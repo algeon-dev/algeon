@@ -160,8 +160,23 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_tab
 }
 
 #[test]
-fn large_keyed_probe_selects_partitioned_strategy_without_large_build() {
-    let plan = large_keyed_probe_join_strategy_plan();
+fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
+    let plan = large_keyed_probe_join_strategy_plan(10, 1024);
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "large probe reusable join with small build should be admitted");
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("large probe reusable join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:1024"));
+    assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
+}
+
+#[test]
+fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
+    let plan = large_keyed_probe_join_strategy_plan(2_000_000, 128 * 1024 * 1024);
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large probe partitioned join should be admitted");
@@ -170,7 +185,7 @@ fn large_keyed_probe_selects_partitioned_strategy_without_large_build() {
         .expect("large probe partitioned join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
-    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:1024"));
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
 
@@ -318,7 +333,7 @@ pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> cudf_query_
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_probe_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> cudf_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -346,8 +361,8 @@ fn large_keyed_probe_join_strategy_plan() -> cudf_query_engine::QueryPlan {
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new("/tmp/large-probe-join-right.parquet")
-                .with_row_group_rows(vec![10])
-                .with_row_group_bytes(vec![1024]),
+                .with_row_group_rows(vec![build_rows])
+                .with_row_group_bytes(vec![build_bytes]),
         ],
         Arc::clone(&right_schema),
         vec!["order_id".to_string(), "category".to_string()],

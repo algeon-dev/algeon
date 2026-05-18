@@ -65,13 +65,16 @@ pub use metrics::{
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use optimizer::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
-    JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions,
-    JoinBuildSideSelectionRejectedReason, NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions,
-    NativeOptimizerResult, SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision,
-    SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics,
-    SemijoinReductionCostSignal, SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics,
-    SemijoinReductionOptions, SemijoinReductionRejectedReason, SemijoinReductionResult, optimize_query_plan,
-    optimize_semijoin_reduction,
+    JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics,
+    JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason, JoinFilterReassociationCandidateDiagnostics,
+    JoinFilterReassociationDiagnostics, JoinFilterReassociationOptions, JoinFilterReassociationRejectedReason,
+    NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
+    OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics, OuterJoinNullRejectionDiagnostics,
+    OuterJoinNullRejectionOptions, OuterJoinNullRejectionRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME,
+    SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
+    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
+    SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
+    SemijoinReductionResult, optimize_query_plan, optimize_semijoin_reduction,
 };
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,

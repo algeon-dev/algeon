@@ -181,6 +181,39 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
 }
 
 #[tokio::test]
+async fn tpcds_sf1_q93_matches_after_outer_join_filter_reassociation() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q93".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+
+    let row = &report.rows[0];
+    assert_eq!(row.query_id, "q93");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.native_reason_code, None);
+    assert_eq!(row.native_unsupported_category, None);
+    assert!(row.native_runtime_started, "q93 must execute through the native path");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, ParityStatus::Matched);
+    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
+    assert_eq!(row.native_reservation_denied_count, Some(0));
+    assert_eq!(row.native_retry_count, Some(0));
+    assert_eq!(row.native_runtime_failure, None);
+}
+
+#[tokio::test]
 async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admission() {
     let root = Path::new(TPCDS_SF1_FIXTURE);
     assert!(root.join("customer.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());

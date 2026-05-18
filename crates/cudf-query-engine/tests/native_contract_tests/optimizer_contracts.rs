@@ -1,6 +1,7 @@
 use cudf_query_engine::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
-    JoinBuildSideSelectionOptions, NativeOptimizerChange, NativeOptimizerOptions, SEMIJOIN_REDUCTION_RULE_NAME,
+    JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionOptions, NativeOptimizerChange, NativeOptimizerOptions,
+    OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME,
     SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionOptions,
     SemijoinReductionRejectedReason, optimize_query_plan,
 };
@@ -54,6 +55,116 @@ fn join_build_side_selection_options_and_rule_name_are_stable() {
     assert!(!JoinBuildSideSelectionOptions::disabled().enabled);
     assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_bytes, 64 * 1024 * 1024);
     assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_rows, 1_000_000);
+}
+
+#[test]
+fn outer_join_null_rejection_options_and_rule_name_are_stable() {
+    assert_eq!(OUTER_JOIN_NULL_REJECTION_RULE_NAME, "outer_join_null_rejection");
+    assert!(cudf_query_engine::OuterJoinNullRejectionOptions::default().enabled);
+    assert!(!cudf_query_engine::OuterJoinNullRejectionOptions::disabled().enabled);
+}
+
+#[test]
+fn join_filter_reassociation_options_and_rule_name_are_stable() {
+    assert_eq!(JOIN_FILTER_REASSOCIATION_RULE_NAME, "join_filter_reassociation");
+    assert!(cudf_query_engine::JoinFilterReassociationOptions::default().enabled);
+    assert!(!cudf_query_engine::JoinFilterReassociationOptions::disabled().enabled);
+}
+
+#[test]
+fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_right_nulls() {
+    let plan = inner_join_over_projected_left_join_right_key_plan();
+    let options = NativeOptimizerOptions {
+        join_filter_reassociation: cudf_query_engine::JoinFilterReassociationOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.applied_count, 1);
+    assert!(result.diagnostics.outer_join_null_rejection.candidates[0].applied);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.candidates[0].rejected_reason, None);
+
+    let PlanNode::Join(root_join) = &result.plan.root_node().kind else {
+        panic!("root should remain an inner join");
+    };
+    let PlanNode::Projection(projection) = &result.plan.node(root_join.inputs[0]).expect("projection").kind else {
+        panic!("root left input should remain a projection");
+    };
+    let PlanNode::Join(rewritten_join) = &result.plan.node(projection.input).expect("left join").kind else {
+        panic!("projection input should be rewritten join");
+    };
+    assert_eq!(rewritten_join.spec.join_type, JoinType::Inner);
+}
+
+#[test]
+fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side() {
+    let plan = inner_join_over_projected_left_join_left_key_plan();
+    let options = NativeOptimizerOptions {
+        join_filter_reassociation: cudf_query_engine::JoinFilterReassociationOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
+    assert!(result.diagnostics.outer_join_null_rejection.is_empty());
+}
+
+#[test]
+fn outer_join_null_rejection_rejects_shared_outer_join_output() {
+    let plan = shared_left_join_output_with_one_null_rejecting_consumer_plan();
+    let options = NativeOptimizerOptions {
+        join_filter_reassociation: cudf_query_engine::JoinFilterReassociationOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.applied_count, 0);
+    assert_eq!(
+        result.diagnostics.outer_join_null_rejection.candidates[0].rejected_reason,
+        Some(OuterJoinNullRejectionRejectedReason::SharedOuterJoinOutput)
+    );
+}
+
+#[test]
+fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_losing_multiplicity() {
+    let plan = inner_join_filter_over_projected_inner_join_plan();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.join_filter_reassociation.considered_count, 1);
+    assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 1);
+    let candidate = &result.diagnostics.join_filter_reassociation.candidates[0];
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+
+    let PlanNode::Projection(parent_projection) = &result.plan.root_node().kind else {
+        panic!("rewritten parent join should become a projection preserving the original output schema");
+    };
+    let PlanNode::Projection(case_projection) =
+        &result.plan.node(parent_projection.input).expect("case projection").kind
+    else {
+        panic!("parent projection should consume rebuilt case projection");
+    };
+    let PlanNode::Join(fact_join) = &result.plan.node(case_projection.input).expect("rebuilt fact join").kind else {
+        panic!("case projection should consume rebuilt fact join");
+    };
+    assert_eq!(fact_join.spec.join_type, JoinType::Inner);
+    let PlanNode::Join(filter_join) = &result.plan.node(fact_join.inputs[1]).expect("filter join").kind else {
+        panic!("fact join right input should be prefiltered by dimension");
+    };
+    assert_eq!(filter_join.spec.join_type, JoinType::Inner);
+    assert_source_input(&result.plan, filter_join.inputs[0], "returns");
+    assert_source_input(&result.plan, filter_join.inputs[1], "reason");
 }
 
 #[test]
@@ -554,6 +665,169 @@ fn root_semijoin_over_nested_inner_join_plan() -> cudf_query_engine::QueryPlan {
         abc_schema,
     );
     builder.finish_gpu_resident(semi)
+}
+
+fn inner_join_over_projected_left_join_right_key_plan() -> cudf_query_engine::QueryPlan {
+    inner_join_over_projected_left_join_key_plan("r_key")
+}
+
+fn inner_join_over_projected_left_join_left_key_plan() -> cudf_query_engine::QueryPlan {
+    inner_join_over_projected_left_join_key_plan("l_key")
+}
+
+fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(gpu_source("left", &["l_key", "payload"]));
+    let right = builder.add_source(gpu_source("right", &["r_key", "r_reason"]));
+    let dim = builder.add_source(gpu_source("dim", &[rejecting_key]));
+    let left_join_schema = schema(&["l_key", "payload", "r_key", "r_reason"]);
+    let left_join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "payload", "payload"), "payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "r_key", "r_key"), "r_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "r_reason", "r_reason"), "r_reason"),
+        ]),
+        Arc::clone(&left_join_schema),
+    );
+    let projected = builder.add_projection(
+        left_join,
+        vec![
+            ProjectionOutput::new(Expr::column("l_key"), Field::new("l_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("r_key"), Field::new("r_key", DataType::Int32, true)),
+            ProjectionOutput::new(Expr::column("r_reason"), Field::new("r_reason", DataType::Int32, true)),
+        ],
+    );
+    let root_schema = Arc::new(Schema::new(vec![
+        Field::new("l_key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("r_key", DataType::Int32, true),
+        Field::new("r_reason", DataType::Int32, true),
+    ]));
+    let root = builder.add_join(
+        projected,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, rejecting_key, rejecting_key),
+                ColumnRef::input(1, rejecting_key, rejecting_key),
+            )],
+        )
+        .with_output_projection(left_projection(&["l_key", "payload", "r_key", "r_reason"])),
+        root_schema,
+    );
+    builder.finish_gpu_resident(root)
+}
+
+fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(gpu_source("left", &["l_key"]));
+    let right = builder.add_source(gpu_source("right", &["r_key"]));
+    let dim = builder.add_source(gpu_source("dim", &["r_key"]));
+    let left_join_schema = schema(&["l_key", "r_key"]);
+    let left_join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "r_key", "r_key"), "r_key"),
+        ]),
+        Arc::clone(&left_join_schema),
+    );
+    let rejecting = builder.add_join(
+        left_join,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "r_key", "r_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(left_projection(&["l_key", "r_key"])),
+        Arc::clone(&left_join_schema),
+    );
+    let root = builder.add_join(
+        left_join,
+        rejecting,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "l_key", "l_key"))],
+        )
+        .with_output_projection(left_projection(&["l_key", "r_key"])),
+        left_join_schema,
+    );
+    builder.finish_gpu_resident(root)
+}
+
+fn inner_join_filter_over_projected_inner_join_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
+    let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
+    let reason = builder.add_source(gpu_source("reason", &["reason_key"]));
+    let sales_returns_schema =
+        schema(&["s_item", "s_ticket", "customer", "amount", "r_item", "r_ticket", "reason_key", "returned"]);
+    let sales_returns = builder.add_join(
+        sales,
+        returns,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![
+                JoinKey::new(ColumnRef::input(0, "s_item", "s_item"), ColumnRef::input(1, "r_item", "r_item")),
+                JoinKey::new(ColumnRef::input(0, "s_ticket", "s_ticket"), ColumnRef::input(1, "r_ticket", "r_ticket")),
+            ],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "s_item", "s_item"), "s_item"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_ticket", "s_ticket"), "s_ticket"),
+            JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::right(ColumnRef::input(1, "r_item", "r_item"), "r_item"),
+            JoinOutputColumn::right(ColumnRef::input(1, "r_ticket", "r_ticket"), "r_ticket"),
+            JoinOutputColumn::right(ColumnRef::input(1, "reason_key", "reason_key"), "reason_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "returned", "returned"), "returned"),
+        ]),
+        sales_returns_schema,
+    );
+    let projected_schema = schema(&["customer", "net_amount", "reason_key"]);
+    let projected = builder.add_projection(
+        sales_returns,
+        vec![
+            ProjectionOutput::new(Expr::column("customer"), Field::new("customer", DataType::Int32, false)),
+            ProjectionOutput::new(
+                Expr::binary(Expr::column("amount"), BinaryOp::Subtract, Expr::column("returned")),
+                Field::new("net_amount", DataType::Int32, false),
+            ),
+            ProjectionOutput::new(Expr::column("reason_key"), Field::new("reason_key", DataType::Int32, false)),
+        ],
+    );
+    let filtered = builder.add_join(
+        projected,
+        reason,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "reason_key", "reason_key"),
+                ColumnRef::input(1, "reason_key", "reason_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
+            JoinOutputColumn::left(ColumnRef::input(0, "net_amount", "net_amount"), "net_amount"),
+        ]),
+        schema(&["customer", "net_amount"]),
+    );
+    assert_eq!(projected_schema.fields().len(), 3);
+    builder.finish_gpu_resident(filtered)
 }
 
 fn gpu_source(name: &str, fields: &[&str]) -> SourceNode {

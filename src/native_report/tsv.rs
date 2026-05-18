@@ -182,6 +182,46 @@ pub(super) fn format_native_optimizer_diagnostics(
             candidates
         ));
     }
+    if !diagnostics.outer_join_null_rejection.is_empty() {
+        let null_rejection = &diagnostics.outer_join_null_rejection;
+        let candidates = if null_rejection.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            null_rejection
+                .candidates
+                .iter()
+                .map(format_outer_join_null_rejection_candidate)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::OUTER_JOIN_NULL_REJECTION_RULE_NAME,
+            null_rejection.considered_count,
+            null_rejection.applied_count,
+            candidates
+        ));
+    }
+    if !diagnostics.join_filter_reassociation.is_empty() {
+        let reassociation = &diagnostics.join_filter_reassociation;
+        let candidates = if reassociation.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            reassociation
+                .candidates
+                .iter()
+                .map(format_join_filter_reassociation_candidate)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::JOIN_FILTER_REASSOCIATION_RULE_NAME,
+            reassociation.considered_count,
+            reassociation.applied_count,
+            candidates
+        ));
+    }
     stable_tsv_field(&rows.join(";"))
 }
 
@@ -245,6 +285,45 @@ fn format_join_build_side_selection_candidate(
         option_u64_text(candidate.right_estimated_rows),
         option_u64_text(candidate.left_estimated_bytes),
         option_u64_text(candidate.right_estimated_bytes),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_outer_join_null_rejection_candidate(
+    candidate: &cudf_query_engine::OuterJoinNullRejectionCandidateDiagnostics,
+) -> String {
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    let rejecting_columns = if candidate.rejecting_columns.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.rejecting_columns.iter().map(|column| stable_tsv_field(column)).collect::<Vec<_>>().join("+")
+    };
+    format!(
+        "rule={},candidate_node_id={},rejecting_node_id={},rejecting_join_side={},rejecting_columns={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        candidate.rejecting_node_id,
+        candidate.rejecting_join_side,
+        rejecting_columns,
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_join_filter_reassociation_candidate(
+    candidate: &cudf_query_engine::JoinFilterReassociationCandidateDiagnostics,
+) -> String {
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},candidate_node_id={},crossed_join_node_id={},filtered_child_node_id={},filtering_node_id={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        candidate.crossed_join_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+        candidate.filtered_child_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+        candidate.filtering_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
         candidate.applied,
         rejected_reason,
     )
