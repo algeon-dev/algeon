@@ -179,6 +179,7 @@ impl NativeDataFusionExecutionMetrics {
                 self.task_operator_rows.iter_mut().find(|existing| existing.operator_kind == row.operator_kind)
             {
                 existing.task_count = existing.task_count.saturating_add(row.task_count);
+                existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
                 existing.reservation_requested_bytes =
                     existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
                 existing.reservation_granted_bytes =
@@ -203,6 +204,7 @@ impl NativeDataFusionExecutionMetrics {
                 self.task_runtime_rows.iter_mut().find(|existing| existing.compiled_task_id == row.compiled_task_id)
             {
                 existing.operator_kind = row.operator_kind;
+                existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
                 existing.reservation_requested_bytes =
                     existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
                 existing.reservation_granted_bytes =
@@ -226,6 +228,7 @@ impl NativeDataFusionExecutionMetrics {
 pub struct NativeTaskOperatorMetricRow {
     pub operator_kind: String,
     pub task_count: usize,
+    pub elapsed_ns: usize,
     pub reservation_requested_bytes: usize,
     pub reservation_granted_bytes: usize,
     pub reservation_released_bytes: usize,
@@ -237,9 +240,10 @@ pub struct NativeTaskOperatorMetricRow {
 impl NativeTaskOperatorMetricRow {
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "operator_kind={},task_count={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            "operator_kind={},task_count={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
             self.operator_kind,
             self.task_count,
+            self.elapsed_ns,
             self.reservation_requested_bytes,
             self.reservation_granted_bytes,
             self.reservation_released_bytes,
@@ -254,6 +258,7 @@ impl NativeTaskOperatorMetricRow {
 pub struct NativeTaskRuntimeMetricRow {
     pub compiled_task_id: String,
     pub operator_kind: String,
+    pub elapsed_ns: usize,
     pub reservation_requested_bytes: usize,
     pub reservation_granted_bytes: usize,
     pub reservation_released_bytes: usize,
@@ -265,9 +270,10 @@ pub struct NativeTaskRuntimeMetricRow {
 impl NativeTaskRuntimeMetricRow {
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "compiled_task_id={},operator_kind={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            "compiled_task_id={},operator_kind={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
             self.compiled_task_id,
             self.operator_kind,
+            self.elapsed_ns,
             self.reservation_requested_bytes,
             self.reservation_granted_bytes,
             self.reservation_released_bytes,
@@ -503,6 +509,7 @@ fn labels_to_task_operator_row(labels: BTreeMap<&str, &str>) -> NativeTaskOperat
     NativeTaskOperatorMetricRow {
         operator_kind: string_label(&labels, "operator_kind"),
         task_count: usize_label(&labels, "task_count"),
+        elapsed_ns: usize_label(&labels, "elapsed_ns"),
         reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
         reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
         reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),
@@ -516,6 +523,7 @@ fn labels_to_task_runtime_row(labels: BTreeMap<&str, &str>) -> NativeTaskRuntime
     NativeTaskRuntimeMetricRow {
         compiled_task_id: string_label(&labels, "compiled_task_id"),
         operator_kind: string_label(&labels, "operator_kind"),
+        elapsed_ns: usize_label(&labels, "elapsed_ns"),
         reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
         reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
         reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),

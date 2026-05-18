@@ -55,7 +55,7 @@ pub use exec::{
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
-    LimitSpec, LiteralValue, SortExpr, SortSpec,
+    GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{
     BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,

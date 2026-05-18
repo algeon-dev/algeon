@@ -413,11 +413,39 @@ impl fmt::Display for BinaryOp {
 pub struct AggregateSpec {
     pub group_exprs: Vec<Expr>,
     pub aggr_exprs: Vec<AggregateExpr>,
+    pub grouping_sets: Option<GroupingSetsSpec>,
 }
 
 impl AggregateSpec {
     pub fn new(group_exprs: Vec<Expr>, aggr_exprs: Vec<AggregateExpr>) -> Self {
-        Self { group_exprs, aggr_exprs }
+        Self { group_exprs, aggr_exprs, grouping_sets: None }
+    }
+
+    pub fn with_grouping_sets(mut self, grouping_sets: GroupingSetsSpec) -> Self {
+        self.grouping_sets = Some(grouping_sets);
+        self
+    }
+}
+
+/// GROUPING SETS / ROLLUP / CUBE grouping masks.
+///
+/// `groups` follows DataFusion's physical `PhysicalGroupBy` convention: each
+/// mask has one entry per `group_exprs` item, and `true` means that grouping
+/// key is replaced by a typed NULL for this grouping set. `grouping_id_alias`
+/// names the generated grouping id key appended after the group expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupingSetsSpec {
+    pub groups: Vec<Vec<bool>>,
+    pub grouping_id_alias: String,
+}
+
+impl GroupingSetsSpec {
+    pub fn new(groups: Vec<Vec<bool>>, grouping_id_alias: impl Into<String>) -> Self {
+        Self { groups, grouping_id_alias: grouping_id_alias.into() }
+    }
+
+    pub fn is_grouping_sets(&self) -> bool {
+        !self.groups.is_empty()
     }
 }
 

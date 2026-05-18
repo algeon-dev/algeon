@@ -14,7 +14,7 @@ use cudf::{
     core::Scalar as CudfScalar,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     io::source::SourceReadMode,
-    ops::{col, lit},
+    ops::{col, lit, lit_null},
 };
 
 mod bounded;

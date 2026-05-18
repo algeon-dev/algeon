@@ -448,6 +448,25 @@ impl QueryMetrics {
         row.task_count = row.task_count.saturating_add(1);
     }
 
+    pub fn record_task_elapsed(&mut self, task_id: impl ToString, operator_kind: impl Into<String>, elapsed: Duration) {
+        let compiled_task_id = task_id.to_string();
+        let operator_kind = operator_kind.into();
+        self.task_kind_by_compiled_task_id.insert(compiled_task_id.clone(), operator_kind.clone());
+        let row = self.task_runtime_metrics.entry(compiled_task_id.clone()).or_insert_with(|| TaskRuntimeMetrics {
+            compiled_task_id,
+            operator_kind: operator_kind.clone(),
+            ..Default::default()
+        });
+        row.operator_kind = operator_kind.clone();
+        row.elapsed_time += elapsed;
+
+        let operator = self
+            .task_operator_metrics
+            .entry(operator_kind.clone())
+            .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() });
+        operator.elapsed_time += elapsed;
+    }
+
     pub fn set_current_compiled_task(&mut self, compiled_task_id: impl ToString) {
         self.set_current_task(compiled_task_id);
     }
@@ -903,6 +922,7 @@ pub struct JoinStrategyDecisionMetrics {
 pub struct TaskOperatorMetrics {
     pub operator_kind: String,
     pub task_count: u64,
+    pub elapsed_time: Duration,
     pub reservation_requested_bytes: u64,
     pub reservation_granted_bytes: u64,
     pub reservation_released_bytes: u64,
@@ -929,6 +949,7 @@ impl TaskOperatorMetrics {
 
     fn merge_from(&mut self, other: Self) {
         self.task_count = self.task_count.saturating_add(other.task_count);
+        self.elapsed_time += other.elapsed_time;
         self.reservation_requested_bytes =
             self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
         self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
@@ -945,6 +966,7 @@ impl TaskOperatorMetrics {
 pub struct TaskRuntimeMetrics {
     pub compiled_task_id: String,
     pub operator_kind: String,
+    pub elapsed_time: Duration,
     pub reservation_requested_bytes: u64,
     pub reservation_granted_bytes: u64,
     pub reservation_released_bytes: u64,
@@ -981,6 +1003,7 @@ impl TaskRuntimeMetrics {
         if self.operator_kind.is_empty() || self.operator_kind == "unknown" {
             self.operator_kind = other.operator_kind;
         }
+        self.elapsed_time += other.elapsed_time;
         self.reservation_requested_bytes =
             self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
         self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);

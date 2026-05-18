@@ -64,7 +64,10 @@ fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let lowered_keys = lower_aggregate_spec_keys(&aggregate.spec)?;
+    let mut lowered_keys = lower_aggregate_spec_keys(&aggregate.spec)?;
+    if aggregate.spec.grouping_sets.is_some() {
+        lowered_keys.key_columns.truncate(aggregate.spec.group_exprs.len());
+    }
     let partition_count = partitioned_aggregate_partition_count(context, input_reserved_bytes);
     let mut partition_reservation = match reservations.try_reserve_work(
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())

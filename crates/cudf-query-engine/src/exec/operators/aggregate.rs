@@ -154,6 +154,9 @@ pub(in crate::exec) fn execute_aggregate(
     if node.spec.group_exprs.is_empty() {
         return execute_global_aggregate(context, &node.spec, input, output_schema, metrics);
     }
+    if node.spec.grouping_sets.is_some() {
+        return execute_grouping_sets_aggregate(context, node, input_schema, input, output_schema, None, metrics);
+    }
 
     // Lowering AVG through libcudf's groupby `MEAN` (`GroupByAgg::Mean`) keeps
     // the result scale equal to the source scale on `fixed_point` columns and
@@ -200,6 +203,17 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
     }
     if node.spec.group_exprs.is_empty() {
         return execute_global_aggregate_with_budget(context, &node.spec, input, output_schema, token, metrics);
+    }
+    if node.spec.grouping_sets.is_some() {
+        return execute_grouping_sets_aggregate(
+            context,
+            node,
+            input_schema,
+            input,
+            output_schema,
+            Some(token),
+            metrics,
+        );
     }
 
     // See `execute_aggregate` for why AVG must not lower to libcudf groupby
@@ -250,6 +264,17 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
         let output_schema = partial_global_aggregate_output_schema(&node.spec, input_schema, aggregate_output_schema)?;
         return execute_global_aggregate_with_budget(context, &partial_spec, input, &output_schema, token, metrics);
     }
+    if node.spec.grouping_sets.is_some() {
+        return execute_grouping_sets_partial_aggregate_with_budget(
+            context,
+            node,
+            input_schema,
+            aggregate_output_schema,
+            input,
+            token,
+            metrics,
+        );
+    }
 
     let aggregate = lower_partial_aggregate_spec(&node.spec)?;
     let expected_output_names = aggregate.output_names.clone();
@@ -275,6 +300,299 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+fn execute_grouping_sets_aggregate(
+    context: &ExecutionContext,
+    node: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if aggregate_spec_has_stddev_samp(&node.spec) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.aggregate.grouping_sets",
+            "grouping sets do not currently support stddev_samp",
+        ));
+    }
+    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_output_fields(&node.spec, output_schema)?;
+    }
+    let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+
+    let timer = Instant::now();
+    let frame = input.into_frame();
+    let mut output = execute_grouping_sets_groupby(
+        context,
+        &node.spec,
+        input_schema,
+        output_schema,
+        frame,
+        &aggregate,
+        token,
+        metrics,
+        "cudf_query_engine.aggregate.grouping_sets",
+    )?;
+    output = match token {
+        Some(token) => {
+            finalize_avg_output_columns_with_budget(context, output, &node.spec, output_schema, token, metrics)?
+        },
+        None => finalize_avg_output_columns(context, output, &node.spec, output_schema)?,
+    };
+    output = match token {
+        Some(token) => cast_reduction_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?,
+        None => cast_reduction_output_columns(output, &node.spec, output_schema)?,
+    };
+    output = match token {
+        Some(token) => cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?,
+        None => cast_count_output_columns(output, &node.spec, output_schema)?,
+    };
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.grouping_sets_select",
+            "failed to select native grouping-sets aggregate output columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+fn execute_grouping_sets_partial_aggregate_with_budget(
+    context: &ExecutionContext,
+    node: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if aggregate_spec_has_stddev_samp(&node.spec) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.aggregate.grouping_sets_partial",
+            "grouping sets do not currently support stddev_samp",
+        ));
+    }
+    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    let expected_output_names = aggregate.output_names.clone();
+    let timer = Instant::now();
+    let frame = input.into_frame();
+    let mut output = execute_grouping_sets_groupby(
+        context,
+        &node.spec,
+        input_schema,
+        aggregate_output_schema,
+        frame,
+        &aggregate,
+        Some(token),
+        metrics,
+        "cudf_query_engine.aggregate.grouping_sets_partial",
+    )?;
+    output = cast_count_output_columns_with_budget(output, &node.spec, aggregate_output_schema, token, metrics)?;
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.grouping_sets_select_partial",
+            "failed to select native partial grouping-sets aggregate output columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+fn execute_grouping_sets_groupby(
+    context: &ExecutionContext,
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &arrow::datatypes::SchemaRef,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let grouping_sets = spec.grouping_sets.as_ref().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-sets execution requires a grouping-sets aggregate spec",
+        )
+    })?;
+    let mut outputs = Vec::with_capacity(grouping_sets.groups.len());
+    for group in &grouping_sets.groups {
+        if group.len() != spec.group_exprs.len() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "grouping-set mask length must match group expression count",
+            )
+            .with_fact("mask_len", group.len())
+            .with_fact("group_expr_count", spec.group_exprs.len()));
+        }
+        let working = prepare_grouping_set_frame(
+            context,
+            input_schema,
+            output_schema,
+            frame.clone(),
+            aggregate,
+            grouping_sets.grouping_id_alias.as_str(),
+            group,
+            token,
+            metrics,
+            operation,
+        )?;
+        let output = match token {
+            Some(token) => {
+                let overrides = token.execution_overrides();
+                execute_groupby_aggregate_with_budget(
+                    &overrides,
+                    working,
+                    aggregate,
+                    token,
+                    metrics,
+                    operation,
+                    "failed to execute bounded native grouping-sets aggregate",
+                )?
+            },
+            None => {
+                let overrides = execution_overrides(context);
+                execute_groupby_aggregate(&overrides, working, aggregate, operation)?
+            },
+        };
+        outputs.push(output);
+    }
+    concat_grouping_set_outputs(context, outputs, token, operation)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_grouping_set_frame(
+    context: &ExecutionContext,
+    input_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &arrow::datatypes::SchemaRef,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    grouping_id_alias: &str,
+    group: &[bool],
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let mut expressions = Vec::<(String, cudf::Expr)>::new();
+    for (key_column, is_null) in aggregate.key_columns.iter().take(group.len()).zip(group) {
+        if *is_null {
+            let field = input_schema.field_with_name(key_column.as_str()).map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    operation,
+                    "grouping-set key column is missing from aggregate input schema",
+                )
+                .with_fact("column", key_column.as_str())
+                .with_fact("arrow_error", error.to_string())
+            })?;
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    operation,
+                    "grouping-set null key column type is not supported by native execution",
+                )
+                .with_fact("column", key_column.as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?;
+            expressions.push((key_column.clone(), lit_null(dtype)));
+        }
+    }
+
+    let grouping_id_field = output_schema.field_with_name(grouping_id_alias).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-id column is missing from grouping-sets output schema",
+        )
+        .with_fact("grouping_id_alias", grouping_id_alias)
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    let grouping_id = grouping_id_value(group);
+    expressions.push((
+        grouping_id_alias.to_string(),
+        grouping_id_literal_expr(grouping_id_field.data_type(), grouping_id, operation)?,
+    ));
+
+    match token {
+        Some(token) => frame
+            .with_columns_with_budget(expressions, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    operation,
+                    "failed to prepare bounded grouping-set aggregate columns",
+                    error,
+                )
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, operation)),
+        None => {
+            let overrides = execution_overrides(context);
+            frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
+                QueryError::from_cudf(operation, "failed to prepare grouping-set aggregate columns", error)
+            })
+        },
+    }
+}
+
+fn grouping_id_value(group: &[bool]) -> u64 {
+    group.iter().fold(0u64, |acc, is_null| (acc << 1) | u64::from(*is_null))
+}
+
+fn grouping_id_literal_expr(data_type: &ArrowDataType, value: u64, operation: &'static str) -> Result<cudf::Expr> {
+    match data_type {
+        ArrowDataType::UInt8 => Ok(lit(u8::try_from(value).map_err(|_error| {
+            QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt8")
+                .with_fact("grouping_id", value)
+        })?)),
+        ArrowDataType::UInt16 => Ok(lit(u16::try_from(value).map_err(|_error| {
+            QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt16")
+                .with_fact("grouping_id", value)
+        })?)),
+        ArrowDataType::UInt32 => Ok(lit(u32::try_from(value).map_err(|_error| {
+            QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt32")
+                .with_fact("grouping_id", value)
+        })?)),
+        ArrowDataType::UInt64 => Ok(lit(value)),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            operation,
+            "grouping-id output type is not supported by native execution",
+        )
+        .with_fact("data_type", format!("{data_type:?}"))),
+    }
+}
+
+fn concat_grouping_set_outputs(
+    context: &ExecutionContext,
+    mut outputs: Vec<DataFrame>,
+    token: Option<&ExecutionBudgetToken>,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    if outputs.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-sets aggregate requires at least one grouping set",
+        ));
+    }
+    if outputs.len() == 1 {
+        return Ok(outputs.remove(0));
+    }
+    let first = outputs.remove(0);
+    let other_refs = outputs.iter().collect::<Vec<_>>();
+    match token {
+        Some(token) => first.with_execution(&token.execution_overrides()).concat_many(&other_refs),
+        None => first.with_execution(&execution_overrides(context)).concat_many(&other_refs),
+    }
+    .map_err(|error| QueryError::from_cudf(operation, "failed to concatenate grouping-set aggregate outputs", error))
 }
 
 pub(in crate::exec) fn execute_groupby_aggregate(

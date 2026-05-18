@@ -39,7 +39,7 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
     // aggregate functions and state fields must match, and no distinct/order
     // by/filter semantics may be hidden in the pair.
     matches!(partial_aggregate.mode(), AggregateMode::Partial)
-        && final_aggregate.group_expr().expr().len() == partial_aggregate.group_expr().expr().len()
+        && final_aggregate.group_expr().expr().len() == partial_group_output_count(partial_aggregate)
         && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
         && final_aggregate.filter_expr().iter().all(Option::is_none)
         && partial_aggregate.filter_expr().iter().all(Option::is_none)
@@ -57,14 +57,28 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
 }
 
 fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
-    final_aggregate.group_expr().expr().iter().zip(partial_aggregate.group_expr().expr()).all(
-        |((final_expr, _final_alias), (_partial_expr, partial_alias))| {
+    final_aggregate.group_expr().expr().iter().zip(partial_group_output_names(partial_aggregate)).all(
+        |((final_expr, _final_alias), partial_alias)| {
             final_expr
                 .as_any()
                 .downcast_ref::<Column>()
                 .is_some_and(|final_column| final_column.name() == partial_alias)
         },
     )
+}
+
+fn partial_group_output_count(partial_aggregate: &AggregateExec) -> usize {
+    partial_aggregate.group_expr().expr().len() + usize::from(partial_aggregate.group_expr().has_grouping_set())
+}
+
+fn partial_group_output_names(partial_aggregate: &AggregateExec) -> Vec<String> {
+    partial_aggregate
+        .group_expr()
+        .expr()
+        .iter()
+        .map(|(_expr, alias)| alias.clone())
+        .chain(partial_aggregate.group_expr().has_grouping_set().then(|| "__grouping_id".to_string()))
+        .collect()
 }
 
 fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {

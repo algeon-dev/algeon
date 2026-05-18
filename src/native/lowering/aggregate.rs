@@ -3,8 +3,9 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{Schema, SchemaRef};
 use cudf_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
-    AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, NodeId as NativeNodeId,
-    QueryPlanBuilder as NativeQueryPlanBuilder, ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
+    AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, GroupingSetsSpec as NativeGroupingSetsSpec,
+    NodeId as NativeNodeId, QueryPlanBuilder as NativeQueryPlanBuilder,
+    ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
 };
 use datafusion::{
     physical_expr::{expressions::Column, projection::ProjectionExprs},
@@ -258,14 +259,21 @@ pub(super) fn lower_aggregate_spec(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(NativeAggregateSpec::new(group_exprs, aggr_exprs))
+    let mut spec = NativeAggregateSpec::new(group_exprs, aggr_exprs);
+    if aggregate.group_expr().has_grouping_set() {
+        spec = spec
+            .with_grouping_sets(NativeGroupingSetsSpec::new(aggregate.group_expr().groups().to_vec(), "__grouping_id"));
+    }
+    Ok(spec)
 }
 
 pub(super) fn rename_aggregate_spec_outputs(
     mut spec: NativeAggregateSpec,
     output_bindings: &[FieldBinding],
 ) -> Result<NativeAggregateSpec, FallbackReason> {
-    let expected_outputs = spec.group_exprs.len() + spec.aggr_exprs.len();
+    let grouping_id_offset = spec.group_exprs.len();
+    let grouping_id_count = usize::from(spec.grouping_sets.is_some());
+    let expected_outputs = spec.group_exprs.len() + grouping_id_count + spec.aggr_exprs.len();
     if output_bindings.len() != expected_outputs {
         return Err(FallbackReason::UnsupportedExpression);
     }
@@ -274,7 +282,13 @@ pub(super) fn rename_aggregate_spec_outputs(
             *expr = with_output_alias(expr.clone(), binding.native_name.as_str());
         }
     }
-    for (expr, binding) in spec.aggr_exprs.iter_mut().zip(output_bindings.iter().skip(spec.group_exprs.len())) {
+    if let Some(grouping_sets) = &mut spec.grouping_sets {
+        let binding = &output_bindings[grouping_id_offset];
+        grouping_sets.grouping_id_alias = binding.native_name.clone();
+    }
+    for (expr, binding) in
+        spec.aggr_exprs.iter_mut().zip(output_bindings.iter().skip(spec.group_exprs.len() + grouping_id_count))
+    {
         expr.alias = binding.native_name.clone();
     }
     Ok(spec)

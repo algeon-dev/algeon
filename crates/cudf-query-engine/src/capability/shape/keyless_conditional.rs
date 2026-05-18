@@ -242,7 +242,7 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
                 ],
             ));
         },
-        AggregateGrouping::Grouped | AggregateGrouping::Scalar => {},
+        AggregateGrouping::Grouped | AggregateGrouping::Scalar | AggregateGrouping::GroupingSets => {},
     }
     validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
     Ok((aggregate_id, node_id))
