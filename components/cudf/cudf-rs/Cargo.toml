@@ -19,6 +19,7 @@ arrow = { version = "58" }
 bitflags = "2"
 csv = "1.4"
 indexmap = "2"
+parquet = { version = "=58.3.0", default-features = false }
 typed-builder = "0.23"
 smallvec = "1.15"
 strum = { version = "0.28", features = ["derive"] }

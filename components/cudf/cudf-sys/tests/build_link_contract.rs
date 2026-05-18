@@ -200,6 +200,10 @@ fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
         "expected build.rs to replay native link search paths as runtime rpath entries"
     );
     assert!(
+        BUILD_RS.contains("cargo:runtime-lib-dir="),
+        "expected build.rs to surface runtime library directories as direct Cargo metadata keys for downstream DEP_CUDF_RUST_RUNTIME_LIB_DIR"
+    );
+    assert!(
         BUILD_RS.contains("cargo:metadata=runtime-lib-dir="),
         "expected build.rs to surface runtime library directories as Cargo metadata"
     );

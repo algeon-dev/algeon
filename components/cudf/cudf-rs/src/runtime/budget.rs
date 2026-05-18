@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use super::{ExecutionOverrides, Runtime};
 use crate::core::{
-    error::{Error, Result},
+    error::{BudgetExhaustionDetail, Error, Result},
     memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
 };
 
@@ -271,16 +271,28 @@ impl ExecutionBudgetToken {
             .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())
             .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
         match self.memory_resource.budget_tracking_usage() {
-            Ok(usage) => err
-                .with_detail_if_absent("budget_peak_bytes", usage.peak_bytes.to_string())
-                .with_detail_if_absent("budget_current_bytes", usage.current_bytes.to_string())
-                .with_detail_if_absent("budget_peak_aligned_bytes", usage.peak_aligned_bytes.to_string())
-                .with_detail_if_absent("budget_current_aligned_bytes", usage.current_aligned_bytes.to_string())
-                .with_detail_if_absent("budget_failed_allocation_count", usage.failed_allocation_count.to_string())
-                .with_detail_if_absent(
-                    "budget_largest_failed_allocation_bytes",
-                    usage.largest_failed_allocation_bytes.to_string(),
-                ),
+            Ok(usage) => {
+                let detail = BudgetExhaustionDetail::new(
+                    self.request.budget_bytes(),
+                    usage.peak_bytes as usize,
+                    usage.peak_aligned_bytes as usize,
+                    usage.current_bytes as usize,
+                    usage.largest_failed_allocation_bytes as usize,
+                    usage.failed_allocation_count as usize,
+                    self.request.boundary().to_string(),
+                    operation,
+                );
+                err.with_budget_exhaustion_if_absent(detail)
+                    .with_detail_if_absent("budget_peak_bytes", usage.peak_bytes.to_string())
+                    .with_detail_if_absent("budget_current_bytes", usage.current_bytes.to_string())
+                    .with_detail_if_absent("budget_peak_aligned_bytes", usage.peak_aligned_bytes.to_string())
+                    .with_detail_if_absent("budget_current_aligned_bytes", usage.current_aligned_bytes.to_string())
+                    .with_detail_if_absent("budget_failed_allocation_count", usage.failed_allocation_count.to_string())
+                    .with_detail_if_absent(
+                        "budget_largest_failed_allocation_bytes",
+                        usage.largest_failed_allocation_bytes.to_string(),
+                    )
+            },
             Err(_) => err,
         }
     }

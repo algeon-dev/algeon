@@ -12,7 +12,7 @@ use crate::{
         error::{Error, ErrorCode, Result},
         scalar::Scalar,
         schema,
-        types::{DataType, TimestampResolution, TypeId},
+        types::{DataType, TimestampResolution, TypeId, cudf_null_mask_allocation_size_bytes},
     },
     frame::series::Series,
     internal::hash::{FastHashSet, fast_hash_set_with_capacity},
@@ -36,6 +36,37 @@ use crate::{
 const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
     "libcudf_parquet_decoded_output_preflight_unavailable";
 const PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES: usize = 64 * 1024;
+
+/// Lower-level byte preflight for a bounded local Parquet source chunk read.
+///
+/// This is returned only for source shapes where cudf-rs can prove the retained
+/// output bytes before execution from the checked source contract, selected
+/// row-count metadata, and fixed-width output types. Variable-width source
+/// outputs and chunks without row-count metadata currently return `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParquetSourceReadPreflight {
+    retained_output_bytes: usize,
+    required_budget_bytes: usize,
+}
+
+impl ParquetSourceReadPreflight {
+    fn new(retained_output_bytes: usize) -> Self {
+        Self {
+            retained_output_bytes,
+            required_budget_bytes: retained_output_bytes.max(PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES),
+        }
+    }
+
+    /// Exact retained-output byte upper bound for the requested source frame.
+    pub fn retained_output_bytes(&self) -> usize {
+        self.retained_output_bytes
+    }
+
+    /// Minimum execution budget cudf-rs recommends for this source read.
+    pub fn required_budget_bytes(&self) -> usize {
+        self.required_budget_bytes
+    }
+}
 
 fn comma_separated_strings(values: &[String]) -> String {
     values.join(",")
@@ -69,6 +100,80 @@ fn source_read_mode_str(mode: SourceReadMode) -> &'static str {
         SourceReadMode::FinalOutput => "final_output",
         SourceReadMode::ExecutionFrame => "execution_frame",
     }
+}
+
+fn source_preflight_row_count(source: &LocalParquetSource, chunk: &SourceChunk) -> Result<Option<usize>> {
+    if source.kind() == LocalParquetSourceKind::MetadataRowCount {
+        return Ok(Some(1));
+    }
+    chunk
+        .known_row_count()
+        .map(|rows| {
+            usize::try_from(rows).map_err(|_| {
+                Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    "dataframe::read_parquet_source_chunk_preflight",
+                    "source chunk row count exceeds usize",
+                )
+                .with_detail("reason", "row_count_exceeds_usize")
+                .with_detail("row_count", rows.to_string())
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
+            })
+        })
+        .transpose()
+}
+
+fn source_preflight_column_bytes(column: &crate::io::source::SourceColumn, rows: usize) -> Result<Option<usize>> {
+    let Some(element_size) = column.data_type().id().size_in_bytes()? else {
+        return Ok(None);
+    };
+    let element_bytes = rows.checked_mul(element_size as usize).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            "dataframe::read_parquet_source_chunk_preflight",
+            "source preflight fixed-width column byte count overflowed usize",
+        )
+        .with_detail("reason", "column_byte_count_overflow")
+        .with_detail("column", column.name().to_string())
+        .with_detail("row_count", rows.to_string())
+        .with_detail("element_size_bytes", element_size.to_string())
+    })?;
+    let mask_bytes = if column.nullable() { cudf_null_mask_allocation_size_bytes(rows) } else { 0 };
+    element_bytes.checked_add(mask_bytes).map(Some).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            "dataframe::read_parquet_source_chunk_preflight",
+            "source preflight nullable fixed-width column byte count overflowed usize",
+        )
+        .with_detail("reason", "nullable_column_byte_count_overflow")
+        .with_detail("column", column.name().to_string())
+        .with_detail("row_count", rows.to_string())
+        .with_detail("element_bytes", element_bytes.to_string())
+        .with_detail("mask_bytes", mask_bytes.to_string())
+    })
+}
+
+fn source_preflight_named_columns(
+    source: &LocalParquetSource,
+    mode: SourceReadMode,
+) -> impl Iterator<Item = &str> + '_ {
+    let mut names = Vec::new();
+    let seen_capacity = source.output_columns().len()
+        + if mode == SourceReadMode::ExecutionFrame { source.required_columns().len() } else { 0 };
+    let mut seen = fast_hash_set_with_capacity(seen_capacity);
+    for output in source.output_columns() {
+        if seen.insert(output.name().to_string()) {
+            names.push(output.name());
+        }
+    }
+    if mode == SourceReadMode::ExecutionFrame {
+        for required in source.required_columns() {
+            if seen.insert(required.name().to_string()) {
+                names.push(required.name());
+            }
+        }
+    }
+    names.into_iter()
 }
 
 fn parquet_source_budget_context(
@@ -830,6 +935,53 @@ impl DataFrame {
         PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES
     }
 
+    /// Return a source-read byte preflight when cudf-rs can prove the retained
+    /// output bytes before execution.
+    ///
+    /// The current coverage is intentionally narrow: every output column in
+    /// the requested source mode must be fixed width and the planned chunk must
+    /// carry exact row-count metadata. Variable-width columns or missing
+    /// row-count metadata return `Ok(None)` so callers can keep their existing
+    /// fallback contract.
+    pub fn parquet_source_chunk_exact_preflight(
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+    ) -> Result<Option<ParquetSourceReadPreflight>> {
+        let operation = "dataframe::read_parquet_source_chunk_preflight";
+        source.validate_chunk_partition_values(chunk, operation)?;
+        let Some(rows) = source_preflight_row_count(source, chunk)? else {
+            return Ok(None);
+        };
+
+        let mut retained_output_bytes = 0usize;
+        for name in source_preflight_named_columns(source, mode) {
+            let column = source.schema().column(name).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::MissingColumn,
+                    operation,
+                    "source preflight output column is missing from source schema",
+                )
+                .with_column(name.to_string())
+                .with_detail("reason", "schema_column_missing")
+            })?;
+            let Some(column_bytes) = source_preflight_column_bytes(column, rows)? else {
+                return Ok(None);
+            };
+            retained_output_bytes = retained_output_bytes.checked_add(column_bytes).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    operation,
+                    "source preflight output byte count overflowed usize",
+                )
+                .with_detail("reason", "source_preflight_byte_count_overflow")
+                .with_detail("column", name.to_string())
+            })?;
+        }
+
+        Ok(Some(ParquetSourceReadPreflight::new(retained_output_bytes)))
+    }
+
     /// Read a CSV file into a `DataFrame`.
     ///
     /// If the caller does not provide explicit names through
@@ -1107,10 +1259,11 @@ impl DataFrame {
     /// the token's hard-limiting allocator. The report records observed
     /// retained/output device allocation bytes and output rows after the read.
     ///
-    /// libcudf does not expose exact decoded Parquet output preflight sizing
-    /// for this path, so the report always records that lower-level contract
-    /// as unresolved. Source compressed bytes are not reported as decoded
-    /// output bytes.
+    /// For source chunks covered by
+    /// [`DataFrame::parquet_source_chunk_exact_preflight`], the report records
+    /// the exact source-read preflight facts. Other chunks keep the unresolved
+    /// decoded-output preflight marker. Source compressed bytes are not
+    /// reported as decoded output bytes.
     pub fn read_parquet_source_chunk_with_budget(
         runtime: &Runtime,
         source: &LocalParquetSource,
@@ -1135,13 +1288,22 @@ impl DataFrame {
                 operation,
             )
             .map_err(|error| token.annotate_error(error, operation))?;
-        let report = token
+        let preflight = Self::parquet_source_chunk_exact_preflight(source, chunk, mode)?;
+        let mut report = token
             .hard_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
-            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP)
             .with_context_facts(parquet_source_budget_context(source, chunk, mode));
+        if let Some(preflight) = preflight {
+            report = report.with_context_facts([
+                ("source_read_preflight_contract", "exact_retained_output_upper_bound".to_string()),
+                ("source_read_preflight_retained_output_bytes", preflight.retained_output_bytes().to_string()),
+                ("source_read_preflight_required_budget_bytes", preflight.required_budget_bytes().to_string()),
+            ]);
+        } else {
+            report = report.with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+        }
 
         Ok(BudgetedExecutionOutcome::new(frame, report))
     }

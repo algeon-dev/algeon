@@ -154,6 +154,9 @@ fn dataframe_conditional_full_join_size_data_matches_materialized_pair_indices_f
 
 #[test]
 fn dataframe_conditional_full_join_size_data_materialize_indices_in_uses_execution_override() {
+    // libcudf binds conditional full join retained size data to the stream that built it
+    // (cpp/src/join/conditional_join.cu), so size_data and materialize_indices_in must
+    // share the same execution context. The override has to flow through both calls.
     let (left, right) = dataframe_conditional_inputs(&[2, 5, 9], &[1, 3, 6]);
     let predicate = left_less_than_right();
     let options = dataframe_conditional_options();
@@ -162,7 +165,8 @@ fn dataframe_conditional_full_join_size_data_materialize_indices_in_uses_executi
     let ctx =
         ExecutionOverrides::new().with_stream(output_rt.stream()).with_memory_resource(output_rt.memory_resource());
 
-    let size_data = left.conditional_full_join_size_data(&right, &predicate, options).unwrap();
+    let size_data =
+        left.with_execution(&ctx).conditional_full_join_size_data(&right, &predicate, options).unwrap();
     let output_size = size_data.output_size();
     let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
 
@@ -172,6 +176,26 @@ fn dataframe_conditional_full_join_size_data_materialize_indices_in_uses_executi
     assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
     assert_eq!(materialized.placement().device, output_rt.device());
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream() {
+    // Cross-stream materialization of conditional full join retained size data is a
+    // hard upstream error. The binding must surface it cleanly instead of masking the
+    // stream-identity contract.
+    let (left, right) = dataframe_conditional_inputs(&[2, 5, 9], &[1, 3, 6]);
+    let predicate = left_less_than_right();
+    let options = dataframe_conditional_options();
+    let foreign_rt = Runtime::new().unwrap();
+    let foreign_ctx = ExecutionOverrides::new()
+        .with_stream(foreign_rt.stream())
+        .with_memory_resource(foreign_rt.memory_resource());
+
+    let size_data = left.conditional_full_join_size_data(&right, &predicate, options).unwrap();
+    let err = size_data
+        .materialize_indices_in(&foreign_ctx)
+        .expect_err("full-join retained size data must be materialized on its creator stream");
+    assert_eq!(err.code(), cudf::ErrorCode::ForeignInvalidArgument);
 }
 
 #[test]

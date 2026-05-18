@@ -36,8 +36,78 @@ struct ErrorInner {
     message: String,
     facts: Facts,
     details: Vec<(&'static str, String)>,
+    budget_exhaustion: Option<BudgetExhaustionDetail>,
     call_chain: Vec<&'static str>,
     source: Option<BoxedSourceError>,
+}
+
+/// Typed budget-exhaustion counters attached by budget-token execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetExhaustionDetail {
+    hard_budget_bytes: usize,
+    peak_bytes: usize,
+    peak_aligned_bytes: usize,
+    current_bytes: usize,
+    largest_failed_allocation_bytes: usize,
+    failed_allocation_count: usize,
+    boundary: Cow<'static, str>,
+    operation: &'static str,
+}
+
+impl BudgetExhaustionDetail {
+    pub(crate) fn new(
+        hard_budget_bytes: usize,
+        peak_bytes: usize,
+        peak_aligned_bytes: usize,
+        current_bytes: usize,
+        largest_failed_allocation_bytes: usize,
+        failed_allocation_count: usize,
+        boundary: impl Into<Cow<'static, str>>,
+        operation: &'static str,
+    ) -> Self {
+        Self {
+            hard_budget_bytes,
+            peak_bytes,
+            peak_aligned_bytes,
+            current_bytes,
+            largest_failed_allocation_bytes,
+            failed_allocation_count,
+            boundary: boundary.into(),
+            operation,
+        }
+    }
+
+    pub fn hard_budget_bytes(&self) -> usize {
+        self.hard_budget_bytes
+    }
+
+    pub fn peak_bytes(&self) -> usize {
+        self.peak_bytes
+    }
+
+    pub fn peak_aligned_bytes(&self) -> usize {
+        self.peak_aligned_bytes
+    }
+
+    pub fn current_bytes(&self) -> usize {
+        self.current_bytes
+    }
+
+    pub fn largest_failed_allocation_bytes(&self) -> usize {
+        self.largest_failed_allocation_bytes
+    }
+
+    pub fn failed_allocation_count(&self) -> usize {
+        self.failed_allocation_count
+    }
+
+    pub fn boundary(&self) -> &str {
+        &self.boundary
+    }
+
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
 }
 
 impl Error {
@@ -60,6 +130,7 @@ impl Error {
                 message,
                 facts: Facts::new(),
                 details: Vec::new(),
+                budget_exhaustion: None,
                 call_chain: Vec::new(),
                 source: None,
             }),
@@ -119,6 +190,15 @@ impl Error {
         for (key, value) in details {
             assert_canonical_key_not_used_as_detail(key);
             self.inner.details.push((key, value));
+        }
+        self
+    }
+
+    /// Internal: attach typed budget-exhaustion counters if absent.
+    #[must_use]
+    pub(crate) fn with_budget_exhaustion_if_absent(mut self, detail: BudgetExhaustionDetail) -> Self {
+        if self.inner.budget_exhaustion.is_none() {
+            self.inner.budget_exhaustion = Some(detail);
         }
         self
     }
@@ -199,6 +279,11 @@ impl Error {
     /// All detail values recorded for `key`, in insertion order.
     pub fn detail_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.inner.details.iter().filter_map(move |(k, v)| (*k == key).then_some(v.as_str()))
+    }
+
+    /// Typed budget-exhaustion counters attached by a hard budget token.
+    pub fn budget_exhaustion(&self) -> Option<&BudgetExhaustionDetail> {
+        self.inner.budget_exhaustion.as_ref()
     }
 
     /// Ordered trail of prior primary operations this error has been

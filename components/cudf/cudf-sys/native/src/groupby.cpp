@@ -292,12 +292,12 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
       int32_t idx = 0;
       for (auto& [results] : result_values) {
         for (auto& col : results) {
-          col_array[idx++] = cudf_release_column_handle(std::move(col));
+          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(exec));
         }
       }
 
       // Publish outputs only after all work succeeds.
-      *out_keys          = cudf_release_table_handle(std::move(result_keys));
+      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
       *out_total_columns = total;
       *out_values        = col_array;
     }
@@ -433,11 +433,11 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
       int32_t idx = 0;
       for (auto& [results] : result_values) {
         for (auto& col : results) {
-          col_array[idx++] = cudf_release_column_handle(std::move(col));
+          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(exec));
         }
       }
 
-      *out_keys          = cudf_release_table_handle(std::move(result_keys));
+      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
       *out_total_columns = total;
       *out_values        = col_array;
     }
