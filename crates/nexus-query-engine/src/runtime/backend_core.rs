@@ -121,13 +121,12 @@ pub struct GpuBackendDeviceConfig {
     cache_cap_bytes: u64,
     attempt_floor_bytes: Option<u64>,
     source_work_per_attempt: usize,
-    max_active_queries: usize,
+    max_active_attempts: usize,
     stream_pool_size: usize,
     worker_count: usize,
     lane_count: usize,
     installation_bounds_set: bool,
     install_telemetry: bool,
-    install_diagnostics: bool,
 }
 
 impl GpuBackendDeviceConfig {
@@ -139,7 +138,7 @@ impl GpuBackendDeviceConfig {
     pub const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
     /// Device admission begins with one active attempt unless the installer
     /// explicitly freezes a different per-device limit.
-    pub const DEFAULT_MAX_ACTIVE_QUERIES: usize = 1;
+    pub const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 1;
 
     pub fn new(device_ordinal: usize, memory_ownership: GpuMemoryOwnership) -> Self {
         Self {
@@ -151,13 +150,12 @@ impl GpuBackendDeviceConfig {
             cache_cap_bytes: 0,
             attempt_floor_bytes: Self::DEFAULT_ATTEMPT_FLOOR_BYTES,
             source_work_per_attempt: Self::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
-            max_active_queries: Self::DEFAULT_MAX_ACTIVE_QUERIES,
+            max_active_attempts: Self::DEFAULT_MAX_ACTIVE_ATTEMPTS,
             stream_pool_size: 1,
             worker_count: 1,
             lane_count: 1,
             installation_bounds_set: false,
             install_telemetry: true,
-            install_diagnostics: true,
         }
     }
 
@@ -193,7 +191,7 @@ impl GpuBackendDeviceConfig {
 
     /// Sets the immutable minimum managed-memory floor for each active attempt.
     /// When unset, it resolves per device to
-    /// `managed_capacity_bytes / max(8, max_active_queries)` so the frozen
+    /// `managed_capacity_bytes / max(8, max_active_attempts)` so the frozen
     /// floor-times-active-limit invariant always holds by default.
     pub fn with_attempt_floor_bytes(mut self, attempt_floor_bytes: u64) -> Self {
         self.attempt_floor_bytes = Some(attempt_floor_bytes);
@@ -209,8 +207,8 @@ impl GpuBackendDeviceConfig {
         self
     }
 
-    pub fn with_max_active_queries(mut self, max_active_queries: usize) -> Self {
-        self.max_active_queries = max_active_queries;
+    pub fn with_max_active_attempts(mut self, max_active_attempts: usize) -> Self {
+        self.max_active_attempts = max_active_attempts;
         self
     }
 
@@ -224,11 +222,6 @@ impl GpuBackendDeviceConfig {
 
     pub fn with_telemetry(mut self, install_telemetry: bool) -> Self {
         self.install_telemetry = install_telemetry;
-        self
-    }
-
-    pub fn with_diagnostics(mut self, install_diagnostics: bool) -> Self {
-        self.install_diagnostics = install_diagnostics;
         self
     }
 
@@ -261,8 +254,8 @@ impl GpuBackendDeviceConfig {
         self.source_work_per_attempt
     }
 
-    pub fn max_active_queries(&self) -> usize {
-        self.max_active_queries
+    pub fn max_active_attempts(&self) -> usize {
+        self.max_active_attempts
     }
 
     pub fn stream_pool_size(&self) -> usize {
@@ -279,10 +272,6 @@ impl GpuBackendDeviceConfig {
 
     pub fn install_telemetry(&self) -> bool {
         self.install_telemetry
-    }
-
-    pub fn install_diagnostics(&self) -> bool {
-        self.install_diagnostics
     }
 }
 
@@ -348,10 +337,10 @@ impl GpuBackendCoreDraft {
         &self.devices
     }
 
-    pub fn derived_global_max_active_queries(&self) -> Result<usize> {
+    pub fn derived_global_max_active_attempts(&self) -> Result<usize> {
         self.devices.iter().try_fold(0usize, |sum, device| {
-            sum.checked_add(device.max_active_queries).ok_or_else(|| {
-                invalid_config("max_active_queries", "derived global maximum overflowed")
+            sum.checked_add(device.max_active_attempts).ok_or_else(|| {
+                invalid_config("max_active_attempts", "derived global maximum overflowed")
                     .with_fact("reason", "derived_global_max_overflow")
             })
         })
@@ -365,11 +354,11 @@ impl GpuBackendCoreDraft {
     pub(crate) fn normalize_installation_bounds(&mut self) -> Result<()> {
         for device in &mut self.devices {
             let source_work = device.source_work_per_attempt;
-            let aux = device.max_active_queries.checked_mul(source_work).ok_or_else(|| {
+            let aux = device.max_active_attempts.checked_mul(source_work).ok_or_else(|| {
                 invalid_device_config(device.device_ordinal, "source_work_per_attempt", "overflowed")
                     .with_fact("reason", "aux_source_work_overflow")
             })?;
-            let required = device.max_active_queries.checked_add(aux).ok_or_else(|| {
+            let required = device.max_active_attempts.checked_add(aux).ok_or_else(|| {
                 invalid_device_config(device.device_ordinal, "stream_pool_size", "overflowed")
                     .with_fact("reason", "required_slot_overflow")
             })?;
@@ -383,18 +372,18 @@ impl GpuBackendCoreDraft {
                     .with_fact("reason", "stream_pool_below_required_formula")
                     .with_fact("stream_pool_size", device.stream_pool_size)
                     .with_fact("required_slot_capacity", required)
-                    .with_fact("max_active_queries", device.max_active_queries)
+                    .with_fact("max_active_attempts", device.max_active_attempts)
                     .with_fact("source_work_per_attempt", source_work));
                 }
             } else {
                 device.stream_pool_size = required;
-                device.lane_count = device.max_active_queries;
+                device.lane_count = device.max_active_attempts;
                 // One root worker scope exists for every concurrently
                 // admitted attempt. Auxiliary work remains bounded by its
                 // class permits and stream slots; leaving the constructor's
                 // single-worker default here would make a public `A_d > 1`
                 // profile fail validation after automatic derivation.
-                device.worker_count = device.max_active_queries;
+                device.worker_count = device.max_active_attempts;
             }
         }
         Ok(())
@@ -406,9 +395,9 @@ impl GpuBackendCoreDraft {
         for device in &self.devices {
             validate_device_config(device)?;
         }
-        let derived = self.derived_global_max_active_queries()?;
+        let derived = self.derived_global_max_active_attempts()?;
         if derived == 0 {
-            return Err(invalid_config("max_active_queries", "derived global maximum must be positive")
+            return Err(invalid_config("max_active_attempts", "derived global maximum must be positive")
                 .with_fact("reason", "zero"));
         }
         validate_controller_draft(&self.controller, &ordinals)
@@ -425,7 +414,7 @@ fn validate_controller_draft(controller: &GpuBackendControllerDraft, ordinals: &
 
 fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     for (field, value) in [
-        ("max_active_queries", device.max_active_queries),
+        ("max_active_attempts", device.max_active_attempts),
         ("source_work_per_attempt", device.source_work_per_attempt),
         ("stream_pool_size", device.stream_pool_size),
         ("worker_count", device.worker_count),
@@ -445,7 +434,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         ("worker_count", device.worker_count),
         ("lane_count", device.lane_count),
     ] {
-        if value < device.max_active_queries {
+        if value < device.max_active_attempts {
             return Err(invalid_device_config(
                 device.device_ordinal,
                 field,
@@ -453,7 +442,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
             )
             .with_fact("reason", "installation_bound_below_active_limit")
             .with_fact("installation_bound", value)
-            .with_fact("max_active_queries", device.max_active_queries));
+            .with_fact("max_active_attempts", device.max_active_attempts));
         }
     }
     match device.memory_limit {
@@ -792,12 +781,11 @@ impl GpuBackendCoreBuilder {
                     memory_ownership: profile.memory_ownership,
                     memory_limit: profile.memory_limit,
                     backend_reserve_bytes: profile.backend_reserve_bytes,
-                    max_active_queries: profile.max_active_queries,
+                    max_active_attempts: profile.max_active_attempts,
                     stream_pool_size: profile.stream_pool_size,
                     worker_count: worker_pool.worker_count,
                     lane_count: profile.lane_count,
                     install_telemetry: profile.install_telemetry,
-                    install_diagnostics: profile.install_diagnostics,
                     memory_manager_installation: installation,
                     device_health_generation: health_identity.device_health_generation,
                     backend_health_generation: health_identity.backend_health_generation,
@@ -858,12 +846,11 @@ pub struct GpuBackendDeviceStartupRecord {
     pub memory_ownership: GpuMemoryOwnership,
     pub memory_limit: GpuDeviceMemoryLimit,
     pub backend_reserve_bytes: u64,
-    pub max_active_queries: usize,
+    pub max_active_attempts: usize,
     pub stream_pool_size: usize,
     pub worker_count: usize,
     pub lane_count: usize,
     pub install_telemetry: bool,
-    pub install_diagnostics: bool,
     pub memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
     /// Persistent engine health epoch bound to this device installation.
     pub device_health_generation: u64,
@@ -1789,12 +1776,12 @@ mod tests {
     #[test]
     fn pure_config_rejects_invalid_device_profiles_before_construction() {
         let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(0)],
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(0)],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
         let error = config.validate().unwrap_err();
-        assert_eq!(error.fact_value("field"), Some("max_active_queries"));
+        assert_eq!(error.fact_value("field"), Some("max_active_attempts"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
@@ -1866,13 +1853,13 @@ mod tests {
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
-        assert_eq!(config.derived_global_max_active_queries().unwrap(), 2);
+        assert_eq!(config.derived_global_max_active_attempts().unwrap(), 2);
     }
 
     #[test]
     fn automatic_installation_bounds_cover_every_active_attempt() {
         let mut draft = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(2)],
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(2)],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
@@ -1892,7 +1879,7 @@ mod tests {
             ..QueryExecutionConfig::default()
         };
         let mut draft = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(2)],
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(2)],
             controller(execution),
             deployment(),
         );
@@ -2000,7 +1987,7 @@ mod tests {
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(
             vec![
                 GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-                    .with_max_active_queries(2)
+                    .with_max_active_attempts(2)
                     .with_installation_bounds(6, 2, 2),
             ],
             controller(QueryExecutionConfig::default()),

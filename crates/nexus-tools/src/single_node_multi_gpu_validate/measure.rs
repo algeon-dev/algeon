@@ -3584,7 +3584,7 @@ fn device_configurations(backend: &NexusGpuBackend) -> Vec<DeviceConfiguration> 
             capacity_bytes: record.capacity_bytes,
             cache_cap_bytes: record.resource_profile.cache_cap_bytes,
             install_telemetry: record.install_telemetry,
-            max_active_attempts: record.max_active_queries,
+            max_active_attempts: record.max_active_attempts,
             stream_pool_size: record.stream_pool_size,
             worker_count: record.worker_count,
             lane_count: record.lane_count,

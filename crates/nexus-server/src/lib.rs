@@ -44,12 +44,11 @@ pub use config::{
     NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, NEXUS_ICEBERG_TABLES_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
     NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
     NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
-    NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+    NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_LOG_ENV,
+    NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
     NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
     NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
@@ -731,12 +730,6 @@ fn validate_injected_startup_profiles(
             profile.install_telemetry(),
             record.install_telemetry,
         )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.install_diagnostics",
-            profile.install_diagnostics(),
-            record.install_diagnostics,
-        )?;
     }
     Ok(())
 }
@@ -815,12 +808,6 @@ fn validate_test_profile_projection(
             "admission.device_profiles.install_telemetry",
             expected.install_telemetry(),
             profile.install_telemetry(),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.install_diagnostics",
-            expected.install_diagnostics(),
-            profile.install_diagnostics(),
         )?;
         let expected_ownership = configured_ownership.get(&ordinal).ok_or_else(|| {
             ServerError::builder_validation(
@@ -991,13 +978,10 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
                 observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
                 observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-                log_filter = %config.log_filter,
                 native_memory_control_policy = %native_execution.memory_control_policy(),
-                native_device_budget_bytes = %native_memory.device_budget_bytes,
                 native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
                 native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
                 native_max_retry_attempts = %native_memory.max_retry_attempts,
-                native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
                 native_boundary_policy = %native_execution.boundary_policy(),
                 native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
                 native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
@@ -1030,13 +1014,10 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
             observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
             observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-            log_filter = %config.log_filter,
             native_memory_control_policy = %native_execution.memory_control_policy(),
-            native_device_budget_bytes = %native_memory.device_budget_bytes,
             native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
             native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
             native_max_retry_attempts = %native_memory.max_retry_attempts,
-            native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
             native_boundary_policy = %native_execution.boundary_policy(),
             native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
             native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
@@ -1064,13 +1045,10 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
         observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-        log_filter = %config.log_filter,
         native_memory_control_policy = %native_execution.memory_control_policy(),
-        native_device_budget_bytes = %native_memory.device_budget_bytes,
         native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
         native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
         native_max_retry_attempts = %native_memory.max_retry_attempts,
-        native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
         native_boundary_policy = %native_execution.boundary_policy(),
         native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
         native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
@@ -1133,35 +1111,28 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
 }
 
 struct NativeMemorySnapshot {
-    device_budget_bytes: String,
     max_source_chunk_bytes: String,
     max_row_groups_per_chunk: String,
     max_retry_attempts: String,
-    min_retry_chunk_row_groups: String,
 }
 
 impl From<MemoryControlPolicy> for NativeMemorySnapshot {
     fn from(policy: MemoryControlPolicy) -> Self {
         match policy {
             MemoryControlPolicy::Unbounded => Self {
-                device_budget_bytes: "none".to_string(),
                 max_source_chunk_bytes: "none".to_string(),
                 max_row_groups_per_chunk: "none".to_string(),
                 max_retry_attempts: "none".to_string(),
-                min_retry_chunk_row_groups: "none".to_string(),
             },
             MemoryControlPolicy::Bounded {
-                device_budget_bytes,
                 max_source_chunk_bytes,
                 max_row_groups_per_chunk,
                 max_retry_attempts,
-                min_retry_chunk_row_groups,
+                ..
             } => Self {
-                device_budget_bytes: device_budget_bytes.to_string(),
                 max_source_chunk_bytes: max_source_chunk_bytes.to_string(),
                 max_row_groups_per_chunk: max_row_groups_per_chunk.to_string(),
                 max_retry_attempts: max_retry_attempts.to_string(),
-                min_retry_chunk_row_groups: min_retry_chunk_row_groups.to_string(),
             },
         }
     }

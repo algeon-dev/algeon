@@ -34,11 +34,11 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250), max_overtakes_per_waiter: 4 },
     );
-    let device = |device_ordinal, max_active_queries| {
+    let device = |device_ordinal, max_active_attempts| {
         GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_CAPACITY_BYTES })
-            .with_max_active_queries(max_active_queries)
-            .with_installation_bounds(max_active_queries.saturating_mul(3), max_active_queries, max_active_queries)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(max_active_attempts.saturating_mul(3), max_active_attempts, max_active_attempts)
     };
     let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
         vec![device(0, 2), device(1, 1)],
@@ -78,11 +78,11 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
 
     const DEVICE_ONE_LIMIT_BYTES: u64 = 2 * DEVICE_CAPACITY_BYTES;
     let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
-    let device = |device_ordinal, limit_bytes, max_active_queries| {
+    let device = |device_ordinal, limit_bytes, max_active_attempts| {
         GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes })
-            .with_max_active_queries(max_active_queries)
-            .with_installation_bounds(max_active_queries.saturating_mul(3), max_active_queries, max_active_queries)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(max_active_attempts.saturating_mul(3), max_active_attempts, max_active_attempts)
     };
     let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
         vec![device(0, DEVICE_CAPACITY_BYTES, 2), device(1, DEVICE_ONE_LIMIT_BYTES, 1)],

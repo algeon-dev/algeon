@@ -339,7 +339,7 @@ fn device_registry_config(
             DeviceRegistryInstallProfile {
                 stream_pool_size: profile.stream_pool_size(),
                 device_capabilities: profile.device_capabilities().clone(),
-                max_active_queries: profile.max_active_queries(),
+                max_active_attempts: profile.max_active_attempts(),
                 capacity_policy,
                 backend_reserve_bytes: profile.backend_reserve_bytes(),
                 cache_cap_bytes: profile.cache_cap_bytes(),
@@ -442,7 +442,7 @@ mod construction_tests {
         let whole_device_profile = |limit_bytes, floor| DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: crate::runtime::DeviceCapabilities::default(),
-            max_active_queries: 1,
+            max_active_attempts: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,

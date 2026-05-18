@@ -21,7 +21,6 @@ use rand::{TryRng, rngs::SysRng};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
     pub username: String,
-    pub roles: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +112,7 @@ mod tests {
     use super::*;
 
     fn principal(name: &str) -> Principal {
-        Principal { username: name.to_string(), roles: vec!["reader".to_string()] }
+        Principal { username: name.to_string() }
     }
 
     #[test]

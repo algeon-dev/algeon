@@ -40,7 +40,7 @@ pub struct NexusGpuBackend {
 /// A profile is keyed by its CUDA ordinal and is projected one-for-one into
 /// the engine's [`GpuBackendDeviceConfig`].  It deliberately owns every
 /// device-local bound: capacity, reserve, floor, active-attempt count,
-/// source work, installation bounds, capabilities, and optional diagnostics.
+/// source work, installation bounds, capabilities, and telemetry.
 /// Queue bounds live in [`NexusGpuQueuePolicy`], because they govern the
 /// one shared admission queue rather than a device envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,6 @@ pub struct NexusGpuDeviceProfile {
     installation_bounds: Option<NexusGpuDeviceInstallationBounds>,
     device_capabilities: DeviceCapabilities,
     install_telemetry: bool,
-    install_diagnostics: bool,
 }
 
 /// Explicit installation limits for one device profile.
@@ -94,11 +93,10 @@ impl NexusGpuDeviceProfile {
             // from construction so changing execution prefetch never changes
             // its stream or worker envelope.
             source_work_per_attempt: defaults.source_work_per_attempt(),
-            max_active_attempts: defaults.max_active_queries(),
+            max_active_attempts: defaults.max_active_attempts(),
             installation_bounds: None,
             device_capabilities: defaults.device_capabilities().clone(),
             install_telemetry: defaults.install_telemetry(),
-            install_diagnostics: defaults.install_diagnostics(),
         }
     }
 
@@ -149,11 +147,6 @@ impl NexusGpuDeviceProfile {
         self
     }
 
-    pub fn with_diagnostics(mut self, install_diagnostics: bool) -> Self {
-        self.install_diagnostics = install_diagnostics;
-        self
-    }
-
     pub fn device_ordinal(&self) -> usize {
         self.device_ordinal
     }
@@ -190,10 +183,6 @@ impl NexusGpuDeviceProfile {
         self.install_telemetry
     }
 
-    pub fn install_diagnostics(&self) -> bool {
-        self.install_diagnostics
-    }
-
     pub fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
         let mut device = GpuBackendDeviceConfig::new(self.device_ordinal, memory_ownership)
             .with_memory_limit(self.memory_limit)
@@ -201,9 +190,8 @@ impl NexusGpuDeviceProfile {
             .with_backend_reserve_bytes(self.backend_reserve_bytes)
             .with_cache_cap_bytes(self.cache_cap_bytes)
             .with_source_work_per_attempt(self.source_work_per_attempt)
-            .with_max_active_queries(self.max_active_attempts)
-            .with_telemetry(self.install_telemetry)
-            .with_diagnostics(self.install_diagnostics);
+            .with_max_active_attempts(self.max_active_attempts)
+            .with_telemetry(self.install_telemetry);
         if let Some(floor) = self.attempt_floor_bytes {
             device = device.with_attempt_floor_bytes(floor);
         }
@@ -952,7 +940,7 @@ pub fn test_validation_projection_from_optimizer_config(
 
 fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig) -> Result<QueryExecutionConfig> {
     let MemoryControlPolicy::Bounded {
-        device_budget_bytes,
+        device_budget_bytes: _,
         max_source_chunk_bytes,
         max_row_groups_per_chunk,
         max_retry_attempts,
@@ -964,9 +952,6 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
             "NexusGpuBackend admission requires bounded native execution",
         ));
     };
-    // This only validates the unadmitted execution template. Per-device
-    // capacity is never derived from this byte value: profiles own it.
-    validate_positive_u64("native_execution_config.device_budget_bytes", device_budget_bytes)?;
     validate_positive_u64("native_execution_config.max_source_chunk_bytes", max_source_chunk_bytes)?;
     validate_positive_usize("native_execution_config.max_row_groups_per_chunk", max_row_groups_per_chunk)?;
     validate_positive_usize("native_execution_config.max_retry_attempts", max_retry_attempts)?;

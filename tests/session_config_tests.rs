@@ -9,7 +9,10 @@ use datafusion_nexus::{
     session::NexusSessionStateBuilderExt,
     session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig},
 };
-use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};
+use nexus_query_engine::{
+    mode::StatisticalAggregateExecutionMode,
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
+};
 
 #[test]
 fn nexus_session_builder_registers_datafusion_nexus_config_extension() {
@@ -21,7 +24,7 @@ fn nexus_session_builder_registers_datafusion_nexus_config_extension() {
         .get::<DataFusionNexusSessionConfig>()
         .expect("with_nexus_native must register datafusion_nexus config options");
 
-    assert!(extension.native_device_budget_bytes > 0);
+    assert!(extension.native_max_source_chunk_bytes > 0);
 }
 
 #[test]
@@ -30,11 +33,9 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
     let mut options = options_with_nexus_extension(&base);
 
-    options.set("datafusion_nexus.native.device_budget_bytes", "2048").unwrap();
     options.set("datafusion_nexus.native.max_source_chunk_bytes", "1024").unwrap();
     options.set("datafusion_nexus.native.max_row_groups_per_chunk", "8").unwrap();
     options.set("datafusion_nexus.native.max_retry_attempts", "5").unwrap();
-    options.set("datafusion_nexus.native.min_retry_chunk_row_groups", "2").unwrap();
     options.set("datafusion_nexus.native.max_source_reads_in_flight", "4").unwrap();
     options.set("datafusion_nexus.native.source_chunk_planning_mode", "local_parquet_throughput").unwrap();
     options.set("datafusion_nexus.native.statistical_aggregate_execution_mode", "gpu_native_tolerant").unwrap();
@@ -44,11 +45,20 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     let native = effective.native_execution_config();
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&effective);
 
-    assert_eq!(projection.native_device_budget_bytes, 2048);
     assert_eq!(projection.native_max_source_chunk_bytes, 1024);
     assert_eq!(projection.native_max_row_groups_per_chunk, 8);
     assert_eq!(projection.native_max_retry_attempts, 5);
-    assert_eq!(projection.native_min_retry_chunk_row_groups, 2);
+    assert_eq!(
+        native.memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            // Engine-owned values from the base config survive session overrides.
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 5,
+            min_retry_chunk_row_groups: 1,
+        }
+    );
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);

@@ -18,16 +18,14 @@ use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::Sourc
 use nexus_server::{
     AuthMode, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV,
     NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
-    NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-    NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+    NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
     NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-    NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-    NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV,
-    ServerConfig, hash_password,
+    NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+    NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
+    NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
+    NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, hash_password,
 };
 
 // Server config contract tests are split by concern while staying in this
@@ -52,7 +50,6 @@ token_ttl_secs = 600
 [[auth.mode.users]]
 username = "alice"
 password_hash = "{alice_hash}"
-roles = ["reader"]
 "#,
     );
     let (_dir, env) = env_with_server_toml(&toml_body);
@@ -64,7 +61,59 @@ roles = ["reader"]
     assert_eq!(*token_ttl_secs, 600);
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].username, "alice");
-    assert_eq!(users[0].roles, ["reader"]);
+}
+
+#[test]
+fn auth_toml_overlay_requires_nonzero_token_ttl() {
+    let alice_hash = hash_password("s3cret").expect("hash");
+    let missing_ttl = format!(
+        r#"
+[auth.mode]
+kind = "basic_bearer"
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "{alice_hash}"
+"#,
+    );
+    let (_dir, env) = env_with_server_toml(&missing_ttl);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("missing TTL must reject");
+    assert!(error.to_string().contains("token_ttl_secs"), "unexpected error: {error}");
+
+    let zero_ttl = format!(
+        r#"
+[auth.mode]
+kind = "basic_bearer"
+token_ttl_secs = 0
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "{alice_hash}"
+"#,
+    );
+    let (_dir, env) = env_with_server_toml(&zero_ttl);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("zero TTL must reject");
+    assert!(error.to_string().contains("token_ttl_secs must be greater than zero"), "unexpected error: {error}");
+}
+
+#[test]
+fn auth_toml_overlay_rejects_removed_roles_field() {
+    let alice_hash = hash_password("s3cret").expect("hash");
+    let toml_body = format!(
+        r#"
+[auth.mode]
+kind = "basic_bearer"
+token_ttl_secs = 600
+
+[[auth.mode.users]]
+username = "alice"
+password_hash = "{alice_hash}"
+roles = ["reader"]
+"#,
+    );
+    let (_dir, env) = env_with_server_toml(&toml_body);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("removed roles field must reject");
+    assert!(error.to_string().contains("roles"), "unexpected error: {error}");
 }
 
 #[test]
@@ -72,6 +121,7 @@ fn auth_toml_overlay_rejects_plaintext_password() {
     let toml_body = r#"
 [auth.mode]
 kind = "basic_bearer"
+token_ttl_secs = 600
 
 [[auth.mode.users]]
 username = "alice"
@@ -87,6 +137,7 @@ fn auth_toml_overlay_rejects_malformed_argon2_phc() {
     let toml_body = r#"
 [auth.mode]
 kind = "basic_bearer"
+token_ttl_secs = 600
 
 [[auth.mode.users]]
 username = "alice"

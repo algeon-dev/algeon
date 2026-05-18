@@ -58,7 +58,7 @@ pub async fn handle_handshake(
             let (username, password) = extract_basic_credentials(request.metadata())?;
             let user = authenticate_user(users, &username, &password)?;
 
-            let principal = Principal { username: user.username.clone(), roles: user.roles.clone() };
+            let principal = Principal { username: user.username.clone() };
             let token = tokens.issue(principal, mode.token_ttl());
 
             let mut response = empty_response();
@@ -175,7 +175,6 @@ mod tests {
         vec![StaticUserConfig {
             username: "alice".to_string(),
             password_hash: super::super::hash_password("s3cret").expect("hash"),
-            roles: Vec::new(),
         }]
     }
 

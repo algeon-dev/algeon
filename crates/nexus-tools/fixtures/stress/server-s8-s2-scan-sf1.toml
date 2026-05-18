@@ -54,9 +54,7 @@ worker_count = 4
 lane_count = 4
 
 [native]
-device_budget_bytes = 1073741824
 max_source_chunk_bytes = 268435456
 max_row_groups_per_chunk = 1024
 max_retry_attempts = 3
-min_retry_chunk_row_groups = 1
 final_plan_requirement = "no_datafusion_cpu"

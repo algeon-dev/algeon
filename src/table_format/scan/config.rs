@@ -148,7 +148,7 @@ pub(super) fn table_format_parquet_read_strategy_config_from_env(
         .to_ascii_lowercase()
         .as_str()
     {
-        "disabled" | "bypass" | "bypassed" => TableFormatLakehouseCacheReadPolicy::Disabled,
+        "disabled" => TableFormatLakehouseCacheReadPolicy::Disabled,
         _ => TableFormatLakehouseCacheReadPolicy::Enabled,
     };
     let lakehouse_cache_policy = match get(NEXUS_LAKEHOUSE_CACHE_POLICY_ENV)

@@ -121,8 +121,13 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
         execution.source_chunk_planning_mode(),
         nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
     );
+    let nexus_query_engine::runtime::MemoryControlPolicy::Bounded { device_budget_bytes, .. } =
+        execution.memory_control_policy()
+    else {
+        panic!("clickbench native execution config must be bounded");
+    };
+    assert_eq!(device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config);
-    assert_eq!(projection.native_device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
     assert_eq!(projection.native_max_source_chunk_bytes, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(projection.native_max_row_groups_per_chunk, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
 }

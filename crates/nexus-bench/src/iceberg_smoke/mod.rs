@@ -63,7 +63,7 @@ use iceberg::{TableIdent, io::FileIO, table::StaticTable};
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
     mode::StatisticalAggregateExecutionMode,
-    runtime::{QueryExecutionConfig, SourceSchedulerPolicy},
+    runtime::{MemoryControlPolicy, QueryExecutionConfig, SourceSchedulerPolicy},
     source::ParquetReadStrategy,
 };
 use nexus_workloads::{

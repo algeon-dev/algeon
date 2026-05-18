@@ -32,13 +32,8 @@ LOG="info"
 
 # ---------------------------------------------------------------------------
 # Native GPU execution controls
-# The default is automatic bounded capacity resolved independently for each
-# selected GPU after it is claimed. Set all three explicit profile values only
-# when a deliberately shared cap is required for a reproducible experiment.
-#
-# NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
-#   Explicit hard cap on live GPU memory reservations. Must be set together
-#   with the source chunk byte and row-group limits below.
+# Device capacity is owned by the per-device admission profiles; these
+# settings shape bounded source chunking and retries only.
 #
 # NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
 #   Max bytes read per Parquet source chunk.
@@ -48,8 +43,7 @@ LOG="info"
 #   Max Parquet row groups per source chunk (rg1024 profile).
 #
 # NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
-# NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
-#   Bounded retry controls.
+#   Bounded retry control.
 #
 # NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
 #   Bounded source scheduling / prefetch width.
@@ -60,11 +54,9 @@ LOG="info"
 # NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #   datafusion_exact_host_welford | gpu_native_tolerant
 # ---------------------------------------------------------------------------
-NATIVE_DEVICE_BUDGET_BYTES="${NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES:-}"
 NATIVE_MAX_SOURCE_CHUNK_BYTES="${NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES:-}"
 NATIVE_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK:-}"
 NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
-NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
 NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
 NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
 NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-datafusion_exact_host_welford}"
@@ -132,15 +124,11 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 #   the SQL surface hidden at runtime. A lean image built without the cugraph
 #   feature must use false.
 #
-# NEXUS_SERVER_CUGRAPH_DIRECTED
-# NEXUS_SERVER_CUGRAPH_RENUMBER
 # NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY
 #   Optional defaults for graph construction. Policy values:
 #   python_cugraph | raw_libcugraph
 # ---------------------------------------------------------------------------
 CUGRAPH_ENABLED="${NEXUS_SERVER_CUGRAPH_ENABLED:-true}"
-CUGRAPH_DIRECTED="${NEXUS_SERVER_CUGRAPH_DIRECTED:-}"
-CUGRAPH_RENUMBER="${NEXUS_SERVER_CUGRAPH_RENUMBER:-}"
 CUGRAPH_CONSTRUCTION_POLICY="${NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY:-}"
 
 # ---------------------------------------------------------------------------
@@ -158,7 +146,6 @@ ARGS=(
     # Native GPU execution controls
     -e "NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE=${NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE}"
     -e "NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS=${NATIVE_MAX_RETRY_ATTEMPTS}"
-    -e "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS=${NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS}"
     -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT=${NATIVE_MAX_SOURCE_READS_IN_FLIGHT}"
     -e "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE=${NATIVE_SOURCE_CHUNK_PLANNING_MODE}"
 
@@ -183,17 +170,10 @@ ARGS=(
     -e "NEXUS_SERVER_CUGRAPH_ENABLED=${CUGRAPH_ENABLED}"
 )
 
-if [[ -n "${NATIVE_DEVICE_BUDGET_BYTES}${NATIVE_MAX_SOURCE_CHUNK_BYTES}${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]]; then
-    if [[ -z "${NATIVE_DEVICE_BUDGET_BYTES}" || -z "${NATIVE_MAX_SOURCE_CHUNK_BYTES}" || -z "${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]]; then
-        echo "ERROR: set NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES, and NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK together" >&2
-        exit 2
-    fi
-    ARGS+=(
-        -e "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=${NATIVE_DEVICE_BUDGET_BYTES}"
-        -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}"
-        -e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}"
-    )
-fi
+[[ -n "${NATIVE_MAX_SOURCE_CHUNK_BYTES}" ]] &&
+    ARGS+=(-e "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}")
+[[ -n "${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]] &&
+    ARGS+=(-e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}")
 
 # Pre-load specific tables only when ICEBERG_TABLES is non-empty.
 [[ -n "${ICEBERG_TABLES}" ]] && ARGS+=(-e "NEXUS_ICEBERG_TABLES=${ICEBERG_TABLES}")
@@ -205,8 +185,6 @@ fi
 [[ -n "${ICEBERG_S3_SESSION_TOKEN}" ]] && ARGS+=(-e "NEXUS_ICEBERG_S3_SESSION_TOKEN=${ICEBERG_S3_SESSION_TOKEN}")
 
 # Optional cuGraph defaults.
-[[ -n "${CUGRAPH_DIRECTED}" ]] && ARGS+=(-e "NEXUS_SERVER_CUGRAPH_DIRECTED=${CUGRAPH_DIRECTED}")
-[[ -n "${CUGRAPH_RENUMBER}" ]] && ARGS+=(-e "NEXUS_SERVER_CUGRAPH_RENUMBER=${CUGRAPH_RENUMBER}")
 [[ -n "${CUGRAPH_CONSTRUCTION_POLICY}" ]] && \
     ARGS+=(-e "NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY=${CUGRAPH_CONSTRUCTION_POLICY}")
 

@@ -113,26 +113,26 @@ device_ordinal = 0
 memory_limit_bytes = 4096
 backend_reserve_bytes = 0
 attempt_floor_bytes = 512
+cache_cap_bytes = 0
 source_work_per_attempt = 2
 max_active_attempts = 2
 stream_pool_size = 6
 worker_count = 2
 lane_count = 2
 install_telemetry = false
-install_diagnostics = true
 
 [[admission.device_profiles]]
 device_ordinal = 3
 memory_limit_bytes = 8192
 backend_reserve_bytes = 128
 attempt_floor_bytes = 1024
+cache_cap_bytes = 2048
 source_work_per_attempt = 1
 max_active_attempts = 1
 stream_pool_size = 2
 worker_count = 1
 lane_count = 1
 install_telemetry = true
-install_diagnostics = false
 "#,
     );
     env.insert(NEXUS_SERVER_GPU_DEVICES_ENV, "0,3".to_string());
@@ -146,21 +146,49 @@ install_diagnostics = false
     assert_eq!(first.memory_limit(), datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 });
     assert_eq!(first.backend_reserve_bytes(), 0);
     assert_eq!(first.attempt_floor_bytes(), Some(512));
+    assert_eq!(first.cache_cap_bytes(), 0);
     assert_eq!(first.source_work_per_attempt(), 2);
     assert_eq!(first.max_active_attempts(), 2);
     assert_eq!(first.installation_bounds().unwrap().stream_pool_size, 6);
     assert!(!first.install_telemetry());
-    assert!(first.install_diagnostics());
 
     assert_eq!(second.device_ordinal(), 3);
     assert_eq!(second.memory_limit(), datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 });
     assert_eq!(second.backend_reserve_bytes(), 128);
     assert_eq!(second.attempt_floor_bytes(), Some(1024));
+    assert_eq!(second.cache_cap_bytes(), 2048);
     assert_eq!(second.source_work_per_attempt(), 1);
     assert_eq!(second.max_active_attempts(), 1);
     assert_eq!(second.installation_bounds().unwrap().stream_pool_size, 2);
     assert!(second.install_telemetry());
-    assert!(!second.install_diagnostics());
+}
+
+#[test]
+fn shipped_stress_server_fixtures_parse_as_valid_server_config() {
+    for fixture in [
+        include_str!("../../../../nexus-tools/fixtures/stress/server-s8-s2-scan-sf1.toml"),
+        include_str!("../../../../nexus-tools/fixtures/stress/server-s8-s2-knee-sf10.toml"),
+    ] {
+        let (_dir, mut env) = env_with_server_toml(fixture);
+        env.insert(NEXUS_SERVER_GPU_DEVICES_ENV, "0,1,2,3".to_string());
+        ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("shipped stress fixture");
+    }
+}
+
+#[test]
+fn server_config_requires_backend_reserve_with_explicit_memory_limit() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[[admission.device_profiles]]
+device_ordinal = 0
+memory_limit_bytes = 4096
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("backend_reserve_bytes"), "{error}");
+    assert!(error.to_string().contains("memory_limit_bytes is explicit"), "{error}");
 }
 
 #[test]
@@ -170,6 +198,7 @@ fn server_config_rejects_missing_duplicate_or_unselected_device_profiles() {
 [[admission.device_profiles]]
 device_ordinal = 0
 memory_limit_bytes = 4096
+backend_reserve_bytes = 0
 "#,
     );
     missing_env.insert(NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string());
@@ -182,10 +211,12 @@ memory_limit_bytes = 4096
 [[admission.device_profiles]]
 device_ordinal = 0
 memory_limit_bytes = 4096
+backend_reserve_bytes = 0
 
 [[admission.device_profiles]]
 device_ordinal = 0
 memory_limit_bytes = 8192
+backend_reserve_bytes = 0
 "#,
     );
     let duplicate = ServerConfig::from_env_get(|name| duplicate_env.get(name).cloned()).unwrap_err();
@@ -197,10 +228,12 @@ memory_limit_bytes = 8192
 [[admission.device_profiles]]
 device_ordinal = 0
 memory_limit_bytes = 4096
+backend_reserve_bytes = 0
 
 [[admission.device_profiles]]
 device_ordinal = 1
 memory_limit_bytes = 8192
+backend_reserve_bytes = 0
 "#,
     );
     let unselected = ServerConfig::from_env_get(|name| unselected_env.get(name).cloned()).unwrap_err();
@@ -218,6 +251,7 @@ max_active_attempts_per_device = 2
 [[admission.device_profiles]]
 device_ordinal = 0
 memory_limit_bytes = 4096
+backend_reserve_bytes = 0
 "#,
     );
 

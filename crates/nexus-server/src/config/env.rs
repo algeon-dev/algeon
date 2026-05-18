@@ -12,7 +12,6 @@ pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATE
 /// env vars remain bootstrap overrides.
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
 pub(super) const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
-pub(super) const DEFAULT_LOG_FILTER: &str = "info";
 pub(super) const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Copy)]

@@ -3,17 +3,23 @@ fn server_cugraph_config_accepts_enabled_env() {
     use datafusion_nexus::cugraph_sql::CugraphGraphConstructionPolicy;
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
-        (NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, "false".to_string()),
         (NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
     ]);
 
     let config = server_config_with_default_device_profile(env).unwrap();
     let cugraph = config.cugraph.expect("enabled env must materialize cuGraph server config");
 
-    assert!(!cugraph.default_graph_options.directed);
-    assert!(!cugraph.default_graph_options.renumber);
     assert_eq!(cugraph.default_graph_options.construction_policy, CugraphGraphConstructionPolicy::RawLibcugraph);
+}
+
+#[test]
+fn server_cugraph_config_rejects_removed_graph_option_env() {
+    for name in ["NEXUS_SERVER_CUGRAPH_DIRECTED", "NEXUS_SERVER_CUGRAPH_RENUMBER"] {
+        let env = BTreeMap::from([(name, "false".to_string())]);
+        let error = server_config_with_default_device_profile(env).unwrap_err();
+        assert_eq!(error.fact_value("config_field"), Some(name), "{error}");
+        assert!(error.message().contains("removed by the resource-only admission contract"), "{error}");
+    }
 }
 
 #[cfg(not(feature = "cugraph"))]
@@ -33,7 +39,7 @@ fn server_feature_off_cugraph_config_is_retained_for_unavailable_registration() 
 fn server_cugraph_config_rejects_settings_when_explicitly_disabled() {
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
-        (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
+        (NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
     ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
 

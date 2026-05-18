@@ -118,7 +118,7 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
     let service_config = QueryExecutionConfig::default();
     let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
         .with_memory_limit(GpuDeviceMemoryLimit::default())
-        .with_max_active_queries(1)
+        .with_max_active_attempts(1)
         .with_installation_bounds(2, 1, 1);
     let backend = ToolGpuBackend::build(service_config, device)?;
     let result = (|| -> ToolResult<()> {

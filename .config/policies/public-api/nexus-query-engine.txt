@@ -6041,7 +6041,7 @@ impl nexus_query_engine::runtime::GpuBackendCoreBuilder
 pub fn nexus_query_engine::runtime::GpuBackendCoreBuilder::build(self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuBackendCore>
 pub struct nexus_query_engine::runtime::GpuBackendCoreDraft
 impl nexus_query_engine::runtime::GpuBackendCoreDraft
-pub fn nexus_query_engine::runtime::GpuBackendCoreDraft::derived_global_max_active_queries(&self) -> nexus_query_engine::error::Result<usize>
+pub fn nexus_query_engine::runtime::GpuBackendCoreDraft::derived_global_max_active_attempts(&self) -> nexus_query_engine::error::Result<usize>
 pub fn nexus_query_engine::runtime::GpuBackendCoreDraft::devices(&self) -> &[nexus_query_engine::runtime::GpuBackendDeviceConfig]
 pub fn nexus_query_engine::runtime::GpuBackendCoreDraft::new(alloc::vec::Vec<nexus_query_engine::runtime::GpuBackendDeviceConfig>, nexus_query_engine::runtime::GpuBackendControllerDraft, nexus_query_engine::runtime::DeploymentIoCapability) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendCoreDraft::validate(&self) -> nexus_query_engine::error::Result<()>
@@ -6053,17 +6053,16 @@ pub nexus_query_engine::runtime::GpuBackendCoreIdentity::resource_generation: u6
 pub struct nexus_query_engine::runtime::GpuBackendDeviceConfig
 impl nexus_query_engine::runtime::GpuBackendDeviceConfig
 pub const nexus_query_engine::runtime::GpuBackendDeviceConfig::DEFAULT_ATTEMPT_FLOOR_BYTES: core::option::Option<u64>
-pub const nexus_query_engine::runtime::GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_QUERIES: usize
+pub const nexus_query_engine::runtime::GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_ATTEMPTS: usize
 pub const nexus_query_engine::runtime::GpuBackendDeviceConfig::DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::attempt_floor_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::backend_reserve_bytes(&self) -> u64
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::cache_cap_bytes(&self) -> u64
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::device_capabilities(&self) -> &nexus_query_engine::runtime::DeviceCapabilities
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::device_ordinal(&self) -> usize
-pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::install_diagnostics(&self) -> bool
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::install_telemetry(&self) -> bool
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::lane_count(&self) -> usize
-pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::max_active_queries(&self) -> usize
+pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::max_active_attempts(&self) -> usize
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::memory_limit(&self) -> nexus_query_engine::runtime::GpuDeviceMemoryLimit
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::memory_ownership(&self) -> nexus_query_engine::runtime::GpuMemoryOwnership
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::new(usize, nexus_query_engine::runtime::GpuMemoryOwnership) -> Self
@@ -6073,9 +6072,8 @@ pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_attempt_floor_b
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_backend_reserve_bytes(self, u64) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_cache_cap_bytes(self, u64) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_device_capabilities(self, nexus_query_engine::runtime::DeviceCapabilities) -> Self
-pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_diagnostics(self, bool) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_installation_bounds(self, usize, usize, usize) -> Self
-pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_max_active_queries(self, usize) -> Self
+pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_max_active_attempts(self, usize) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_memory_limit(self, nexus_query_engine::runtime::GpuDeviceMemoryLimit) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_source_work_per_attempt(self, usize) -> Self
 pub fn nexus_query_engine::runtime::GpuBackendDeviceConfig::with_telemetry(self, bool) -> Self
@@ -6087,10 +6085,9 @@ pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::capacity_bytes: 
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::device_health_generation: u64
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::device_ordinal: usize
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::facts: nexus_query_engine::runtime::DeviceFacts
-pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::install_diagnostics: bool
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::install_telemetry: bool
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::lane_count: usize
-pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::max_active_queries: usize
+pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::max_active_attempts: usize
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::memory_manager_installation: cudf::core::memory::DeviceMemoryManagerInstallationState
 pub nexus_query_engine::runtime::GpuBackendDeviceStartupRecord::memory_ownership: nexus_query_engine::runtime::GpuMemoryOwnership

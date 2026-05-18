@@ -647,6 +647,11 @@ pub(crate) async fn native_session_context(
     let execution_projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
         &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
     );
+    let MemoryControlPolicy::Bounded { device_budget_bytes, min_retry_chunk_row_groups, .. } =
+        execution_config.memory_control_policy()
+    else {
+        unreachable!("iceberg smoke native execution config is always bounded")
+    };
     let service_config = QueryExecutionConfig {
         lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
         source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
@@ -662,12 +667,12 @@ pub(crate) async fn native_session_context(
         max_source_chunk_bytes: execution_projection.native_max_source_chunk_bytes,
         max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk,
         max_retry_attempts: execution_projection.native_max_retry_attempts,
-        min_retry_chunk_row_groups: execution_projection.native_min_retry_chunk_row_groups,
+        min_retry_chunk_row_groups,
     };
     let backend = GpuBackendOwner::build(
         service_config,
         nexus_query_engine::runtime::QueueBounds::default(),
-        vec![GpuBackendOwner::device_config(0, execution_projection.native_device_budget_bytes, 1, 1)],
+        vec![GpuBackendOwner::device_config(0, device_budget_bytes, 1, 1)],
     )?;
     let query_handle = Arc::new(backend.session().admit_query()?);
     execution_config = execution_config.with_query_service_handle(query_handle);

@@ -322,7 +322,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         let native_execution_config = effective_config
             .native_execution_config()
             .clone()
-            .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env());
+            .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env()?);
         let effective_config = effective_config.with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();

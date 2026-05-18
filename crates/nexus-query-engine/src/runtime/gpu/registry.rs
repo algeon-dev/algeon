@@ -49,7 +49,7 @@ pub(crate) struct DeviceRegistryInstallProfile {
     pub(crate) stream_pool_size: usize,
     /// Immutable native capabilities consumed before placement and queueing.
     pub(crate) device_capabilities: DeviceCapabilities,
-    pub(crate) max_active_queries: usize,
+    pub(crate) max_active_attempts: usize,
     pub(crate) capacity_policy: DeviceRegistryCapacityPolicy,
     pub(crate) backend_reserve_bytes: u64,
     pub(crate) cache_cap_bytes: u64,
@@ -236,7 +236,7 @@ impl DeviceRegistry {
             // more than eight slots are configured, so the frozen
             // `floor * A_d <= managed_capacity` invariant always holds.
             // Explicit floors are validated against the same equation.
-            let max_active = profile.max_active_queries;
+            let max_active = profile.max_active_attempts;
             let default_floor_divisor = u64::try_from(max_active).unwrap_or(u64::MAX).max(8);
             let attempt_floor_bytes = match profile.attempt_floor_bytes {
                 Some(floor) => floor,
@@ -263,7 +263,7 @@ impl DeviceRegistry {
                 0,
                 profile.backend_reserve_bytes,
                 attempt_floor_bytes,
-                profile.max_active_queries,
+                profile.max_active_attempts,
                 profile.source_work_per_attempt,
                 profile.stream_pool_size,
                 profile.worker_job_capacity,
@@ -391,7 +391,7 @@ impl DeviceRegistry {
                 managed.memory_failure_tracker,
                 ledger,
                 managed.discovered.facts,
-                managed.discovered.profile.max_active_queries,
+                managed.discovered.profile.max_active_attempts,
             )?;
             if let Some(journal) = construction_journal {
                 journal.record_device_context(context.clone())?;
@@ -771,13 +771,13 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
             .with_fact("device_ordinal", *ordinal)
             .with_fact("reason", "zero"));
         }
-        if profile.max_active_queries == 0 {
+        if profile.max_active_attempts == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_registry.config",
-                "per-device active-query limit must be greater than zero",
+                "per-device active-attempt limit must be greater than zero",
             )
-            .with_fact("field", "device_profiles.max_active_queries")
+            .with_fact("field", "device_profiles.max_active_attempts")
             .with_fact("device_ordinal", *ordinal)
             .with_fact("reason", "zero"));
         }
@@ -994,7 +994,7 @@ mod tests {
         let profile = DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 1,
+            max_active_attempts: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
                 fallback_bytes: 200,
@@ -1063,7 +1063,7 @@ mod tests {
         let profile = |floor| DeviceRegistryInstallProfile {
             stream_pool_size: 4,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 2,
+            max_active_attempts: 2,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
                 fallback_bytes: 100,
@@ -1118,7 +1118,7 @@ mod tests {
         let whole = DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 2,
+            max_active_attempts: 2,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
                 fallback_bytes: 200,
@@ -1137,7 +1137,7 @@ mod tests {
         let partition = DeviceRegistryInstallProfile {
             stream_pool_size: 7,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 7,
+            max_active_attempts: 7,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 100,
                 fallback_bytes: 200,
@@ -1156,7 +1156,7 @@ mod tests {
         let explicit = DeviceRegistryInstallProfile {
             stream_pool_size: 3,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 3,
+            max_active_attempts: 3,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 700 },
             backend_reserve_bytes: 10,
             cache_cap_bytes: 0,
@@ -1198,7 +1198,7 @@ mod tests {
         let automatic = DeviceRegistryInstallProfile {
             stream_pool_size: 1,
             device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: 1,
+            max_active_attempts: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
                 headroom_bytes: 500,
                 fallback_bytes: 256,

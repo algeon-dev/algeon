@@ -29,16 +29,16 @@ fn backend_draft(config: QueryExecutionConfig) -> GpuBackendCoreDraft {
 fn backend_draft_with_limits_and_queue_bounds(
     config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
-    max_active_queries: usize,
+    max_active_attempts: usize,
 ) -> GpuBackendCoreDraft {
     let device_ordinal = DeviceId::current().expect("current CUDA device").ordinal();
     let source_work_per_attempt = 1;
-    let stream_pool_size = max_active_queries.saturating_mul(1 + source_work_per_attempt).max(1);
+    let stream_pool_size = max_active_attempts.saturating_mul(1 + source_work_per_attempt).max(1);
     let controller = GpuBackendControllerDraft::new(config, queue_bounds);
     let device = GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
         .with_source_work_per_attempt(source_work_per_attempt)
-        .with_max_active_queries(max_active_queries)
-        .with_installation_bounds(stream_pool_size, max_active_queries, max_active_queries);
+        .with_max_active_attempts(max_active_attempts)
+        .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts);
     GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment())
 }
 
@@ -233,7 +233,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
         panic!("expected one startup record for the single configured device");
     };
     assert_eq!(startup.device_ordinal, device.ordinal());
-    assert_eq!(startup.max_active_queries, 2);
+    assert_eq!(startup.max_active_attempts, 2);
     assert_eq!(startup.lane_count, 2);
     assert_eq!(startup.resource_profile.root_lane_count, 2);
     assert_eq!(startup.resource_profile.root_stream_count, 2);

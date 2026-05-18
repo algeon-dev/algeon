@@ -46,7 +46,7 @@ impl DeviceContext {
         memory_failure_tracker: DeviceMemoryFailureTracker,
         ledger: Arc<DeviceLedger>,
         facts: DeviceFacts,
-        max_active_queries: usize,
+        max_active_attempts: usize,
     ) -> Result<Self> {
         if device.ordinal() != facts.device {
             return Err(QueryError::new(
@@ -121,26 +121,26 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("device_ledger_ordinal", ledger.device_ordinal()));
         }
-        if max_active_queries == 0 {
+        if max_active_attempts == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_context",
-                "device active-query limit must be greater than zero",
+                "device active-attempt limit must be greater than zero",
             )
             .with_fact("device_ordinal", device.ordinal())
-            .with_fact("field", "max_active_queries")
+            .with_fact("field", "max_active_attempts")
             .with_fact("reason", "zero"));
         }
-        if max_active_queries != ledger.profile().max_active_attempts {
+        if max_active_attempts != ledger.profile().max_active_attempts {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_context",
-                "device active-query limit must match the ledger profile",
+                "device active-attempt limit must match the ledger profile",
             )
             .with_fact("device_ordinal", device.ordinal())
-            .with_fact("field", "max_active_queries")
+            .with_fact("field", "max_active_attempts")
             .with_fact("reason", "active_limit_mismatches_ledger_profile")
-            .with_fact("max_active_queries", max_active_queries)
+            .with_fact("max_active_attempts", max_active_attempts)
             .with_fact("ledger_max_active_attempts", ledger.profile().max_active_attempts));
         }
         let lane_permits = std::sync::Arc::new(super::lanes::DeviceLanePermits::new(

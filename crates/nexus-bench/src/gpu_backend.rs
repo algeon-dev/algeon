@@ -25,14 +25,15 @@ impl GpuBackendOwner {
     pub(crate) fn device_config(
         device_ordinal: usize,
         capacity_bytes: u64,
-        max_active_queries: usize,
+        max_active_attempts: usize,
         source_reads: usize,
     ) -> GpuBackendDeviceConfig {
-        let streams = max_active_queries.saturating_mul(source_reads.max(1).saturating_add(1)).max(max_active_queries);
+        let streams =
+            max_active_attempts.saturating_mul(source_reads.max(1).saturating_add(1)).max(max_active_attempts);
         GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-            .with_max_active_queries(max_active_queries)
-            .with_installation_bounds(streams, max_active_queries, max_active_queries)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(streams, max_active_attempts, max_active_attempts)
     }
 
     pub(crate) fn build(
