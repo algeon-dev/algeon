@@ -14,6 +14,7 @@ mod core;
 mod display;
 mod estimates;
 mod facts;
+mod graph_algorithm;
 mod join;
 mod nodes;
 mod sink;
@@ -23,6 +24,13 @@ pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 pub use builder::QueryPlanBuilder;
 pub(crate) use estimates::{estimated_output_bytes, estimated_output_rows};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
+pub use graph_algorithm::{
+    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
+    GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLouvainParams, GraphPageRankParams,
+    stable_graph_result_schema,
+};
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };

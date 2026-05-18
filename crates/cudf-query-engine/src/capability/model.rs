@@ -143,6 +143,22 @@ impl ReservationRequirement {
             quality,
         }
     }
+
+    pub fn blocked_by_lower_level(
+        kind: ReservationKind,
+        memory_boundary: &'static str,
+        required_contract: &'static str,
+        quality: ContractQuality,
+    ) -> Self {
+        Self {
+            kind,
+            scope: reservation_requirement_scope(kind),
+            memory_boundary,
+            required_contract,
+            status: ContractStatus::BlockedByLowerLevel,
+            quality,
+        }
+    }
 }
 
 pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
@@ -271,6 +287,7 @@ pub enum NodeOperator {
     Limit,
     Join { join_type: JoinType, key_count: usize, residual: ResidualRequirement, build_side: JoinSide },
     Union { input_count: usize },
+    GraphAlgorithm { algorithm: GraphAlgorithm },
 }
 
 /// Source format capability known by the native engine.
@@ -347,6 +364,7 @@ pub enum EdgeContractKind {
     ResidentFrameFlow,
     JoinMaterialization,
     SortInput,
+    GraphAlgorithmInput,
     ExplicitSinkMaterialization,
 }
 
@@ -378,6 +396,7 @@ pub enum InputRole {
     WindowInput,
     SortInput,
     UnionInput { input_index: usize },
+    GraphAlgorithmInput,
     LimitInput,
     JoinBuildInput { side: JoinSide },
     JoinProbeInput { side: JoinSide },

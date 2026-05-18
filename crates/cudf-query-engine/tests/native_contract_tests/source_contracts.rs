@@ -97,6 +97,56 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_rejects_decimal32_backed_contract() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("amount", DataType::Decimal128(9, 2), false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-decimal32.parquet")
+                .with_stable_id("reader-predicate-decimal32")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["key".to_string(), "amount".to_string()],
+    );
+    let predicate = Expr::binary(
+        Expr::column("amount"),
+        BinaryOp::Eq,
+        Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 9, scale: 2 }),
+    );
+
+    assert!(!source.reader_predicate_is_supported(&predicate));
+}
+
+#[test]
+fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("payload", DataType::Utf8, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-typed-literal.parquet")
+                .with_stable_id("reader-predicate-typed-literal")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["key".to_string(), "payload".to_string()],
+    );
+    let widened_integer = Expr::binary(Expr::column("key"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10)));
+    let mismatched_string =
+        Expr::binary(Expr::column("key"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("10".to_string())));
+    let string_match =
+        Expr::binary(Expr::column("payload"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("ok".to_string())));
+
+    assert!(source.reader_predicate_is_supported(&widened_integer));
+    assert!(!source.reader_predicate_is_supported(&mismatched_string));
+    assert!(source.reader_predicate_is_supported(&string_match));
+}
+
+#[test]
 fn local_parquet_source_represents_order_insensitive_scan_limit() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let source = LocalParquetSource::from_files(

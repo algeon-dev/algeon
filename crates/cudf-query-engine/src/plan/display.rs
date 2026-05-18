@@ -152,6 +152,23 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::GraphAlgorithm(node) => writeln!(
+                f,
+                "{padding}{} GraphAlgorithm input={} algorithm={} src_col={} dst_col={} weight_col={} directed={} renumber={} construction_policy={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                self.id,
+                node.input,
+                node.spec.algorithm,
+                node.spec.edge_columns.source,
+                node.spec.edge_columns.destination,
+                node.spec.edge_columns.weight.as_deref().unwrap_or("none"),
+                node.spec.graph_options.directed,
+                node.spec.graph_options.renumber,
+                node.spec.graph_options.policy,
+                format_graph_algorithm_params(&node.spec.params),
+                node.output_schema().fields().len(),
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
         }
     }
 }
@@ -216,6 +233,20 @@ fn format_sort_exprs(expressions: &[SortExpr]) -> String {
             })
             .collect::<Vec<_>>()
             .join(",")
+    }
+}
+
+fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String {
+    match params {
+        super::GraphAlgorithmParams::PageRank(params) => {
+            format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
+        },
+        super::GraphAlgorithmParams::Bfs(params) => format!(
+            "source_vertex={}:depth_limit={}",
+            params.source_vertex,
+            params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string())
+        ),
+        super::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
     }
 }
 

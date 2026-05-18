@@ -153,11 +153,14 @@ pub(in crate::capability) fn resident_grouped_aggregate_subquery_filter_stats(
         PlanNode::Source(_) => Ok(ResidentGroupedAggregateSubqueryFilterStats::default()),
         PlanNode::Filter(filter) => resident_grouped_aggregate_subquery_filter_stats(plan, filter.input),
         PlanNode::Projection(projection) => resident_grouped_aggregate_subquery_filter_stats(plan, projection.input),
-        PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::Sort(_) | PlanNode::Limit(_) | PlanNode::Union(_) => {
-            Err(CapabilityDecision::rejected(
-                "resident_grouped_subquery_filter_unsupported_node",
-                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            ))
-        },
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
+            "resident_grouped_subquery_filter_unsupported_node",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
     }
 }

@@ -14,10 +14,13 @@ resolver = "3"
 [workspace.dependencies]
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 cudf = { path = "../cudf-rs/cudf-rs" }
+cugraph = { path = "../cugraph-rs/cugraph-rs" }
+cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
 parquet = "58.3.0"
 
 [features]
 default = []
+cugraph = ["dep:cugraph", "dep:cugraph-sys", "cudf-query-engine/cugraph"]
 iceberg = [
     "dep:aws-config",
     "dep:aws-credential-types",
@@ -39,13 +42,18 @@ cudf = { workspace = true }
 # the loader picks up the freshly built libcudf_rust.so without relying on
 # LD_LIBRARY_PATH ordering.
 cudf-sys = { path = "../cudf-rs/cudf-sys" }
-cudf-query-engine = { path = "crates/cudf-query-engine" }
+cugraph = { workspace = true, optional = true }
+# Direct (non-transitive) dep on cugraph-sys so this crate's build.rs receives
+# DEP_CUGRAPH_RUNTIME_LIB_DIRS from cugraph-sys's `links = "cugraph"` metadata.
+cugraph-sys = { workspace = true, optional = true }
+cudf-query-engine = { path = "crates/cudf-query-engine", default-features = false }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg", optional = true }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue", optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
+serde_json = "1"
 tempfile = { version = "3", optional = true }
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync"] }
 

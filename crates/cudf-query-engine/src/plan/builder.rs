@@ -114,6 +114,16 @@ impl QueryPlanBuilder {
         self.push(PlanNode::Union(UnionNode { inputs }), PlanFacts::device(output_schema, SchemaBehavior::Union))
     }
 
+    /// Adds a graph algorithm node over an edge-list input.
+    pub fn add_graph_algorithm(&mut self, input: NodeId, spec: GraphAlgorithmSpec) -> NodeId {
+        self.assert_input_exists(input);
+        let output_schema = Arc::clone(&spec.output_schema);
+        self.push(
+            PlanNode::GraphAlgorithm(GraphAlgorithmNode { input, spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::GraphAlgorithm),
+        )
+    }
+
     /// Finishes the plan with a host Arrow materialization sink.
     pub fn finish_with_host_sink(self, root: NodeId) -> QueryPlan {
         let schema = self.node(root).output_schema().clone();

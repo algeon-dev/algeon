@@ -38,6 +38,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "max_task_observed_peak_bytes_observed",
     "max_task_retained_bytes",
     "max_task_retained_bytes_observed",
+    "native_graph_runtime_rows",
     "native_task_operator_rows",
     "native_task_runtime_rows",
     "peak_device_memory_bytes",
@@ -115,9 +116,9 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
 // Private translation layer from native `QueryMetrics` into DataFusion metrics. Field names must
 // match `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` and the registration names in `new`.
 #[derive(Debug, Clone)]
-pub(super) struct NativeCudfMetrics {
+pub(crate) struct NativeCudfMetrics {
     metrics_set: ExecutionPlanMetricsSet,
-    pub(super) baseline: BaselineMetrics,
+    pub(crate) baseline: BaselineMetrics,
     input_batches: Count,
     input_rows: Count,
     gpu_resident_input_handoffs: Count,
@@ -215,8 +216,9 @@ pub(super) struct NativeCudfMetrics {
 }
 
 impl NativeCudfMetrics {
-    pub(super) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
+        let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
         Self {
@@ -363,7 +365,7 @@ impl NativeCudfMetrics {
         }
     }
 
-    pub(super) fn record_query_metrics(&self, metrics: &QueryMetrics) {
+    pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
         self.input_batches.add(count(metrics.input_batches));
         self.input_rows.add(count(metrics.input_rows));
         self.gpu_resident_input_handoffs.add(count(metrics.boundary.gpu_resident_input_handoffs));
@@ -456,6 +458,7 @@ impl NativeCudfMetrics {
         self.one_shot_join_materialization_bytes.add(count(metrics.one_shot_join_materialization_bytes));
         self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.record_graph_runtime_rows(metrics);
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
         self.record_join_strategy_rows(metrics);
@@ -469,6 +472,43 @@ impl NativeCudfMetrics {
         self.final_merge_time.add_duration(metrics.final_merge_time);
         self.final_sort_time.add_duration(metrics.final_sort_time);
         self.materialization_time.add_duration(metrics.materialization_time);
+    }
+
+    fn record_graph_runtime_rows(&self, metrics: &QueryMetrics) {
+        for row in &metrics.graph_algorithm_runtime_rows {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("node_id", row.node_id.clone())
+                .with_new_label("algorithm", row.algorithm.clone())
+                .with_new_label("runtime_outcome", row.runtime_outcome.clone())
+                .with_new_label("input_boundary", row.input_boundary.clone())
+                .with_new_label("output_boundary", row.output_boundary.clone())
+                .with_new_label("construction_policy", row.construction_policy.clone())
+                .with_new_label("source_column", row.source_column.clone())
+                .with_new_label("destination_column", row.destination_column.clone())
+                .with_new_label(
+                    "weight_column",
+                    row.weight_column.as_deref().map_or_else(|| "none".to_string(), ToOwned::to_owned),
+                )
+                .with_new_label("directed", row.directed.to_string())
+                .with_new_label("renumber", row.renumber.to_string())
+                .with_new_label("algorithm_parameters", row.algorithm_parameters.clone())
+                .with_new_label("algorithm_metadata", row.algorithm_metadata.clone())
+                .with_new_label("input_rows", row.input_rows.to_string())
+                .with_new_label("input_columns", row.input_columns.to_string())
+                .with_new_label("output_rows", row.output_rows.to_string())
+                .with_new_label("output_columns", row.output_columns.to_string())
+                .with_new_label(
+                    "output_device_bytes",
+                    row.output_device_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("elapsed_ns", row.elapsed_ns.to_string())
+                .with_new_label("gpu_resident_input_handoffs", row.gpu_resident_input_handoffs.to_string())
+                .with_new_label("host_to_device_uploads", row.host_to_device_uploads.to_string())
+                .with_new_label("device_to_host_materializations", row.device_to_host_materializations.to_string())
+                .global_counter("native_graph_runtime_rows")
+                .add(1);
+        }
     }
 
     fn record_task_operator_rows(&self, metrics: &QueryMetrics) {

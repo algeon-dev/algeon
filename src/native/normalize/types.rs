@@ -28,6 +28,7 @@ impl<'a> NormalizedNativePlan<'a> {
         let root = self.aggregate_root()?;
         match &root.input {
             NormalizedNativeInput::Source(source) => Some(source),
+            NormalizedNativeInput::GpuResidentSource(_) => None,
             NormalizedNativeInput::Filter(_)
             | NormalizedNativeInput::Projection(_)
             | NormalizedNativeInput::Limit(_)
@@ -96,6 +97,7 @@ pub(in crate::native) struct NormalizedNativeInputRoot<'a> {
 #[derive(Debug, Clone)]
 pub(in crate::native) enum NormalizedNativeInput<'a> {
     Source(NormalizedNativeSource<'a>),
+    GpuResidentSource(NormalizedNativeGpuResidentSource<'a>),
     Filter(NormalizedNativeFilter<'a>),
     Projection(NormalizedNativeProjection<'a>),
     Limit(NormalizedNativeLimit<'a>),
@@ -115,6 +117,7 @@ impl NormalizedNativeInput<'_> {
     pub(in crate::native) fn shape(&self) -> String {
         match self {
             Self::Source(source) => source.shape(),
+            Self::GpuResidentSource(source) => source.shape(),
             Self::Filter(filter) => filter.shape(),
             Self::Projection(projection) => projection.shape(),
             Self::Limit(limit) => limit.shape(),
@@ -134,6 +137,7 @@ impl NormalizedNativeInput<'_> {
     pub(in crate::native) fn operator_count(&self) -> usize {
         match self {
             Self::Source(source) => source.operator_count(),
+            Self::GpuResidentSource(source) => source.operator_count(),
             Self::Filter(filter) => filter.operator_count(),
             Self::Projection(projection) => projection.operator_count(),
             Self::Limit(limit) => limit.operator_count(),
@@ -145,6 +149,24 @@ impl NormalizedNativeInput<'_> {
             Self::NestedLoopJoin(join) => join.operator_count(),
             Self::Union(union) => union.operator_count(),
         }
+    }
+}
+
+/// GPU-resident output supplied by another DataFusion execution node, such as
+/// a cuGraph SQL table function producer.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeGpuResidentSource<'a> {
+    pub(in crate::native) source_exec: &'a dyn ExecutionPlan,
+    pub(in crate::native) input_name: String,
+}
+
+impl NormalizedNativeGpuResidentSource<'_> {
+    fn shape(&self) -> String {
+        self.source_exec.name().to_string()
+    }
+
+    fn operator_count(&self) -> usize {
+        1
     }
 }
 

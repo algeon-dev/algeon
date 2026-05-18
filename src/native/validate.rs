@@ -78,11 +78,6 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     for (group_expr, _alias) in group_by.expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
     }
-    if group_by.has_grouping_set() {
-        for (null_expr, _alias) in group_by.null_expr() {
-            validate_physical_expr(null_expr, &aggregate.input().schema())?;
-        }
-    }
     Ok(())
 }
 
@@ -90,7 +85,52 @@ pub(super) fn validate_aggregate_for_native_lowering(
     aggregate: &AggregateExec,
     allow_partial: bool,
 ) -> Result<(), FallbackReason> {
-    validate_aggregate(aggregate, allow_partial)
+    if aggregate.group_expr().has_grouping_set() {
+        validate_grouping_set_aggregate(aggregate, allow_partial)
+    } else {
+        validate_aggregate(aggregate, allow_partial)
+    }
+}
+
+fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {
+    if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
+        || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
+    {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
+    if aggregate.filter_expr().iter().any(Option::is_some) {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+
+    let group_by = aggregate.group_expr();
+    if !group_by.has_grouping_set()
+        || group_by.expr().is_empty()
+        || group_by.null_expr().len() != group_by.expr().len()
+        || group_by.groups().is_empty()
+        || group_by.groups().iter().any(|group| group.len() != group_by.expr().len())
+    {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
+    for aggregate_expr in aggregate.aggr_expr() {
+        if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
+            return Err(FallbackReason::UnsupportedExpression);
+        }
+        if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
+            return Err(FallbackReason::UnsupportedOperator);
+        }
+        let expressions = aggregate_expr.expressions();
+        let [arg] = expressions.as_slice() else {
+            return Err(FallbackReason::UnsupportedExpression);
+        };
+        validate_physical_expr(arg, &aggregate.input().schema())?;
+    }
+    for (group_expr, _alias) in group_by.expr() {
+        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    }
+    for (null_expr, _alias) in group_by.null_expr() {
+        validate_physical_expr(null_expr, &aggregate.input().schema())?;
+    }
+    Ok(())
 }
 
 fn validate_grouping_sets(

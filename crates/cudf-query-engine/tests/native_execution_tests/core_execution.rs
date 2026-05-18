@@ -161,19 +161,29 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
 }
 
 #[test]
-fn native_local_parquet_reader_predicate_coerces_integer_literal_to_decimal_column_type() {
-    let dir = unique_temp_dir("cudf-query-engine-native-reader-decimal-integer-predicate");
+fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type() {
+    let dir = unique_temp_dir("cudf-query-engine-native-reader-float-integer-predicate");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_join_left_decimal_parquet(&runtime, &path);
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("amount", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(Float64Array::from(vec![10.5, 20.0, 30.5]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap().write_parquet(&path).unwrap();
 
-    let predicate = Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(200)));
+    let predicate = Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(20)));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
         vec!["order_id".to_string(), "amount".to_string()],
     )
     .with_reader_predicate(predicate);
+    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| source.reader_predicate_is_supported(predicate)));
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -186,7 +196,7 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_decimal_colu
     };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
-    assert_eq!(decimal128_array(batch, 1).values().as_ref(), &[20_000]);
+    assert_eq!(float64_array(batch, 1).values().as_ref(), &[20.0]);
 
     fs::remove_dir_all(dir).unwrap();
 }

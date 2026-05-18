@@ -15,6 +15,8 @@ use super::{
     metrics::NativeCudfMetrics,
 };
 use crate::error::{Error, ErrorCode};
+#[cfg(feature = "cugraph")]
+use crate::graph_sql::CugraphAlgoExec;
 
 /// Internal GPU-resident native fragment producer.
 ///
@@ -78,7 +80,7 @@ impl NativeCudfGpuProducerExec {
     ///
     /// The result stays on the GPU and is returned as `(input_name, GpuResultHandle)` so the composed
     /// consumer can populate its `GpuResidentInputMap` without host materialization.
-    pub(super) fn execute_gpu_result_with_context(
+    pub(crate) fn execute_gpu_result_with_context(
         &self,
         native_context: &ExecutionContext,
         partition: usize,
@@ -115,6 +117,42 @@ impl NativeCudfGpuProducerExec {
         };
         Ok((self.input_name.clone(), handle))
     }
+}
+
+pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
+    if let Some(producer) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>() {
+        return Some(producer.input_name().to_string());
+    }
+    #[cfg(feature = "cugraph")]
+    if let Some(producer) = plan.as_any().downcast_ref::<CugraphAlgoExec>() {
+        return Some(producer.gpu_result_input_name().to_string());
+    }
+    None
+}
+
+pub(crate) async fn execute_gpu_resident_producer_with_context(
+    plan: &dyn ExecutionPlan,
+    native_context: &ExecutionContext,
+    partition: usize,
+    task_context: Arc<TaskContext>,
+) -> DataFusionResult<(String, GpuResultHandle)> {
+    #[cfg(not(feature = "cugraph"))]
+    let _ = task_context;
+
+    if let Some(producer) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>() {
+        return producer.execute_gpu_result_with_context(native_context, partition);
+    }
+    #[cfg(feature = "cugraph")]
+    if let Some(producer) = plan.as_any().downcast_ref::<CugraphAlgoExec>() {
+        return producer.execute_gpu_result_with_context(native_context, partition, task_context).await;
+    }
+    Err(Error::new(
+        ErrorCode::InvalidExecutionPlan,
+        "datafusion_cudf.native_gpu_producer.execute_gpu",
+        "execution plan is not a GPU-resident producer",
+    )
+    .with_fact("plan_name", plan.name())
+    .into())
 }
 
 impl DisplayAs for NativeCudfGpuProducerExec {

@@ -75,6 +75,10 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
         && distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate)
 }
 
+fn partial_group_output_count(partial_aggregate: &AggregateExec) -> usize {
+    partial_group_output_names(partial_aggregate).len()
+}
+
 fn distributed_group_expr_layout_is_native_safe(
     final_aggregate: &AggregateExec,
     partial_aggregate: &AggregateExec,
@@ -102,10 +106,6 @@ fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, part
                 .is_some_and(|final_column| final_column.name() == partial_alias)
         },
     )
-}
-
-fn partial_group_output_count(partial_aggregate: &AggregateExec) -> usize {
-    partial_aggregate.group_expr().expr().len() + usize::from(partial_aggregate.group_expr().has_grouping_set())
 }
 
 fn partial_group_output_names(partial_aggregate: &AggregateExec) -> Vec<String> {

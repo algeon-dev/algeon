@@ -388,6 +388,14 @@ fn node_signature(node: &PlanNode) -> String {
             node.spec.output_projection.len()
         ),
         PlanNode::Union(node) => format!("union:inputs={}", node.inputs.len()),
+        PlanNode::GraphAlgorithm(node) => format!(
+            "graph_algorithm:algorithm={}:directed={}:renumber={}:weight={}:schema_fields={}",
+            node.spec.algorithm,
+            node.spec.graph_options.directed,
+            node.spec.graph_options.renumber,
+            node.spec.edge_columns.weight.is_some(),
+            node.output_schema().fields().len()
+        ),
     }
 }
 

@@ -179,7 +179,7 @@ impl NativeCudfExecutionConfig {
 
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
-    pub(super) fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
+    pub(crate) fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
             .with_memory_control_policy(self.memory_control_policy)

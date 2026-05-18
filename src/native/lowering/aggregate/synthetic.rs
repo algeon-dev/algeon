@@ -1,6 +1,7 @@
 use arrow::datatypes::Field;
 
 use super::*;
+use crate::native::lowering::expr::physical_expr_field;
 
 pub(super) struct SyntheticAggregateInputProjection {
     pub(super) expressions: Vec<NativeExpr>,

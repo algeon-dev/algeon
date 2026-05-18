@@ -52,8 +52,8 @@ use diagnostics::{
     summarize_source_diagnostics, unsupported_category,
 };
 pub use metrics::{
-    NativeDataFusionExecutionMetrics, NativeJoinStrategyMetricRow, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow,
+    NativeDataFusionExecutionMetrics, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
@@ -89,7 +89,7 @@ pub use tpcds_parity::{
     sql_has_top_level_order_by,
 };
 use tsv::{
-    format_adaptive_pipeline_rows, format_join_diagnostics, format_join_strategy_rows,
+    format_adaptive_pipeline_rows, format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows,
     format_native_optimizer_diagnostics, format_source_diagnostics, format_strict_bounded_compiled_graphs,
     format_strict_bounded_contract_rows, format_task_operator_rows, format_task_runtime_rows, stable_tsv_field,
     write_workload_dataset_metadata,

@@ -55,7 +55,7 @@ pub(in crate::capability) fn root_join_with_post_root_stages(
                     [("reason_prefix", reason_prefix.to_string()), ("node_id", current.to_string())],
                 ));
             },
-            PlanNode::Union(_) => {
+            PlanNode::Union(_) | PlanNode::GraphAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "post_root_stage_unsupported_node",
                     [
@@ -137,7 +137,8 @@ pub(in crate::capability) fn validate_resident_source_filter_projection_leaf_pip
         | PlanNode::Window(_)
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
-        | PlanNode::Union(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::Union(_)
+        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
             "source_leaf_pipeline_requires_source_filter_projection",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),

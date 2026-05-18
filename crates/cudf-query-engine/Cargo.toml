@@ -4,8 +4,15 @@ description = "Native cudf-rs query engine contracts for DataFusion-free GPU pla
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+build = "build.rs"
+
+[features]
+default = []
+cugraph = ["dep:cugraph", "dep:cugraph-sys"]
 
 [dependencies]
 arrow = { workspace = true }
 cudf = { workspace = true }
+cugraph = { workspace = true, optional = true }
+cugraph-sys = { workspace = true, optional = true }
 parquet = { workspace = true }

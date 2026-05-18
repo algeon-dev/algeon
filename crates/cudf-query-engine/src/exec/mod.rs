@@ -18,6 +18,7 @@ use cudf::{
 };
 
 mod bounded;
+mod graph_algorithm;
 mod join;
 mod lowering;
 mod materialize;
@@ -193,6 +194,7 @@ pub mod reservation_contract_testing {
 
 use self::{
     bounded::*,
+    graph_algorithm::*,
     join::*,
     lowering::*,
     materialize::*,
@@ -410,6 +412,11 @@ fn execute_node(
                 .map(|input| execute_node(context, plan, *input, gpu_inputs, scratch, metrics))
                 .collect::<Result<Vec<_>>>()?;
             execute_union(context, node.id, inputs, metrics)
+        },
+        PlanNode::GraphAlgorithm(graph) => {
+            let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
+            Ok(execute_graph_algorithm(context, node.id, graph, input, metrics)
+                .map_err(|error| error.with_fact("node_id", node.id))?)
         },
     }?;
 

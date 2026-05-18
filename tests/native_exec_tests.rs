@@ -126,6 +126,33 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
 }
 
 #[test]
+fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
+    let producer = Arc::new(NativeCudfGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
+    let child_schema = producer_child.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("key", &child_schema).unwrap(), alias: "key".to_string() }],
+            producer_child,
+        )
+        .unwrap(),
+    );
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let composed = optimized
+        .as_any()
+        .downcast_ref::<NativeCudfComposedExec>()
+        .expect("GPU-resident producer children should lower through composed native execution");
+    assert_eq!(composed.children().len(), 1);
+    assert!(composed.children()[0].as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some());
+    assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+}
+
+#[test]
 fn native_optimizer_rule_rewrites_supported_physical_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer");
     let path = dir.join("input.parquet");

@@ -180,6 +180,11 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
                 union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
                 PlanNode::Union(union)
             },
+            PlanNode::GraphAlgorithm(graph) => {
+                let mut graph = graph.clone();
+                graph.input = self.rewrite_subtree(graph.input);
+                PlanNode::GraphAlgorithm(graph)
+            },
         }
     }
 

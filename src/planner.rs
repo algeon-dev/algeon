@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fmt,
     sync::{Arc, Mutex},
 };
@@ -14,7 +15,9 @@ use datafusion::{
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
+    native_exec::{
+        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, gpu_resident_producer_input_name,
+    },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
     session::{CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},

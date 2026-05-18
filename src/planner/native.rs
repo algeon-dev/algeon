@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use arrow::datatypes::Schema;
 use datafusion::{
     datasource::source::DataSourceExec,
@@ -147,7 +149,9 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if plan.as_any().downcast_ref::<NativeCudfExec>().is_some() {
+        if plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
+            || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
+        {
             return Ok(plan);
         }
         if let Some(native_plan) = peel_cooperative_native_exec(&plan) {
@@ -324,6 +328,17 @@ fn optimize_final_native_plan(
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let mut adaptive_pipeline = NativeAdaptivePipelineDiagnostics::default();
+    if first_native_rejection(&report).is_some_and(|(_, reason)| reason == FallbackReason::UnsupportedExpression) {
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report,
+            native_optimizer,
+            source_diagnostics,
+            strict_bounded_contract,
+            adaptive_pipeline,
+            rewritten: false,
+        });
+    }
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
@@ -407,9 +422,7 @@ fn replace_lowered_root_or_keep_plan(
             });
         }
 
-        let plan = NativeCudfExec::try_new(native_plan, native_execution_config.clone())
-            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            .map_err(DataFusionError::from)?;
+        let plan = native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config)?;
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
@@ -442,9 +455,7 @@ fn replace_lowered_root_or_keep_plan(
     }
 
     let strict_bounded_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
-    let plan = NativeCudfExec::try_new(native_plan, native_execution_config.clone())
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from)?;
+    let plan = native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config)?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
@@ -470,6 +481,74 @@ fn native_optimizer_options_for_execution(
         },
     };
     options
+}
+
+fn native_datafusion_exec_for_plan(
+    original_plan: Arc<dyn ExecutionPlan>,
+    native_plan: cudf_query_engine::QueryPlan,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let gpu_input_names = native_plan_gpu_resident_source_names(&native_plan);
+    if gpu_input_names.is_empty() {
+        return NativeCudfExec::try_new(native_plan, native_execution_config.clone())
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+            .map_err(DataFusionError::from);
+    }
+
+    let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
+    NativeCudfComposedExec::try_new(native_plan, gpu_inputs, native_execution_config.clone())
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from)
+}
+
+fn native_plan_gpu_resident_source_names(plan: &cudf_query_engine::QueryPlan) -> BTreeSet<String> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            cudf_query_engine::PlanNode::Source(source) => match source.as_ref() {
+                cudf_query_engine::SourceNode::GpuResident(source) => Some(source.input_name.clone()),
+                cudf_query_engine::SourceNode::LocalParquet(_) => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn gpu_resident_producer_children(
+    plan: &Arc<dyn ExecutionPlan>,
+    required_inputs: &BTreeSet<String>,
+) -> DataFusionResult<Vec<Arc<dyn ExecutionPlan>>> {
+    let mut producers = BTreeMap::<String, Arc<dyn ExecutionPlan>>::new();
+    collect_gpu_resident_producer_children(plan, required_inputs, &mut producers);
+    let missing =
+        required_inputs.iter().filter(|name| !producers.contains_key(*name)).map(String::as_str).collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(DataFusionError::from(
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.native.compose_gpu_resident",
+                "native plan requires GPU-resident inputs that were not produced by child execution plans",
+            )
+            .with_fact("missing_inputs", missing.join(",")),
+        ));
+    }
+    Ok(required_inputs.iter().filter_map(|name| producers.remove(name)).collect())
+}
+
+fn collect_gpu_resident_producer_children(
+    plan: &Arc<dyn ExecutionPlan>,
+    required_inputs: &BTreeSet<String>,
+    producers: &mut BTreeMap<String, Arc<dyn ExecutionPlan>>,
+) {
+    if let Some(input_name) = gpu_resident_producer_input_name(plan.as_ref()) {
+        if required_inputs.contains(&input_name) {
+            producers.entry(input_name).or_insert_with(|| Arc::clone(plan));
+        }
+        return;
+    }
+    for child in plan.children() {
+        collect_gpu_resident_producer_children(child, required_inputs, producers);
+    }
 }
 
 fn optimize_native_children_for_host_arrow_boundary(

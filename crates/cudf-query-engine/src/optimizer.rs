@@ -33,23 +33,12 @@ pub use semijoin_reduction::{
 use crate::plan::QueryPlan;
 
 /// Native optimizer pass configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerOptions {
     pub semijoin_reduction: SemijoinReductionOptions,
     pub outer_join_null_rejection: OuterJoinNullRejectionOptions,
     pub join_filter_reassociation: JoinFilterReassociationOptions,
     pub join_build_side_selection: JoinBuildSideSelectionOptions,
-}
-
-impl Default for NativeOptimizerOptions {
-    fn default() -> Self {
-        Self {
-            semijoin_reduction: SemijoinReductionOptions::default(),
-            outer_join_null_rejection: OuterJoinNullRejectionOptions::default(),
-            join_filter_reassociation: JoinFilterReassociationOptions::default(),
-            join_build_side_selection: JoinBuildSideSelectionOptions::default(),
-        }
-    }
 }
 
 impl NativeOptimizerOptions {

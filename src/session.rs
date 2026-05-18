@@ -5,6 +5,8 @@ use datafusion::{
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
 };
 
+#[cfg(feature = "cugraph")]
+use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
 use crate::planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig};
 
 pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
@@ -36,6 +38,10 @@ pub trait CudfSessionStateBuilderExt {
     /// validation rule.
     fn with_cudf_native(self, config: CudfOptimizerConfig) -> Self;
 
+    /// Register cuGraph SQL table functions.
+    #[cfg(feature = "cugraph")]
+    fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
+
     /// Register a caller-retained cudf native rule before DataFusion's final
     /// physical-plan validation rule.
     fn with_cudf_native_rule(self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self;
@@ -44,6 +50,15 @@ pub trait CudfSessionStateBuilderExt {
 impl CudfSessionStateBuilderExt for SessionStateBuilder {
     fn with_cudf_native(self, config: CudfOptimizerConfig) -> Self {
         self.with_cudf_native_rule(Arc::new(CudfNativePhysicalOptimizerRule::new(config)))
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn with_cugraph_sql(mut self, config: CugraphSqlConfig) -> Self {
+        let functions = self.table_functions().get_or_insert_with(Default::default);
+        for function in cugraph_table_functions(config) {
+            functions.insert(function.name().to_string(), function);
+        }
+        self
     }
 
     fn with_cudf_native_rule(mut self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self {

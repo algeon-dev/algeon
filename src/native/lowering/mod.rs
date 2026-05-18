@@ -10,13 +10,16 @@ mod unary;
 mod union;
 mod window;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    Expr as NativeExpr, LimitSpec as NativeLimitSpec, NodeId as NativeNodeId,
-    ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
-    QueryPlanBuilder as NativeQueryPlanBuilder,
+    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LimitSpec as NativeLimitSpec,
+    NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
+    QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 use datafusion::physical_expr::expressions::Column;
 
@@ -210,6 +213,9 @@ fn lower_native_input(
 ) -> Result<LoweredNativeInput, FallbackReason> {
     match input {
         NormalizedNativeInput::Source(source) => source::lower_source_input(source, builder, required_output_fields),
+        NormalizedNativeInput::GpuResidentSource(source) => {
+            lower_gpu_resident_source_input(source, builder, required_output_fields)
+        },
         NormalizedNativeInput::Filter(filter) => unary::lower_filter_input(filter, builder, required_output_fields),
         NormalizedNativeInput::Projection(projection) => {
             unary::lower_projection_input(projection, builder, required_output_fields)
@@ -233,7 +239,46 @@ fn lower_native_input(
     }
 }
 
-use std::sync::Arc;
+fn lower_gpu_resident_source_input(
+    source: &super::normalize::NormalizedNativeGpuResidentSource<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_fields: &RequiredFields,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let full_schema = source.source_exec.schema();
+    let full_required = RequiredFields::all();
+    let (source_schema, source_bindings) = executable_schema_and_bindings(&full_schema, &full_required)?;
+    let source_node = builder.add_source(NativeSourceNode::GpuResident(NativeGpuResidentSource::new(
+        source.input_name.as_str(),
+        Arc::clone(&source_schema),
+    )));
+    if required_output_fields.is_all() {
+        return Ok(LoweredNativeInput::with_bindings(source_node, source_schema, source_bindings));
+    }
+
+    let (projected_schema, projected_bindings) = executable_schema_and_bindings(&full_schema, required_output_fields)?;
+    let expressions = projected_bindings
+        .iter()
+        .map(|projected| {
+            let input = source_bindings
+                .iter()
+                .find(|binding| binding.frontend_index == projected.frontend_index)
+                .ok_or(FallbackReason::UnsupportedExpression)?;
+            Ok(NativeProjectionOutput::new(
+                NativeExpr::column(input.native_name.as_str()),
+                rename_field(
+                    source_schema
+                        .fields()
+                        .get(input.frontend_index)
+                        .ok_or(FallbackReason::UnsupportedExpression)?
+                        .as_ref(),
+                    projected.native_name.as_str(),
+                ),
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let projected_node = builder.add_projection(source_node, expressions);
+    Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
+}
 
 fn rename_field(field: &Field, name: &str) -> Field {
     field.clone().with_name(name)

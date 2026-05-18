@@ -575,7 +575,8 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
             | PlanNode::Window(_)
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
-            | PlanNode::Union(_) => {
+            | PlanNode::Union(_)
+            | PlanNode::GraphAlgorithm(_) => {
                 return CapabilityDecision::rejected(
                     "resident_unary_chain_requires_filter_projection_nodes",
                     [("node_id", chain_id.to_string()), ("operator", node_operator_fact(&chain_node.kind).to_string())],

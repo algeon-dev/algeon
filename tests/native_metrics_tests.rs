@@ -406,6 +406,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "max_task_observed_peak_bytes_observed",
         "max_task_retained_bytes",
         "max_task_retained_bytes_observed",
+        "native_graph_runtime_rows",
         "native_task_operator_rows",
         "native_task_runtime_rows",
         "compiled_pipeline_attempts",
