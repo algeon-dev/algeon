@@ -151,6 +151,7 @@ impl_cugraph_element! {
     u16 => Uint16,
     u32 => Uint32,
     u64 => Uint64,
+    usize => SizeT,
     f32 => Float32,
     f64 => Float64,
 }

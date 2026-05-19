@@ -1,7 +1,7 @@
 //! Integration tests for graph/result exports back into cuDF.
 mod common;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use common::{
     cudf::{explicit_runtime, read_parquet_dataframe, unique_temp_dir, write_parquet_dataframe},
@@ -15,12 +15,13 @@ use common::{
 use cugraph::{
     array::DeviceArray,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::{LouvainParams, TriangleCountParams},
+    community::{ExtractEgoParams, KTrussSubgraphParams, LouvainParams, TriangleCountParams},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     labeling::ConnectedComponentsParams,
-    structure::{CoreNumberParams, KCoreDegreeType},
+    structure::{CoreNumberParams, KCoreDegreeType, KCoreParams},
     traversal::{BfsParams, SsspParams},
+    tree::MinimumSpanningTreeParams,
     types::GraphProperties,
 };
 
@@ -369,6 +370,85 @@ fn triangle_count_result_to_dataframe() {
         df.series("triangle_count").expect("triangle_count").to_vec_strict::<i32>().expect("triangle_count"),
         expected_counts
     );
+}
+
+#[test]
+fn subgraph_edge_results_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("subgraph_edge_results_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let k_core_params = KCoreParams {
+        k: NonZeroUsize::new(2).expect("k"),
+        degree_type: KCoreDegreeType::Out,
+        do_expensive_check: false,
+    };
+    let k_core_df = graph.k_core(&handle, &k_core_params).expect("k_core").to_dataframe(&runtime).expect("k_core df");
+    assert_eq!(k_core_df.column_names()[0], "source");
+    assert_eq!(k_core_df.column_names()[1], "destination");
+    assert_eq!(k_core_df.column_names()[2], "weight");
+
+    let mst_df = graph
+        .minimum_spanning_tree(&handle, &MinimumSpanningTreeParams::default())
+        .expect("mst")
+        .to_dataframe(&runtime)
+        .expect("mst df");
+    assert_eq!(mst_df.column_names()[0], "source");
+    assert_eq!(mst_df.column_names()[1], "destination");
+    assert_eq!(mst_df.column_names()[2], "weight");
+
+    let k_truss_df = graph
+        .k_truss_subgraph(
+            &handle,
+            &KTrussSubgraphParams { k: NonZeroUsize::new(3).expect("k"), do_expensive_check: false },
+        )
+        .expect("k_truss")
+        .to_dataframe(&runtime)
+        .expect("k_truss df");
+    assert_eq!(k_truss_df.column_names()[0], "source");
+    assert_eq!(k_truss_df.column_names()[1], "destination");
+    assert_eq!(k_truss_df.column_names()[2], "weight");
+}
+
+#[test]
+fn extract_ego_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("extract_ego_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 2, 2, 3, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 3, 4, 0, 1, 3, 4, 5, 5]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
+    let seeds = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("seeds");
+    let seeds_view = seeds.view().expect("seeds_view");
+    let params = ExtractEgoParams { radius: NonZeroUsize::new(2).expect("radius"), do_expensive_check: false };
+
+    let result = graph.extract_ego(&handle, &seeds_view, &params).expect("extract_ego");
+    let expected_edges = result.sources().expect("sources").len();
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "source");
+    assert_eq!(df.column_names()[1], "destination");
+    assert_eq!(df.num_rows(), expected_edges);
 }
 
 #[test]

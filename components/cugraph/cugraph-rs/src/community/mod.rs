@@ -6,8 +6,10 @@
 
 pub mod louvain;
 mod result;
+pub mod subgraph;
 pub mod triangle_count;
 
 pub use louvain::LouvainParams;
 pub use result::LouvainResult;
+pub use subgraph::{ExtractEgoParams, ExtractEgoResult, KTrussSubgraphParams, KTrussSubgraphResult};
 pub use triangle_count::{TriangleCountParams, TriangleCountResult};

@@ -73,6 +73,22 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_core_result_get_vertices",
         "cugraph_core_result_get_core_numbers",
         "cugraph_core_result_free",
+        "cugraph_k_core",
+        "cugraph_k_core_result_get_src_vertices",
+        "cugraph_k_core_result_get_dst_vertices",
+        "cugraph_k_core_result_get_weights",
+        "cugraph_k_core_result_free",
+        // Subgraph / tree
+        "cugraph_minimum_spanning_tree",
+        "cugraph_k_truss_subgraph",
+        "cugraph_extract_ego",
+        "cugraph_induced_subgraph_get_sources",
+        "cugraph_induced_subgraph_get_destinations",
+        "cugraph_induced_subgraph_get_edge_weights",
+        "cugraph_induced_subgraph_get_edge_ids",
+        "cugraph_induced_subgraph_get_edge_type_ids",
+        "cugraph_induced_subgraph_get_subgraph_offsets",
+        "cugraph_induced_subgraph_result_free",
     ];
 
     for symbol in required_symbols {

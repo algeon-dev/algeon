@@ -1289,6 +1289,34 @@ impl<T: Transposition> Graph<T> {
         crate::structure::core::core_number(handle, self, params)
     }
 
+    /// Extract a k-core subgraph, computing core numbers internally.
+    pub fn k_core(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::structure::KCoreParams,
+    ) -> Result<crate::structure::KCoreResult> {
+        crate::structure::core::k_core(handle, self, params, None)
+    }
+
+    /// Extract a k-core subgraph using a precomputed core-number result.
+    pub fn k_core_with_core_numbers(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::structure::KCoreParams,
+        core_numbers: &crate::structure::CoreNumberResult,
+    ) -> Result<crate::structure::KCoreResult> {
+        crate::structure::core::k_core(handle, self, params, Some(core_numbers))
+    }
+
+    /// Compute a minimum spanning tree.
+    pub fn minimum_spanning_tree(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::tree::MinimumSpanningTreeParams,
+    ) -> Result<crate::tree::MinimumSpanningTreeResult> {
+        crate::tree::minimum_spanning_tree::minimum_spanning_tree(handle, self, params)
+    }
+
     /// Compute a Force Atlas 2 layout for this graph.
     ///
     /// Returns a [`LayoutResult`](crate::layout::LayoutResult) containing
@@ -1418,6 +1446,32 @@ impl<T: Transposition> Graph<T> {
         params: &crate::community::TriangleCountParams,
     ) -> Result<crate::community::TriangleCountResult> {
         self.triangle_count(handle, crate::structure::VertexSelection::<i32>::All, params)
+    }
+
+    /// Extract a k-truss subgraph.
+    pub fn k_truss_subgraph(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::community::KTrussSubgraphParams,
+    ) -> Result<crate::community::KTrussSubgraphResult> {
+        crate::community::subgraph::k_truss_subgraph(handle, self, params)
+    }
+
+    /// Extract ego subgraphs for explicit source vertices.
+    ///
+    /// `VertexSelection::All` is rejected because the native API requires an
+    /// explicit source vertex list.
+    pub fn extract_ego<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        source_vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::community::ExtractEgoParams,
+    ) -> Result<crate::community::ExtractEgoResult> {
+        let source_vertices = source_vertices.into();
+        self.validate_vertex_selection(&source_vertices, "Graph::extract_ego", "source_vertices", false)?;
+        let resolved = source_vertices.resolve(handle)?;
+        let view = self.resolved_vertex_view(&resolved, "Graph::extract_ego", "source_vertices")?;
+        crate::community::subgraph::extract_ego(handle, self, &view, params)
     }
 }
 
