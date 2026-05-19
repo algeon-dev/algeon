@@ -79,7 +79,8 @@ fn current_device_resource_guard_stays_on_explicit_allowlist() {
 
     for entry in fs::read_dir(&src_dir).expect("native/src must be readable") {
         let path = entry.expect("native/src entry must be readable").path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("cpp") {
+        let is_join_common = path.file_name().and_then(|name| name.to_str()) == Some("join_common.hpp");
+        if path.extension().and_then(|ext| ext.to_str()) != Some("cpp") && !is_join_common {
             continue;
         }
 
@@ -130,6 +131,13 @@ fn context_around(lines: &[&str], index: usize) -> String {
     lines[start..end].join("\n")
 }
 
+fn is_join_source(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "join_common.hpp" | "join_conditional.cpp" | "join_filter.cpp" | "join_hash.cpp" | "join_mixed.cpp"
+    )
+}
+
 fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str> {
     match file_name {
         "copying.cpp" if context.contains("cudf::gather(*view, *map_view, policy, exec.stream, exec.mr)") => {
@@ -176,137 +184,219 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "io_parquet.cpp" if context.contains("cudf::io::write_parquet(options, exec.stream)") => {
             Some("io_parquet::write_parquet")
         },
-        "join.cpp" if context.contains("std::make_unique<cudf::distinct_hash_join>") => {
+        file_name if is_join_source(file_name) && context.contains("std::make_unique<cudf::distinct_hash_join>") => {
             Some("join::distinct_hash_join_create")
         },
-        "join.cpp" if context.contains("void cudf_distinct_hash_join_destroy") && context.contains("delete owner") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_distinct_hash_join_destroy")
+                && context.contains("delete owner") =>
+        {
             Some("join::distinct_hash_join_destroy")
         },
-        "join.cpp" if context.contains("distinct_join->left_join(*probe_view, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("distinct_join->left_join(*probe_view, exec.stream, exec.mr)") =>
+        {
             Some("join::distinct_hash_join_left_join")
         },
-        "join.cpp" if context.contains("cudf::cross_join(*left_view, *right_view, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("cudf::cross_join(*left_view, *right_view, exec.stream, exec.mr)") =>
+        {
             Some("join::cross_join")
         },
-        "join.cpp"
-            if context.contains("projected_cross_join_table(") && context.contains("cudf_release_table_handle") =>
+        file_name
+            if is_join_source(file_name)
+                && context.contains("projected_cross_join_table(")
+                && context.contains("cudf_release_table_handle") =>
         {
             Some("join::projected_cross_join")
         },
-        "join.cpp" if context.contains("projected_cross_join_table(") && context.contains("result->alloc_size()") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("projected_cross_join_table(")
+                && context.contains("result->alloc_size()") =>
+        {
             Some("join::projected_cross_join_device_allocated_size")
         },
-        "join.cpp" if context.contains("std::make_unique<cudf::hash_join>") => Some("join::hash_join_create"),
-        "join.cpp" if context.contains("void cudf_hash_join_destroy") && context.contains("delete owner") => {
+        file_name if is_join_source(file_name) && context.contains("std::make_unique<cudf::hash_join>") => {
+            Some("join::hash_join_create")
+        },
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_hash_join_destroy")
+                && context.contains("delete owner") =>
+        {
             Some("join::hash_join_destroy")
         },
-        "join.cpp" if context.contains("cudf::full_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("cudf::full_join(*lk, *rk, null_eq, exec.stream, exec.mr)") =>
+        {
             Some("join::full_join_indices")
         },
-        "join.cpp" if context.contains("cudf::inner_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("cudf::inner_join(*lk, *rk, null_eq, exec.stream, exec.mr)") =>
+        {
             Some("join::inner_join_indices")
         },
-        "join.cpp" if context.contains("cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr)") =>
+        {
             Some("join::left_join_indices")
         },
-        "join.cpp" if context.contains("join.anti_join(*lk, exec.stream, exec.mr)") => {
+        file_name if is_join_source(file_name) && context.contains("join.anti_join(*lk, exec.stream, exec.mr)") => {
             Some("join::left_anti_join_indices")
         },
-        "join.cpp" if context.contains("join.semi_join(*lk, exec.stream, exec.mr)") => {
+        file_name if is_join_source(file_name) && context.contains("join.semi_join(*lk, exec.stream, exec.mr)") => {
             Some("join::left_semi_join_indices")
         },
-        "join.cpp" if context.contains("cudf::conditional_inner_join(") => Some("join::conditional_pair_join_indices"),
-        "join.cpp" if context.contains("cudf::conditional_left_semi_join(") => {
+        file_name if is_join_source(file_name) && context.contains("cudf::conditional_inner_join(") => {
+            Some("join::conditional_pair_join_indices")
+        },
+        file_name if is_join_source(file_name) && context.contains("cudf::conditional_left_semi_join(") => {
             Some("join::conditional_single_side_join_indices")
         },
-        "join.cpp" if context.contains("cudf::conditional_inner_join_size(") => Some("join::conditional_join_size"),
-        "join.cpp" if context.contains("cudf::conditional_full_join_size(") => {
+        file_name if is_join_source(file_name) && context.contains("cudf::conditional_inner_join_size(") => {
+            Some("join::conditional_join_size")
+        },
+        file_name if is_join_source(file_name) && context.contains("cudf::conditional_full_join_size(") => {
             Some("join::conditional_full_join_size_data_create")
         },
-        "join.cpp"
-            if context.contains("conditional full join size data missing state")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("conditional full join size data missing state")
                 && context.contains("owner->size_data->materialize_indices(exec.stream, exec.mr)") =>
         {
             Some("join::conditional_full_join_size_data_materialize_indices")
         },
-        "join.cpp"
-            if context.contains("void cudf_conditional_full_join_size_data_destroy")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_conditional_full_join_size_data_destroy")
                 && context.contains("delete owner") =>
         {
             Some("join::conditional_full_join_size_data_destroy")
         },
-        "join.cpp" if context.contains("cudf::filter_join_indices(") => Some("join::filter_join_indices"),
-        "join.cpp" if context.contains("std::make_unique<cudf::filtered_join>") => Some("join::filtered_join_create"),
-        "join.cpp" if context.contains("*out = indices->size()") && context.contains("owner->join->semi_join") => {
+        file_name if is_join_source(file_name) && context.contains("cudf::filter_join_indices(") => {
+            Some("join::filter_join_indices")
+        },
+        file_name if is_join_source(file_name) && context.contains("std::make_unique<cudf::filtered_join>") => {
+            Some("join::filtered_join_create")
+        },
+        file_name
+            if is_join_source(file_name)
+                && context.contains("*out = indices->size()")
+                && context.contains("owner->join->semi_join") =>
+        {
             Some("join::filtered_join_size")
         },
-        "join.cpp"
-            if context.contains("filtered join output_size does not match produced index count")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("filtered join output_size does not match produced index count")
                 && context.contains("owner->join->semi_join") =>
         {
             Some("join::filtered_join_indices_with_output_size")
         },
-        "join.cpp" if context.contains("owner->join->begin_left_semi_probe") => Some("join::filtered_join_begin_probe"),
-        "join.cpp"
-            if context.contains("filtered join probe is null")
+        file_name if is_join_source(file_name) && context.contains("owner->join->begin_left_semi_probe") => {
+            Some("join::filtered_join_begin_probe")
+        },
+        file_name
+            if is_join_source(file_name)
+                && context.contains("filtered join probe is null")
                 && context.contains("owner->probe->materialize_indices(exec.stream, exec.mr)") =>
         {
             Some("join::filtered_join_probe_materialize_indices")
         },
-        "join.cpp" if context.contains("void cudf_filtered_join_destroy") && context.contains("delete owner") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_filtered_join_destroy")
+                && context.contains("delete owner") =>
+        {
             Some("join::filtered_join_destroy")
         },
-        "join.cpp" if context.contains("void cudf_filtered_join_probe_destroy") && context.contains("delete owner") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_filtered_join_probe_destroy")
+                && context.contains("delete owner") =>
+        {
             Some("join::filtered_join_probe_destroy")
         },
-        "join.cpp" if context.contains("cudf::mixed_inner_join(") => Some("join::mixed_pair_join_indices"),
-        "join.cpp" if context.contains("cudf::mixed_left_semi_join(") => Some("join::mixed_single_side_join_indices"),
-        "join.cpp" if context.contains("cudf::mixed_inner_join_size(") => Some("join::mixed_join_size_data_create"),
-        "join.cpp"
-            if context.contains("join_index_pair indices")
+        file_name if is_join_source(file_name) && context.contains("cudf::mixed_inner_join(") => {
+            Some("join::mixed_pair_join_indices")
+        },
+        file_name if is_join_source(file_name) && context.contains("cudf::mixed_left_semi_join(") => {
+            Some("join::mixed_single_side_join_indices")
+        },
+        file_name if is_join_source(file_name) && context.contains("cudf::mixed_inner_join_size(") => {
+            Some("join::mixed_join_size_data_create")
+        },
+        file_name
+            if is_join_source(file_name)
+                && context.contains("join_index_pair indices")
                 && context.contains("mixed join size data missing left equality view") =>
         {
             Some("join::mixed_join_size_data_materialize_pair_indices")
         },
-        "join.cpp"
-            if context.contains("mixed semi/anti join size data missing state")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("mixed semi/anti join size data missing state")
                 && context.contains("owner->single_size_data->materialize_indices(exec.stream, exec.mr)") =>
         {
             Some("join::mixed_join_size_data_materialize_single_indices")
         },
-        "join.cpp"
-            if context.contains("void cudf_mixed_join_size_data_destroy") && context.contains("delete owner") =>
+        file_name
+            if is_join_source(file_name)
+                && context.contains("void cudf_mixed_join_size_data_destroy")
+                && context.contains("delete owner") =>
         {
             Some("join::mixed_join_size_data_destroy")
         },
-        "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") =>
+        {
             Some("join::hash_join_full_join")
         },
-        "join.cpp"
-            if context.contains("hash_join->full_join(")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->full_join(")
                 && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
         {
             Some("join::hash_join_full_join_with_output_size")
         },
-        "join.cpp" if context.contains("hash_join->inner_join(*probe_view, {}, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->inner_join(*probe_view, {}, exec.stream, exec.mr)") =>
+        {
             Some("join::hash_join_inner_join")
         },
-        "join.cpp"
-            if context.contains("hash_join->inner_join(")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->inner_join(")
                 && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
         {
             Some("join::hash_join_inner_join_with_output_size")
         },
-        "join.cpp" if context.contains("hash_join->left_join(*probe_view, {}, exec.stream, exec.mr)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->left_join(*probe_view, {}, exec.stream, exec.mr)") =>
+        {
             Some("join::hash_join_left_join")
         },
-        "join.cpp"
-            if context.contains("hash_join->left_join(")
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->left_join(")
                 && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
         {
             Some("join::hash_join_left_join_with_output_size")
         },
-        "join.cpp" if context.contains("hash_join->inner_join_size(*probe_view, exec.stream)") => {
+        file_name
+            if is_join_source(file_name)
+                && context.contains("hash_join->inner_join_size(*probe_view, exec.stream)") =>
+        {
             Some("join::hash_join_size")
         },
         "partitioning.cpp"
