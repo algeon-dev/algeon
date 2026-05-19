@@ -1317,6 +1317,149 @@ impl<T: Transposition> Graph<T> {
         crate::tree::minimum_spanning_tree::minimum_spanning_tree(handle, self, params)
     }
 
+    /// Create an owned vertex-pair collection for pairwise similarity algorithms.
+    ///
+    /// `first` and `second` must be explicit vertex selections with matching
+    /// lengths and the same vertex dtype as this graph. `VertexSelection::All`
+    /// is rejected because pairwise similarity requires aligned input pairs.
+    pub fn vertex_pairs<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        first: impl Into<VertexSelection<'a, V>>,
+        second: impl Into<VertexSelection<'a, V>>,
+    ) -> Result<crate::similarity::VertexPairs> {
+        let first = first.into();
+        let second = second.into();
+        self.validate_vertex_selection(&first, "Graph::vertex_pairs", "first", false)?;
+        self.validate_vertex_selection(&second, "Graph::vertex_pairs", "second", false)?;
+        let first = first.resolve(handle)?;
+        let second = second.resolve(handle)?;
+        let first_view = self.resolved_vertex_view(&first, "Graph::vertex_pairs", "first")?;
+        let second_view = self.resolved_vertex_view(&second, "Graph::vertex_pairs", "second")?;
+        crate::similarity::create_vertex_pairs(handle, self, &first_view, &second_view)
+            .map_err(|error| error.with_operation("Graph::vertex_pairs"))
+    }
+
+    /// Compute Jaccard similarity coefficients for explicit vertex pairs.
+    ///
+    /// cuGraph requires a symmetric graph for this algorithm; native
+    /// validation reports detailed graph-property errors.
+    pub fn jaccard_coefficients(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        pairs: crate::similarity::VertexPairs,
+        params: &crate::similarity::SimilarityParams,
+    ) -> Result<crate::similarity::JaccardSimilarityResult> {
+        crate::similarity::jaccard_coefficients(handle, self, pairs, params)
+    }
+
+    /// Compute Sorensen similarity coefficients for explicit vertex pairs.
+    ///
+    /// cuGraph requires a symmetric graph for this algorithm; native
+    /// validation reports detailed graph-property errors.
+    pub fn sorensen_coefficients(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        pairs: crate::similarity::VertexPairs,
+        params: &crate::similarity::SimilarityParams,
+    ) -> Result<crate::similarity::SorensenSimilarityResult> {
+        crate::similarity::sorensen_coefficients(handle, self, pairs, params)
+    }
+
+    /// Compute overlap similarity coefficients for explicit vertex pairs.
+    ///
+    /// cuGraph requires a symmetric graph for this algorithm; native
+    /// validation reports detailed graph-property errors.
+    pub fn overlap_coefficients(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        pairs: crate::similarity::VertexPairs,
+        params: &crate::similarity::SimilarityParams,
+    ) -> Result<crate::similarity::OverlapSimilarityResult> {
+        crate::similarity::overlap_coefficients(handle, self, pairs, params)
+    }
+
+    /// Compute cosine similarity coefficients for explicit vertex pairs.
+    ///
+    /// cuGraph requires a symmetric graph for this algorithm; native
+    /// validation reports detailed graph-property errors.
+    pub fn cosine_similarity_coefficients(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        pairs: crate::similarity::VertexPairs,
+        params: &crate::similarity::SimilarityParams,
+    ) -> Result<crate::similarity::CosineSimilarityResult> {
+        crate::similarity::cosine_similarity_coefficients(handle, self, pairs, params)
+    }
+
+    /// Compute all-pairs Jaccard similarity coefficients.
+    ///
+    /// Pass [`VertexSelection::All`] to use all vertices or an explicit subset
+    /// to seed pair generation. cuGraph requires a symmetric graph.
+    pub fn all_pairs_jaccard_coefficients<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::similarity::AllPairsSimilarityParams,
+    ) -> Result<crate::similarity::JaccardSimilarityResult> {
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::all_pairs_jaccard_coefficients", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::similarity::all_pairs_jaccard_coefficients(handle, self, view.as_ref(), params)
+    }
+
+    /// Compute all-pairs Sorensen similarity coefficients.
+    ///
+    /// Pass [`VertexSelection::All`] to use all vertices or an explicit subset
+    /// to seed pair generation. cuGraph requires a symmetric graph.
+    pub fn all_pairs_sorensen_coefficients<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::similarity::AllPairsSimilarityParams,
+    ) -> Result<crate::similarity::SorensenSimilarityResult> {
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::all_pairs_sorensen_coefficients", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::similarity::all_pairs_sorensen_coefficients(handle, self, view.as_ref(), params)
+    }
+
+    /// Compute all-pairs overlap similarity coefficients.
+    ///
+    /// Pass [`VertexSelection::All`] to use all vertices or an explicit subset
+    /// to seed pair generation. cuGraph requires a symmetric graph.
+    pub fn all_pairs_overlap_coefficients<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::similarity::AllPairsSimilarityParams,
+    ) -> Result<crate::similarity::OverlapSimilarityResult> {
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::all_pairs_overlap_coefficients", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::similarity::all_pairs_overlap_coefficients(handle, self, view.as_ref(), params)
+    }
+
+    /// Compute all-pairs cosine similarity coefficients.
+    ///
+    /// Pass [`VertexSelection::All`] to use all vertices or an explicit subset
+    /// to seed pair generation. cuGraph requires a symmetric graph.
+    pub fn all_pairs_cosine_similarity_coefficients<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::similarity::AllPairsSimilarityParams,
+    ) -> Result<crate::similarity::CosineSimilarityResult> {
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::all_pairs_cosine_similarity_coefficients", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::similarity::all_pairs_cosine_similarity_coefficients(handle, self, view.as_ref(), params)
+    }
+
     /// Compute a Force Atlas 2 layout for this graph.
     ///
     /// Returns a [`LayoutResult`](crate::layout::LayoutResult) containing

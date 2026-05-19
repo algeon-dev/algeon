@@ -104,6 +104,9 @@ use crate::{
     handle::EnteredContext,
     labeling::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult},
     layout::LayoutResult,
+    similarity::{
+        CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult, SorensenSimilarityResult, VertexPairs,
+    },
     structure::{
         CoreNumberResult, KCoreResult,
         degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
@@ -669,6 +672,83 @@ pub(crate) fn extract_ego_result_to_dataframe(result: &ExtractEgoResult, runtime
         result.edge_type_ids()?,
         runtime,
         "extract_ego_result_to_dataframe",
+    )
+}
+
+pub(crate) fn vertex_pairs_to_dataframe(result: &VertexPairs, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "vertex_pairs_to_dataframe";
+    dataframe_from_named_series(
+        [("first", result.first()?.to_series(runtime)?), ("second", result.second()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+fn similarity_result_to_dataframe(
+    first: VertexIds<'_>,
+    second: VertexIds<'_>,
+    scores: ScoreValues<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    dataframe_from_named_series(
+        [
+            ("first", first.to_series(runtime)?),
+            ("second", second.to_series(runtime)?),
+            ("similarity", scores.to_series(runtime)?),
+        ],
+        operation,
+    )
+}
+
+pub(crate) fn jaccard_similarity_result_to_dataframe(
+    result: &JaccardSimilarityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    similarity_result_to_dataframe(
+        result.first()?,
+        result.second()?,
+        result.scores()?,
+        runtime,
+        "jaccard_similarity_result_to_dataframe",
+    )
+}
+
+pub(crate) fn sorensen_similarity_result_to_dataframe(
+    result: &SorensenSimilarityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    similarity_result_to_dataframe(
+        result.first()?,
+        result.second()?,
+        result.scores()?,
+        runtime,
+        "sorensen_similarity_result_to_dataframe",
+    )
+}
+
+pub(crate) fn overlap_similarity_result_to_dataframe(
+    result: &OverlapSimilarityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    similarity_result_to_dataframe(
+        result.first()?,
+        result.second()?,
+        result.scores()?,
+        runtime,
+        "overlap_similarity_result_to_dataframe",
+    )
+}
+
+pub(crate) fn cosine_similarity_result_to_dataframe(
+    result: &CosineSimilarityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    similarity_result_to_dataframe(
+        result.first()?,
+        result.second()?,
+        result.scores()?,
+        runtime,
+        "cosine_similarity_result_to_dataframe",
     )
 }
 

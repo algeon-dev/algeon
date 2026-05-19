@@ -8,7 +8,8 @@ use common::{
     support,
     support::{
         BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_SOURCE_VERTEX_I32, DIRECTED_STAR_DST_I32, DIRECTED_STAR_SRC_I32,
-        LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32,
+        LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SIMILARITY_JACCARD_F32,
+        SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32,
         SSSP_GRAPH_WEIGHT_F32, TEST_LAYOUT_PRIMARY_SEED, TEST_LAYOUT_SETTLE_ITERATIONS,
     },
 };
@@ -19,6 +20,7 @@ use cugraph::{
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     labeling::ConnectedComponentsParams,
+    similarity::SimilarityParams,
     structure::{CoreNumberParams, KCoreDegreeType, KCoreParams},
     traversal::{BfsParams, SsspParams},
     tree::MinimumSpanningTreeParams,
@@ -237,6 +239,46 @@ fn betweenness_result_to_dataframe() {
     assert_eq!(vertices.len(), 4);
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|value| value.is_finite() && *value >= 0.0));
+}
+
+#[test]
+fn similarity_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("similarity_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let pairs =
+        graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
+    let result = graph.jaccard_coefficients(&handle, pairs, &SimilarityParams::default()).expect("jaccard");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 3);
+    assert_eq!(df.column_names()[0], "first");
+    assert_eq!(df.column_names()[1], "second");
+    assert_eq!(df.column_names()[2], "similarity");
+    assert_eq!(df.num_rows(), SIMILARITY_JACCARD_F32.len());
+
+    let first: Vec<i32> = df.series("first").expect("first column").to_vec_strict().expect("first to_vec");
+    let second: Vec<i32> = df.series("second").expect("second column").to_vec_strict().expect("second to_vec");
+    let scores: Vec<f32> =
+        df.series("similarity").expect("similarity column").to_vec_strict().expect("similarity to_vec");
+
+    assert_eq!(first, SIMILARITY_PAIR_FIRST_I32);
+    assert_eq!(second, SIMILARITY_PAIR_SECOND_I32);
+    for (index, (&actual, &expected)) in scores.iter().zip(SIMILARITY_JACCARD_F32).enumerate() {
+        assert!((actual - expected).abs() < 1.0e-4, "similarity[{index}] expected {expected}, got {actual}");
+    }
 }
 
 #[test]

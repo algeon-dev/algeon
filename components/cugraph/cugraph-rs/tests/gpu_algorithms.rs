@@ -5,23 +5,27 @@ use std::{collections::HashMap, num::NonZeroUsize};
 use common::{
     cudf::explicit_runtime,
     support::{
-        DEGREE_QUERY_I64, DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
+        ALL_PAIRS_JACCARD_F32, ALL_PAIRS_JACCARD_FIRST_I32, ALL_PAIRS_JACCARD_SECOND_I32, DEGREE_QUERY_I64,
+        DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
         DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, FOUR_VERTEX_CHAIN_DST_I32,
         FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, LOUVAIN_GRAPH_DST_I32,
-        LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32, SSSP_GRAPH_WEIGHT_F32,
-        SSSP_GRAPH_WEIGHT_F64, TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64,
-        UNDIRECTED_TRIANGLE_DST_I32, UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I32,
-        UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
+        LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SIMILARITY_COSINE_F32, SIMILARITY_JACCARD_F32,
+        SIMILARITY_OVERLAP_F32, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32, SIMILARITY_SORENSEN_F32,
+        SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32, SSSP_GRAPH_WEIGHT_F32, SSSP_GRAPH_WEIGHT_F64,
+        TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I32,
+        UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I32, UNDIRECTED_TRIANGLE_SRC_I64,
+        UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
     },
 };
 use cugraph::{
-    DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
+    DeviceArray, Forward, Graph, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{BetweennessCentralityParams, PageRankParams},
     community::{ExtractEgoParams, KTrussSubgraphParams, LouvainParams, TriangleCountParams},
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64},
     random::RngState,
+    similarity::{AllPairsSimilarityParams, SimilarityParams},
     structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, KCoreParams, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
     tree::MinimumSpanningTreeParams,
@@ -31,6 +35,25 @@ use cugraph::{
 fn test_handle() -> ResourceHandle {
     let runtime = std::sync::Arc::new(explicit_runtime());
     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
+}
+
+fn assert_f32_close(actual: &[f32], expected: &[f32]) {
+    assert_eq!(actual.len(), expected.len(), "score length mismatch");
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        assert!((actual - expected).abs() < 1.0e-4, "score[{index}] expected {expected}, got {actual}");
+    }
+}
+
+fn similarity_fixture_graph(handle: &cugraph::EnteredContext<'_>) -> Graph<Forward> {
+    let src = DeviceArray::from_slice(handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(handle)
+        .expect("graph")
 }
 
 #[test]
@@ -166,6 +189,84 @@ fn out_degrees_checked_accepts_all_vertices() {
     for v in [1_i64, 2, 3] {
         assert_eq!(degree_map[&v], 1, "leaf vertex {v} should have out-degree 1");
     }
+}
+
+#[test]
+fn pairwise_similarity_coefficients_match_reference_values() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("pairwise_similarity_coefficients_match_reference_values").expect("entered");
+    let mut graph = similarity_fixture_graph(&entered);
+    let params = SimilarityParams::default();
+
+    macro_rules! assert_pairwise {
+        ($method:ident, $expected:expr) => {{
+            let pairs = graph
+                .vertex_pairs(&entered, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32)
+                .expect("vertex_pairs");
+            let result = graph.$method(&entered, pairs, &params).expect(stringify!($method));
+            assert_eq!(
+                result.first().expect("first").to_vec_i32(&entered).expect("first copy"),
+                SIMILARITY_PAIR_FIRST_I32
+            );
+            assert_eq!(
+                result.second().expect("second").to_vec_i32(&entered).expect("second copy"),
+                SIMILARITY_PAIR_SECOND_I32
+            );
+            let scores = result.scores().expect("scores").to_vec_f32(&entered).expect("score copy");
+            assert_f32_close(&scores, $expected);
+        }};
+    }
+
+    assert_pairwise!(jaccard_coefficients, SIMILARITY_JACCARD_F32);
+    assert_pairwise!(sorensen_coefficients, SIMILARITY_SORENSEN_F32);
+    assert_pairwise!(overlap_coefficients, SIMILARITY_OVERLAP_F32);
+    assert_pairwise!(cosine_similarity_coefficients, SIMILARITY_COSINE_F32);
+}
+
+#[test]
+fn all_pairs_jaccard_returns_generated_vertex_pairs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("all_pairs_jaccard_returns_generated_vertex_pairs").expect("entered");
+    let mut graph = similarity_fixture_graph(&entered);
+
+    let result = graph
+        .all_pairs_jaccard_coefficients(&entered, VertexSelection::<i32>::All, &AllPairsSimilarityParams::default())
+        .expect("all_pairs_jaccard");
+
+    let first = result.first().expect("first").to_vec_i32(&entered).expect("first copy");
+    let second = result.second().expect("second").to_vec_i32(&entered).expect("second copy");
+    let scores = result.scores().expect("scores").to_vec_f32(&entered).expect("score copy");
+    assert_eq!(first.len(), ALL_PAIRS_JACCARD_F32.len());
+    assert_eq!(second.len(), ALL_PAIRS_JACCARD_F32.len());
+    assert_eq!(scores.len(), ALL_PAIRS_JACCARD_F32.len());
+
+    let score_map: HashMap<(i32, i32), f32> =
+        first.into_iter().zip(second).zip(scores).map(|((a, b), s)| ((a, b), s)).collect();
+    for ((&first, &second), &expected) in
+        ALL_PAIRS_JACCARD_FIRST_I32.iter().zip(ALL_PAIRS_JACCARD_SECOND_I32).zip(ALL_PAIRS_JACCARD_F32)
+    {
+        let actual = score_map
+            .get(&(first, second))
+            .copied()
+            .unwrap_or_else(|| panic!("missing all-pairs score for ({first}, {second})"));
+        assert_f32_close(&[actual], &[expected]);
+    }
+}
+
+#[test]
+fn vertex_pairs_rejects_mismatched_pair_lengths() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("vertex_pairs_rejects_mismatched_pair_lengths").expect("entered");
+    let mut graph = similarity_fixture_graph(&entered);
+
+    let err = graph
+        .vertex_pairs(&entered, &[0i32, 1][..], &[1i32][..])
+        .expect_err("mismatched pair lengths should be rejected");
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "Graph::vertex_pairs");
 }
 
 #[test]

@@ -9,6 +9,7 @@ use cugraph::{
     community::LouvainParams,
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
+    similarity::{AllPairsSimilarityParams, SimilarityParams},
 };
 
 #[test]
@@ -44,6 +45,18 @@ fn louvain_params_default_has_expected_values() {
     assert_eq!(params.threshold.get(), 1e-7);
     assert_eq!(params.resolution.get(), 1.0);
     assert!(!params.do_expensive_check);
+}
+
+#[test]
+fn similarity_params_default_has_expected_values() {
+    let params = SimilarityParams::default();
+    assert!(!params.use_weight);
+    assert!(!params.do_expensive_check);
+
+    let all_pairs = AllPairsSimilarityParams::default();
+    assert!(!all_pairs.use_weight);
+    assert_eq!(all_pairs.topk, None);
+    assert!(!all_pairs.do_expensive_check);
 }
 
 #[test]

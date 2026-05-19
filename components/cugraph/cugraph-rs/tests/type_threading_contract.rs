@@ -5,6 +5,9 @@ use cugraph::{
     graph::{Forward, Graph, Transposed},
     layout::LayoutResult,
     random::RngState,
+    similarity::{
+        CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult, SorensenSimilarityResult, VertexPairs,
+    },
     traversal::{BfsResult, ExtractPathsResult, SsspResult},
 };
 use static_assertions::assert_not_impl_any;
@@ -24,5 +27,10 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(SsspResult: Send, Sync);
     assert_not_impl_any!(ExtractPathsResult: Send, Sync);
     assert_not_impl_any!(LayoutResult: Send, Sync);
+    assert_not_impl_any!(VertexPairs: Send, Sync);
+    assert_not_impl_any!(JaccardSimilarityResult: Send, Sync);
+    assert_not_impl_any!(SorensenSimilarityResult: Send, Sync);
+    assert_not_impl_any!(OverlapSimilarityResult: Send, Sync);
+    assert_not_impl_any!(CosineSimilarityResult: Send, Sync);
     assert_not_impl_any!(RngState: Send, Sync);
 }
