@@ -10,18 +10,19 @@ use common::{
         FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, LOUVAIN_GRAPH_DST_I32,
         LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32, SSSP_GRAPH_WEIGHT_F32,
         SSSP_GRAPH_WEIGHT_F64, TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64,
-        UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64,
-        bfs_distance_map_i64_result,
+        UNDIRECTED_TRIANGLE_DST_I32, UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I32,
+        UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
     },
 };
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::LouvainParams,
+    community::{LouvainParams, TriangleCountParams},
+    labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64},
     random::RngState,
-    structure::{Distances, ScoreValues, VertexIds},
+    structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
     types::GraphProperties,
 };
@@ -471,6 +472,129 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
     assert_eq!(vertex_ids.len(), clusters.len());
     assert!(!vertex_ids.is_empty());
     assert!(result.modularity().is_finite());
+}
+
+#[test]
+fn weakly_connected_components_labels_two_symmetric_components() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("weakly_connected_components_labels_two_symmetric_components").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let result = graph.weakly_connected_components(&entered, &ConnectedComponentsParams::default()).expect("wcc");
+
+    let vertex_ids = result.vertex_ids().expect("vertex_ids");
+    assert!(matches!(vertex_ids, VertexIds::I32(_)));
+    let labels = result.labels().expect("labels");
+    assert!(matches!(labels, IntegerValues::I32(_)));
+
+    let vertices = vertex_ids.to_vec_i32(&entered).expect("vertices");
+    let labels = labels.to_vec_i32(&entered).expect("labels");
+    let label_map: HashMap<i32, i32> = vertices.into_iter().zip(labels).collect();
+
+    assert_eq!(label_map[&0], label_map[&1]);
+    assert_eq!(label_map[&2], label_map[&3]);
+    assert_ne!(label_map[&0], label_map[&2]);
+}
+
+#[test]
+fn strongly_connected_components_labels_directed_components() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("strongly_connected_components_labels_directed_components").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 0, 2, 3, 2]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+
+    let result = graph.strongly_connected_components(&entered, &ConnectedComponentsParams::default()).expect("scc");
+
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let labels = result.labels().expect("labels").to_vec_i32(&entered).expect("labels");
+    let label_map: HashMap<i32, i32> = vertices.into_iter().zip(labels).collect();
+
+    assert_eq!(label_map[&0], label_map[&1]);
+    assert_eq!(label_map[&2], label_map[&3]);
+    assert_ne!(label_map[&0], label_map[&2]);
+}
+
+#[test]
+fn core_number_on_triangle_tail_returns_stable_core_values() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("core_number_on_triangle_tail_returns_stable_core_values").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 1, 2, 0, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0, 0, 1, 2, 3, 2]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let params = CoreNumberParams { degree_type: KCoreDegreeType::Out, do_expensive_check: false };
+    let result = graph.core_number(&entered, &params).expect("core_number");
+
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let core_numbers = result.core_numbers().expect("core_numbers").to_vec_i32(&entered).expect("core numbers");
+    let core_map: HashMap<i32, i32> = vertices.into_iter().zip(core_numbers).collect();
+
+    assert_eq!(core_map[&0], 2);
+    assert_eq!(core_map[&1], 2);
+    assert_eq!(core_map[&2], 2);
+    assert_eq!(core_map[&3], 1);
+}
+
+#[test]
+fn triangle_count_all_and_start_vertices_return_expected_counts() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("triangle_count_all_and_start_vertices_return_expected_counts").expect("entered");
+    let src = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let params = TriangleCountParams::default();
+    let all = graph.triangle_count_all(&entered, &params).expect("triangle_count all");
+    let all_vertices = all.vertex_ids().expect("vertices").to_vec_i32(&entered).expect("vertices");
+    let all_counts = all.counts().expect("counts").to_vec_i32(&entered).expect("counts");
+    let all_map: HashMap<i32, i32> = all_vertices.into_iter().zip(all_counts).collect();
+
+    assert_eq!(all_map.len(), 3);
+    assert_eq!(all_map[&0], 1);
+    assert_eq!(all_map[&1], 1);
+    assert_eq!(all_map[&2], 1);
+
+    let start = DeviceArray::from_slice(&entered, &[0i32, 2]).expect("start");
+    let start_view = start.view().expect("start_view");
+    let subset = graph.triangle_count(&entered, &start_view, &params).expect("triangle_count subset");
+    let subset_vertices = subset.vertex_ids().expect("vertices").to_vec_i32(&entered).expect("vertices");
+    let subset_counts = subset.counts().expect("counts").to_vec_i32(&entered).expect("counts");
+    let subset_map: HashMap<i32, i32> = subset_vertices.into_iter().zip(subset_counts).collect();
+
+    assert_eq!(subset_map.len(), 2);
+    assert_eq!(subset_map[&0], 1);
+    assert_eq!(subset_map[&2], 1);
 }
 
 #[test]

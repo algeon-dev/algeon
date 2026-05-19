@@ -1255,6 +1255,40 @@ impl<T: Transposition> Graph<T> {
         self.betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
     }
 
+    /// Compute weakly connected components.
+    ///
+    /// cuGraph requires the input graph to be symmetric for this algorithm.
+    /// This wrapper does not add a Rust-side graph-property hard failure; use
+    /// `do_expensive_check` in [`ConnectedComponentsParams`] to request native
+    /// validation.
+    ///
+    /// [`ConnectedComponentsParams`]: crate::labeling::ConnectedComponentsParams
+    pub fn weakly_connected_components(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::labeling::ConnectedComponentsParams,
+    ) -> Result<crate::labeling::WeaklyConnectedComponentsResult> {
+        crate::labeling::connected_components::weakly_connected_components(handle, self, params)
+    }
+
+    /// Compute strongly connected components.
+    pub fn strongly_connected_components(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::labeling::ConnectedComponentsParams,
+    ) -> Result<crate::labeling::StronglyConnectedComponentsResult> {
+        crate::labeling::connected_components::strongly_connected_components(handle, self, params)
+    }
+
+    /// Compute core numbers for all vertices.
+    pub fn core_number(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::structure::CoreNumberParams,
+    ) -> Result<crate::structure::CoreNumberResult> {
+        crate::structure::core::core_number(handle, self, params)
+    }
+
     /// Compute a Force Atlas 2 layout for this graph.
     ///
     /// Returns a [`LayoutResult`](crate::layout::LayoutResult) containing
@@ -1352,6 +1386,38 @@ impl<T: Transposition> Graph<T> {
     /// Compute out-degrees for every vertex in the graph.
     pub fn out_degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<crate::structure::OutDegreesResult> {
         self.out_degrees(handle, crate::structure::VertexSelection::<i32>::All)
+    }
+
+    /// Compute triangle counts for all vertices or an explicit start-vertex list.
+    ///
+    /// Pass [`VertexSelection::All`] to count triangles for every vertex,
+    /// [`VertexSelection::Device`] with a device view, or
+    /// [`VertexSelection::Host`] with a host slice uploaded on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnsupportedType`] if `start_vertices` uses a
+    /// vertex dtype that does not match the graph.
+    pub fn triangle_count<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        start_vertices: impl Into<VertexSelection<'a, V>>,
+        params: &crate::community::TriangleCountParams,
+    ) -> Result<crate::community::TriangleCountResult> {
+        let start_vertices = start_vertices.into();
+        self.validate_vertex_selection(&start_vertices, "Graph::triangle_count", "start_vertices", true)?;
+        let resolved = start_vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::community::triangle_count::triangle_count(handle, self, view.as_ref(), params)
+    }
+
+    /// Compute triangle counts for every vertex in the graph.
+    pub fn triangle_count_all(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::community::TriangleCountParams,
+    ) -> Result<crate::community::TriangleCountResult> {
+        self.triangle_count(handle, crate::structure::VertexSelection::<i32>::All, params)
     }
 }
 
