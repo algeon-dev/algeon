@@ -41,13 +41,13 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     };
     assert_eq!(edge_normalize.input.index(), 0);
     assert!(!edge_normalize.spec.add_reverse);
-    assert_eq!(edge_normalize.spec.dedup.as_str(), "keep_first");
-    assert_eq!(edge_normalize.spec.weight_combiner.as_str(), "min_weight");
+    assert_eq!(edge_normalize.spec.dedup.as_str(), "keep_last");
+    assert_eq!(edge_normalize.spec.weight_combiner.as_str(), "keep_last_input_order");
 
     let display = plan.to_string();
     assert!(display.contains("EdgeNormalize"));
-    assert!(display.contains("dedup=keep_first"));
-    assert!(display.contains("weight_combiner=min_weight"));
+    assert!(display.contains("dedup=keep_last"));
+    assert!(display.contains("weight_combiner=keep_last_input_order"));
     assert!(display.contains("GraphAlgorithm"));
     assert!(display.contains("algorithm=pagerank"));
     assert!(display.contains("src_col=src"));
@@ -57,6 +57,34 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(display.contains("renumber=true"));
     assert!(display.contains("construction_policy=raw_libcugraph"));
     assert!(display.contains("output_schema_fields=2"));
+}
+
+#[test]
+fn undirected_weighted_python_graph_construction_uses_min_weight_normalization() {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    )));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Louvain,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: false, ..Default::default() },
+        GraphAlgorithmParams::Louvain(Default::default()),
+    );
+    let graph = builder.add_graph_algorithm(input, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
+        panic!("expected edge normalize input");
+    };
+    assert!(edge_normalize.spec.add_reverse);
+    assert_eq!(edge_normalize.spec.dedup.as_str(), "keep_first");
+    assert_eq!(edge_normalize.spec.weight_combiner.as_str(), "min_weight");
 }
 
 #[test]

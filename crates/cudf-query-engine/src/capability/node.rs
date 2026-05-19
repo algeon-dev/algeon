@@ -555,12 +555,14 @@ fn edge_normalize_node_executable_decision(
         }
     }
 
-    if edge_normalize.spec.weight_combiner == crate::plan::EdgeWeightCombiner::MinWeight
-        && edge_normalize.spec.edge_columns.weight.is_none()
+    if matches!(
+        edge_normalize.spec.weight_combiner,
+        crate::plan::EdgeWeightCombiner::MinWeight | crate::plan::EdgeWeightCombiner::KeepLastInputOrder
+    ) && edge_normalize.spec.edge_columns.weight.is_none()
     {
         return CapabilityDecision::rejected(
             "unsupported_edge_normalize_node_capability",
-            [("node_id", node_id.to_string()), ("reason", "min_weight_without_weight_column".to_string())],
+            [("node_id", node_id.to_string()), ("reason", "weight_combiner_without_weight_column".to_string())],
         );
     }
 

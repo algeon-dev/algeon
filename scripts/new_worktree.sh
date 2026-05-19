@@ -14,6 +14,7 @@
 #   - worktree at ../datafusion-cudf-wt-<name>
 #   - new branch wt/<name> tracking the base ref
 #   - isolated CARGO_TARGET_DIR under ~/code/cargo-target/datafusion-cudf-wt-<name>
+#   - .venv symlink to the shared primary-checkout Python environment
 #   - .envrc.sh inside the worktree that exports the right env vars
 
 set -euo pipefail
@@ -38,6 +39,7 @@ parent_dir="$(dirname "$repo_root")"
 worktree_path="$parent_dir/datafusion-cudf-wt-$name"
 branch="wt/$name"
 target_dir="$HOME/code/cargo-target/datafusion-cudf-wt-$name"
+shared_venv="$parent_dir/datafusion-cudf/.venv"
 
 if [[ -e "$worktree_path" ]]; then
     echo "error: $worktree_path already exists" >&2
@@ -48,6 +50,11 @@ echo "==> Creating worktree at $worktree_path (branch $branch from $base_ref)"
 git -C "$repo_root" worktree add -b "$branch" "$worktree_path" "$base_ref"
 
 mkdir -p "$target_dir"
+if [[ -d "$shared_venv" ]]; then
+    ln -s "$shared_venv" "$worktree_path/.venv"
+else
+    echo "warning: shared Python venv $shared_venv does not exist; skipping worktree .venv symlink" >&2
+fi
 
 envrc="$worktree_path/.envrc.sh"
 cat >"$envrc" <<EOF
@@ -56,10 +63,16 @@ cat >"$envrc" <<EOF
 #
 # Provides:
 #   - isolated CARGO_TARGET_DIR so parallel worktrees don't fight over target/
+#   - PATH pointing at the shared Python .venv when present
 #   - LD_LIBRARY_PATH pointing at the shared cudf-rs install + this worktree's
 #     own cudf-sys build output (in case cudf-sys is rebuilt here).
 CARGO_TARGET_DIR="$target_dir"
 export CARGO_TARGET_DIR
+
+if [[ -d "$worktree_path/.venv/bin" && ":\${PATH:-}:" != *":$worktree_path/.venv/bin:"* ]]; then
+    PATH="$worktree_path/.venv/bin\${PATH:+:\$PATH}"
+    export PATH
+fi
 
 # Shared libcudf install (from the primary cudf-rs checkout). Every worktree
 # links against the same libcudf.so unless you explicitly override cudf-rs via
@@ -89,6 +102,7 @@ cat <<EOF
 Worktree:        $worktree_path
 Branch:          $branch  (forked from $base_ref)
 CARGO_TARGET_DIR: $target_dir
+Python venv:      $worktree_path/.venv -> $shared_venv
 
 Next steps:
   cd $worktree_path

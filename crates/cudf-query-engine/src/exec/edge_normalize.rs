@@ -47,7 +47,11 @@ pub(super) fn execute_edge_normalize(
             .drop_duplicates(
                 DropDuplicatesOptions::builder()
                     .subset(&[node.spec.edge_columns.source.as_str(), node.spec.edge_columns.destination.as_str()][..])
-                    .keep(DuplicateKeepOption::KeepFirst)
+                    .keep(match node.spec.dedup {
+                        EdgeDedupStrategy::None => DuplicateKeepOption::KeepAny,
+                        EdgeDedupStrategy::KeepFirst => DuplicateKeepOption::KeepFirst,
+                        EdgeDedupStrategy::KeepLast => DuplicateKeepOption::KeepLast,
+                    })
                     .build(),
             )
             .map_err(|error| {

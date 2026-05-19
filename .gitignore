@@ -29,3 +29,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Shared local Python environment for RAPIDS/cuGraph oracle tests.
+.venv
+.venv/

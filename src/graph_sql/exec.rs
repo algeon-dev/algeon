@@ -19,12 +19,16 @@ use cudf_query_engine::{
 use datafusion::{
     common::{DataFusionError, Result},
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_expr::{EquivalenceProperties, Partitioning, expressions::Column},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, collect,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        aggregates::AggregateExec,
+        collect,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
+        projection::ProjectionExec,
         stream::RecordBatchStreamAdapter,
+        union::UnionExec,
     },
 };
 use futures::{TryStreamExt, future::BoxFuture};
@@ -48,6 +52,7 @@ pub struct CugraphAlgoExec {
     edge_source: Arc<dyn ExecutionPlan>,
     projection: Option<Vec<usize>>,
     limit: Option<usize>,
+    edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     gpu_result_input_name: String,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
@@ -78,11 +83,13 @@ impl CugraphAlgoExec {
         gpu_result_input_name: String,
     ) -> Result<Self> {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
+        let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         Ok(Self {
             spec,
             edge_source,
             projection,
             limit,
+            edge_source_canonical_facts,
             gpu_result_input_name,
             metrics: ExecutionPlanMetricsSet::new(),
             cache: Arc::new(PlanProperties::new(
@@ -96,6 +103,7 @@ impl CugraphAlgoExec {
 
     pub(crate) fn edge_normalize_inserted(&self) -> bool {
         self.spec.graph_options.construction_policy == CugraphGraphConstructionPolicy::PythonCugraph
+            && !self.edge_source_canonical_facts.satisfies_python_options(&self.spec)
     }
 
     async fn execute_gpu_result_with_context_impl(
@@ -228,6 +236,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         let edge_source = Arc::clone(&self.edge_source);
         let projection = self.projection.clone();
         let limit = self.limit;
+        let edge_normalize_inserted = self.edge_normalize_inserted();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
             let execution_config = edge_execution_config(edge_source.as_ref());
@@ -240,8 +249,15 @@ impl ExecutionPlan for CugraphAlgoExec {
             })?;
             let edge_schema = edge_source.schema();
             let edge_frame = execute_edge_source_to_gpu(&context, Arc::clone(&edge_source), task_context).await?;
-            let (batch, query_metrics) =
-                execute_cugraph_query_to_host(&context, &spec, edge_schema, edge_frame, projection.as_ref(), limit)?;
+            let (batch, query_metrics) = execute_cugraph_query_to_host(
+                &context,
+                &spec,
+                edge_schema,
+                edge_frame,
+                projection.as_ref(),
+                limit,
+                edge_normalize_inserted,
+            )?;
             metrics.record_query_metrics(&query_metrics);
             Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
         })
@@ -306,6 +322,160 @@ fn as_native_cudf_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfC
 
 fn cooperative_exec_children(plan: &dyn ExecutionPlan) -> Option<Vec<&Arc<dyn ExecutionPlan>>> {
     (plan.name() == "CooperativeExec").then(|| plan.children())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CugraphEdgeCanonicalFacts {
+    add_reverse_present: bool,
+    dedup_present: bool,
+}
+
+impl CugraphEdgeCanonicalFacts {
+    fn satisfies_python_options(self, spec: &CugraphAlgorithmSpec) -> bool {
+        self.dedup_present && spec.weight_col.is_none() && (spec.graph_options.directed || self.add_reverse_present)
+    }
+}
+
+fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+        let mut facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
+        facts |= aggregate_edge_dedup_facts(aggregate, spec);
+        return facts;
+    }
+
+    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        return cugraph_edge_canonical_facts(projection.input().as_ref(), spec);
+    }
+
+    if let Some(union) = plan.as_any().downcast_ref::<UnionExec>()
+        && union_has_reverse_edge_expansion(union, spec)
+    {
+        return CugraphEdgeCanonicalFacts { add_reverse_present: true, ..Default::default() };
+    }
+
+    if preserves_edge_list_canonical_facts(plan) {
+        let children = plan.children();
+        if let [child] = children.as_slice() {
+            return cugraph_edge_canonical_facts(child.as_ref(), spec);
+        }
+    }
+
+    CugraphEdgeCanonicalFacts::default()
+}
+
+impl std::ops::BitOrAssign for CugraphEdgeCanonicalFacts {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.add_reverse_present |= rhs.add_reverse_present;
+        self.dedup_present |= rhs.dedup_present;
+    }
+}
+
+fn preserves_edge_list_canonical_facts(plan: &dyn ExecutionPlan) -> bool {
+    matches!(plan.name(), "CoalesceBatchesExec" | "CoalescePartitionsExec" | "RepartitionExec" | "SortExec")
+}
+
+fn aggregate_edge_dedup_facts(aggregate: &AggregateExec, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
+    let group_exprs = aggregate.group_expr().expr();
+    let groups_source = group_exprs.iter().any(|(expr, alias)| {
+        physical_column_name(expr.as_ref()).is_some_and(|name| same_edge_column(name, &spec.src_col))
+            || same_edge_column(alias, &spec.src_col)
+    });
+    let groups_destination = group_exprs.iter().any(|(expr, alias)| {
+        physical_column_name(expr.as_ref()).is_some_and(|name| same_edge_column(name, &spec.dst_col))
+            || same_edge_column(alias, &spec.dst_col)
+    });
+    if !(groups_source && groups_destination) {
+        return CugraphEdgeCanonicalFacts::default();
+    }
+
+    CugraphEdgeCanonicalFacts { dedup_present: true, add_reverse_present: false }
+}
+
+fn union_has_reverse_edge_expansion(union: &UnionExec, spec: &CugraphAlgorithmSpec) -> bool {
+    let mut has_forward = false;
+    let mut has_reverse = false;
+    for input in union.inputs() {
+        match edge_projection_orientation(input.as_ref(), spec) {
+            Some(EdgeProjectionOrientation::Forward) => has_forward = true,
+            Some(EdgeProjectionOrientation::Reverse) => has_reverse = true,
+            None => {},
+        }
+    }
+    has_forward && has_reverse
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeProjectionOrientation {
+    Forward,
+    Reverse,
+}
+
+fn edge_projection_orientation(
+    plan: &dyn ExecutionPlan,
+    spec: &CugraphAlgorithmSpec,
+) -> Option<EdgeProjectionOrientation> {
+    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        return projection_edge_orientation(projection, spec);
+    }
+
+    let children = plan.children();
+    if let [child] = children.as_slice()
+        && let Some(orientation) = edge_projection_orientation(child.as_ref(), spec)
+    {
+        return Some(orientation);
+    }
+
+    let schema = plan.schema();
+    if schema.index_of(&spec.src_col).is_ok() && schema.index_of(&spec.dst_col).is_ok() {
+        Some(EdgeProjectionOrientation::Forward)
+    } else {
+        None
+    }
+}
+
+fn projection_edge_orientation(
+    projection: &ProjectionExec,
+    spec: &CugraphAlgorithmSpec,
+) -> Option<EdgeProjectionOrientation> {
+    let schema = projection.schema();
+    let source_index = schema.index_of(&spec.src_col).ok()?;
+    let destination_index = schema.index_of(&spec.dst_col).ok()?;
+    let source_input = projection.expr().get(source_index).and_then(|expr| physical_column_name(expr.expr.as_ref()))?;
+    let destination_input =
+        projection.expr().get(destination_index).and_then(|expr| physical_column_name(expr.expr.as_ref()))?;
+    if !projection_preserves_weight(projection, spec) {
+        return None;
+    }
+
+    if same_edge_column(source_input, &spec.src_col) && same_edge_column(destination_input, &spec.dst_col) {
+        Some(EdgeProjectionOrientation::Forward)
+    } else if same_edge_column(source_input, &spec.dst_col) && same_edge_column(destination_input, &spec.src_col) {
+        Some(EdgeProjectionOrientation::Reverse)
+    } else {
+        None
+    }
+}
+
+fn projection_preserves_weight(projection: &ProjectionExec, spec: &CugraphAlgorithmSpec) -> bool {
+    let Some(weight_col) = spec.weight_col.as_deref() else {
+        return true;
+    };
+    let Ok(weight_index) = projection.schema().index_of(weight_col) else {
+        return false;
+    };
+    projection
+        .expr()
+        .get(weight_index)
+        .and_then(|expr| physical_column_name(expr.expr.as_ref()))
+        .is_some_and(|name| same_edge_column(name, weight_col))
+}
+
+fn physical_column_name(expr: &dyn datafusion::physical_expr::PhysicalExpr) -> Option<&str> {
+    expr.as_any().downcast_ref::<Column>().map(Column::name)
+}
+
+fn same_edge_column(actual: &str, expected: &str) -> bool {
+    actual.eq_ignore_ascii_case(expected)
 }
 
 async fn execute_edge_source_to_gpu(
@@ -434,9 +604,18 @@ fn execute_cugraph_query_to_host(
     edge_frame: GpuDataFrame,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
+    edge_normalize_inserted: bool,
 ) -> Result<(RecordBatch, QueryMetrics)> {
-    let plan =
-        cugraph_query_plan(context, spec, edge_schema, edge_frame, projection, limit, CugraphQuerySink::HostArrow)?;
+    let plan = cugraph_query_plan(
+        context,
+        spec,
+        edge_schema,
+        edge_frame,
+        projection,
+        limit,
+        CugraphQuerySink::HostArrow,
+        edge_normalize_inserted,
+    )?;
     let result = execute_query_plan_with_gpu_inputs(context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_cudf.cugraph_sql.execute",
@@ -471,6 +650,7 @@ fn execute_cugraph_query_to_gpu(
         exec.projection.as_ref(),
         exec.limit,
         CugraphQuerySink::GpuResident,
+        exec.edge_normalize_inserted(),
     )?;
     let result = execute_query_plan_with_gpu_inputs(context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
@@ -511,6 +691,7 @@ fn cugraph_query_plan(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     sink: CugraphQuerySink,
+    edge_normalize_inserted: bool,
 ) -> Result<CugraphQueryPlan> {
     let input_name = "__datafusion_cudf_cugraph_edges";
     let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&edge_schema)).map_err(|error| {
@@ -525,7 +706,7 @@ fn cugraph_query_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, edge_schema)));
-    let mut root = builder.add_graph_algorithm(input, native_graph_spec(spec));
+    let mut root = builder.add_graph_algorithm(input, native_graph_spec(spec, edge_normalize_inserted));
     let mut root_schema = Arc::clone(&spec.output_schema);
     if let Some(projection) = projection {
         root_schema = projected_schema(&root_schema, Some(projection))?;
@@ -551,16 +732,21 @@ fn cugraph_query_plan(
     Ok(CugraphQueryPlan { plan, inputs })
 }
 
-fn native_graph_spec(spec: &CugraphAlgorithmSpec) -> GraphAlgorithmSpec {
+fn native_graph_spec(spec: &CugraphAlgorithmSpec, edge_normalize_inserted: bool) -> GraphAlgorithmSpec {
     GraphAlgorithmSpec::new(
         native_algorithm(spec.algorithm),
         GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone()),
         GraphConstructionOptions {
             directed: spec.graph_options.directed,
             renumber: spec.graph_options.renumber,
-            policy: match spec.graph_options.construction_policy {
-                CugraphGraphConstructionPolicy::PythonCugraph => GraphConstructionPolicy::PythonCugraph,
-                CugraphGraphConstructionPolicy::RawLibcugraph => GraphConstructionPolicy::RawLibcugraph,
+            policy: if edge_normalize_inserted {
+                GraphConstructionPolicy::PythonCugraph
+            } else {
+                match spec.graph_options.construction_policy {
+                    CugraphGraphConstructionPolicy::PythonCugraph | CugraphGraphConstructionPolicy::RawLibcugraph => {
+                        GraphConstructionPolicy::RawLibcugraph
+                    },
+                }
             },
         },
         native_algorithm_params(&spec.params),
