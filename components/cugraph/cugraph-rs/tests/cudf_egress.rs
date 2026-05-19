@@ -8,8 +8,8 @@ use common::{
     support,
     support::{
         BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_SOURCE_VERTEX_I32, DIRECTED_STAR_DST_I32, DIRECTED_STAR_SRC_I32,
-        LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, TEST_LAYOUT_PRIMARY_SEED,
-        TEST_LAYOUT_SETTLE_ITERATIONS,
+        LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32,
+        SSSP_GRAPH_WEIGHT_F32, TEST_LAYOUT_PRIMARY_SEED, TEST_LAYOUT_SETTLE_ITERATIONS,
     },
 };
 use cugraph::{
@@ -18,7 +18,7 @@ use cugraph::{
     community::LouvainParams,
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
-    traversal::BfsParams,
+    traversal::{BfsParams, SsspParams},
     types::GraphProperties,
 };
 
@@ -113,6 +113,50 @@ fn bfs_result_to_dataframe_with_predecessors() {
     assert_eq!(predecessors, expected_predecessors);
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
     assert_eq!(dist_map[&0], 0, "source vertex should have distance 0");
+}
+
+#[test]
+fn sssp_result_to_dataframe_with_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("sssp_result_to_dataframe_with_predecessors").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, SSSP_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, SSSP_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.sssp(&handle, 0i32, &SsspParams::default().with_predecessors()).expect("sssp");
+    let expected_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    let expected_distances = result.distances().expect("distances").to_vec_f32(&handle).expect("distance copy");
+    let expected_predecessors = result
+        .predecessors()
+        .expect("predecessors")
+        .expect("predecessors should exist")
+        .to_vec_i32(&handle)
+        .expect("predecessor copy");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 3, "should have 3 columns with predecessors");
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "distance");
+    assert_eq!(df.column_names()[2], "predecessor");
+
+    let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
+    let distances: Vec<f32> = df.series("distance").expect("distance column").to_vec_strict().expect("distance to_vec");
+    let predecessors: Vec<i32> =
+        df.series("predecessor").expect("predecessor column").to_vec_strict().expect("predecessor to_vec");
+    assert_eq!(vertices, expected_vertices);
+    assert_eq!(distances, expected_distances);
+    assert_eq!(predecessors, expected_predecessors);
 }
 
 #[test]

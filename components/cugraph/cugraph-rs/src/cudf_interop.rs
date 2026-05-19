@@ -107,7 +107,7 @@ use crate::{
         degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
         typed_results::{Distances, ScoreValues, VertexIds},
     },
-    traversal::bfs::BfsResult,
+    traversal::{bfs::BfsResult, sssp::SsspResult},
     types::{CugraphElement, DataType, GraphProperties},
 };
 
@@ -453,6 +453,23 @@ pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runt
 
 pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "bfs_result_to_dataframe";
+    let vertex_series = result.vertex_ids()?.to_series(runtime)?;
+    let distance_series = result.distances()?.to_series(runtime)?;
+
+    match result.predecessors()? {
+        Some(predecessors) => {
+            let predecessor_series = predecessors.to_series(runtime)?;
+            dataframe_from_named_series(
+                [("vertex", vertex_series), ("distance", distance_series), ("predecessor", predecessor_series)],
+                operation,
+            )
+        },
+        None => dataframe_from_named_series([("vertex", vertex_series), ("distance", distance_series)], operation),
+    }
+}
+
+pub(crate) fn sssp_result_to_dataframe(result: &SsspResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "sssp_result_to_dataframe";
     let vertex_series = result.vertex_ids()?.to_series(runtime)?;
     let distance_series = result.distances()?.to_series(runtime)?;
 

@@ -377,7 +377,12 @@ impl<T> Graph<T> {
         edgelist.edge_count(handle, self.properties, operation)
     }
 
-    fn validate_vertex_input_dtype(&self, dtype: DataType, op: &'static str, input_name: &'static str) -> Result<()> {
+    pub(crate) fn validate_vertex_input_dtype(
+        &self,
+        dtype: DataType,
+        op: &'static str,
+        input_name: &'static str,
+    ) -> Result<()> {
         if !dtype.is_supported_index_type() {
             return Err(Error::new(ErrorKind::UnsupportedType, op)
                 .with_message(format!("{input_name} must use Int32 or Int64 vertex ids, got {dtype}")));
@@ -393,7 +398,7 @@ impl<T> Graph<T> {
         Ok(())
     }
 
-    fn validate_vertex_selection<V: CugraphElement>(
+    pub(crate) fn validate_vertex_selection<V: CugraphElement>(
         &self,
         vertices: &VertexSelection<'_, V>,
         op: &'static str,
@@ -414,7 +419,7 @@ impl<T> Graph<T> {
         Ok(())
     }
 
-    fn resolved_vertex_view<'a, V: CugraphElement>(
+    pub(crate) fn resolved_vertex_view<'a, V: CugraphElement>(
         &self,
         resolved: &'a ResolvedVertexSelection<'_, V>,
         op: &'static str,
@@ -1151,6 +1156,23 @@ impl Graph<Forward> {
         let resolved = sources.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::bfs", "sources")?;
         crate::traversal::bfs::bfs(handle, self, &view, params)
+    }
+
+    /// Perform single-source shortest path from one source vertex.
+    ///
+    /// Returns an [`SsspResult`](crate::traversal::SsspResult) containing
+    /// vertex ids, weighted distances, and optionally predecessors.
+    pub fn sssp<V>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        source: V,
+        params: &crate::traversal::SsspParams,
+    ) -> Result<crate::traversal::SsspResult>
+    where
+        V: CugraphElement + TryInto<usize> + Copy + std::fmt::Debug,
+    {
+        self.validate_vertex_input_dtype(V::data_type(), "Graph::sssp", "source")?;
+        crate::traversal::sssp::sssp(handle, self, source, params)
     }
 
     /// Compute Louvain communities on this forward-stored graph.
