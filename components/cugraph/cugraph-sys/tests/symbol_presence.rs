@@ -92,6 +92,16 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_clustering_result_get_vertices",
         "cugraph_clustering_result_get_clusters",
         "cugraph_clustering_result_free",
+        // Sampling
+        "cugraph_uniform_random_walks",
+        "cugraph_biased_random_walks",
+        "cugraph_node2vec_random_walks",
+        "cugraph_random_walk_result_get_max_path_length",
+        "cugraph_random_walk_result_get_paths",
+        "cugraph_random_walk_result_get_weights",
+        "cugraph_random_walk_result_get_path_sizes",
+        "cugraph_random_walk_result_free",
+        "cugraph_select_random_vertices",
         // Labeling
         "cugraph_weakly_connected_components",
         "cugraph_strongly_connected_components",

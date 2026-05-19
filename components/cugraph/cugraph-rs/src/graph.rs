@@ -51,7 +51,7 @@ use cugraph_sys::{
 use rapids_interop::CompletionWitness;
 
 use crate::{
-    array::{DeviceArrayView, RawDeviceArrayView},
+    array::{DeviceArray, DeviceArrayView, RawDeviceArrayView},
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     handle::EnteredContext,
@@ -117,6 +117,7 @@ pub struct Graph<T = Forward> {
     properties: GraphProperties,
     vertex_dtype: DataType,
     weight_dtype: DataType,
+    has_weights: bool,
     has_edge_ids: bool,
     pending_input_completion: Option<DeferredInputCompletion>,
     _nosend_nosync: PhantomData<*mut ()>,
@@ -308,6 +309,10 @@ impl<T> Graph<T> {
         self.has_edge_ids
     }
 
+    pub(crate) fn has_weights(&self) -> bool {
+        self.has_weights
+    }
+
     pub(crate) fn with_pending_input_completion(mut self, pending: DeferredInputCompletion) -> Self {
         self.pending_input_completion = Some(pending);
         self
@@ -348,6 +353,19 @@ impl<T> Graph<T> {
     /// This has the same counting semantics as [`edge_count`](Self::edge_count).
     pub fn edge_count_checked(&mut self, handle: &EnteredContext<'_>, do_expensive_check: bool) -> Result<usize> {
         self.edge_count_impl(handle, do_expensive_check, "Graph::edge_count_checked")
+    }
+
+    /// Select random vertices from this graph.
+    ///
+    /// The returned [`DeviceArray`] owns the sampled vertex ids on the handle
+    /// device. The requested vertex dtype must match this graph's vertex dtype.
+    pub fn select_random_vertices<V: CugraphElement>(
+        &self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        num_vertices: usize,
+    ) -> Result<DeviceArray<V>> {
+        crate::sampling::select_random_vertices(handle, self, rng_state, num_vertices)
     }
 
     pub(crate) fn as_ptr(&self) -> *mut cugraph_graph_t {
@@ -444,6 +462,7 @@ impl<T> std::fmt::Debug for Graph<T> {
             .field("properties", &self.properties)
             .field("vertex_dtype", &self.vertex_dtype)
             .field("weight_dtype", &self.weight_dtype)
+            .field("has_weights", &self.has_weights)
             .finish_non_exhaustive()
     }
 }
@@ -742,6 +761,7 @@ impl<'a> GraphBuilder<'a> {
             properties: self.properties,
             vertex_dtype,
             weight_dtype,
+            has_weights: self.weights.is_some(),
             has_edge_ids: self.edge_ids.is_some(),
             pending_input_completion: None,
             _nosend_nosync: PhantomData,
@@ -1301,6 +1321,39 @@ impl Graph<Forward> {
     {
         self.validate_vertex_input_dtype(V::data_type(), "Graph::sssp", "source")?;
         crate::traversal::sssp::sssp(handle, self, source, params)
+    }
+
+    /// Compute uniform random walks from explicit start vertices.
+    pub fn uniform_random_walks<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        start_vertices: &DeviceArrayView<'_, V>,
+        params: &crate::sampling::RandomWalkParams,
+    ) -> Result<crate::sampling::RandomWalkResult> {
+        crate::sampling::uniform_random_walks(handle, rng_state, self, start_vertices, params)
+    }
+
+    /// Compute biased random walks from explicit start vertices.
+    pub fn biased_random_walks<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        start_vertices: &DeviceArrayView<'_, V>,
+        params: &crate::sampling::RandomWalkParams,
+    ) -> Result<crate::sampling::RandomWalkResult> {
+        crate::sampling::biased_random_walks(handle, rng_state, self, start_vertices, params)
+    }
+
+    /// Compute node2vec random walks from explicit start vertices.
+    pub fn node2vec_random_walks<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        start_vertices: &DeviceArrayView<'_, V>,
+        params: &crate::sampling::Node2VecRandomWalkParams,
+    ) -> Result<crate::sampling::RandomWalkResult> {
+        crate::sampling::node2vec_random_walks(handle, rng_state, self, start_vertices, params)
     }
 
     /// Compute Louvain communities on this forward-stored graph.

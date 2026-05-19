@@ -44,6 +44,37 @@ fn checked_byte_len(len: usize, dtype: DataType, operation: &'static str) -> Res
 }
 
 impl RawDeviceArray {
+    /// Wrap a native-owned cuGraph device-array handle returned by an
+    /// algorithm. Ownership of `raw` transfers to this wrapper.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by the cuGraph C API,
+    /// and no other owner may free it after this call succeeds.
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_type_erased_device_array_t,
+        device: i32,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<Self> {
+        let raw = require_non_null(raw, operation, pointer_name)?;
+        // SAFETY: `raw` is a live cuGraph device-array handle transferred to
+        // this wrapper. The returned view metadata is separately owned.
+        let raw_view = unsafe { cugraph_type_erased_device_array_view(raw) };
+        let raw_view = match require_non_null(raw_view, operation, "device_array_view") {
+            Ok(raw_view) => raw_view,
+            Err(error) => {
+                let _guard = DeviceGuard::switch_to_for_drop(device, operation).ok();
+                // SAFETY: construction has not succeeded, so `raw` is still
+                // uniquely owned here and must be released on error.
+                unsafe { cugraph_type_erased_device_array_free(raw) };
+                return Err(error);
+            },
+        };
+
+        Ok(Self { raw, raw_view, device, _nosend_nosync: PhantomData })
+    }
+
     pub(crate) fn new(handle: &EnteredContext<'_>, len: usize, dtype: DataType) -> Result<Self> {
         let mut raw: *mut cugraph_type_erased_device_array_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
@@ -336,6 +367,30 @@ impl<T: CugraphElement> fmt::Debug for DeviceArray<T> {
 }
 
 impl<T: CugraphElement> DeviceArray<T> {
+    /// Wrap a native-owned cuGraph device-array handle returned by an
+    /// algorithm. Ownership of `raw` transfers to the returned [`DeviceArray`].
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by the cuGraph C API.
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_type_erased_device_array_t,
+        device: i32,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<Self> {
+        // SAFETY: the caller transfers ownership of the native array handle.
+        let inner = unsafe { RawDeviceArray::from_raw(raw, device, operation, pointer_name) }?;
+        let dtype = inner.raw_view()?.dtype()?;
+        if dtype != T::data_type() {
+            return Err(Error::new(ErrorKind::InvalidState, operation).with_message(format!(
+                "{pointer_name} dtype {dtype} does not match requested dtype {}",
+                T::data_type()
+            )));
+        }
+        Ok(Self { inner, _element: PhantomData })
+    }
+
     /// Allocate a new device array with `len` elements of type `T`.
     pub fn new(handle: &EnteredContext<'_>, len: usize) -> Result<Self> {
         let inner = RawDeviceArray::new(handle, len, T::data_type())?;
