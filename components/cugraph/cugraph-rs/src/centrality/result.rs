@@ -11,13 +11,18 @@ use std::marker::PhantomData;
 use cugraph_sys::{
     cugraph_centrality_result_converged, cugraph_centrality_result_free, cugraph_centrality_result_get_num_iterations,
     cugraph_centrality_result_get_values, cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
+    cugraph_edge_centrality_result_free, cugraph_edge_centrality_result_get_dst_vertices,
+    cugraph_edge_centrality_result_get_edge_ids, cugraph_edge_centrality_result_get_src_vertices,
+    cugraph_edge_centrality_result_get_values, cugraph_edge_centrality_result_t, cugraph_hits_result_free,
+    cugraph_hits_result_get_authorities, cugraph_hits_result_get_hub_score_differences, cugraph_hits_result_get_hubs,
+    cugraph_hits_result_get_number_of_iterations, cugraph_hits_result_get_vertices, cugraph_hits_result_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, require_non_null},
-    structure::typed_results::{ScoreValues, VertexIds},
+    structure::typed_results::{IntegerValues, ScoreValues, VertexIds},
     types::try_from_bool_t,
 };
 
@@ -52,10 +57,15 @@ impl CentralityResult {
             "CentralityResult::vertices_raw",
             "vertices",
         )?;
-        // SAFETY: `view_ptr` belongs to the live centrality result and was
-        // validated to be non-null above.
+        // SAFETY: cuGraph returns freshly allocated view metadata backed by
+        // the live centrality result arrays.
         unsafe {
-            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "CentralityResult::vertices_raw", "vertices")
+            RawDeviceArrayView::from_owned_view(
+                view_ptr,
+                Some(self.device),
+                "CentralityResult::vertices_raw",
+                "vertices",
+            )
         }
     }
 
@@ -67,10 +77,10 @@ impl CentralityResult {
             "CentralityResult::values_raw",
             "values",
         )?;
-        // SAFETY: `view_ptr` belongs to the live centrality result and was
-        // validated to be non-null above.
+        // SAFETY: cuGraph returns freshly allocated view metadata backed by
+        // the live centrality result arrays.
         unsafe {
-            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "CentralityResult::values_raw", "values")
+            RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), "CentralityResult::values_raw", "values")
         }
     }
 
@@ -175,6 +185,89 @@ impl PageRankResult {
 }
 
 // ---------------------------------------------------------------------------
+// EigenvectorCentralityResult
+// ---------------------------------------------------------------------------
+
+/// Result of an eigenvector centrality computation.
+pub struct EigenvectorCentralityResult(CentralityResult);
+
+impl std::fmt::Debug for EigenvectorCentralityResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EigenvectorCentralityResult").finish_non_exhaustive()
+    }
+}
+
+impl EigenvectorCentralityResult {
+    /// Wrap a raw centrality result pointer as an `EigenvectorCentralityResult`.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by
+    /// `cugraph_eigenvector_centrality`. Ownership is transferred to this
+    /// struct.
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+    }
+
+    /// Get the vertex ids as a runtime-typed device array view.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.vertices_raw()?)
+    }
+
+    /// Get the eigenvector centrality scores as a runtime-typed device array view.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.0.values_raw()?)
+    }
+
+    /// Convert this eigenvector centrality result to a cudf DataFrame.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::eigenvector_centrality_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("EigenvectorCentralityResult::to_dataframe"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KatzCentralityResult
+// ---------------------------------------------------------------------------
+
+/// Result of a Katz centrality computation.
+pub struct KatzCentralityResult(CentralityResult);
+
+impl std::fmt::Debug for KatzCentralityResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KatzCentralityResult").finish_non_exhaustive()
+    }
+}
+
+impl KatzCentralityResult {
+    /// Wrap a raw centrality result pointer as a `KatzCentralityResult`.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by
+    /// `cugraph_katz_centrality`. Ownership is transferred to this struct.
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+    }
+
+    /// Get the vertex ids as a runtime-typed device array view.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.vertices_raw()?)
+    }
+
+    /// Get the Katz centrality scores as a runtime-typed device array view.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.0.values_raw()?)
+    }
+
+    /// Convert this Katz centrality result to a cudf DataFrame.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::katz_centrality_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("KatzCentralityResult::to_dataframe"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BetweennessCentralityResult
 // ---------------------------------------------------------------------------
 
@@ -189,6 +282,233 @@ pub struct BetweennessCentralityResult(CentralityResult);
 impl std::fmt::Debug for BetweennessCentralityResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BetweennessCentralityResult").finish_non_exhaustive()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EdgeBetweennessCentralityResult
+// ---------------------------------------------------------------------------
+
+pub(crate) struct EdgeCentralityResult {
+    raw: *mut cugraph_edge_centrality_result_t,
+    device: i32,
+    has_edge_ids: bool,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl EdgeCentralityResult {
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by a cuGraph edge
+    /// centrality C API function. Ownership is transferred to this struct.
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_edge_centrality_result_t,
+        device: i32,
+        has_edge_ids: bool,
+    ) -> Result<Self> {
+        let raw = require_non_null(raw, "EdgeCentralityResult::from_raw", "edge_centrality_result")?;
+        Ok(Self { raw, device, has_edge_ids, _nosend_nosync: PhantomData })
+    }
+
+    fn raw_view(
+        &self,
+        getter: unsafe extern "C" fn(
+            *mut cugraph_edge_centrality_result_t,
+        ) -> *mut cugraph_sys::cugraph_type_erased_device_array_view_t,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live edge centrality result owned by
+            // this wrapper for the duration of the call.
+            unsafe { getter(self.raw) },
+            operation,
+            pointer_name,
+        )?;
+        // SAFETY: cuGraph returns freshly allocated view metadata backed by
+        // the live edge centrality result arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
+    }
+
+    pub(crate) fn sources(&self, operation: &'static str) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.raw_view(cugraph_edge_centrality_result_get_src_vertices, operation, "sources")?)
+    }
+
+    pub(crate) fn destinations(&self, operation: &'static str) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.raw_view(
+            cugraph_edge_centrality_result_get_dst_vertices,
+            operation,
+            "destinations",
+        )?)
+    }
+
+    pub(crate) fn values(&self, operation: &'static str) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.raw_view(cugraph_edge_centrality_result_get_values, operation, "values")?)
+    }
+
+    pub(crate) fn edge_ids(&self, operation: &'static str) -> Result<Option<IntegerValues<'_>>> {
+        if !self.has_edge_ids {
+            return Ok(None);
+        }
+        IntegerValues::from_raw(self.raw_view(cugraph_edge_centrality_result_get_edge_ids, operation, "edge_ids")?)
+            .map(Some)
+    }
+}
+
+impl Drop for EdgeCentralityResult {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "EdgeCentralityResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
+            unsafe { cugraph_edge_centrality_result_free(self.raw) };
+        }
+    }
+}
+
+/// Result of an edge betweenness centrality computation.
+pub struct EdgeBetweennessCentralityResult(EdgeCentralityResult);
+
+impl std::fmt::Debug for EdgeBetweennessCentralityResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeBetweennessCentralityResult").finish_non_exhaustive()
+    }
+}
+
+impl EdgeBetweennessCentralityResult {
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by
+    /// `cugraph_edge_betweenness_centrality`. Ownership is transferred to
+    /// this struct.
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_edge_centrality_result_t,
+        device: i32,
+        has_edge_ids: bool,
+    ) -> Result<Self> {
+        Ok(Self(unsafe { EdgeCentralityResult::from_raw(raw, device, has_edge_ids) }?))
+    }
+
+    /// Source vertices for each edge centrality score.
+    pub fn sources(&self) -> Result<VertexIds<'_>> {
+        self.0.sources("EdgeBetweennessCentralityResult::sources")
+    }
+
+    /// Destination vertices for each edge centrality score.
+    pub fn destinations(&self) -> Result<VertexIds<'_>> {
+        self.0.destinations("EdgeBetweennessCentralityResult::destinations")
+    }
+
+    /// Optional edge ids. Returns `None` for graphs built without edge ids.
+    pub fn edge_ids(&self) -> Result<Option<IntegerValues<'_>>> {
+        self.0.edge_ids("EdgeBetweennessCentralityResult::edge_ids")
+    }
+
+    /// Edge betweenness centrality scores.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        self.0.values("EdgeBetweennessCentralityResult::scores")
+    }
+
+    /// Convert this edge betweenness centrality result to a cudf DataFrame.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::edge_betweenness_centrality_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("EdgeBetweennessCentralityResult::to_dataframe"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HitsResult
+// ---------------------------------------------------------------------------
+
+/// Result of a HITS computation.
+pub struct HitsResult {
+    raw: *mut cugraph_hits_result_t,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl std::fmt::Debug for HitsResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HitsResult").finish_non_exhaustive()
+    }
+}
+
+impl HitsResult {
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by `cugraph_hits`.
+    /// Ownership is transferred to this struct.
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hits_result_t, device: i32) -> Result<Self> {
+        let raw = require_non_null(raw, "HitsResult::from_raw", "hits_result")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+    }
+
+    fn raw_view(
+        &self,
+        getter: unsafe extern "C" fn(
+            *mut cugraph_hits_result_t,
+        ) -> *mut cugraph_sys::cugraph_type_erased_device_array_view_t,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live HITS result owned by this wrapper
+            // for the duration of the call.
+            unsafe { getter(self.raw) },
+            operation,
+            pointer_name,
+        )?;
+        // SAFETY: cuGraph returns freshly allocated view metadata backed by
+        // the live HITS result arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
+    }
+
+    /// Vertex ids for the hub and authority scores.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.raw_view(cugraph_hits_result_get_vertices, "HitsResult::vertex_ids", "vertices")?)
+    }
+
+    /// Hub scores.
+    pub fn hub_scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.raw_view(cugraph_hits_result_get_hubs, "HitsResult::hub_scores", "hubs")?)
+    }
+
+    /// Authority scores.
+    pub fn authority_scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.raw_view(
+            cugraph_hits_result_get_authorities,
+            "HitsResult::authority_scores",
+            "authorities",
+        )?)
+    }
+
+    /// Difference between hub scores in the final two iterations.
+    pub fn hub_score_differences(&self) -> f64 {
+        // SAFETY: `self.raw` is a live HITS result owned by this wrapper.
+        unsafe { cugraph_hits_result_get_hub_score_differences(self.raw) }
+    }
+
+    /// Number of HITS iterations performed.
+    pub fn number_of_iterations(&self) -> usize {
+        // SAFETY: `self.raw` is a live HITS result owned by this wrapper.
+        unsafe { cugraph_hits_result_get_number_of_iterations(self.raw) }
+    }
+
+    /// Convert this HITS result to a cudf DataFrame.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::hits_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("HitsResult::to_dataframe"))
+    }
+}
+
+impl Drop for HitsResult {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "HitsResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
+            unsafe { cugraph_hits_result_free(self.raw) };
+        }
     }
 }
 
@@ -254,5 +574,27 @@ mod tests {
         };
         assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "CentralityResult::from_raw");
+    }
+
+    #[test]
+    fn edge_centrality_result_from_raw_rejects_null() {
+        // SAFETY: this exercises the constructor's null guard only.
+        let err = match unsafe { EdgeCentralityResult::from_raw(ptr::null_mut(), 0, false) } {
+            Err(err) => err,
+            Ok(_) => panic!("null must be rejected"),
+        };
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "EdgeCentralityResult::from_raw");
+    }
+
+    #[test]
+    fn hits_result_from_raw_rejects_null() {
+        // SAFETY: this exercises the constructor's null guard only.
+        let err = match unsafe { HitsResult::from_raw(ptr::null_mut(), 0) } {
+            Err(err) => err,
+            Ok(_) => panic!("null must be rejected"),
+        };
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "HitsResult::from_raw");
     }
 }

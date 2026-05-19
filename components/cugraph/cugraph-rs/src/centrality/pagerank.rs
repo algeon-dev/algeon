@@ -2,7 +2,11 @@
 
 use std::ptr;
 
-use cugraph_sys::{cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank_allow_nonconvergence};
+use cugraph_sys::{
+    cugraph_centrality_result_free, cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank,
+    cugraph_pagerank_allow_nonconvergence, cugraph_personalized_pagerank,
+    cugraph_personalized_pagerank_allow_nonconvergence,
+};
 
 use super::PageRankResult;
 use crate::{
@@ -71,6 +75,36 @@ impl Default for PageRankParams {
     }
 }
 
+/// Parameters for personalized PageRank.
+///
+/// These have the same invariants and defaults as [`PageRankParams`], but are
+/// kept as a distinct public type because personalized PageRank requires an
+/// explicit personalization vector.
+#[derive(Debug, Clone, Copy)]
+#[must_use]
+pub struct PersonalizedPageRankParams {
+    /// Damping factor (default 0.85). Must be in the closed interval `[0.0, 1.0]`.
+    pub alpha: ClosedUnitF64,
+    /// Convergence tolerance (default 1e-5). Must be non-negative.
+    pub epsilon: NonNegativeF64,
+    /// Maximum number of iterations (default 100). Must be at least 1.
+    pub max_iterations: IterationCount,
+    /// Whether to run expensive input validation checks in the C library
+    /// (default: `false`).
+    pub do_expensive_check: bool,
+}
+
+impl Default for PersonalizedPageRankParams {
+    fn default() -> Self {
+        Self {
+            alpha: defaults::PAGERANK_ALPHA,
+            epsilon: defaults::PAGERANK_EPSILON,
+            max_iterations: defaults::PAGERANK_MAX_ITERATIONS,
+            do_expensive_check: false,
+        }
+    }
+}
+
 /// Precomputed vertex out-weight sums for PageRank.
 ///
 /// Providing these avoids recomputation inside the C library and can
@@ -95,6 +129,23 @@ pub struct InitialGuess<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
     pub values: &'a DeviceArrayView<'a, W>,
 }
 
+/// Personalization vector for personalized PageRank.
+#[derive(Debug)]
+pub struct PersonalizationVector<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
+    /// Vertex ids in the personalization set.
+    pub vertices: &'a DeviceArrayView<'a, V>,
+    /// Personalization values for each vertex.
+    pub values: &'a DeviceArrayView<'a, W>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PageRankCall {
+    StandardAllowNonconvergence,
+    StandardStrict,
+    PersonalizedAllowNonconvergence,
+    PersonalizedStrict,
+}
+
 /// Compute PageRank on a graph.
 ///
 /// Prefer using [`Graph::pagerank`](crate::graph::Graph::pagerank) or
@@ -107,28 +158,136 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
     initial_guess: Option<&InitialGuess<'_, V, W>>,
 ) -> Result<PageRankResult> {
+    pagerank_impl(
+        handle,
+        graph,
+        params.alpha,
+        params.epsilon,
+        params.max_iterations,
+        params.do_expensive_check,
+        precomputed_weights,
+        initial_guess,
+        None,
+        PageRankCall::StandardAllowNonconvergence,
+        "pagerank",
+    )
+}
+
+pub(crate) fn pagerank_strict<V: CugraphElement, W: CugraphElement>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<Transposed>,
+    params: &PageRankParams,
+    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+    initial_guess: Option<&InitialGuess<'_, V, W>>,
+) -> Result<PageRankResult> {
+    pagerank_impl(
+        handle,
+        graph,
+        params.alpha,
+        params.epsilon,
+        params.max_iterations,
+        params.do_expensive_check,
+        precomputed_weights,
+        initial_guess,
+        None,
+        PageRankCall::StandardStrict,
+        "pagerank_strict",
+    )
+}
+
+pub(crate) fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<Transposed>,
+    params: &PersonalizedPageRankParams,
+    personalization: &PersonalizationVector<'_, V, W>,
+    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+    initial_guess: Option<&InitialGuess<'_, V, W>>,
+) -> Result<PageRankResult> {
+    pagerank_impl(
+        handle,
+        graph,
+        params.alpha,
+        params.epsilon,
+        params.max_iterations,
+        params.do_expensive_check,
+        precomputed_weights,
+        initial_guess,
+        Some(personalization),
+        PageRankCall::PersonalizedAllowNonconvergence,
+        "personalized_pagerank",
+    )
+}
+
+pub(crate) fn personalized_pagerank_strict<V: CugraphElement, W: CugraphElement>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<Transposed>,
+    params: &PersonalizedPageRankParams,
+    personalization: &PersonalizationVector<'_, V, W>,
+    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+    initial_guess: Option<&InitialGuess<'_, V, W>>,
+) -> Result<PageRankResult> {
+    pagerank_impl(
+        handle,
+        graph,
+        params.alpha,
+        params.epsilon,
+        params.max_iterations,
+        params.do_expensive_check,
+        precomputed_weights,
+        initial_guess,
+        Some(personalization),
+        PageRankCall::PersonalizedStrict,
+        "personalized_pagerank_strict",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<Transposed>,
+    alpha: ClosedUnitF64,
+    epsilon: NonNegativeF64,
+    max_iterations: IterationCount,
+    do_expensive_check: bool,
+    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+    initial_guess: Option<&InitialGuess<'_, V, W>>,
+    personalization: Option<&PersonalizationVector<'_, V, W>>,
+    call: PageRankCall,
+    operation: &'static str,
+) -> Result<PageRankResult> {
     // Validate precomputed weights.
     if let Some(pw) = precomputed_weights {
         if pw.vertices.len() != pw.sums.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "pagerank")
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
                 .with_message("precomputed weights: vertices and sums must have the same length")
                 .with_context("vertices_len", pw.vertices.len().to_string())
                 .with_context("sums_len", pw.sums.len().to_string()));
         }
-        validate_vertex_dtype::<V>(graph, "precomputed weights vertices")?;
-        validate_weight_dtype::<W>("precomputed weights sums")?;
+        validate_vertex_dtype::<V>(graph, operation, "precomputed weights vertices")?;
+        validate_weight_dtype::<W>(operation, "precomputed weights sums")?;
     }
 
     // Validate initial guess.
     if let Some(ig) = initial_guess {
         if ig.vertices.len() != ig.values.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "pagerank")
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
                 .with_message("initial guess: vertices and values must have the same length")
                 .with_context("vertices_len", ig.vertices.len().to_string())
                 .with_context("values_len", ig.values.len().to_string()));
         }
-        validate_vertex_dtype::<V>(graph, "initial guess vertices")?;
-        validate_weight_dtype::<W>("initial guess values")?;
+        validate_vertex_dtype::<V>(graph, operation, "initial guess vertices")?;
+        validate_weight_dtype::<W>(operation, "initial guess values")?;
+    }
+
+    if let Some(personalization) = personalization {
+        if personalization.vertices.len() != personalization.values.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("personalization: vertices and values must have the same length")
+                .with_context("vertices_len", personalization.vertices.len().to_string())
+                .with_context("values_len", personalization.values.len().to_string()));
+        }
+        validate_vertex_dtype::<V>(graph, operation, "personalization vertices")?;
+        validate_weight_dtype::<W>(operation, "personalization values")?;
     }
 
     // Extract raw pointers for optional arrays.
@@ -142,6 +301,11 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
         None => (ptr::null(), ptr::null()),
     };
 
+    let (personalization_verts_ptr, personalization_vals_ptr) = match personalization {
+        Some(p) => (p.vertices.as_ptr() as *const _, p.values.as_ptr() as *const _),
+        None => (ptr::null(), ptr::null()),
+    };
+
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -149,37 +313,94 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     // validated device views that outlive the call, and `result`/`error` are
     // valid out-pointers.
     unsafe {
-        let code = cugraph_pagerank_allow_nonconvergence(
-            handle.handle_ptr(),
-            graph.as_ptr(),
-            pw_verts_ptr,
-            pw_sums_ptr,
-            ig_verts_ptr,
-            ig_vals_ptr,
-            params.alpha.get(),
-            params.epsilon.get(),
-            usize::from(params.max_iterations),
-            to_bool_t(params.do_expensive_check),
-            &mut result,
-            &mut error,
-        );
-        check_error(code, error, "pagerank")?;
+        let code = match call {
+            PageRankCall::StandardAllowNonconvergence => cugraph_pagerank_allow_nonconvergence(
+                handle.handle_ptr(),
+                graph.as_ptr(),
+                pw_verts_ptr,
+                pw_sums_ptr,
+                ig_verts_ptr,
+                ig_vals_ptr,
+                alpha.get(),
+                epsilon.get(),
+                usize::from(max_iterations),
+                to_bool_t(do_expensive_check),
+                &mut result,
+                &mut error,
+            ),
+            PageRankCall::StandardStrict => cugraph_pagerank(
+                handle.handle_ptr(),
+                graph.as_ptr(),
+                pw_verts_ptr,
+                pw_sums_ptr,
+                ig_verts_ptr,
+                ig_vals_ptr,
+                alpha.get(),
+                epsilon.get(),
+                usize::from(max_iterations),
+                to_bool_t(do_expensive_check),
+                &mut result,
+                &mut error,
+            ),
+            PageRankCall::PersonalizedAllowNonconvergence => cugraph_personalized_pagerank_allow_nonconvergence(
+                handle.handle_ptr(),
+                graph.as_ptr(),
+                pw_verts_ptr,
+                pw_sums_ptr,
+                ig_verts_ptr,
+                ig_vals_ptr,
+                personalization_verts_ptr,
+                personalization_vals_ptr,
+                alpha.get(),
+                epsilon.get(),
+                usize::from(max_iterations),
+                to_bool_t(do_expensive_check),
+                &mut result,
+                &mut error,
+            ),
+            PageRankCall::PersonalizedStrict => cugraph_personalized_pagerank(
+                handle.handle_ptr(),
+                graph.as_ptr(),
+                pw_verts_ptr,
+                pw_sums_ptr,
+                ig_verts_ptr,
+                ig_vals_ptr,
+                personalization_verts_ptr,
+                personalization_vals_ptr,
+                alpha.get(),
+                epsilon.get(),
+                usize::from(max_iterations),
+                to_bool_t(do_expensive_check),
+                &mut result,
+                &mut error,
+            ),
+        };
+        if let Err(err) = check_error(code, error, operation) {
+            if !result.is_null() {
+                cugraph_centrality_result_free(result);
+            }
+            return Err(err);
+        }
     }
 
-    let result = require_non_null(result, "pagerank", "centrality_result")?;
+    let result = require_non_null(result, operation, "centrality_result")?;
 
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
     unsafe { PageRankResult::from_raw(result, handle.device()) }
 }
 
-fn validate_vertex_dtype<V: CugraphElement>(graph: &Graph<Transposed>, input_name: &str) -> Result<()> {
+fn validate_vertex_dtype<V: CugraphElement>(
+    graph: &Graph<Transposed>,
+    operation: &'static str,
+    input_name: &str,
+) -> Result<()> {
     let dtype = V::data_type();
     if !dtype.is_supported_index_type() {
-        return Err(Error::new(ErrorKind::UnsupportedType, "pagerank")
+        return Err(Error::new(ErrorKind::UnsupportedType, operation)
             .with_message(format!("{input_name} require Int32 or Int64 vertex ids, got {dtype}")));
     }
     if dtype != graph.vertex_dtype() {
-        return Err(Error::new(ErrorKind::UnsupportedType, "pagerank").with_message(format!(
+        return Err(Error::new(ErrorKind::UnsupportedType, operation).with_message(format!(
             "{input_name} vertex dtype {dtype} does not match graph vertex dtype {}",
             graph.vertex_dtype()
         )));
@@ -187,10 +408,10 @@ fn validate_vertex_dtype<V: CugraphElement>(graph: &Graph<Transposed>, input_nam
     Ok(())
 }
 
-fn validate_weight_dtype<W: CugraphElement>(input_name: &str) -> Result<()> {
+fn validate_weight_dtype<W: CugraphElement>(operation: &'static str, input_name: &str) -> Result<()> {
     let dtype = W::data_type();
     if !dtype.is_float() {
-        return Err(Error::new(ErrorKind::UnsupportedType, "pagerank")
+        return Err(Error::new(ErrorKind::UnsupportedType, operation)
             .with_message(format!("{input_name} require Float32 or Float64 values, got {dtype}")));
     }
     Ok(())

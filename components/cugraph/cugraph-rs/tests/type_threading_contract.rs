@@ -1,6 +1,9 @@
 use cugraph::{
     array::{DeviceArray, DeviceArrayView},
-    centrality::{BetweennessCentralityResult, PageRankResult},
+    centrality::{
+        BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
+        KatzCentralityResult, PageRankResult,
+    },
     community::{EcgResult, LeidenResult, LouvainResult},
     graph::{Forward, Graph, Transposed},
     layout::LayoutResult,
@@ -22,6 +25,10 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(Graph<Transposed>: Send, Sync);
     assert_not_impl_any!(PageRankResult: Send, Sync);
     assert_not_impl_any!(BetweennessCentralityResult: Send, Sync);
+    assert_not_impl_any!(EigenvectorCentralityResult: Send, Sync);
+    assert_not_impl_any!(KatzCentralityResult: Send, Sync);
+    assert_not_impl_any!(HitsResult: Send, Sync);
+    assert_not_impl_any!(EdgeBetweennessCentralityResult: Send, Sync);
     assert_not_impl_any!(LouvainResult: Send, Sync);
     assert_not_impl_any!(LeidenResult: Send, Sync);
     assert_not_impl_any!(EcgResult: Send, Sync);

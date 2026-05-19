@@ -117,6 +117,7 @@ pub struct Graph<T = Forward> {
     properties: GraphProperties,
     vertex_dtype: DataType,
     weight_dtype: DataType,
+    has_edge_ids: bool,
     pending_input_completion: Option<DeferredInputCompletion>,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
@@ -301,6 +302,10 @@ impl<T> Graph<T> {
     /// For unweighted graphs, this defaults to `Float32`.
     pub fn weight_dtype(&self) -> DataType {
         self.weight_dtype
+    }
+
+    pub(crate) fn has_edge_ids(&self) -> bool {
+        self.has_edge_ids
     }
 
     pub(crate) fn with_pending_input_completion(mut self, pending: DeferredInputCompletion) -> Self {
@@ -737,6 +742,7 @@ impl<'a> GraphBuilder<'a> {
             properties: self.properties,
             vertex_dtype,
             weight_dtype,
+            has_edge_ids: self.edge_ids.is_some(),
             pending_input_completion: None,
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
@@ -1023,6 +1029,128 @@ impl Graph<Transposed> {
         crate::centrality::pagerank::pagerank(handle, self, params, precomputed_weights, initial_guess)
     }
 
+    /// Compute PageRank using the strict native API, returning an error if the
+    /// solver does not converge within `max_iterations`.
+    pub fn pagerank_strict(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PageRankParams,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::pagerank_strict::<i32, f32>(handle, self, params, None, None)
+    }
+
+    /// Compute strict PageRank with optional precomputed weights and/or initial guess.
+    pub fn pagerank_strict_with<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PageRankParams,
+        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::pagerank_strict(handle, self, params, precomputed_weights, initial_guess)
+    }
+
+    /// Compute personalized PageRank using the allow-nonconvergence native API.
+    pub fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PersonalizedPageRankParams,
+        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::personalized_pagerank(handle, self, params, personalization, None, None)
+    }
+
+    /// Compute personalized PageRank with optional precomputed weights and/or initial guess.
+    pub fn personalized_pagerank_with<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PersonalizedPageRankParams,
+        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
+        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::personalized_pagerank(
+            handle,
+            self,
+            params,
+            personalization,
+            precomputed_weights,
+            initial_guess,
+        )
+    }
+
+    /// Compute personalized PageRank using the strict native API, returning an
+    /// error if the solver does not converge within `max_iterations`.
+    pub fn personalized_pagerank_strict<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PersonalizedPageRankParams,
+        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::personalized_pagerank_strict(handle, self, params, personalization, None, None)
+    }
+
+    /// Compute strict personalized PageRank with optional precomputed weights
+    /// and/or initial guess.
+    pub fn personalized_pagerank_strict_with<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::PersonalizedPageRankParams,
+        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
+        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::personalized_pagerank_strict(
+            handle,
+            self,
+            params,
+            personalization,
+            precomputed_weights,
+            initial_guess,
+        )
+    }
+
+    /// Compute eigenvector centrality.
+    pub fn eigenvector_centrality(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::EigenvectorCentralityParams,
+    ) -> Result<crate::centrality::EigenvectorCentralityResult> {
+        crate::centrality::vertex::eigenvector_centrality(handle, self, params)
+    }
+
+    /// Compute Katz centrality using a scalar beta value.
+    ///
+    /// The local cuGraph C API accepts a per-vertex beta array parameter, but
+    /// the v26.04 implementation does not currently forward it to the native
+    /// algorithm. This safe method therefore exposes only the scalar-beta path.
+    pub fn katz_centrality(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::KatzCentralityParams,
+    ) -> Result<crate::centrality::KatzCentralityResult> {
+        crate::centrality::vertex::katz_centrality(handle, self, params)
+    }
+
+    /// Compute HITS hub and authority scores.
+    pub fn hits(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::HitsParams,
+    ) -> Result<crate::centrality::HitsResult> {
+        crate::centrality::hits::hits::<i32, f32>(handle, self, params, None)
+    }
+
+    /// Compute HITS hub and authority scores with an optional initial hub guess.
+    pub fn hits_with_initial_hubs<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::HitsParams,
+        initial_hubs: Option<&crate::centrality::HitsInitialHubs<'_, V, W>>,
+    ) -> Result<crate::centrality::HitsResult> {
+        crate::centrality::hits::hits(handle, self, params, initial_hubs)
+    }
+
     /// Compute both in-degrees and out-degrees for vertices in this graph.
     ///
     /// Pass [`VertexSelection::All`] to compute degrees for every vertex,
@@ -1281,6 +1409,33 @@ impl<T: Transposition> Graph<T> {
         params: &crate::centrality::BetweennessCentralityParams,
     ) -> Result<crate::centrality::BetweennessCentralityResult> {
         self.betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
+    }
+
+    /// Compute edge betweenness centrality on this graph.
+    ///
+    /// Pass [`VertexSelection::All`] for exact computation, or provide seed
+    /// vertices for approximate computation via [`VertexSelection::Device`] or
+    /// [`VertexSelection::Host`].
+    pub fn edge_betweenness_centrality<'a, V: CugraphElement + 'a>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        vertex_list: impl Into<VertexSelection<'a, V>>,
+        params: &crate::centrality::EdgeBetweennessCentralityParams,
+    ) -> Result<crate::centrality::EdgeBetweennessCentralityResult> {
+        let vertex_list = vertex_list.into();
+        self.validate_vertex_selection(&vertex_list, "Graph::edge_betweenness_centrality", "vertex_list", true)?;
+        let resolved = vertex_list.resolve(handle)?;
+        let view = resolved.view()?;
+        crate::centrality::edge_betweenness::edge_betweenness_centrality(handle, self, view.as_ref(), params)
+    }
+
+    /// Compute exact edge betweenness centrality over all vertices.
+    pub fn edge_betweenness_centrality_all(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        params: &crate::centrality::EdgeBetweennessCentralityParams,
+    ) -> Result<crate::centrality::EdgeBetweennessCentralityResult> {
+        self.edge_betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
     }
 
     /// Compute weakly connected components.

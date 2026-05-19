@@ -15,7 +15,7 @@ use common::{
 };
 use cugraph::{
     array::DeviceArray,
-    centrality::{BetweennessCentralityParams, PageRankParams},
+    centrality::{BetweennessCentralityParams, EdgeBetweennessCentralityParams, HitsParams, PageRankParams},
     community::{EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
@@ -240,6 +240,61 @@ fn betweenness_result_to_dataframe() {
     assert_eq!(vertices.len(), 4);
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|value| value.is_finite() && *value >= 0.0));
+}
+
+#[test]
+fn hits_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("hits_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, &[0i32, 0, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 2, 3]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
+
+    let df = graph.hits(&handle, &HitsParams::default()).expect("hits").to_dataframe(&runtime).expect("df");
+
+    assert_eq!(df.num_columns(), 3);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "hub");
+    assert_eq!(df.column_names()[2], "authority");
+    assert_eq!(df.num_rows(), 4);
+}
+
+#[test]
+fn edge_betweenness_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("edge_betweenness_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("dst");
+    let edge_ids = DeviceArray::from_slice(&handle, &[10i32, 11, 12]).expect("edge_ids");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .edge_ids(&edge_ids_view)
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let df = graph
+        .edge_betweenness_centrality_all(&handle, &EdgeBetweennessCentralityParams::default())
+        .expect("edge betweenness")
+        .to_dataframe(&runtime)
+        .expect("df");
+
+    assert_eq!(df.num_columns(), 4);
+    assert_eq!(df.column_names()[0], "source");
+    assert_eq!(df.column_names()[1], "destination");
+    assert_eq!(df.column_names()[2], "edge_id");
+    assert_eq!(df.column_names()[3], "score");
+    assert_eq!(df.num_rows(), 3);
 }
 
 #[test]
