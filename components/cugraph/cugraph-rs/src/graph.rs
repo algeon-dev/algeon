@@ -1219,6 +1219,20 @@ impl Graph<Forward> {
     ) -> Result<crate::community::LouvainResult> {
         crate::community::louvain::louvain(handle, self, params)
     }
+
+    /// Compute Leiden communities on this forward-stored graph.
+    ///
+    /// Leiden is an undirected community-detection algorithm. This wrapper
+    /// requires forward graph storage but leaves graph-property validation to
+    /// the native library.
+    pub fn leiden(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        params: &crate::community::LeidenParams,
+    ) -> Result<crate::community::LeidenResult> {
+        crate::community::leiden::leiden(handle, rng_state, self, params)
+    }
 }
 
 impl<T: Transposition> Graph<T> {
