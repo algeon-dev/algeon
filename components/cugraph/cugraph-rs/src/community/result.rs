@@ -169,6 +169,7 @@ macro_rules! define_hierarchical_result {
 
 define_hierarchical_result!(LouvainResult, "Modularity score returned by Louvain.", louvain_result_to_dataframe);
 define_hierarchical_result!(LeidenResult, "Modularity score returned by Leiden.", leiden_result_to_dataframe);
+define_hierarchical_result!(EcgResult, "Modularity score returned by ECG.", ecg_result_to_dataframe);
 
 #[cfg(test)]
 mod tests {

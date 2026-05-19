@@ -16,7 +16,7 @@ use common::{
 use cugraph::{
     array::DeviceArray,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::{ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
+    community::{EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     labeling::ConnectedComponentsParams,
@@ -336,6 +336,38 @@ fn leiden_result_to_dataframe() {
         .expect("graph");
 
     let result = graph.leiden(&handle, &mut rng, &LeidenParams::default()).expect("leiden");
+    let expected_rows = result.vertex_ids().expect("vertex_ids").len();
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "partition");
+    assert_eq!(df.num_rows(), expected_rows);
+}
+
+#[test]
+fn ecg_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("ecg_result_to_dataframe").expect("entered");
+    let mut rng = RngState::new(&handle, 0).expect("rng");
+
+    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.ecg(&handle, &mut rng, &EcgParams::default()).expect("ecg");
     let expected_rows = result.vertex_ids().expect("vertex_ids").len();
     let df = result.to_dataframe(&runtime).expect("to_dataframe");
 

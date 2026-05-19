@@ -6,7 +6,7 @@
 
 use cugraph::{
     centrality::PageRankParams,
-    community::{LeidenParams, LouvainParams},
+    community::{EcgParams, LeidenParams, LouvainParams},
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
     similarity::{AllPairsSimilarityParams, SimilarityParams},
@@ -53,6 +53,17 @@ fn leiden_params_default_has_expected_values() {
     assert_eq!(params.max_level.get(), 100);
     assert_eq!(params.resolution.get(), 1.0);
     assert_eq!(params.theta.get(), 1.0);
+    assert!(!params.do_expensive_check);
+}
+
+#[test]
+fn ecg_params_default_has_expected_values() {
+    let params = EcgParams::default();
+    assert_eq!(params.min_weight.get(), 0.001);
+    assert_eq!(params.ensemble_size.get(), 10);
+    assert_eq!(params.max_level.get(), 100);
+    assert_eq!(params.threshold.get(), 1e-7);
+    assert_eq!(params.resolution.get(), 1.0);
     assert!(!params.do_expensive_check);
 }
 

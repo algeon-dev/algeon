@@ -97,7 +97,7 @@ use rapids_interop::{
 use crate::{
     array::RawDeviceArrayView,
     centrality::{BetweennessCentralityResult, PageRankResult},
-    community::{ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, TriangleCountResult},
+    community::{EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, TriangleCountResult},
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
@@ -471,6 +471,14 @@ pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runt
 
 pub(crate) fn leiden_result_to_dataframe(result: &LeidenResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "leiden_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn ecg_result_to_dataframe(result: &EcgResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "ecg_result_to_dataframe";
     dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
         operation,

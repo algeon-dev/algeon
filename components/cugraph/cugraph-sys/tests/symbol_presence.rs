@@ -55,6 +55,7 @@ fn bindings_include_critical_core_symbols() {
         // Community
         "cugraph_louvain",
         "cugraph_leiden",
+        "cugraph_ecg",
         "cugraph_hierarchical_clustering_result_get_vertices",
         "cugraph_hierarchical_clustering_result_get_clusters",
         "cugraph_hierarchical_clustering_result_get_modularity",

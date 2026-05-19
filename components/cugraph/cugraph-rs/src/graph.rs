@@ -1233,6 +1233,20 @@ impl Graph<Forward> {
     ) -> Result<crate::community::LeidenResult> {
         crate::community::leiden::leiden(handle, rng_state, self, params)
     }
+
+    /// Compute ECG communities on this forward-stored graph.
+    ///
+    /// ECG is an undirected community-detection algorithm built from a Louvain
+    /// ensemble. This wrapper requires forward graph storage but leaves
+    /// graph-property validation to the native library.
+    pub fn ecg(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        params: &crate::community::EcgParams,
+    ) -> Result<crate::community::EcgResult> {
+        crate::community::ecg::ecg(handle, rng_state, self, params)
+    }
 }
 
 impl<T: Transposition> Graph<T> {
