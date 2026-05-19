@@ -31,7 +31,7 @@ use cugraph::{
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64, PositiveF64},
     random::RngState,
-    sampling::{Node2VecRandomWalkParams, RandomWalkParams},
+    sampling::{NeighborSamplingParams, Node2VecRandomWalkParams, RandomWalkParams, TemporalSamplingComparison},
     similarity::{AllPairsSimilarityParams, SimilarityParams},
     structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, KCoreParams, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
@@ -293,6 +293,39 @@ fn random_walk_fixture(handle: &cugraph::EnteredContext<'_>) -> (Graph<Forward>,
     (graph, starts)
 }
 
+fn neighbor_sampling_fixture(
+    handle: &cugraph::EnteredContext<'_>,
+) -> (Graph<Forward>, DeviceArray<i32>, DeviceArray<i32>) {
+    let src = DeviceArray::from_slice(handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let weights = DeviceArray::from_slice(handle, &[0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]).expect("weights");
+    let edge_ids = DeviceArray::from_slice(handle, &[0i32, 1, 2, 3, 4, 5, 6, 7]).expect("edge_ids");
+    let edge_types = DeviceArray::from_slice(handle, &[7i32, 6, 5, 4, 3, 2, 1, 0]).expect("edge_types");
+    let start_times = DeviceArray::from_slice(handle, &[0i32, 1, 2, 3, 4, 5, 6, 7]).expect("start_times");
+    let end_times = DeviceArray::from_slice(handle, &[1i32, 2, 3, 4, 5, 6, 7, 8]).expect("end_times");
+    let starts = DeviceArray::from_slice(handle, &[2i32, 3]).expect("starts");
+    let vertex_times = DeviceArray::from_slice(handle, &[0i32, 0]).expect("vertex_times");
+
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+    let edge_types_view = edge_types.view().expect("edge_types_view");
+    let start_times_view = start_times.view().expect("start_times_view");
+    let end_times_view = end_times.view().expect("end_times_view");
+    let graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .edge_ids(&edge_ids_view)
+        .edge_type_ids(&edge_types_view)
+        .edge_start_time_ids(&start_times_view)
+        .edge_end_time_ids(&end_times_view)
+        .renumber()
+        .build::<Forward>(handle)
+        .expect("graph");
+
+    (graph, starts, vertex_times)
+}
+
 fn assert_random_walk_shape(
     handle: &cugraph::EnteredContext<'_>,
     result: &cugraph::sampling::RandomWalkResult,
@@ -317,6 +350,56 @@ fn assert_random_walk_shape(
         _ => panic!("expected f32 random-walk weights"),
     };
     assert_eq!(weight_values.len(), starts.len() * max_length);
+}
+
+fn neighbor_sampling_params() -> NeighborSamplingParams {
+    let mut params = NeighborSamplingParams::new(vec![2]);
+    params.options.return_hops = true;
+    params.options.temporal_sampling_comparison = TemporalSamplingComparison::MonotonicallyIncreasing;
+    params
+}
+
+fn assert_neighbor_sample_columns(
+    handle: &cugraph::EnteredContext<'_>,
+    result: &cugraph::sampling::SampleResult,
+    expect_temporal_columns: bool,
+) {
+    let minors = result.minors().expect("minors");
+    let len = minors.len();
+    assert!(len > 0, "sample should contain at least one edge");
+
+    let majors = result.majors().expect("majors").expect("COO output should include majors");
+    assert_eq!(majors.len(), len);
+    assert!(result.major_offsets().expect("major_offsets").is_none());
+
+    let edge_weights = result.edge_weights().expect("edge_weights").expect("weighted graph should produce weights");
+    assert_eq!(edge_weights.len(), len);
+    let edge_ids = result.edge_ids().expect("edge_ids").expect("graph edge ids should be returned");
+    assert_eq!(edge_ids.len(), len);
+    let edge_types = result.edge_types().expect("edge_types").expect("graph edge types should be returned");
+    assert_eq!(edge_types.len(), len);
+    let hops = result.hops().expect("hops");
+
+    assert_eq!(minors.to_vec_i32(handle).expect("minor copy").len(), len);
+    assert_eq!(majors.to_vec_i32(handle).expect("major copy").len(), len);
+    assert_eq!(edge_weights.to_vec_f32(handle).expect("weight copy").len(), len);
+    assert_eq!(edge_ids.to_vec_i32(handle).expect("edge id copy").len(), len);
+    assert_eq!(edge_types.to_vec_i32(handle).expect("edge type copy").len(), len);
+    if let Some(hops) = hops {
+        assert_eq!(hops.len(), len);
+        assert_eq!(hops.to_vec_i32(handle).expect("hop copy").len(), len);
+    }
+
+    if expect_temporal_columns {
+        let edge_start_times = result.edge_start_times().expect("edge_start_times");
+        let edge_end_times = result.edge_end_times().expect("edge_end_times");
+        if let Some(edge_start_times) = edge_start_times {
+            assert_eq!(edge_start_times.len(), len);
+        }
+        if let Some(edge_end_times) = edge_end_times {
+            assert_eq!(edge_end_times.len(), len);
+        }
+    }
 }
 
 #[test]
@@ -393,6 +476,100 @@ fn select_random_vertices_returns_owned_device_array() {
     for vertex in values {
         assert!((0..=5).contains(&vertex), "sampled vertex {vertex} should belong to the graph");
     }
+}
+
+#[test]
+fn homogeneous_neighbor_sampling_returns_expected_columns() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("homogeneous_neighbor_sampling_returns_expected_columns").expect("entered");
+    let params = neighbor_sampling_params();
+
+    let (mut graph, starts, _) = neighbor_sampling_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph
+        .homogeneous_uniform_neighbor_sample(&entered, &mut rng, &starts_view, None, &params)
+        .expect("uniform neighbor sample");
+    assert_neighbor_sample_columns(&entered, &result, false);
+
+    let (mut graph, starts, _) = neighbor_sampling_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph
+        .homogeneous_biased_neighbor_sample(&entered, &mut rng, &starts_view, None, &params)
+        .expect("biased neighbor sample");
+    assert_neighbor_sample_columns(&entered, &result, false);
+}
+
+#[test]
+fn temporal_neighbor_sampling_is_callable_with_start_times() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("temporal_neighbor_sampling_is_callable_with_start_times").expect("entered");
+    let params = neighbor_sampling_params();
+
+    let (mut graph, starts, vertex_times) = neighbor_sampling_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let times_view = vertex_times.view().expect("times_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph
+        .homogeneous_uniform_temporal_neighbor_sample(
+            &entered,
+            &mut rng,
+            "edge_start_time",
+            &starts_view,
+            Some(&times_view),
+            None,
+            &params,
+        )
+        .expect("uniform temporal neighbor sample");
+    assert_neighbor_sample_columns(&entered, &result, true);
+
+    let (mut graph, starts, vertex_times) = neighbor_sampling_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let times_view = vertex_times.view().expect("times_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph
+        .homogeneous_biased_temporal_neighbor_sample(
+            &entered,
+            &mut rng,
+            "edge_start_time",
+            &starts_view,
+            Some(&times_view),
+            None,
+            &params,
+        )
+        .expect("biased temporal neighbor sample");
+    assert_neighbor_sample_columns(&entered, &result, true);
+}
+
+#[test]
+fn temporal_neighbor_sampling_rejects_start_time_length_mismatch() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("temporal_neighbor_sampling_rejects_start_time_length_mismatch").expect("entered");
+    let params = neighbor_sampling_params();
+    let (mut graph, starts, _) = neighbor_sampling_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let wrong_times = DeviceArray::from_slice(&entered, &[0i32]).expect("wrong_times");
+    let wrong_times_view = wrong_times.view().expect("wrong_times_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+
+    let err = graph
+        .homogeneous_uniform_temporal_neighbor_sample(
+            &entered,
+            &mut rng,
+            "edge_start_time",
+            &starts_view,
+            Some(&wrong_times_view),
+            None,
+            &params,
+        )
+        .expect_err("mismatched start times should be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "homogeneous_uniform_temporal_neighbor_sample");
 }
 
 #[test]

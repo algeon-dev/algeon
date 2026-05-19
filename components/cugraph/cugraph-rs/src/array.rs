@@ -698,6 +698,10 @@ impl<'a> HostArrayView<'a> {
         }
         Ok(HostArrayView { raw, _lifetime: PhantomData, _nosend_nosync: PhantomData })
     }
+
+    pub(crate) fn as_ptr(&self) -> *mut cugraph_type_erased_host_array_view_t {
+        self.raw
+    }
 }
 
 impl<'a> Drop for HostArrayView<'a> {

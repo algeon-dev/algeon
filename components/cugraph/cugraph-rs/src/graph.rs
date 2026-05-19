@@ -1356,6 +1356,98 @@ impl Graph<Forward> {
         crate::sampling::node2vec_random_walks(handle, rng_state, self, start_vertices, params)
     }
 
+    /// Sample homogeneous neighborhoods uniformly from explicit start vertices.
+    pub fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        start_vertices: &DeviceArrayView<'_, V>,
+        starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
+        params: &crate::sampling::NeighborSamplingParams,
+    ) -> Result<crate::sampling::SampleResult> {
+        crate::sampling::homogeneous_uniform_neighbor_sample(
+            handle,
+            rng_state,
+            self,
+            start_vertices,
+            starting_vertex_label_offsets,
+            params,
+        )
+    }
+
+    /// Sample homogeneous neighborhoods with biased sampling from explicit start vertices.
+    pub fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        start_vertices: &DeviceArrayView<'_, V>,
+        starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
+        params: &crate::sampling::NeighborSamplingParams,
+    ) -> Result<crate::sampling::SampleResult> {
+        crate::sampling::homogeneous_biased_neighbor_sample(
+            handle,
+            rng_state,
+            self,
+            start_vertices,
+            starting_vertex_label_offsets,
+            params,
+        )
+    }
+
+    /// Sample homogeneous temporal neighborhoods uniformly from explicit start vertices.
+    pub fn homogeneous_uniform_temporal_neighbor_sample<V, Tm>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        temporal_property_name: &str,
+        start_vertices: &DeviceArrayView<'_, V>,
+        starting_vertex_times: Option<&DeviceArrayView<'_, Tm>>,
+        starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
+        params: &crate::sampling::NeighborSamplingParams,
+    ) -> Result<crate::sampling::SampleResult>
+    where
+        V: CugraphElement,
+        Tm: CugraphElement,
+    {
+        crate::sampling::homogeneous_uniform_temporal_neighbor_sample(
+            handle,
+            rng_state,
+            self,
+            temporal_property_name,
+            start_vertices,
+            starting_vertex_times,
+            starting_vertex_label_offsets,
+            params,
+        )
+    }
+
+    /// Sample homogeneous temporal neighborhoods with biased sampling from explicit start vertices.
+    pub fn homogeneous_biased_temporal_neighbor_sample<V, Tm>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        temporal_property_name: &str,
+        start_vertices: &DeviceArrayView<'_, V>,
+        starting_vertex_times: Option<&DeviceArrayView<'_, Tm>>,
+        starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
+        params: &crate::sampling::NeighborSamplingParams,
+    ) -> Result<crate::sampling::SampleResult>
+    where
+        V: CugraphElement,
+        Tm: CugraphElement,
+    {
+        crate::sampling::homogeneous_biased_temporal_neighbor_sample(
+            handle,
+            rng_state,
+            self,
+            temporal_property_name,
+            start_vertices,
+            starting_vertex_times,
+            starting_vertex_label_offsets,
+            params,
+        )
+    }
+
     /// Compute Louvain communities on this forward-stored graph.
     ///
     /// Louvain is an undirected community-detection algorithm. This wrapper
