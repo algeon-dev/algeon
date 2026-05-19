@@ -23,7 +23,10 @@ use cugraph::{
         BetweennessCentralityParams, EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams,
         KatzCentralityParams, PageRankParams, PersonalizationVector, PersonalizedPageRankParams,
     },
-    community::{EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
+    community::{
+        EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, SpectralClusteringParams,
+        TriangleCountParams,
+    },
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64},
@@ -1115,6 +1118,126 @@ fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
         .edge_betweenness_centrality_all(&entered, &EdgeBetweennessCentralityParams::default())
         .expect("edge betweenness without ids");
     assert!(result_without_ids.edge_ids().expect("edge ids").is_none());
+}
+
+#[test]
+fn spectral_clustering_returns_partitions_and_analysis_scores() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("spectral_clustering_returns_partitions_and_analysis_scores").expect("entered");
+    let src_data = [0i32, 0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5];
+    let dst_data = [1i32, 2, 0, 2, 0, 1, 3, 2, 4, 5, 3, 5, 3, 4];
+    let weights_data = [0.1f32, 0.2, 0.1, 1.2, 0.2, 1.2, 2.3, 2.3, 3.4, 3.5, 3.4, 4.5, 3.5, 4.5];
+    let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, &weights_data).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let params = SpectralClusteringParams::default();
+    let n_clusters = params.n_clusters;
+    let mut last_error = None;
+
+    for seed in 10..20 {
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
+            .weights(&weights_view)
+            .properties(GraphProperties::undirected())
+            .renumber()
+            .build::<Forward>(&entered)
+            .expect("graph");
+        let mut rng = RngState::new(&entered, seed).expect("rng");
+        match graph.spectral_modularity_maximization(&entered, &mut rng, &params) {
+            Ok(result) => {
+                assert_eq!(result.vertex_ids().expect("vertices").len(), 6);
+                assert_eq!(result.clusters().expect("clusters").len(), 6);
+                let vertices = result.vertex_ids().expect("vertices");
+                let clusters = result.clusters().expect("clusters");
+                let edge_cut = match (vertices, clusters) {
+                    (VertexIds::I32(vertices), VertexIds::I32(clusters)) => {
+                        graph.analyze_clustering_edge_cut(&entered, n_clusters, &vertices, &clusters).expect("edge cut")
+                    },
+                    _ => panic!("expected i32 spectral clustering output"),
+                };
+                assert!(edge_cut.is_finite());
+                assert!(edge_cut < 55.0, "edge cut should be bounded, got {edge_cut}");
+                return;
+            },
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    panic!("spectral clustering did not converge in retry window: {last_error:?}");
+}
+
+#[test]
+fn clustering_analysis_accepts_explicit_partition_columns() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("clustering_analysis_accepts_explicit_partition_columns").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 0, 3, 2]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 3]).expect("vertices");
+    let clusters = DeviceArray::from_slice(&entered, &[0i32, 0, 1, 1]).expect("clusters");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let clusters_view = clusters.view().expect("clusters_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+    let n_clusters = NonZeroUsize::new(2).expect("clusters");
+
+    let modularity =
+        graph.analyze_clustering_modularity(&entered, n_clusters, &vertices_view, &clusters_view).expect("modularity");
+    let edge_cut =
+        graph.analyze_clustering_edge_cut(&entered, n_clusters, &vertices_view, &clusters_view).expect("edge cut");
+    let ratio_cut =
+        graph.analyze_clustering_ratio_cut(&entered, n_clusters, &vertices_view, &clusters_view).expect("ratio cut");
+
+    assert!(modularity.is_finite());
+    assert!(edge_cut.abs() < 1e-6, "disconnected partition edge cut should be zero, got {edge_cut}");
+    assert!(ratio_cut.abs() < 1e-6, "disconnected partition ratio cut should be zero, got {ratio_cut}");
+}
+
+#[test]
+#[allow(deprecated)]
+fn balanced_cut_clustering_is_deprecated_but_callable() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("balanced_cut_clustering_is_deprecated_but_callable").expect("entered");
+    let src_data = [0i32, 0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5];
+    let dst_data = [1i32, 2, 0, 2, 0, 1, 3, 2, 4, 5, 3, 5, 3, 4];
+    let weights_data = [1.0f32; 14];
+    let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, &weights_data).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let params = cugraph::community::BalancedCutClusteringParams::default();
+    let mut last_error = None;
+
+    for seed in 99..109 {
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
+            .weights(&weights_view)
+            .properties(GraphProperties::undirected())
+            .renumber()
+            .build::<Forward>(&entered)
+            .expect("graph");
+        let mut rng = RngState::new(&entered, seed).expect("rng");
+        match graph.balanced_cut_clustering(&entered, &mut rng, &params) {
+            Ok(result) => {
+                assert_eq!(result.vertex_ids().expect("vertices").len(), 6);
+                assert_eq!(result.clusters().expect("clusters").len(), 6);
+                return;
+            },
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    panic!("balanced cut clustering did not converge in retry window: {last_error:?}");
 }
 
 #[test]

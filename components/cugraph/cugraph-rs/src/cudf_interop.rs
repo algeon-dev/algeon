@@ -94,13 +94,18 @@ use rapids_interop::{
     ReadStartAuthority, TypeId as InteropTypeId,
 };
 
+#[allow(deprecated)]
+use crate::community::BalancedCutClusteringResult;
 use crate::{
     array::RawDeviceArrayView,
     centrality::{
         BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
         KatzCentralityResult, PageRankResult,
     },
-    community::{EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, TriangleCountResult},
+    community::{
+        EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, SpectralClusteringResult,
+        TriangleCountResult,
+    },
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
@@ -537,6 +542,29 @@ pub(crate) fn leiden_result_to_dataframe(result: &LeidenResult, runtime: &Runtim
 
 pub(crate) fn ecg_result_to_dataframe(result: &EcgResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "ecg_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn spectral_clustering_result_to_dataframe(
+    result: &SpectralClusteringResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "spectral_clustering_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+#[allow(deprecated)]
+pub(crate) fn balanced_cut_clustering_result_to_dataframe(
+    result: &BalancedCutClusteringResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "balanced_cut_clustering_result_to_dataframe";
     dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
         operation,
