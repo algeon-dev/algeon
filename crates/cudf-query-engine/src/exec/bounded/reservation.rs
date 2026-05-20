@@ -275,6 +275,27 @@ impl ActiveReservation {
         }
     }
 
+    fn relabeled_alias(mut self, request: &MemoryReservationRequest) -> Self {
+        assert!(!self.released, "cannot relabel a released reservation");
+        assert!(self.is_alias(), "cannot relabel a non-alias reservation as an alias");
+        let source_cache_key = self.source_cache_key.take();
+        let lineage = self.lineage.clone();
+        self.released = true;
+        Self {
+            memory_space: self.memory_space,
+            reserved_bytes: Rc::clone(&self.reserved_bytes),
+            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
+            source_cache_key,
+            event_context: ActiveReservationEventContext::from_request(request),
+            semantics: ActiveReservationSemantics::Alias,
+            lineage,
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes: request.requested_bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
     fn release(&mut self) -> Option<MemoryReservationEvent> {
         if self.released {
             return None;
@@ -623,6 +644,30 @@ impl ReservationTracker {
         transferred
     }
 
+    pub(in crate::exec) fn relabel_alias_reservation(
+        &mut self,
+        reservation: ActiveReservation,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> ActiveReservation {
+        self.assert_reservation_belongs_to_tracker(&reservation, "relabel_alias_reservation");
+        assert!(
+            reservation.is_alias(),
+            "reservation tracker invariant failed during relabel_alias_reservation: only alias reservations can be relabeled"
+        );
+        let request = self.stamp_request(request);
+        let relabeled = reservation.relabeled_alias(&request);
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::AliasRelabel,
+            0,
+            0,
+            self.raw_reserved_bytes(),
+        ));
+        relabeled
+    }
+
     pub(in crate::exec) fn borrow_accounted_source_cache(
         &self,
         key: GpuLocalParquetSourceCacheKey,
@@ -816,6 +861,10 @@ impl ReservationTracker {
         let mut protected = self.source_cache_protected_keys();
         protected.insert(additional_key.clone());
         protected
+    }
+
+    pub(in crate::exec) fn source_cache_protected_key_count(&self, key: &GpuLocalParquetSourceCacheKey) -> usize {
+        self.protected_source_cache_keys.borrow().get(key).copied().unwrap_or(0)
     }
 
     fn try_reserve_source_cache_baseline(&mut self, retained_bytes: u64, metrics: &mut QueryMetrics) -> Result<()> {

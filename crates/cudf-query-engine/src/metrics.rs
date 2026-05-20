@@ -37,6 +37,7 @@ pub enum MemoryReservationEventAction {
     Release,
     Transfer,
     AliasAcquire,
+    AliasRelabel,
     AliasRelease,
 }
 
@@ -49,6 +50,7 @@ impl MemoryReservationEventAction {
             Self::Release => "release",
             Self::Transfer => "transfer",
             Self::AliasAcquire => "alias_acquire",
+            Self::AliasRelabel => "alias_relabel",
             Self::AliasRelease => "alias_release",
         }
     }

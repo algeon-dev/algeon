@@ -10,6 +10,7 @@ use super::{
 use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
 
 const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
+const SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
@@ -318,7 +319,7 @@ fn read_local_parquet_chunks_serial(
             1,
             1,
         );
-        let reservation = match reservations.try_reserve(source_request, metrics) {
+        let mut reservation = match reservations.try_reserve(source_request, metrics) {
             Ok(reservation) => reservation,
             Err(error) => {
                 release_source_read_outputs_reverse(reservations, outputs, metrics);
@@ -330,9 +331,30 @@ fn read_local_parquet_chunks_serial(
             match read_local_parquet_chunk(context, source, chunk, source_token_budget, memory_boundary, metrics) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    reservations.release(reservation, metrics);
-                    release_source_read_outputs_reverse(reservations, outputs, metrics);
-                    return Err(error);
+                    match try_read_local_parquet_chunk_with_corrected_budget_after_error(
+                        context,
+                        source,
+                        chunk,
+                        &mut reservation,
+                        reservations,
+                        metrics,
+                        memory_boundary,
+                        &error,
+                        1,
+                        1,
+                    ) {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => {
+                            reservations.release(reservation, metrics);
+                            release_source_read_outputs_reverse(reservations, outputs, metrics);
+                            return Err(error);
+                        },
+                        Err(retry_error) => {
+                            reservations.release(reservation, metrics);
+                            release_source_read_outputs_reverse(reservations, outputs, metrics);
+                            return Err(retry_error);
+                        },
+                    }
                 },
             };
         let mut output =
@@ -360,7 +382,7 @@ fn read_local_parquet_chunks_serial(
                 1,
             )
         } {
-            Ok(bytes) => bytes,
+            Ok(observed_bytes) => observed_bytes,
             Err(error) => {
                 drop(output.frame);
                 reservations.release(output.reservation, metrics);
@@ -608,6 +630,8 @@ fn start_scheduled_source_read(
         source_token_budget,
         budget_boundary,
         prefetch,
+        attempt,
+        max_attempts,
     ))
 }
 
@@ -881,14 +905,34 @@ fn read_bounded_chunk_source(
         attempt,
         max_attempts,
     );
-    let source_reservation = reservations.try_reserve(source_request, metrics)?;
+    let mut source_reservation = reservations.try_reserve(source_request, metrics)?;
     let source_token_budget = reservations.available_bytes_including(&source_reservation);
     let frame =
         match read_local_parquet_chunk(context, source, chunk, source_token_budget, "source_chunk_read", metrics) {
             Ok(frame) => frame,
             Err(error) => {
-                reservations.release(source_reservation, metrics);
-                return Err(error);
+                match try_read_local_parquet_chunk_with_corrected_budget_after_error(
+                    context,
+                    source,
+                    chunk,
+                    &mut source_reservation,
+                    reservations,
+                    metrics,
+                    "source_chunk_read",
+                    &error,
+                    attempt,
+                    max_attempts,
+                ) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => {
+                        reservations.release(source_reservation, metrics);
+                        return Err(error);
+                    },
+                    Err(retry_error) => {
+                        reservations.release(source_reservation, metrics);
+                        return Err(retry_error);
+                    },
+                }
             },
         };
     let mut output = ScheduledLocalParquetReadOutput {
@@ -1311,7 +1355,7 @@ fn minimum_parquet_source_read_budget_bytes() -> u64 {
 /// Precision of the byte contract used when reserving memory for one bounded
 /// source-read chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SourceReadReservationContractQuality {
+pub(in crate::exec) enum SourceReadReservationContractQuality {
     /// A lower layer supplied an exact preflight byte contract, so bounded
     /// source reads can reserve the required bytes before decoding starts.
     #[allow(dead_code)]
@@ -1322,20 +1366,146 @@ pub(super) enum SourceReadReservationContractQuality {
     /// The read is admitted with an initial reservation and then reconciled to
     /// observed device bytes by growing or shrinking after decoding.
     ObservedGrowShrink,
+    /// A failed lower-level hard budget reported typed allocation counters and
+    /// the retry reservation was corrected from those counters.
+    CorrectedLowerLevelBudget,
     /// The reservation is based on file statistics or configured chunk caps;
     /// it may be retried with smaller row-group chunks if execution exceeds it.
     ConservativeEstimate,
 }
 
 impl SourceReadReservationContractQuality {
-    pub(super) const fn as_str(self) -> &'static str {
+    pub(in crate::exec) const fn as_str(self) -> &'static str {
         match self {
             Self::ExactLowerLevelContract => "exact_lower_level_contract",
             Self::ProjectedUncompressedEstimate => "projected_uncompressed_estimate",
             Self::ObservedGrowShrink => "observed_grow_shrink",
+            Self::CorrectedLowerLevelBudget => "corrected_lower_level_budget",
             Self::ConservativeEstimate => "conservative_estimate",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec) struct SourceReadBudgetCorrection {
+    previous_budget_bytes: u64,
+    corrected_budget_bytes: u64,
+    peak_aligned_bytes: u64,
+    largest_failed_allocation_bytes: u64,
+    failed_allocation_count: u64,
+    cap_bytes: u64,
+}
+
+impl SourceReadBudgetCorrection {
+    pub(in crate::exec) fn attach_to_error(self, error: QueryError) -> QueryError {
+        error
+            .with_fact_if_absent("budget_retry_previous_budget_bytes", self.previous_budget_bytes)
+            .with_fact_if_absent("budget_retry_corrected_budget_bytes", self.corrected_budget_bytes)
+            .with_fact_if_absent("budget_retry_peak_aligned_bytes", self.peak_aligned_bytes)
+            .with_fact_if_absent("budget_retry_largest_failed_allocation_bytes", self.largest_failed_allocation_bytes)
+            .with_fact_if_absent("budget_retry_failed_allocation_count", self.failed_allocation_count)
+            .with_fact_if_absent("budget_retry_slack_bytes", SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES)
+            .with_fact_if_absent("budget_retry_cap_bytes", self.cap_bytes)
+    }
+
+    pub(in crate::exec) fn corrected_budget_bytes(self) -> u64 {
+        self.corrected_budget_bytes
+    }
+
+    pub(in crate::exec) fn previous_budget_bytes(self) -> u64 {
+        self.previous_budget_bytes
+    }
+}
+
+pub(in crate::exec) fn source_read_budget_correction_from_error(
+    error: &QueryError,
+    reservations: &ReservationTracker,
+    reservation: &ActiveReservation,
+) -> Option<SourceReadBudgetCorrection> {
+    if error.code() != QueryErrorCode::CudfResourceExhausted {
+        return None;
+    }
+    let detail = error.cudf_budget_exhaustion()?;
+    if detail.failed_allocation_count() == 0 || detail.largest_failed_allocation_bytes() == 0 {
+        return None;
+    }
+    let previous_budget_bytes = u64::try_from(detail.hard_budget_bytes()).ok()?;
+    let peak_aligned_bytes = u64::try_from(detail.peak_aligned_bytes()).ok()?;
+    let largest_failed_allocation_bytes = u64::try_from(detail.largest_failed_allocation_bytes()).ok()?;
+    let failed_allocation_count = u64::try_from(detail.failed_allocation_count()).ok()?;
+    let lower_bound = previous_budget_bytes.saturating_mul(2).max(
+        peak_aligned_bytes
+            .saturating_add(largest_failed_allocation_bytes)
+            .saturating_add(SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES),
+    );
+    let cap_bytes = reservations.available_bytes_including(reservation);
+    let corrected_budget_bytes = lower_bound.min(cap_bytes);
+    if corrected_budget_bytes <= previous_budget_bytes {
+        return None;
+    }
+    Some(SourceReadBudgetCorrection {
+        previous_budget_bytes,
+        corrected_budget_bytes,
+        peak_aligned_bytes,
+        largest_failed_allocation_bytes,
+        failed_allocation_count,
+        cap_bytes,
+    })
+}
+
+pub(in crate::exec) fn try_grow_source_read_reservation_for_budget_correction(
+    reservations: &mut ReservationTracker,
+    reservation: &mut ActiveReservation,
+    correction: SourceReadBudgetCorrection,
+    mut request: MemoryReservationRequest,
+    metrics: &mut QueryMetrics,
+) -> Result<()> {
+    if correction.corrected_budget_bytes <= reservation.bytes() {
+        return Ok(());
+    }
+    let delta = correction.corrected_budget_bytes.saturating_sub(reservation.bytes());
+    request = request.with_requested_bytes(delta).with_source_read_contract(
+        SourceReadReservationContractQuality::CorrectedLowerLevelBudget.as_str(),
+        Some(correction.previous_budget_bytes),
+        Some(correction.corrected_budget_bytes),
+    );
+    reservations.try_grow(reservation, request, metrics).map_err(|error| correction.attach_to_error(error))
+}
+
+fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    error: &QueryError,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<Option<GpuDataFrame>> {
+    if attempt >= max_attempts {
+        return Ok(None);
+    }
+    let Some(correction) = source_read_budget_correction_from_error(error, reservations, reservation) else {
+        return Ok(None);
+    };
+    record_chunk_retry_error(error, metrics);
+    metrics.record_source_chunk_retry();
+    let request = chunk_reservation_request(
+        ReservationKind::SourceRead,
+        memory_boundary,
+        0,
+        reservations.budget(),
+        chunk,
+        attempt + 1,
+        max_attempts,
+    );
+    try_grow_source_read_reservation_for_budget_correction(reservations, reservation, correction, request, metrics)?;
+    metrics.record_source_chunk_attempt();
+    read_local_parquet_chunk(context, source, chunk, correction.corrected_budget_bytes(), memory_boundary, metrics)
+        .map(Some)
+        .map_err(|error| correction.attach_to_error(error))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1354,6 +1524,14 @@ pub(super) fn source_read_reservation_contract(
         MemoryControlPolicy::Unbounded => 0,
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
     };
+    if let Some(exact_bytes) = chunk.exact_source_read_preflight_bytes {
+        return SourceReadReservationContract {
+            requested_bytes: exact_bytes,
+            planning_bytes: Some(exact_bytes),
+            estimated_bytes: chunk.estimated_source_read_bytes,
+            quality: SourceReadReservationContractQuality::ExactLowerLevelContract,
+        };
+    }
     let has_projected_source_read_estimate = chunk.estimated_source_read_bytes.is_some()
         && (chunk.known_projected_uncompressed_bytes.is_some() || chunk.known_pure_filter_uncompressed_bytes.is_some());
     let planning_bytes = if has_projected_source_read_estimate {
@@ -1501,7 +1679,7 @@ fn is_prefetch_chunk_error(error: &QueryError) -> bool {
         || error.fact_value("memory_boundary") == Some("source_chunk_prefetch")
 }
 
-pub(super) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
     match error.code() {
         QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
         QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
@@ -1637,6 +1815,7 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        exact_source_read_preflight_bytes: None,
         source_file_row_groups: parent.source_file_row_groups.clone(),
         source_file_row_group_bytes: parent.source_file_row_group_bytes.clone(),
         source_file_projected_compressed_bytes: parent.source_file_projected_compressed_bytes.clone(),

@@ -192,13 +192,19 @@ pub(super) fn append_source_read_edge_requirement(
     producer: NodeId,
     requirements: &mut Vec<ReservationRequirement>,
 ) {
-    if matches!(plan.node(producer).map(|node| &node.kind), Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::LocalParquet(_)))
+    if let Some(PlanNode::Source(source)) = plan.node(producer).map(|node| &node.kind)
+        && let SourceNode::LocalParquet(source) = source.as_ref()
     {
+        let (required_contract, quality) = if local_parquet_source_has_exact_read_preflight(source) {
+            ("parquet_source_read_exact_preflight", ContractQuality::ExactPreflight)
+        } else {
+            ("source_contract", ContractQuality::HardBudgetedReportWithUnresolvedPreflight)
+        };
         requirements.push(ReservationRequirement::modeled(
             ReservationKind::SourceRead,
             "source_read",
-            "source_contract",
-            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            required_contract,
+            quality,
         ));
     }
 }

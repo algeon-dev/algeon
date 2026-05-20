@@ -19,7 +19,7 @@ use super::{
         validate_joined_aggregate_scalar_expressions, validate_required_scalar_expressions,
     },
     executable_schema_and_bindings,
-    expr::{collect_required_field_indices, lower_physical_expr, lower_physical_expr_with_bindings},
+    expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input, projection_outputs,
     sort::lower_sort_with_input,
     source::{
@@ -125,7 +125,7 @@ pub(super) fn lower_slice1_plan(
             file_scan.limit,
             scan_projection_requires_native,
             &source_output_schema,
-            source_exec.schema(),
+            if filter.is_none() { Arc::clone(&table_schema) } else { source_exec.schema() },
             &source,
         )?
     {
@@ -151,10 +151,11 @@ pub(super) fn lower_slice1_plan(
         None
     };
     let (scan_input_node, scan_input_schema) = if let Some(predicate) = scan_only_post_scan_predicate.as_ref() {
+        let bindings = source_bindings_for_schema(&source_output_schema, Arc::clone(&table_schema));
         (
             builder.add_filter(
                 source_node,
-                lower_physical_expr(predicate, &source_output_schema)?,
+                lower_physical_expr_with_bindings(predicate, &table_schema, Some(&bindings))?,
                 Arc::clone(&source_output_schema),
             ),
             Arc::clone(&source_output_schema),

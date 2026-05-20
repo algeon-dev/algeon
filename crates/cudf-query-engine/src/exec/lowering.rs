@@ -59,6 +59,20 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     }
 }
 
+pub(super) fn lower_filter_predicate_expr(expr: &Expr) -> Result<cudf::Expr> {
+    match expr {
+        Expr::Not(expr) => Ok(lower_filter_predicate_expr(expr)?.not()),
+        Expr::IsNull(expr) => Ok(lower_filter_predicate_expr(expr)?.is_null()),
+        Expr::IsNotNull(expr) => Ok(lower_filter_predicate_expr(expr)?.is_not_null()),
+        Expr::Binary { left, op, right, output_type } => {
+            lower_filter_binary_expr(left, *op, right, output_type.as_ref())
+        },
+        Expr::InList { expr, list, negated } => lower_filter_in_list(expr, list, *negated),
+        Expr::Alias { expr, alias } => Ok(lower_filter_predicate_expr(expr)?.alias(alias)),
+        _ => lower_expr(expr),
+    }
+}
+
 pub(super) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<cudf::Expr> {
     lower_expr_with_expected_type(&output.expr, Some(output.field.data_type()))
 }
@@ -132,6 +146,41 @@ fn lower_binary_expr(
     output_type: Option<&ArrowDataType>,
 ) -> Result<cudf::Expr> {
     lower_binary_expr_with_expected_type(left, op, right, output_type, None)
+}
+
+fn lower_filter_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    output_type: Option<&ArrowDataType>,
+) -> Result<cudf::Expr> {
+    match op {
+        BinaryOp::And => Ok(cudf_binary_expr(
+            lower_filter_predicate_expr(left)?,
+            BinaryOperator::LogicalAnd,
+            lower_filter_predicate_expr(right)?,
+        )),
+        BinaryOp::Or if filter_or_can_use_row_logical(left, right) => Ok(cudf_binary_expr(
+            lower_filter_predicate_expr(left)?,
+            BinaryOperator::LogicalOr,
+            lower_filter_predicate_expr(right)?,
+        )),
+        _ => lower_binary_expr(left, op, right, output_type),
+    }
+}
+
+fn filter_or_can_use_row_logical(left: &Expr, right: &Expr) -> bool {
+    !filter_expr_is_bare_nullable_boolean_value(left) && !filter_expr_is_bare_nullable_boolean_value(right)
+}
+
+fn filter_expr_is_bare_nullable_boolean_value(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::Literal(LiteralValue::Boolean(_) | LiteralValue::Null(ArrowDataType::Boolean)) => true,
+        Expr::Not(expr) | Expr::Alias { expr, .. } => filter_expr_is_bare_nullable_boolean_value(expr),
+        Expr::Cast { target_type, .. } => matches!(target_type, ArrowDataType::Boolean),
+        _ => false,
+    }
 }
 
 fn lower_binary_expr_with_expected_type(
@@ -357,6 +406,35 @@ fn lower_float_round(expr: &Expr, decimal_places: i32) -> Result<cudf::Expr> {
 }
 
 fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {
+    validate_in_list_literal_values(list)?;
+    let values = list.iter().map(lower_expr).collect::<Result<Vec<_>>>()?;
+    Ok(if negated { lower_expr(expr)?.is_not_in_list(values) } else { lower_expr(expr)?.is_in_list(values) })
+}
+
+fn lower_filter_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {
+    validate_in_list_literal_values(list)?;
+    let Some((first, rest)) = list.split_first() else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_filter_in_list",
+            "native filter IN list requires at least one value",
+        ));
+    };
+
+    let op = if negated { BinaryOp::NotEq } else { BinaryOp::Eq };
+    let combine_op = if negated { BinaryOperator::LogicalAnd } else { BinaryOperator::LogicalOr };
+    let mut lowered = lower_filter_binary_expr(expr, op, first, Some(&ArrowDataType::Boolean))?;
+    for item in rest {
+        lowered = cudf_binary_expr(
+            lowered,
+            combine_op,
+            lower_filter_binary_expr(expr, op, item, Some(&ArrowDataType::Boolean))?,
+        );
+    }
+    Ok(lowered)
+}
+
+fn validate_in_list_literal_values(list: &[Expr]) -> Result<()> {
     for item in list {
         let Expr::Literal(value) = item else {
             return Err(QueryError::new(
@@ -373,8 +451,7 @@ fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr
             ));
         }
     }
-    let values = list.iter().map(lower_expr).collect::<Result<Vec<_>>>()?;
-    Ok(if negated { lower_expr(expr)?.is_not_in_list(values) } else { lower_expr(expr)?.is_in_list(values) })
+    Ok(())
 }
 
 fn validate_like_escape(escape: &str) -> Result<()> {

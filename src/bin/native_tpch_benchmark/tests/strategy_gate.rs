@@ -126,6 +126,23 @@ fn sf100_bounded_reservation_gate_accepts_q09_q18_q19_skip_cpu_success() {
 }
 
 #[test]
+fn sf100_bounded_reservation_gate_accepts_q19_runtime_success_with_matched_parity() {
+    let mut report = sf100_q09_q18_q19_report(false, 82_000_000_000, 83_000_000_000, 84_000_000_000, 0);
+    report.rows[2] = cpu_enabled_matched_row(
+        "q19",
+        NativeDataFusionExecutionMetrics { reservation_live_peak_bytes: 84_000_000_000, ..Default::default() },
+    );
+
+    let summary = strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&report.to_tsv(), &report.config)
+        .expect("gate should parse")
+        .expect("SF100 gate should accept q19 when native runtime succeeds and parity matches");
+
+    assert_eq!(summary.query_ids, vec!["q09", "q18", "q19"]);
+    assert_eq!(summary.reservation_denied_count, 0);
+    assert_eq!(summary.reservation_live_peak_bytes, 84_000_000_000);
+}
+
+#[test]
 fn sf100_bounded_reservation_gate_rejects_denials() {
     let report = sf100_q09_q18_q19_report(false, 82_000_000_000, 83_000_000_000, 84_000_000_000, 1);
 
@@ -338,6 +355,15 @@ fn cpu_enabled_mismatched_row(query_id: &str, metrics: NativeDataFusionExecution
         Ok(timed_cpu_run("output-fnv1a64:0000000000000009")),
         Ok(native),
     )
+}
+
+fn cpu_enabled_matched_row(query_id: &str, metrics: NativeDataFusionExecutionMetrics) -> NativeTpchBenchmarkRow {
+    let mut planning = accepted_planning_row(query_id);
+    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
+    let fingerprint = format!("output-fnv1a64:{:016x}", query_id.as_bytes()[2]);
+    let mut native = timed_native_run(&fingerprint);
+    native.metrics = metrics;
+    NativeTpchBenchmarkRow::accepted(query_id, planning, Ok(timed_cpu_run(&fingerprint)), Ok(native))
 }
 
 fn benchmark_sf100_metadata() -> TpchDatasetMetadata {

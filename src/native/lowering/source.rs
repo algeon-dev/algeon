@@ -113,7 +113,7 @@ pub(super) fn lower_source_input(
         file_scan.limit,
         scan_projection_requires_native,
         &source_output_schema,
-        source_exec.schema(),
+        if filter.is_none() { Arc::clone(&table_schema) } else { source_exec.schema() },
         &native_source,
     )? {
         reader_pushdown_covers_filter = predicate.covers_filter;
@@ -137,10 +137,11 @@ pub(super) fn lower_source_input(
         None
     };
     let (scan_input_node, scan_input_schema) = if let Some(predicate) = scan_only_post_scan_predicate.as_ref() {
+        let bindings = source_bindings_for_schema(&source_output_schema, Arc::clone(&table_schema));
         (
             builder.add_filter(
                 source_node,
-                lower_physical_expr(predicate, &source_output_schema)?,
+                lower_physical_expr_with_bindings(predicate, &table_schema, Some(&bindings))?,
                 Arc::clone(&source_output_schema),
             ),
             Arc::clone(&source_output_schema),
@@ -703,13 +704,14 @@ pub(super) fn source_reader_pushdown_predicate(
     let predicate = if let Some(filter) = filter
         && covers_filter
     {
-        let bindings = source_bindings_for_schema(source_output_schema, frontend_schema);
+        let bindings = source_bindings_for_schema(source_output_schema, Arc::clone(&frontend_schema));
         lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings))
     } else {
         let Some(reader_scan_predicate) = reader_scan_predicate.as_ref() else {
             return Ok(None);
         };
-        lower_physical_expr(reader_scan_predicate, source_output_schema)
+        let bindings = source_bindings_for_schema(source_output_schema, Arc::clone(&frontend_schema));
+        lower_physical_expr_with_bindings(reader_scan_predicate, &frontend_schema, Some(&bindings))
     };
     let predicate = match predicate {
         Ok(predicate) => predicate,

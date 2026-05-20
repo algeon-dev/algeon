@@ -4,7 +4,8 @@ use super::*;
 use crate::exec::{
     bounded::chunks::{
         SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
-        source_read_reservation_contract, try_read_cached_local_parquet_chunk,
+        source_read_budget_correction_from_error, source_read_reservation_contract,
+        try_grow_source_read_reservation_for_budget_correction, try_read_cached_local_parquet_chunk,
     },
     source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk},
 };
@@ -435,8 +436,34 @@ fn read_join_leaf_source_chunk_attempt(
     {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(reservation, metrics);
-            return Err(attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts));
+            match try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
+                context,
+                source,
+                chunk,
+                node_id,
+                &mut reservation,
+                reservations,
+                metrics,
+                &error,
+                attempt,
+                max_attempts,
+            ) {
+                Ok(Some(frame)) => frame,
+                Ok(None) => {
+                    reservations.release(reservation, metrics);
+                    return Err(attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts));
+                },
+                Err(retry_error) => {
+                    reservations.release(reservation, metrics);
+                    return Err(attach_join_source_read_resource_facts(
+                        retry_error,
+                        node_id,
+                        chunk,
+                        attempt.saturating_add(1),
+                        max_attempts,
+                    ));
+                },
+            }
         },
     };
     if grow_source_to_observed {
@@ -479,6 +506,43 @@ fn read_join_leaf_source_chunk_attempt(
     }
     metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
     Ok((frame, reservation))
+}
+
+fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    node_id: NodeId,
+    reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    error: &QueryError,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<Option<GpuDataFrame>> {
+    if attempt >= max_attempts {
+        return Ok(None);
+    }
+    let Some(correction) = source_read_budget_correction_from_error(error, reservations, reservation) else {
+        return Ok(None);
+    };
+    record_chunk_retry_error(error, metrics);
+    metrics.record_source_chunk_retry();
+    let request = join_source_read_reservation_request_for_boundary(
+        context.memory_control_policy(),
+        0,
+        reservations.budget(),
+        node_id,
+        chunk,
+        "join_source_read",
+        attempt + 1,
+        max_attempts,
+    );
+    try_grow_source_read_reservation_for_budget_correction(reservations, reservation, correction, request, metrics)?;
+    metrics.record_source_chunk_attempt();
+    read_local_parquet_chunk(context, source, chunk, correction.corrected_budget_bytes(), "join_source_read", metrics)
+        .map(Some)
+        .map_err(|error| correction.attach_to_error(error))
 }
 
 fn read_join_leaf_source_chunks_with_scheduler(
@@ -615,8 +679,22 @@ fn stream_join_leaf_source_chunks_serial<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
+    stream_join_leaf_source_chunks_serial_from(context, stream, &stream.chunks, reservations, metrics, consume)
+}
+
+fn stream_join_leaf_source_chunks_serial_from<F>(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    consume: &mut F,
+) -> Result<()>
+where
+    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+{
     let grow_source_to_observed = stream.stages.is_empty();
-    for chunk in &stream.chunks {
+    for chunk in chunks {
         let outputs = read_join_leaf_source_chunk_with_retry(
             context,
             &stream.source,
@@ -669,6 +747,20 @@ where
         let is_prefetch = scheduled.is_prefetch();
         let mut output = match scheduled.finish(reservations, metrics) {
             Ok(output) => output,
+            Err(error) if is_retryable_chunk_error(&error) => {
+                if is_prefetch {
+                    metrics.record_source_read_prefetch_abandoned();
+                }
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                return stream_join_leaf_source_chunks_serial_from(
+                    context,
+                    stream,
+                    &stream.chunks[index..],
+                    reservations,
+                    metrics,
+                    consume,
+                );
+            },
             Err(error) => {
                 abandon_join_leaf_reads(pending, reservations, metrics);
                 return Err(attach_join_source_read_resource_facts(
@@ -841,7 +933,7 @@ fn fill_optional_join_leaf_reads(
             metrics,
             requested_bytes,
             "join_source_read_prefetch",
-            true,
+            false,
             true,
             1,
             max_attempts,
@@ -889,6 +981,8 @@ fn start_join_leaf_scheduled_source_read(
         source_token_budget,
         memory_boundary,
         prefetch,
+        attempt,
+        max_attempts,
     ))
 }
 

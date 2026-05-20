@@ -209,6 +209,8 @@ fn source_chunk_planning_uses_source_read_uncompressed_bytes_for_chunk_ceiling()
     assert_eq!(plan.chunks[0].known_pure_filter_uncompressed_bytes, Some(400));
     assert_eq!(plan.chunks[0].estimated_chunk_bytes, Some(100));
     assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(500));
+    let minimum_read_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+    assert_eq!(plan.chunks[0].exact_source_read_preflight_bytes, Some(minimum_read_budget));
     assert_eq!(plan.chunks[1].row_group_indexes, vec![1]);
     assert_eq!(plan.chunks[1].estimated_chunk_bytes, Some(100));
 }
@@ -240,6 +242,58 @@ fn source_chunk_planning_does_not_double_count_overlapping_projected_filter_colu
     assert_eq!(plan.chunks[0].known_pure_filter_uncompressed_bytes, Some(200));
     assert_eq!(plan.chunks[0].estimated_chunk_bytes, Some(200));
     assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(200));
+    let minimum_read_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+    assert_eq!(plan.chunks[0].exact_source_read_preflight_bytes, Some(minimum_read_budget));
+}
+
+#[test]
+fn source_chunk_planning_uses_exact_required_budget_when_it_exceeds_minimum_source_read_budget() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int64, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/part-000.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_bytes(vec![1_000])
+                .with_projected_row_group_bytes(vec![100], vec![100])
+                .with_row_group_rows(vec![20_000]),
+        ],
+        Arc::clone(&schema),
+        vec!["payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(1024), 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(100));
+    assert_eq!(plan.chunks[0].exact_source_read_preflight_bytes, Some(160_000));
+}
+
+#[test]
+fn source_chunk_planning_leaves_variable_width_source_reads_on_fallback_contract() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Utf8, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/part-000.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_bytes(vec![1_000])
+                .with_projected_row_group_bytes(vec![100], vec![400])
+                .with_row_group_rows(vec![10]),
+        ],
+        Arc::clone(&schema),
+        vec!["payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(1024), 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(400));
+    assert_eq!(plan.chunks[0].exact_source_read_preflight_bytes, None);
 }
 
 #[test]

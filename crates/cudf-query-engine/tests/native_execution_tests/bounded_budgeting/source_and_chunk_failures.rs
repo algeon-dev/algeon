@@ -237,6 +237,12 @@ fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservati
     assert!(error.fact_value("budget_current_bytes").is_some());
     assert!(error.fact_value("budget_failed_allocation_count").is_some());
     assert!(error.fact_value("budget_largest_failed_allocation_bytes").is_some());
+    let budget = error.cudf_budget_exhaustion().expect("source-read OOM should preserve typed budget detail");
+    assert_eq!(budget.boundary(), "source_chunk_read");
+    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget");
+    assert_eq!(budget.hard_budget_bytes(), admitted_budget.parse::<usize>().unwrap());
+    assert!(budget.failed_allocation_count() > 0);
+    assert!(budget.largest_failed_allocation_bytes() > 0);
     assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));

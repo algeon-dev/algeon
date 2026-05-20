@@ -253,6 +253,105 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
 }
 
 #[test]
+fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("a", DataType::Boolean, true),
+        Field::new("b", DataType::Boolean, true),
+        Field::new("label", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+            Arc::new(BooleanArray::from(vec![Some(true), Some(true), Some(false), None, None, None])),
+            Arc::new(BooleanArray::from(vec![Some(true), None, None, Some(true), Some(false), None])),
+            Arc::new(StringArray::from(vec![Some("A"), Some("C"), None, Some("B"), Some("D"), Some("A")])),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        execute_gpu_resident_filter_ids(
+            &runtime,
+            Arc::clone(&schema),
+            &batch,
+            Expr::binary(Expr::column("a"), BinaryOp::And, Expr::column("b"))
+        ),
+        vec![1]
+    );
+    assert_eq!(
+        execute_gpu_resident_filter_ids(
+            &runtime,
+            Arc::clone(&schema),
+            &batch,
+            Expr::binary(Expr::column("a"), BinaryOp::Or, Expr::column("b"))
+        ),
+        vec![1, 2, 4]
+    );
+    assert_eq!(
+        execute_gpu_resident_filter_ids(
+            &runtime,
+            Arc::clone(&schema),
+            &batch,
+            Expr::in_list(
+                Expr::column("label"),
+                vec![
+                    Expr::literal(LiteralValue::Utf8("A".to_string())),
+                    Expr::literal(LiteralValue::Utf8("B".to_string())),
+                ],
+            ),
+        ),
+        vec![1, 4, 6]
+    );
+    assert_eq!(
+        execute_gpu_resident_filter_ids(
+            &runtime,
+            Arc::clone(&schema),
+            &batch,
+            Expr::not_in_list(
+                Expr::column("label"),
+                vec![
+                    Expr::literal(LiteralValue::Utf8("A".to_string())),
+                    Expr::literal(LiteralValue::Utf8("B".to_string())),
+                ],
+            ),
+        ),
+        vec![2, 5]
+    );
+}
+
+fn execute_gpu_resident_filter_ids(
+    runtime: &Arc<cudf::Runtime>,
+    schema: Arc<Schema>,
+    batch: &RecordBatch,
+    predicate: Expr,
+) -> Vec<i32> {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+    let filter = builder.add_filter(source, predicate, Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(filter);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "input".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(runtime, batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    int32_array(batch, 0).values().to_vec()
+}
+
+#[test]
 fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
     let dir = unique_temp_dir("cudf-query-engine-native-source-scan-limit");
     let path = dir.join("input.parquet");

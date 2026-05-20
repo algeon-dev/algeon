@@ -51,11 +51,16 @@ pub use types::{
 
 #[doc(hidden)]
 pub mod reservation_contract_testing {
-    use super::bounded::ReservationTracker;
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+
+    use super::{bounded::ReservationTracker, types::GpuLocalParquetSourceCacheKey};
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,
         runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
+        source::LocalParquetSource,
     };
 
     #[derive(Debug)]
@@ -72,6 +77,19 @@ pub mod reservation_contract_testing {
         pub metrics: QueryMetrics,
         pub error: QueryError,
         pub reserved_after_denial: u64,
+    }
+
+    #[derive(Debug)]
+    pub struct SourceCacheAliasRelabelProbe {
+        pub metrics: QueryMetrics,
+        pub reserved_after_cache_insert: u64,
+        pub reserved_after_borrow: u64,
+        pub reserved_after_relabel: u64,
+        pub reserved_after_alias_release: u64,
+        pub reserved_after_cache_release: u64,
+        pub protected_after_borrow: usize,
+        pub protected_after_relabel: usize,
+        pub protected_after_alias_release: usize,
     }
 
     pub fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
@@ -180,6 +198,60 @@ pub mod reservation_contract_testing {
         tracker.release(alias, &mut metrics);
         tracker.release(owned, &mut metrics);
         Ok(ReservationTrackerDenialProbe { metrics, error, reserved_after_denial })
+    }
+
+    pub fn probe_source_cache_alias_relabel_contract() -> Result<SourceCacheAliasRelabelProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let key = source_cache_key();
+        let mut source = tracker.try_reserve_owned_resident(
+            request(ReservationKind::SourceRead, "join_source_read", 60, tracker.budget()),
+            &mut metrics,
+        )?;
+        tracker.promote_source_cache_insert(
+            &mut source,
+            60,
+            request(ReservationKind::SourceCacheRetained, "source_cache_retained", 60, tracker.budget()),
+            &mut metrics,
+            &key,
+        )?;
+        let reserved_after_cache_insert = tracker.reserved_bytes();
+        tracker.release(source, &mut metrics);
+
+        let borrowed = tracker.borrow_accounted_source_cache(key.clone(), 60, &mut metrics);
+        let reserved_after_borrow = tracker.reserved_bytes();
+        let protected_after_borrow = tracker.source_cache_protected_key_count(&key);
+        let relabeled = tracker.relabel_alias_reservation(
+            borrowed,
+            request(ReservationKind::ProbeSide, "join_probe_side", 60, tracker.budget()),
+            &mut metrics,
+        );
+        let reserved_after_relabel = tracker.reserved_bytes();
+        let protected_after_relabel = tracker.source_cache_protected_key_count(&key);
+        tracker.release(relabeled, &mut metrics);
+        let reserved_after_alias_release = tracker.reserved_bytes();
+        let protected_after_alias_release = tracker.source_cache_protected_key_count(&key);
+        tracker.release_source_cache_baseline_bytes(60, &mut metrics);
+        let reserved_after_cache_release = tracker.reserved_bytes();
+
+        Ok(SourceCacheAliasRelabelProbe {
+            metrics,
+            reserved_after_cache_insert,
+            reserved_after_borrow,
+            reserved_after_relabel,
+            reserved_after_alias_release,
+            reserved_after_cache_release,
+            protected_after_borrow,
+            protected_after_relabel,
+            protected_after_alias_release,
+        })
+    }
+
+    fn source_cache_key() -> GpuLocalParquetSourceCacheKey {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", ArrowDataType::Int64, true)]));
+        let source =
+            LocalParquetSource::new("/tmp/source-cache-alias-contract.parquet", schema, vec!["c0".to_string()]);
+        GpuLocalParquetSourceCacheKey::from_source(&source)
     }
 
     fn request(

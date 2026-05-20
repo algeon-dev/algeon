@@ -12,7 +12,7 @@ use super::{
 mod adaptive;
 mod admission;
 mod aggregate;
-mod chunks;
+pub(in crate::exec) mod chunks;
 mod compiled;
 mod facts;
 mod final_sort;

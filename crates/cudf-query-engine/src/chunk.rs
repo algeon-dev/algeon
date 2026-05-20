@@ -170,6 +170,7 @@ pub struct SourceChunk {
     pub known_pure_filter_uncompressed_bytes: Option<u64>,
     pub estimated_chunk_bytes: Option<u64>,
     pub estimated_source_read_bytes: Option<u64>,
+    pub exact_source_read_preflight_bytes: Option<u64>,
     pub source_file_row_groups: Option<Vec<usize>>,
     pub source_file_row_group_bytes: Option<Vec<u64>>,
     pub source_file_projected_compressed_bytes: Option<Vec<u64>>,
@@ -272,6 +273,11 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     })
 }
 
+pub fn local_parquet_source_has_exact_read_preflight(source: &LocalParquetSource) -> bool {
+    source.files.iter().all(|file| source_file_has_row_count_metadata(file))
+        && exact_source_read_preflight_bytes(source, Some(1), source.is_zero_column_count_source()).is_some()
+}
+
 fn apply_source_scan_limit_to_chunks(
     source: &LocalParquetSource,
     chunks: Vec<SourceChunk>,
@@ -308,6 +314,8 @@ fn apply_source_scan_limit_to_chunks(
             if limited.is_empty() {
                 chunk.scan_limit_rows = Some(0);
                 chunk.known_row_count = Some(0);
+                chunk.exact_source_read_preflight_bytes =
+                    exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count);
                 limited.push(chunk);
             }
             break;
@@ -330,6 +338,8 @@ fn apply_source_scan_limit_to_chunks(
         })?;
         chunk.scan_limit_rows = Some(keep_rows);
         chunk.known_row_count = Some(remaining);
+        chunk.exact_source_read_preflight_bytes =
+            exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count);
         limited.push(chunk);
         break;
     }
@@ -755,6 +765,8 @@ fn push_pending_chunk(
     )
     .or(known_row_group_bytes)
     .or(estimated_chunk_bytes);
+    let exact_source_read_preflight_bytes =
+        exact_source_read_preflight_bytes(source, known_row_count, source.is_zero_column_count_source());
     chunks.push(SourceChunk {
         source_node_id,
         chunk_index: chunks.len(),
@@ -772,6 +784,7 @@ fn push_pending_chunk(
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        exact_source_read_preflight_bytes,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
         source_file_projected_compressed_bytes: metadata.and_then(RowGroupMetadata::projected_compressed_bytes_vec),
@@ -803,6 +816,79 @@ fn source_read_uncompressed_bytes(
         (Some(projected), None) => Some(projected),
         (None, Some(filter)) => Some(filter),
         (None, None) => None,
+    }
+}
+
+fn exact_source_read_preflight_bytes(
+    source: &LocalParquetSource,
+    known_row_count: Option<u64>,
+    zero_column_count: bool,
+) -> Option<u64> {
+    let row_count = if zero_column_count { 1 } else { known_row_count? };
+    if zero_column_count {
+        return exact_source_read_required_budget_bytes(exact_fixed_width_column_upper_bound_bytes(
+            &arrow::datatypes::DataType::Int64,
+            false,
+            row_count,
+        )?);
+    }
+    let mut seen = BTreeSet::new();
+    let mut total = 0u64;
+    for column in source.projected_output_columns.iter().chain(&source.pure_filter_columns) {
+        if !seen.insert(column.as_str()) {
+            continue;
+        }
+        let field = source.schema.field_with_name(column).ok()?;
+        let column_bytes =
+            exact_fixed_width_column_upper_bound_bytes(field.data_type(), field.is_nullable(), row_count)?;
+        total = total.checked_add(column_bytes)?;
+    }
+    exact_source_read_required_budget_bytes(total)
+}
+
+fn exact_source_read_required_budget_bytes(retained_output_bytes: u64) -> Option<u64> {
+    let minimum_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).ok()?;
+    Some(retained_output_bytes.max(minimum_budget))
+}
+
+fn exact_fixed_width_column_upper_bound_bytes(
+    data_type: &arrow::datatypes::DataType,
+    nullable: bool,
+    row_count: u64,
+) -> Option<u64> {
+    let element_size = match data_type {
+        arrow::datatypes::DataType::Boolean | arrow::datatypes::DataType::Int8 | arrow::datatypes::DataType::UInt8 => 1,
+        arrow::datatypes::DataType::Int16 | arrow::datatypes::DataType::UInt16 => 2,
+        arrow::datatypes::DataType::Int32
+        | arrow::datatypes::DataType::UInt32
+        | arrow::datatypes::DataType::Float32
+        | arrow::datatypes::DataType::Date32 => 4,
+        arrow::datatypes::DataType::Int64
+        | arrow::datatypes::DataType::UInt64
+        | arrow::datatypes::DataType::Float64
+        | arrow::datatypes::DataType::Date64
+        | arrow::datatypes::DataType::Timestamp(_, _)
+        | arrow::datatypes::DataType::Duration(_) => 8,
+        arrow::datatypes::DataType::Decimal128(_, _) => 16,
+        _ => return None,
+    };
+    let data_bytes = row_count.checked_mul(element_size)?;
+    let mask_bytes = if nullable { null_mask_allocation_size_bytes(row_count) } else { 0 };
+    data_bytes.checked_add(mask_bytes)
+}
+
+fn null_mask_allocation_size_bytes(row_count: u64) -> u64 {
+    if row_count == 0 { 0 } else { row_count.div_ceil(8).div_ceil(64) * 64 }
+}
+
+fn source_file_has_row_count_metadata(file: &LocalParquetFile) -> bool {
+    let Some(rows) = &file.row_group_rows else {
+        return false;
+    };
+    if let Some(selected) = &file.row_groups {
+        selected.iter().all(|row_group| *row_group < rows.len())
+    } else {
+        !rows.is_empty()
     }
 }
 
@@ -845,6 +931,7 @@ fn single_all_row_groups_chunk(
         known_pure_filter_uncompressed_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
         estimated_source_read_bytes: file.file_size_bytes,
+        exact_source_read_preflight_bytes: None,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: None,
         source_file_projected_compressed_bytes: None,
