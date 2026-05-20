@@ -556,6 +556,17 @@ pub(super) fn reconcile_join_output_upper_bound(
     Ok(())
 }
 
+pub(super) fn validate_join_output_upper_bound_bytes(
+    node_id: NodeId,
+    upper_bound_bytes: u64,
+    observed_bytes: u64,
+) -> Result<()> {
+    if observed_bytes > upper_bound_bytes {
+        return Err(join_output_upper_bound_violation_error(node_id, upper_bound_bytes, observed_bytes));
+    }
+    Ok(())
+}
+
 fn join_output_upper_bound_violation_error(node_id: NodeId, upper_bound_bytes: u64, observed_bytes: u64) -> QueryError {
     QueryError::new(
         QueryErrorCode::Internal,

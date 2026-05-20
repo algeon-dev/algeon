@@ -5,7 +5,7 @@ use super::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
         join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
         prepare_bounded_join_side_input_from_shared_frame, reconcile_join_output_upper_bound,
-        release_bounded_join_side_frame,
+        release_bounded_join_side_frame, validate_join_output_upper_bound_bytes,
     },
     *,
 };
@@ -15,7 +15,7 @@ use crate::{
         LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
         SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD, keyed_filtered_semi_anti_join_capable,
     },
-    exec::bounded::strict::CompiledJoinExecutionStrategy,
+    exec::bounded::{compiled::ResidentFrameStreamPayload, strict::CompiledJoinExecutionStrategy},
     expr::{ColumnQualifier, ColumnRef},
 };
 
@@ -143,6 +143,7 @@ struct PartitionedJoinPartitionOutput {
 pub(in crate::exec::bounded) enum BoundedCompiledJoinMaterializeOutput {
     Frame(Box<ResidentGpuFrame>),
     Stream(Vec<ResidentGpuFrame>),
+    LazyStream(ResidentFrameStreamPayload),
 }
 
 impl StreamedOneShotJoinSummary {
@@ -719,6 +720,19 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             if probe.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui =>
         {
             execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream(
+                context,
+                node_id,
+                node,
+                probe.left,
+                probe.right,
+                reservations,
+                metrics,
+            )
+        },
+        BoundedCompiledJoinProbeState::Prepared(probe)
+            if probe.strategy == CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual =>
+        {
+            execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream(
                 context,
                 node_id,
                 node,

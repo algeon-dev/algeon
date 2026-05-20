@@ -335,7 +335,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
         }
 
         let mut partials = Vec::with_capacity(inputs.len());
-        while let Some(input) = inputs.next_yielded_frame() {
+        while let Some(input) = inputs.next_yielded_frame(reservations, metrics) {
             let mut input = match input {
                 Ok(input) => input,
                 Err(error) => {

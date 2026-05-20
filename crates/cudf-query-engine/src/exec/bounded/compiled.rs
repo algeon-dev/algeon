@@ -21,6 +21,8 @@ pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
 pub(in crate::exec::bounded) use tasks::ResidentFrameStreamPayload;
+#[allow(unused_imports)]
+pub(in crate::exec::bounded) use tasks::ResidentFrameStreamSource;
 pub use tasks::{
     CompiledGpuResource, CompiledGpuTaskExecutor, ResidentFrameStreamProducerTestHarness,
     YieldedFrameCounterTestHarness,
