@@ -1006,6 +1006,27 @@ fn bounded_capability_analysis_can_reject_node_capabilities_without_family_proje
 }
 
 #[test]
+fn bounded_capability_analysis_rejects_unsupported_join_output_dtype_before_strategy_selection() {
+    let plan = root_join_with_unsupported_output_dtype_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.has_rejections());
+    let rejected_join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { join_type: JoinType::Inner, .. }))
+        .expect("unsupported output dtype plan should contain an inner join capability");
+    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
+        panic!("join with unsupported output dtype should be rejected as a node capability");
+    };
+    assert_eq!(*reason, "unsupported_join_output_dtype");
+    assert_eq!(facts.get("field_index").map(String::as_str), Some("0"));
+    assert_eq!(facts.get("field_name").map(String::as_str), Some("l_key"));
+    assert_eq!(facts.get("dtype").map(String::as_str), Some("Timestamp(ns, \"UTC\")"));
+    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
+}
+
+#[test]
 fn strict_contract_report_projects_rejected_node_capability_when_reservations_are_modeled() {
     let plan = unsupported_cross_key_join_plan();
     let analysis = plan.capability_analysis();
@@ -1152,6 +1173,40 @@ fn simple_root_join_plan() -> cudf_query_engine::QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn root_join_with_unsupported_output_dtype_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new(
+        "l_key",
+        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+        false,
+    )]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-unsupported-output-left.parquet",
+        left_schema,
+        vec!["l_key".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-unsupported-output-right.parquet",
+        right_schema,
+        vec!["r_key".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key")])
+        .with_build_side(JoinSide::Right),
+        output_schema,
     );
     builder.finish_with_host_sink(join)
 }
