@@ -22,20 +22,15 @@ use crate::{
 };
 
 /// Degree direction used when computing core numbers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum KCoreDegreeType {
     /// Compute core numbers from incoming edges.
     In,
     /// Compute core numbers from outgoing edges.
     Out,
     /// Compute core numbers from both incoming and outgoing edges.
+    #[default]
     InOut,
-}
-
-impl Default for KCoreDegreeType {
-    fn default() -> Self {
-        Self::InOut
-    }
 }
 
 impl From<KCoreDegreeType> for cugraph_k_core_degree_type_t {

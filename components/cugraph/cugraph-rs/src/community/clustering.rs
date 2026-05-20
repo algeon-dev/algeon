@@ -133,6 +133,9 @@ macro_rules! define_clustering_result {
             /// matching cuGraph C API. Ownership is transferred to this
             /// struct.
             pub(crate) unsafe fn from_raw(raw: *mut cugraph_clustering_result_t, device: i32) -> Result<Self> {
+                // SAFETY: caller upholds the contract documented on this fn, which
+                // matches `ClusteringResult::from_raw`'s requirements (valid non-null
+                // pointer with transferred ownership).
                 Ok(Self(unsafe { ClusteringResult::from_raw(raw, device) }?))
             }
 
@@ -177,6 +180,9 @@ impl BalancedCutClusteringResult {
     /// `cugraph_balanced_cut_clustering`. Ownership is transferred to this
     /// struct.
     pub(crate) unsafe fn from_raw(raw: *mut cugraph_clustering_result_t, device: i32) -> Result<Self> {
+        // SAFETY: caller upholds the contract documented on this fn, which matches
+        // `ClusteringResult::from_raw`'s requirements (valid non-null pointer with
+        // transferred ownership).
         Ok(Self(unsafe { ClusteringResult::from_raw(raw, device) }?))
     }
 

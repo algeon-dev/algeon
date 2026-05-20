@@ -81,9 +81,10 @@ impl Default for Node2VecRandomWalkParams {
 }
 
 /// Sampling output compression mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[must_use]
 pub enum SamplingCompression {
+    #[default]
     Coo,
     Csr,
     Csc,
@@ -103,16 +104,11 @@ impl SamplingCompression {
     }
 }
 
-impl Default for SamplingCompression {
-    fn default() -> Self {
-        Self::Coo
-    }
-}
-
 /// How prior-hop sources contribute to the next sampling frontier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[must_use]
 pub enum PriorSourcesBehavior {
+    #[default]
     Default,
     CarryOver,
     Exclude,
@@ -128,16 +124,11 @@ impl PriorSourcesBehavior {
     }
 }
 
-impl Default for PriorSourcesBehavior {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
 /// Temporal edge-time comparison used by temporal neighbor sampling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[must_use]
 pub enum TemporalSamplingComparison {
+    #[default]
     StrictlyIncreasing,
     MonotonicallyIncreasing,
     StrictlyDecreasing,
@@ -154,12 +145,6 @@ impl TemporalSamplingComparison {
             Self::MonotonicallyDecreasing => cugraph_temporal_sampling_comparison_t_MONOTONICALLY_DECREASING,
             Self::Last => cugraph_temporal_sampling_comparison_t_LAST,
         }
-    }
-}
-
-impl Default for TemporalSamplingComparison {
-    fn default() -> Self {
-        Self::StrictlyIncreasing
     }
 }
 

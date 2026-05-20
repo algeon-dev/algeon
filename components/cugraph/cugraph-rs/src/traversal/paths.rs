@@ -260,6 +260,8 @@ mod tests {
 
     #[test]
     fn paths_result_from_raw_rejects_null() {
+        // SAFETY: passing a null pointer is an intentional invalid input — the
+        // function's null check rejects it before any dereference happens.
         let err = unsafe { PathsResult::from_raw(std::ptr::null_mut(), 0, "test_paths_result") }
             .expect_err("null paths result should fail");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
@@ -268,6 +270,8 @@ mod tests {
 
     #[test]
     fn extract_paths_result_from_raw_rejects_null() {
+        // SAFETY: passing a null pointer is an intentional invalid input — the
+        // function's null check rejects it before any dereference happens.
         let err = unsafe { ExtractPathsResult::from_raw(std::ptr::null_mut(), 0, "test_extract_paths_result") }
             .expect_err("null extract paths result should fail");
         assert_eq!(err.kind(), ErrorKind::Unexpected);

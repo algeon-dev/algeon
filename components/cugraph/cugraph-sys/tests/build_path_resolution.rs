@@ -73,7 +73,7 @@ fn native_include_dirs_must_contain_cugraph_headers() {
     let include_dir = root.path().join("include");
     fs::create_dir_all(&include_dir).expect("create include dir");
 
-    let err = build_support::resolve_native_include_dirs(Some(join_paths(&[include_dir.clone()]))).unwrap_err();
+    let err = build_support::resolve_native_include_dirs(Some(join_paths(std::slice::from_ref(&include_dir)))).unwrap_err();
 
     assert!(err.contains("CUGRAPH_NATIVE_INCLUDE_DIRS"));
     assert!(err.contains("cugraph_c"));
@@ -94,7 +94,7 @@ fn native_link_dirs_must_contain_cugraph_libraries() {
     let link_dir = root.path().join("link");
     fs::create_dir_all(&link_dir).expect("create link dir");
 
-    let err = build_support::resolve_native_link_dirs(Some(join_paths(&[link_dir.clone()]))).unwrap_err();
+    let err = build_support::resolve_native_link_dirs(Some(join_paths(std::slice::from_ref(&link_dir)))).unwrap_err();
 
     assert!(err.contains("CUGRAPH_NATIVE_LINK_DIRS"));
     assert!(err.contains("libcugraph"));
@@ -116,7 +116,7 @@ fn runtime_lib_dirs_must_contain_cugraph_libraries() {
     let runtime_dir = root.path().join("runtime");
     fs::create_dir_all(&runtime_dir).expect("create runtime dir");
 
-    let err = build_support::resolve_runtime_lib_dirs(Some(join_paths(&[runtime_dir.clone()]))).unwrap_err();
+    let err = build_support::resolve_runtime_lib_dirs(Some(join_paths(std::slice::from_ref(&runtime_dir)))).unwrap_err();
 
     assert!(err.contains("CUGRAPH_RUNTIME_LIB_DIRS"));
     assert!(err.contains("libcugraph"));
@@ -145,8 +145,8 @@ fn native_build_contract_uses_explicit_path_lists_without_extending_build_tree()
     let contract = build_support::resolve_native_build_contract(
         root.path(),
         Some(join_paths(&[include_dir.clone(), dep_include.clone()])),
-        Some(join_paths(&[link_dir.clone()])),
-        Some(join_paths(&[runtime_dir.clone()])),
+        Some(join_paths(std::slice::from_ref(&link_dir))),
+        Some(join_paths(std::slice::from_ref(&runtime_dir))),
         None,
     )
     .expect("resolve explicit contract");

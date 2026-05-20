@@ -249,8 +249,7 @@ fn all_pairs_jaccard_returns_generated_vertex_pairs() {
     assert_eq!(second.len(), ALL_PAIRS_JACCARD_F32.len());
     assert_eq!(scores.len(), ALL_PAIRS_JACCARD_F32.len());
 
-    let score_map: HashMap<(i32, i32), f32> =
-        first.into_iter().zip(second).zip(scores).map(|((a, b), s)| ((a, b), s)).collect();
+    let score_map: HashMap<(i32, i32), f32> = first.into_iter().zip(second).zip(scores).collect();
     for ((&first, &second), &expected) in
         ALL_PAIRS_JACCARD_FIRST_I32.iter().zip(ALL_PAIRS_JACCARD_SECOND_I32).zip(ALL_PAIRS_JACCARD_F32)
     {
