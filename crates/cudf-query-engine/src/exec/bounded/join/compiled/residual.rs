@@ -17,8 +17,43 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let overrides = execution_overrides(context);
     let residual_candidate = one_shot_residual_candidate_projection(node)?;
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
-    let candidate_reservation_bytes =
-        indices.output_reservation_size_bytes(&left.frame, &right.frame, &overrides, &residual_candidate.projection)?;
+    super::super::common::trace_preflight_entry(
+        "materialize_compiled_one_shot_residual_output",
+        "one_shot_residual",
+        node_id,
+        reservations,
+        gather_map_bytes,
+        candidate_rows,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
+    let candidate_reservation_bytes = match indices.output_reservation_size_bytes(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &residual_candidate.projection,
+    ) {
+        Ok(bytes) => {
+            super::super::common::trace_preflight_success(
+                "materialize_compiled_one_shot_residual_output",
+                node_id,
+                reservations,
+                bytes,
+            );
+            bytes
+        },
+        Err(error) => {
+            super::super::common::trace_preflight_failed(
+                "materialize_compiled_one_shot_residual_output",
+                node_id,
+                reservations,
+                &error,
+            );
+            return Err(error);
+        },
+    };
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(index_bytes);
     metrics.record_one_shot_join_materialization_bytes(candidate_reservation_bytes);

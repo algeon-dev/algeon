@@ -38,8 +38,9 @@ pub use bounded::strict::{
     strict_bounded_pipeline_admission,
 };
 pub use bounded::{
-    AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission,
-    adaptive_bounded_pipeline_admission_with_memory_history,
+    AdaptivePipelineAdmission, JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES,
+    STRING_OFFSET_BYTES_CONSERVATIVE, adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission_with_memory_history, join_output_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};

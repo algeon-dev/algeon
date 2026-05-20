@@ -41,6 +41,10 @@ pub(in crate::exec::bounded) use join::{
     materialize_bounded_join_leaf_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     release_bounded_compiled_join_build_state, release_bounded_compiled_join_probe_state,
 };
+pub use join::{
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
+    join_output_upper_bound_bytes,
+};
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 use strict::try_execute_strict_bounded_pipeline;
 
