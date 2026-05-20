@@ -274,7 +274,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
 }
 
 pub fn local_parquet_source_has_exact_read_preflight(source: &LocalParquetSource) -> bool {
-    source.files.iter().all(|file| source_file_has_row_count_metadata(file))
+    source.files.iter().all(source_file_has_row_count_metadata)
         && exact_source_read_preflight_bytes(source, Some(1), source.is_zero_column_count_source()).is_some()
 }
 

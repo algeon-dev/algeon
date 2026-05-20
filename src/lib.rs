@@ -11,6 +11,8 @@ pub mod native_report;
 pub mod planner;
 pub mod policy;
 pub mod report;
+#[cfg(feature = "server")]
+pub mod server;
 pub mod session;
 pub mod table_format;
 mod workload;

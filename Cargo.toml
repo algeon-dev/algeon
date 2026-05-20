@@ -29,9 +29,20 @@ iceberg = [
     "dep:object_store",
     "dep:tempfile",
 ]
+server = [
+    "dep:arrow-flight",
+    "dep:dashmap",
+    "dep:prost",
+    "dep:tokio-util",
+    "dep:tonic",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:uuid",
+]
 
 [dependencies]
 arrow = { workspace = true }
+arrow-flight = { version = "58.3", features = ["flight-sql-experimental"], optional = true }
 async-trait = "0.1"
 aws-config = { version = "1.8", optional = true }
 aws-credential-types = { version = "1.2", optional = true }
@@ -47,15 +58,27 @@ cugraph = { workspace = true, optional = true }
 # DEP_CUGRAPH_RUNTIME_LIB_DIRS from cugraph-sys's `links = "cugraph"` metadata.
 cugraph-sys = { workspace = true, optional = true }
 cudf-query-engine = { path = "crates/cudf-query-engine", default-features = false }
+dashmap = { version = "6", optional = true }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg", optional = true }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue", optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
+prost = { version = "0.14.1", optional = true }
 serde_json = "1"
 tempfile = { version = "3", optional = true }
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", optional = true }
+tonic = { version = "0.14", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[[bin]]
+name = "datafusion_cudf_server"
+path = "src/bin/datafusion_cudf_server.rs"
+required-features = ["server"]
 
 [[bin]]
 name = "native_iceberg_smoke_report"
@@ -101,3 +124,18 @@ required-features = ["iceberg"]
 name = "cugraph_sql_tests"
 path = "tests/cugraph_sql_tests.rs"
 required-features = ["cugraph"]
+
+[[test]]
+name = "server_config_tests"
+path = "tests/server_config_tests.rs"
+required-features = ["server"]
+
+[[test]]
+name = "server_flight_sql_tests"
+path = "tests/server_flight_sql_tests.rs"
+required-features = ["server"]
+
+[[test]]
+name = "server_iceberg_smoke_tests"
+path = "tests/server_iceberg_smoke_tests.rs"
+required-features = ["server", "iceberg"]

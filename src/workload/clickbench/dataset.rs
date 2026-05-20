@@ -315,37 +315,37 @@ pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(P
 
     if crate::workload::tpch::default_nvme_mount_present() {
         let nvme = PathBuf::from(DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR);
-        if nvme.is_dir() {
-            if let Ok(metadata) = describe_clickbench_dataset(
+        if nvme.is_dir()
+            && let Ok(metadata) = describe_clickbench_dataset(
                 &nvme,
                 "external_parquet_root",
                 format!("local {DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR} parquet fixture (default)"),
-            ) {
-                return Ok(Some((nvme, metadata)));
-            }
+            )
+        {
+            return Ok(Some((nvme, metadata)));
         }
     }
 
     let local_partitioned = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR);
-    if local_partitioned.is_dir() {
-        if let Ok(metadata) = describe_clickbench_dataset(
+    if local_partitioned.is_dir()
+        && let Ok(metadata) = describe_clickbench_dataset(
             &local_partitioned,
             "external_parquet_root",
             format!("local {DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR} parquet fixture (default)"),
-        ) {
-            return Ok(Some((local_partitioned, metadata)));
-        }
+        )
+    {
+        return Ok(Some((local_partitioned, metadata)));
     }
 
     let local_single = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET);
-    if local_single.is_file() {
-        if let Ok(metadata) = describe_clickbench_dataset(
+    if local_single.is_file()
+        && let Ok(metadata) = describe_clickbench_dataset(
             &local_single,
             "external_parquet_root",
             format!("local {DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET} parquet fixture (default)"),
-        ) {
-            return Ok(Some((local_single, metadata)));
-        }
+        )
+    {
+        return Ok(Some((local_single, metadata)));
     }
 
     Ok(None)

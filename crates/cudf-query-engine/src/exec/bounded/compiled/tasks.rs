@@ -170,6 +170,13 @@ pub struct YieldedFrameCounterTestHarness {
 }
 
 #[doc(hidden)]
+impl Default for YieldedFrameCounterTestHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[doc(hidden)]
 impl YieldedFrameCounterTestHarness {
     pub fn new() -> Self {
         Self { live_counter: Rc::new(Cell::new(0)) }

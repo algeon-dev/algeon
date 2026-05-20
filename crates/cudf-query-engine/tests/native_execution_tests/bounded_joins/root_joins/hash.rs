@@ -2192,7 +2192,7 @@ fn write_row_grouped_join_left_with_payload_parquet(path: &Path) -> Arc<Schema> 
     let mut quantities = Vec::with_capacity(total_rows);
     for row_group in 0..row_groups {
         let order_id = i32::try_from(row_group + 1).unwrap();
-        order_ids.extend(std::iter::repeat(order_id).take(rows_per_row_group));
+        order_ids.extend(std::iter::repeat_n(order_id, rows_per_row_group));
         quantities.extend((0..rows_per_row_group).map(|row| order_id * 1000 + i32::try_from(row).unwrap()));
     }
     let payload = "x".repeat(8192);
