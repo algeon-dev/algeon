@@ -854,6 +854,23 @@ impl ReservationTracker {
         ));
     }
 
+    pub(in crate::exec::bounded) fn reclaim_source_cache_for_external_working_set(
+        &mut self,
+        working_set_bytes: u64,
+        metrics: &mut QueryMetrics,
+    ) -> Result<()> {
+        let Some(cache) = self.local_parquet_source_cache.as_ref().map(Arc::clone) else {
+            return Ok(());
+        };
+        if working_set_bytes == 0 || self.source_cache_baseline_bytes == 0 {
+            return Ok(());
+        }
+        let evicted_bytes = cache.evict_at_least_protecting(working_set_bytes, &self.source_cache_protected_keys())?;
+        self.release_source_cache_baseline_bytes(evicted_bytes, metrics);
+        metrics.record_source_cache_retained_bytes(cache.retained_device_bytes()?);
+        Ok(())
+    }
+
     pub(in crate::exec) fn source_cache_protected_keys_with(
         &self,
         additional_key: &GpuLocalParquetSourceCacheKey,

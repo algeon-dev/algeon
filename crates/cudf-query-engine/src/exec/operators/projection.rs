@@ -1,4 +1,5 @@
 use super::*;
+use crate::expr::ColumnRef;
 
 pub(in crate::exec) fn validate_projection_capability(
     node: &ProjectionNode,
@@ -39,6 +40,11 @@ pub(in crate::exec) fn execute_projection(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.into_frame();
+    let timer = Instant::now();
+    if let Some(output) = try_execute_column_only_projection(node, frame.clone(), None, metrics)? {
+        metrics.operator_time += timer.elapsed();
+        return Ok(GpuDataFrame::new(output));
+    }
     let output_names = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
     let exprs = node
         .outputs
@@ -49,7 +55,6 @@ pub(in crate::exec) fn execute_projection(
     output_columns.extend(datafusion_order_columns(&frame));
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let overrides = execution_overrides(context);
-    let timer = Instant::now();
     let mut output =
         frame.with_execution(&overrides).with_columns(exprs).and_then(|frame| frame.select(output_columns)).map_err(
             |error| {
@@ -73,6 +78,11 @@ pub(in crate::exec) fn execute_projection_with_budget(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.into_frame();
+    let timer = Instant::now();
+    if let Some(output) = try_execute_column_only_projection(node, frame.clone(), Some(token), metrics)? {
+        metrics.operator_time += timer.elapsed();
+        return Ok(GpuDataFrame::new(output));
+    }
     let output_names = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
     let exprs = node
         .outputs
@@ -82,7 +92,6 @@ pub(in crate::exec) fn execute_projection_with_budget(
     let mut output_columns = output_names;
     output_columns.extend(datafusion_order_columns(&frame));
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let timer = Instant::now();
     let mut output = budgeted_value(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {
             QueryError::from_cudf_with_budget_details(
@@ -105,6 +114,64 @@ pub(in crate::exec) fn execute_projection_with_budget(
     output = coerce_projection_output_schema(output, node, Some(token), metrics)?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+fn try_execute_column_only_projection(
+    node: &ProjectionNode,
+    frame: DataFrame,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<DataFrame>> {
+    let mut selected_columns = Vec::with_capacity(node.outputs.len());
+    let mut renames = Vec::new();
+    for output in &node.outputs {
+        let Some(column) = projection_output_source_column(&output.expr) else {
+            return Ok(None);
+        };
+        let source_name = column.name().to_string();
+        if selected_columns.iter().any(|selected| selected == &source_name) {
+            return Ok(None);
+        }
+        let output_name = output.field.name().to_string();
+        if source_name != output_name {
+            renames.push((source_name.clone(), output_name));
+        }
+        selected_columns.push(source_name);
+    }
+    for order_column in datafusion_order_columns(&frame) {
+        let order_column = order_column.to_string();
+        if selected_columns.iter().any(|selected| selected == &order_column) {
+            return Ok(None);
+        }
+        selected_columns.push(order_column);
+    }
+    let selected_refs = selected_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut output = frame.select(selected_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.projection.select",
+            "failed to select native column-only projection",
+            error,
+        )
+    })?;
+    if !renames.is_empty() {
+        let rename_refs = renames.iter().map(|(old, new)| (old.as_str(), new.as_str())).collect::<Vec<_>>();
+        output = output.rename_columns(rename_refs).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.projection.rename",
+                "failed to rename native column-only projection",
+                error,
+            )
+        })?;
+    }
+    coerce_projection_output_schema(output, node, token, metrics).map(Some)
+}
+
+fn projection_output_source_column(expr: &Expr) -> Option<&ColumnRef> {
+    match expr {
+        Expr::Column(column) => Some(column),
+        Expr::Alias { expr, .. } => projection_output_source_column(expr),
+        _ => None,
+    }
 }
 
 fn coerce_projection_output_schema(

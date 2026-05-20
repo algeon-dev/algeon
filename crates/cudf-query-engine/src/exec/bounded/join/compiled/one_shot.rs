@@ -1,4 +1,11 @@
 use super::*;
+use crate::exec::bounded::compiled::ResidentFrameStreamSource;
+
+pub(in crate::exec::bounded) struct OneShotEquiJoinFrameStreamProbeState {
+    pub(in crate::exec::bounded) build: BoundedCompiledPreparedJoinBuildState,
+    pub(in crate::exec::bounded) inputs: ResidentFrameStreamPayload,
+    probe_columns: Vec<String>,
+}
 
 pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
@@ -171,6 +178,156 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
         },
     }
 }
+
+pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: BoundedCompiledPreparedJoinBuildState,
+    inputs: ResidentFrameStreamPayload,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedCompiledJoinProbeState> {
+    validate_one_shot_equi_join(node)?;
+    if node.spec.residual_predicate.is_some() {
+        inputs.release_all(reservations, metrics);
+        release_bounded_join_side_frame(build.input, reservations, metrics);
+        return Err(unsupported_bounded_shape(
+            "streamed compiled one-shot equi join probe does not support residual predicates",
+            "compiled_join_strategy_unsupported",
+        ));
+    }
+    let probe_side = probe_side(build.side);
+    let probe_columns = match compiled_join_input_columns(context, node, build.strategy, probe_side) {
+        Ok(columns) => columns,
+        Err(error) => {
+            inputs.release_all(reservations, metrics);
+            release_bounded_join_side_frame(build.input, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let _ = node_id;
+    Ok(BoundedCompiledJoinProbeState::OneShotLazyStream(OneShotEquiJoinFrameStreamProbeState {
+        build,
+        inputs,
+        probe_columns,
+    }))
+}
+
+pub(super) fn one_shot_equi_join_frame_stream_probe_to_payload(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    probe: OneShotEquiJoinFrameStreamProbeState,
+) -> ResidentFrameStreamPayload {
+    let max_per_frame_reservation_bytes = probe.inputs.max_per_frame_reservation_bytes();
+    let aggregate_reservation_bytes = probe.inputs.aggregate_reservation_bytes();
+    let aggregate_num_rows = probe.inputs.num_rows();
+    let num_columns = node.spec.output_projection.len();
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(OneShotEquiJoinProbeStreamSource {
+            context: context.clone(),
+            node_id,
+            node: node.clone(),
+            build: Some(probe.build),
+            inputs: Some(probe.inputs),
+            probe_columns: probe.probe_columns,
+            summary: StreamedOneShotJoinSummary::new(),
+            metrics_recorded: false,
+        }),
+    )
+}
+
+struct OneShotEquiJoinProbeStreamSource {
+    context: ExecutionContext,
+    node_id: NodeId,
+    node: JoinNode,
+    build: Option<BoundedCompiledPreparedJoinBuildState>,
+    inputs: Option<ResidentFrameStreamPayload>,
+    probe_columns: Vec<String>,
+    summary: StreamedOneShotJoinSummary,
+    metrics_recorded: bool,
+}
+
+impl OneShotEquiJoinProbeStreamSource {
+    fn record_success_metrics(&mut self, metrics: &mut QueryMetrics) {
+        if self.metrics_recorded {
+            return;
+        }
+        self.metrics_recorded = true;
+        let Some(build) = self.build.as_ref() else { return };
+        record_streamed_one_shot_join_metrics(
+            self.node_id,
+            &self.node,
+            build.side,
+            probe_side(build.side),
+            build.input.rows,
+            build.input.bytes,
+            &self.summary,
+            metrics,
+        );
+    }
+}
+
+impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
+        let inputs = self.inputs.as_mut()?;
+        let mut input = match inputs.next_yielded_frame(reservations, metrics) {
+            Some(Ok(input)) => input,
+            Some(Err(error)) => return Some(Err(error)),
+            None => {
+                self.record_success_metrics(metrics);
+                self.release(reservations, metrics);
+                return None;
+            },
+        };
+        let input = input.take_for_release();
+        let build = self.build.as_ref().expect("one-shot join build side released before stream end");
+        let probe_side = probe_side(build.side);
+        let probe = match prepare_bounded_join_side_input_from_resident_frame(
+            input,
+            &self.probe_columns,
+            probe_side,
+            self.node_id,
+            build.side,
+            reservations,
+            metrics,
+        ) {
+            Ok(probe) => probe,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(materialize_compiled_one_shot_equi_join_probe_chunk(
+            &self.context,
+            self.node_id,
+            &self.node,
+            build.side,
+            &build.input,
+            probe,
+            reservations,
+            metrics,
+            &mut self.summary,
+        ))
+    }
+
+    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        if let Some(input) = self.inputs.take() {
+            input.release_all(reservations, metrics);
+        }
+        if let Some(build) = self.build.take() {
+            release_bounded_join_side_frame(build.input, reservations, metrics);
+        }
+    }
+}
+
 pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -290,6 +447,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             return Err(error);
         },
     };
+    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
     let output = match indices.materialize_output(
         &left.frame,
         &right.frame,

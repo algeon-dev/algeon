@@ -282,10 +282,18 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
                 JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
-        join_schema,
+        Arc::clone(&join_schema),
+    );
+    let filtered = builder.add_filter(join, Expr::is_not_null(Expr::column("category")), Arc::clone(&join_schema));
+    let projected = builder.add_projection(
+        filtered,
+        vec![
+            ProjectionOutput::new(Expr::column("category"), Field::new("category", DataType::Utf8, false)),
+            ProjectionOutput::new(Expr::column("qty"), Field::new("qty", DataType::Int32, false)),
+        ],
     );
     let aggregate = builder.add_aggregate(
-        join,
+        projected,
         AggregateSpec::new(
             vec![Expr::column("category")],
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
@@ -313,6 +321,131 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("two")]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_streams_q72_shaped_partitioned_left_join_into_grouped_aggregate() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-q72-left-stream-aggregate");
+    let left_path = dir.join("catalog_sales.parquet");
+    let right_path = dir.join("catalog_returns.parquet");
+    let dim_path = dir.join("category_dim.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_keys_parquet(&runtime, &right_path, &[2, 2, 4]);
+    let dim_schema = write_category_bucket_parquet(&runtime, &dim_path);
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+    let hash_join_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("bucket", DataType::Int32, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("bucket", DataType::Int32, false),
+        Field::new("line_count", DataType::Int64, false),
+    ]));
+
+    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
+    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &dim_path,
+        &dim_schema,
+        &["category", "bucket"],
+    )));
+    let left_join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let hash_join = builder.add_join(
+        left_join,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "category", "category"),
+                cudf_query_engine::ColumnRef::input(1, "category", "dim_category"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "bucket", "bucket"), "bucket"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&hash_join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        hash_join,
+        AggregateSpec::new(
+            vec![Expr::column("bucket")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = bounded_join_execution_context(&runtime);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.join_type, "left");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
+    assert_eq!(join_metrics.output_rows, 6);
+    assert_eq!(metrics.hash_join_build_count, 1);
+    assert!(metrics.partial_aggregate_count > 0);
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output" })
+    );
+    let hash_table_release = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "applied"
+                && event.action == MemoryReservationEventAction::Release
+                && event.memory_boundary == "join_hash_table"
+        })
+        .expect("streamed root hash join should eventually release its hash table");
+    let first_partial_work = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.memory_boundary == "compiled_aggregate_partial_state_work"
+        })
+        .expect("aggregate should consume streamed hash outputs frame by frame");
+    assert!(
+        first_partial_work < hash_table_release,
+        "root hash frame-stream probe should stay lazy through aggregate consumption instead of collecting all outputs before releasing the build"
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_columns(), 2);
+    let mut rows = (0..batch.num_rows())
+        .map(|row| (int32_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(rows, vec![(7, 4)]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1893,6 +2026,20 @@ fn write_row_grouped_join_left_with_payload_parquet(path: &Path) -> Arc<Schema> 
     )
     .unwrap();
     write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, rows_per_row_group);
+    schema
+}
+
+fn write_category_bucket_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("bucket", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["category_2", "category_4"])), Arc::new(Int32Array::from(vec![7, 9]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
 }
 

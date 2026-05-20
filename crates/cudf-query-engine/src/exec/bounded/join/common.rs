@@ -310,32 +310,6 @@ pub(in crate::exec::bounded) fn trace_preflight_failed(
     );
 }
 
-pub(super) fn join_side_output_reservation_bytes(
-    frame: &DataFrame,
-    indices: &cudf::DataFrameJoinIndices,
-    columns: &[String],
-    overrides: &ExecutionOverrides<'_>,
-    side: JoinSide,
-) -> Result<u64> {
-    let mut columns = columns.to_vec();
-    join_side_projection_with_order(frame, &mut columns);
-    if columns.is_empty() {
-        return Ok(0);
-    }
-    frame
-        .with_execution(overrides)
-        .materialize_join_indices_reservation_size_bytes(indices, &columns)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.bounded.join.output_reservation",
-                "failed to size bounded native join output materialization",
-                error,
-            )
-            .with_fact("side", side)
-        })
-}
-
 pub(super) fn join_side_output_upper_bound_bytes(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -553,17 +527,6 @@ pub(super) fn reconcile_join_output_upper_bound(
         return Err(join_output_upper_bound_violation_error(node_id, output_reservation.bytes(), output_bytes));
     }
     reservations.shrink_to_observed(output_reservation, output_bytes, metrics);
-    Ok(())
-}
-
-pub(super) fn validate_join_output_upper_bound_bytes(
-    node_id: NodeId,
-    upper_bound_bytes: u64,
-    observed_bytes: u64,
-) -> Result<()> {
-    if observed_bytes > upper_bound_bytes {
-        return Err(join_output_upper_bound_violation_error(node_id, upper_bound_bytes, observed_bytes));
-    }
     Ok(())
 }
 

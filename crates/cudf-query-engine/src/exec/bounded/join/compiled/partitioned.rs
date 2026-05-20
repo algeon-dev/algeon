@@ -323,7 +323,8 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     let original_right_bytes = right.bytes;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let partition_count = partitioned_join_partition_count(context, left.bytes, right.bytes);
+    let partition_count =
+        partitioned_mixed_join_partition_count(context, left.rows, left.bytes, right.rows, right.bytes);
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     metrics.record_join_strategy_decision(
         node_id,
@@ -610,6 +611,26 @@ pub(super) fn partitioned_join_partition_count(context: &ExecutionContext, left_
     usize::try_from(partitions.clamp(2, 1024)).unwrap_or(1024)
 }
 
+fn partitioned_mixed_join_partition_count(
+    context: &ExecutionContext,
+    left_rows: u64,
+    left_bytes: u64,
+    right_rows: u64,
+    right_bytes: u64,
+) -> usize {
+    let byte_partitions = partitioned_join_partition_count(context, left_bytes, right_bytes);
+    let row_basis = left_rows.max(right_rows).max(1);
+    let row_partitions = row_basis.saturating_add(PARTITIONED_MIXED_JOIN_TARGET_ROWS.saturating_sub(1))
+        / PARTITIONED_MIXED_JOIN_TARGET_ROWS;
+    let row_partitions = usize::try_from(row_partitions.clamp(2, PARTITIONED_MIXED_JOIN_MAX_PARTITIONS as u64))
+        .unwrap_or(PARTITIONED_MIXED_JOIN_MAX_PARTITIONS);
+    byte_partitions.max(row_partitions)
+}
+
+const PARTITIONED_MIXED_JOIN_TARGET_ROWS: u64 = 50_000;
+const PARTITIONED_MIXED_JOIN_MAX_PARTITIONS: usize = 1024;
+const PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS: usize = 2;
+
 pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionContext) -> u64 {
     match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
@@ -660,6 +681,7 @@ pub(super) fn hash_partition_join_side(
         bounded_join_request(ReservationKind::OperatorOutput, boundary, bytes, reservations.budget(), node_id),
         metrics,
     )?;
+    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
     let partitioned = frame
         .with_execution(overrides)
         .hash_partition_by(keys.iter().map(String::as_str), partition_count)
@@ -850,6 +872,7 @@ pub(super) fn materialize_partitioned_hash_equi_join_partition(
             return Err(error);
         },
     };
+    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
     let output = match indices.materialize_output(
         &left.frame,
         &right.frame,
@@ -1034,25 +1057,13 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
         right.rows,
         right.bytes,
     );
-    let output_reservation_bytes = match indices.output_reservation_size_bytes(
-        &left.frame,
-        &right.frame,
-        &overrides,
-        &node.spec.output_projection,
-    ) {
-        Ok(bytes) => {
-            super::super::common::trace_preflight_success("partitioned_mixed_partition", node_id, reservations, bytes);
-            bytes
-        },
-        Err(error) => {
-            super::super::common::trace_preflight_failed("partitioned_mixed_partition", node_id, reservations, &error);
-            drop(indices);
-            reservations.release(gather_map_reservation, metrics);
-            drop(left);
-            drop(right);
-            return Err(error);
-        },
-    };
+    let output_reservation_bytes = forecast_output_reservation_bytes;
+    super::super::common::trace_preflight_success(
+        "partitioned_mixed_partition",
+        node_id,
+        reservations,
+        output_reservation_bytes,
+    );
     let mut output_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
@@ -1072,6 +1083,7 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
+    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
     let output = match indices.materialize_output(
         &left.frame,
         &right.frame,
@@ -1102,7 +1114,8 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
-    if let Err(error) = validate_join_output_upper_bound_bytes(node_id, forecast_output_reservation_bytes, output_bytes)
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
     {
         drop(output);
         drop(indices);
@@ -1110,23 +1123,7 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
         reservations.release(output_reservation, metrics);
         drop(left);
         drop(right);
-        return Err(error.with_fact("stage", "partitioned_mixed_metadata_forecast"));
-    }
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        reservations.try_grow(
-            &mut output_reservation,
-            bounded_join_request(
-                ReservationKind::JoinOutput,
-                "join_partition_output",
-                delta,
-                reservations.budget(),
-                node_id,
-            ),
-            metrics,
-        )?;
-    } else {
-        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
+        return Err(error);
     }
     drop(indices);
     reservations.release(gather_map_reservation, metrics);
@@ -1536,7 +1533,8 @@ pub(super) fn execute_compiled_partitioned_hash_equi_join_probe_from_stream(
     let build_rows = build.input.rows;
     let build_bytes = build.input.bytes;
     let probe_estimated_bytes = stream.estimated_source_read_bytes().unwrap_or(0);
-    let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes);
+    let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes)
+        .max(PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS);
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
@@ -1694,7 +1692,7 @@ pub(super) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_strea
     node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledPreparedJoinBuildState,
-    inputs: Vec<ResidentGpuFrame>,
+    inputs: ResidentFrameStreamPayload,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
@@ -1711,9 +1709,9 @@ pub(super) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_strea
     let probe_side = probe_side(build_side);
     let build_rows = build.input.rows;
     let build_bytes = build.input.bytes;
-    let probe_estimated_bytes =
-        inputs.iter().fold(0_u64, |total, input| total.saturating_add(input.reservation.bytes()));
-    let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes);
+    let probe_estimated_bytes = inputs.max_per_frame_reservation_bytes();
+    let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes)
+        .max(PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS);
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
@@ -1730,9 +1728,6 @@ pub(super) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_strea
         metrics,
     )?;
     let build_partitioned_bytes = build_partitioned.reservation.bytes();
-    let mut outputs = Vec::new();
-    let mut summary =
-        StreamedPartitionedJoinSummary::new(partition_count, partition_target_bytes, build_partitioned_bytes);
     metrics.record_join_strategy_decision(
         node_id,
         &BTreeMap::from([
@@ -1744,116 +1739,262 @@ pub(super) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_strea
         ]),
     );
 
-    let probe_columns =
-        compiled_join_input_columns(context, node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side)?;
-    for input in inputs {
-        let probe = prepare_bounded_join_side_input_from_resident_frame(
+    let probe_columns = match compiled_join_input_columns(
+        context,
+        node,
+        CompiledJoinExecutionStrategy::PartitionedHashEqui,
+        probe_side,
+    ) {
+        Ok(columns) => columns,
+        Err(error) => {
+            inputs.release_all(reservations, metrics);
+            release_partitioned_join_side(build_partitioned, reservations, metrics);
+            return Err(error);
+        },
+    };
+    Ok(BoundedCompiledJoinProbeState::PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState {
+        build_side,
+        build_rows,
+        build_bytes,
+        build_partitioned,
+        build_partitioned_bytes,
+        inputs,
+        partition_count,
+        partition_target_bytes,
+        probe_columns,
+        probe_keys,
+    }))
+}
+
+pub(super) fn partitioned_hash_equi_join_frame_stream_probe_to_payload(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    probe: PartitionedHashEquiJoinFrameStreamProbeState,
+) -> ResidentFrameStreamPayload {
+    let max_per_frame_reservation_bytes = probe.inputs.max_per_frame_reservation_bytes();
+    let aggregate_reservation_bytes = probe.inputs.aggregate_reservation_bytes();
+    let aggregate_num_rows = probe.inputs.num_rows();
+    let num_columns = node.spec.output_projection.len();
+    let source = PartitionedHashEquiJoinProbeStreamSource {
+        context: context.clone(),
+        node_id,
+        node: node.clone(),
+        build_side: probe.build_side,
+        build_rows: probe.build_rows,
+        build_bytes: probe.build_bytes,
+        build_partitioned: Some(probe.build_partitioned),
+        inputs: Some(probe.inputs),
+        partition_count: probe.partition_count,
+        probe_columns: probe.probe_columns,
+        probe_keys: probe.probe_keys,
+        active_probe_partitioned: None,
+        next_partition: 0,
+        summary: StreamedPartitionedJoinSummary::new(
+            probe.partition_count,
+            probe.partition_target_bytes,
+            probe.build_partitioned_bytes,
+        ),
+        metrics_recorded: false,
+    };
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(source),
+    )
+}
+
+struct PartitionedHashEquiJoinProbeStreamSource {
+    context: ExecutionContext,
+    node_id: NodeId,
+    node: JoinNode,
+    build_side: JoinSide,
+    build_rows: u64,
+    build_bytes: u64,
+    build_partitioned: Option<PartitionedJoinSide>,
+    inputs: Option<ResidentFrameStreamPayload>,
+    partition_count: usize,
+    probe_columns: Vec<String>,
+    probe_keys: Vec<String>,
+    active_probe_partitioned: Option<PartitionedJoinSide>,
+    next_partition: usize,
+    summary: StreamedPartitionedJoinSummary,
+    metrics_recorded: bool,
+}
+
+impl PartitionedHashEquiJoinProbeStreamSource {
+    fn record_success_metrics(&mut self, metrics: &mut QueryMetrics) {
+        if self.metrics_recorded {
+            return;
+        }
+        self.metrics_recorded = true;
+        record_streamed_partitioned_hash_join_metrics(
+            self.node_id,
+            &self.node,
+            self.build_side,
+            probe_side(self.build_side),
+            self.build_rows,
+            self.build_bytes,
+            &self.summary,
+            metrics,
+        );
+    }
+
+    fn load_next_probe_chunk(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<bool>> {
+        let inputs = self.inputs.as_mut()?;
+        let mut input = match inputs.next_yielded_frame(reservations, metrics) {
+            Some(Ok(input)) => input,
+            Some(Err(error)) => return Some(Err(error)),
+            None => return None,
+        };
+        let input = input.take_for_release();
+        let probe_side = probe_side(self.build_side);
+        let probe = match prepare_bounded_join_side_input_from_resident_frame(
             input,
-            &probe_columns,
+            &self.probe_columns,
             probe_side,
-            node_id,
-            build_side,
+            self.node_id,
+            self.build_side,
             reservations,
             metrics,
-        )?;
+        ) {
+            Ok(probe) => probe,
+            Err(error) => return Some(Err(error)),
+        };
         let probe_rows = probe.rows;
         let probe_bytes = probe.bytes;
+        let overrides = execution_overrides(&self.context);
         let probe_partitioned = match hash_partition_join_side(
-            context,
-            node_id,
+            &self.context,
+            self.node_id,
             probe_side,
             probe,
-            &probe_keys,
-            partition_count,
+            &self.probe_keys,
+            self.partition_count,
             &overrides,
             reservations,
             metrics,
         ) {
             Ok(partitioned) => partitioned,
+            Err(error) => return Some(Err(error)),
+        };
+        let probe_partitioned_bytes = probe_partitioned.reservation.bytes();
+        self.summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
+        self.active_probe_partitioned = Some(probe_partitioned);
+        self.next_partition = 0;
+        Some(Ok(true))
+    }
+
+    fn materialize_next_active_partition(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ResidentGpuFrame> {
+        let partition = self.next_partition;
+        self.next_partition += 1;
+        let is_last_active_partition = self.next_partition >= self.partition_count;
+        let build_partitioned =
+            self.build_partitioned.as_ref().expect("partitioned hash join build side released before stream end");
+        let probe_partitioned = self
+            .active_probe_partitioned
+            .as_ref()
+            .expect("partitioned hash join probe chunk missing before stream end");
+        let probe_side = probe_side(self.build_side);
+        let build_part = slice_partition_join_side(
+            &self.context,
+            self.node_id,
+            self.build_side,
+            self.build_side,
+            build_partitioned,
+            partition,
+            reservations,
+            metrics,
+        )?;
+        let probe_part = match slice_partition_join_side(
+            &self.context,
+            self.node_id,
+            probe_side,
+            self.build_side,
+            probe_partitioned,
+            partition,
+            reservations,
+            metrics,
+        ) {
+            Ok(partition) => partition,
             Err(error) => {
-                release_streamed_join_outputs_reverse(reservations, outputs, metrics);
-                release_partitioned_join_side(build_partitioned, reservations, metrics);
+                drop(build_part);
                 return Err(error);
             },
         };
-        let probe_partitioned_bytes = probe_partitioned.reservation.bytes();
-        summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
-        for partition in 0..partition_count {
-            let build_part = match slice_partition_join_side(
-                context,
-                node_id,
-                build_side,
-                build_side,
-                &build_partitioned,
-                partition,
-                reservations,
-                metrics,
-            ) {
-                Ok(partition) => partition,
-                Err(error) => {
-                    release_partitioned_join_side(probe_partitioned, reservations, metrics);
-                    release_streamed_join_outputs_reverse(reservations, outputs, metrics);
-                    release_partitioned_join_side(build_partitioned, reservations, metrics);
-                    return Err(error);
-                },
-            };
-            let probe_part = match slice_partition_join_side(
-                context,
-                node_id,
-                probe_side,
-                build_side,
-                &probe_partitioned,
-                partition,
-                reservations,
-                metrics,
-            ) {
-                Ok(partition) => partition,
-                Err(error) => {
-                    drop(build_part);
-                    release_partitioned_join_side(probe_partitioned, reservations, metrics);
-                    release_streamed_join_outputs_reverse(reservations, outputs, metrics);
-                    release_partitioned_join_side(build_partitioned, reservations, metrics);
-                    return Err(error);
-                },
-            };
-            let (left_part, right_part) = match build_side {
-                JoinSide::Left => (build_part, probe_part),
-                JoinSide::Right => (probe_part, build_part),
-            };
-            match materialize_partitioned_hash_equi_join_partition(
-                context,
-                node_id,
-                node,
-                left_part,
-                right_part,
-                reservations,
-                metrics,
-            ) {
-                Ok(output) => {
-                    summary.record_output(&output);
-                    outputs.push(output.frame);
-                },
-                Err(error) => {
-                    release_partitioned_join_side(probe_partitioned, reservations, metrics);
-                    release_streamed_join_outputs_reverse(reservations, outputs, metrics);
-                    release_partitioned_join_side(build_partitioned, reservations, metrics);
-                    return Err(error);
+        let (left_part, right_part) = match self.build_side {
+            JoinSide::Left => (build_part, probe_part),
+            JoinSide::Right => (probe_part, build_part),
+        };
+        if is_last_active_partition {
+            self.release_active_probe_partitioned(reservations, metrics);
+        }
+        let output = materialize_partitioned_hash_equi_join_partition(
+            &self.context,
+            self.node_id,
+            &self.node,
+            left_part,
+            right_part,
+            reservations,
+            metrics,
+        )
+        .map_err(|error| error.with_fact("partition", partition))?;
+        self.summary.record_output(&output);
+        Ok(output.frame)
+    }
+
+    fn release_active_probe_partitioned(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        if let Some(probe_partitioned) = self.active_probe_partitioned.take() {
+            release_partitioned_join_side(probe_partitioned, reservations, metrics);
+        }
+    }
+}
+
+impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
+        loop {
+            if self.active_probe_partitioned.is_some() {
+                if self.next_partition < self.partition_count {
+                    return Some(self.materialize_next_active_partition(reservations, metrics));
+                }
+                self.release_active_probe_partitioned(reservations, metrics);
+            }
+
+            match self.load_next_probe_chunk(reservations, metrics) {
+                Some(Ok(true)) => {},
+                Some(Ok(false)) => unreachable!("partitioned hash stream probe chunk loading is boolean-true only"),
+                Some(Err(error)) => return Some(Err(error)),
+                None => {
+                    self.record_success_metrics(metrics);
+                    self.release(reservations, metrics);
+                    return None;
                 },
             }
         }
-        release_partitioned_join_side(probe_partitioned, reservations, metrics);
     }
 
-    metrics.record_join_strategy_decision(
-        node_id,
-        &BTreeMap::from([
-            ("join_strategy", "partitioned_hash_equi".to_string()),
-            ("partition_count", partition_count.to_string()),
-            ("partition_target_bytes", partition_target_bytes.to_string()),
-            ("probe_partition_batch_count", summary.probe_partition_batch_count.to_string()),
-            ("probe_partitioned_bytes", summary.probe_partitioned_bytes.to_string()),
-        ]),
-    );
-    release_partitioned_join_side(build_partitioned, reservations, metrics);
-    Ok(BoundedCompiledJoinProbeState::PartitionedStreamed { build_side, build_rows, build_bytes, outputs, summary })
+    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        self.release_active_probe_partitioned(reservations, metrics);
+        if let Some(input) = self.inputs.take() {
+            input.release_all(reservations, metrics);
+        }
+        if let Some(build_partitioned) = self.build_partitioned.take() {
+            release_partitioned_join_side(build_partitioned, reservations, metrics);
+        }
+    }
 }

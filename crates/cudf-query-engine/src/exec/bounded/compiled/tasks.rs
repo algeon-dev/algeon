@@ -42,7 +42,10 @@ use crate::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
         SinkBoundaryKind,
     },
-    plan::{JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
+    plan::{
+        FilterNode, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink,
+        SortNode,
+    },
     runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind},
     source::SourceNode,
 };
@@ -321,17 +324,6 @@ impl ResidentFrameStreamPayload {
         self.frames.len()
     }
 
-    pub(in crate::exec::bounded) fn into_frames(self) -> Vec<ResidentGpuFrame> {
-        assert!(self.producer.is_none(), "lazy frame streams must be consumed through yielded frames");
-        self.frames
-    }
-
-    #[allow(dead_code)]
-    pub(in crate::exec::bounded) fn into_frame_iter(self) -> std::vec::IntoIter<ResidentGpuFrame> {
-        assert!(self.producer.is_none(), "lazy frame streams must be consumed through yielded frames");
-        self.frames.into_iter()
-    }
-
     pub(in crate::exec::bounded) fn next_yielded_frame(
         &mut self,
         reservations: &mut ReservationTracker,
@@ -365,6 +357,16 @@ impl ResidentFrameStreamPayload {
                 None => return Ok(accumulated),
             }
         }
+    }
+
+    pub(in crate::exec::bounded) fn into_remaining_frames_owned(
+        mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<Vec<ResidentGpuFrame>> {
+        let result = self.collect_remaining_frames_owned(reservations, metrics);
+        self.release_producer_reservations(reservations, metrics);
+        result
     }
 
     pub(in crate::exec::bounded) fn release_remaining_frames(
@@ -429,6 +431,160 @@ impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
             "injected resident frame stream source failure",
         )))
     }
+}
+
+enum UnaryMappedResidentFrameStreamOperator {
+    Filter(FilterNode),
+    Projection(ProjectionNode),
+}
+
+struct UnaryMappedResidentFrameStreamSource {
+    context: ExecutionContext,
+    node_id: NodeId,
+    input: Option<ResidentFrameStreamPayload>,
+    operator: UnaryMappedResidentFrameStreamOperator,
+}
+
+impl UnaryMappedResidentFrameStreamSource {
+    fn from_filter(
+        context: &ExecutionContext,
+        node_id: NodeId,
+        input: ResidentFrameStreamPayload,
+        filter: FilterNode,
+    ) -> Self {
+        Self {
+            context: context.clone(),
+            node_id,
+            input: Some(input),
+            operator: UnaryMappedResidentFrameStreamOperator::Filter(filter),
+        }
+    }
+
+    fn from_projection(
+        context: &ExecutionContext,
+        node_id: NodeId,
+        input: ResidentFrameStreamPayload,
+        projection: ProjectionNode,
+    ) -> Self {
+        Self {
+            context: context.clone(),
+            node_id,
+            input: Some(input),
+            operator: UnaryMappedResidentFrameStreamOperator::Projection(projection),
+        }
+    }
+
+    fn execute(
+        &self,
+        input: ResidentGpuFrame,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ResidentGpuFrame> {
+        match &self.operator {
+            UnaryMappedResidentFrameStreamOperator::Filter(filter) => execute_bounded_generic_unary(
+                &self.context,
+                self.node_id,
+                "compiled_filter",
+                "compiled_filter_output",
+                input,
+                reservations,
+                metrics,
+                true,
+                |context, input, token, metrics| {
+                    crate::exec::operators::execute_filter_with_budget(
+                        context,
+                        filter,
+                        input,
+                        token.expect("budget token is created for compiled bounded filter stages"),
+                        metrics,
+                    )
+                },
+            ),
+            UnaryMappedResidentFrameStreamOperator::Projection(projection) => execute_bounded_generic_unary(
+                &self.context,
+                self.node_id,
+                "compiled_projection",
+                "compiled_projection_output",
+                input,
+                reservations,
+                metrics,
+                true,
+                |context, input, token, metrics| {
+                    crate::exec::operators::execute_projection_with_budget(
+                        context,
+                        projection,
+                        input,
+                        token.expect("budget token is created for compiled bounded projection stages"),
+                        metrics,
+                    )
+                },
+            ),
+        }
+    }
+}
+
+impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
+        let input = self.input.as_mut()?;
+        match input.next_yielded_frame(reservations, metrics) {
+            Some(Ok(mut yielded)) => Some(self.execute(yielded.take_for_release(), reservations, metrics)),
+            Some(Err(error)) => Some(Err(error)),
+            None => {
+                self.release(reservations, metrics);
+                None
+            },
+        }
+    }
+
+    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        if let Some(input) = self.input.take() {
+            input.release_all(reservations, metrics);
+        }
+    }
+}
+
+fn map_filter_resident_frame_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stream: ResidentFrameStreamPayload,
+    filter: FilterNode,
+) -> ResidentFrameStreamPayload {
+    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
+    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let aggregate_num_rows = stream.num_rows();
+    let num_columns = stream.num_columns();
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(UnaryMappedResidentFrameStreamSource::from_filter(context, node_id, stream, filter)),
+    )
+}
+
+fn map_projection_resident_frame_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stream: ResidentFrameStreamPayload,
+    projection: ProjectionNode,
+) -> ResidentFrameStreamPayload {
+    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
+    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let aggregate_num_rows = stream.num_rows();
+    let num_columns = projection.output_schema().fields().len();
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(UnaryMappedResidentFrameStreamSource::from_projection(context, node_id, stream, projection)),
+    )
 }
 
 #[doc(hidden)]
@@ -872,40 +1028,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            let frames = stream.into_frames();
-                            let mut outputs = Vec::with_capacity(frames.len());
-                            for frame in frames {
-                                match execute_bounded_generic_unary(
-                                    self.context,
-                                    node_id,
-                                    "compiled_filter",
-                                    "compiled_filter_output",
-                                    frame,
-                                    &mut self.reservations,
-                                    self.metrics,
-                                    true,
-                                    |context, input, token, metrics| {
-                                        crate::exec::operators::execute_filter_with_budget(
-                                            context,
-                                            filter,
-                                            input,
-                                            token.expect("budget token is created for compiled bounded filter stages"),
-                                            metrics,
-                                        )
-                                    },
-                                ) {
-                                    Ok(output) => outputs.push(output),
-                                    Err(error) => {
-                                        release_resident_frame_stream_reverse(
-                                            &mut self.reservations,
-                                            outputs,
-                                            self.metrics,
-                                        );
-                                        return Err(attach_task_facts(error, task, node_id));
-                                    },
-                                }
-                            }
-                            Ok(CompiledGpuResource::frame_stream(outputs))
+                            Ok(CompiledGpuResource::frame_stream_payload(map_filter_resident_frame_stream(
+                                self.context,
+                                node_id,
+                                stream,
+                                filter.clone(),
+                            )))
                         },
                     }
                 } else {
@@ -969,42 +1097,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            let frames = stream.into_frames();
-                            let mut outputs = Vec::with_capacity(frames.len());
-                            for frame in frames {
-                                match execute_bounded_generic_unary(
-                                    self.context,
-                                    node_id,
-                                    "compiled_projection",
-                                    "compiled_projection_output",
-                                    frame,
-                                    &mut self.reservations,
-                                    self.metrics,
-                                    true,
-                                    |context, input, token, metrics| {
-                                        crate::exec::operators::execute_projection_with_budget(
-                                            context,
-                                            projection,
-                                            input,
-                                            token.expect(
-                                                "budget token is created for compiled bounded projection stages",
-                                            ),
-                                            metrics,
-                                        )
-                                    },
-                                ) {
-                                    Ok(output) => outputs.push(output),
-                                    Err(error) => {
-                                        release_resident_frame_stream_reverse(
-                                            &mut self.reservations,
-                                            outputs,
-                                            self.metrics,
-                                        );
-                                        return Err(attach_task_facts(error, task, node_id));
-                                    },
-                                }
-                            }
-                            Ok(CompiledGpuResource::frame_stream(outputs))
+                            Ok(CompiledGpuResource::frame_stream_payload(map_projection_resident_frame_stream(
+                                self.context,
+                                node_id,
+                                stream,
+                                projection.clone(),
+                            )))
                         },
                     }
                 } else {
@@ -1210,7 +1308,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         node_id,
                         node,
                         build,
-                        stream.into_frames(),
+                        stream,
                         &mut self.reservations,
                         self.metrics,
                     )
@@ -1601,7 +1699,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     ) -> Result<()> {
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(frame),
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => inputs.extend(stream.into_frames()),
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                inputs.extend(stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?)
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                 if !consumed {
                     return Err(invalid("compiled union task cannot share a deferred join leaf source")
@@ -1971,17 +2071,6 @@ fn task_diagnostic_resident_resource(task: &PipelineTask) -> Option<ResidentReso
         Some(task.input_resources()[0])
     } else {
         None
-    }
-}
-
-fn release_resident_frame_stream_reverse(
-    reservations: &mut ReservationTracker,
-    mut frames: Vec<ResidentGpuFrame>,
-    metrics: &mut QueryMetrics,
-) {
-    while let Some(frame) = frames.pop() {
-        drop(frame.frame);
-        reservations.release(frame.reservation, metrics);
     }
 }
 
