@@ -55,8 +55,102 @@ pub struct CompiledGpuResource {
 
 enum CompiledGpuResourcePayload {
     ResidentFrame { frame: ResidentGpuFrame, applied_limit: Option<NodeId> },
-    ResidentFrameStream(Vec<ResidentGpuFrame>),
+    ResidentFrameStream(ResidentFrameStreamPayload),
     JoinLeafLocalParquetSource(BoundedJoinLeafLocalParquetSourceStream),
+}
+
+/// Multi-frame stream payload with eagerly-computed scheduler metadata.
+///
+/// The split between `max_per_frame_reservation_bytes` and
+/// `live_reservation_bytes` exists so the scheduler can distinguish
+/// "how big is the consumer's per-step input footprint" (the admission
+/// estimate) from "how many bytes can the consumer reclaim right now by
+/// dropping inputs" (the reclaim accounting). For Phase 4.B (Vec-backed
+/// payload) all frames are already resident so the three reservation
+/// fields hold equal values. Phase 4.E.3a's lazy producer will let
+/// `max_per_frame_reservation_bytes` shrink to one partition's upper
+/// bound while `live_reservation_bytes` tracks frames currently held by
+/// the consumer.
+pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
+    /// Worst-case bytes a single yielded "step" can occupy on the
+    /// device. Consumed by `resource_admission_estimate_bytes` (the
+    /// scheduler's admission input sizing). For Vec-backed payloads
+    /// this equals `aggregate_reservation_bytes`.
+    max_per_frame_reservation_bytes: u64,
+    /// Sum of per-frame reservation bytes across the whole stream.
+    /// Diagnostic / sanity-check only; not consumed by the scheduler.
+    /// Wired in Phase 4.B for the upcoming Phase 4.E.3b metadata
+    /// forecast pass; the dead-code allowance disappears once that
+    /// pass starts populating it from the closed-form upper bound.
+    #[allow(dead_code)]
+    aggregate_reservation_bytes: u64,
+    /// Currently-live frame reservation bytes. Read by
+    /// `reclaimable_input_bytes` (`tasks.rs:reclaimable_input_bytes`).
+    /// For Vec-backed payloads this equals `aggregate_reservation_bytes`
+    /// because all frames are immediately live.
+    live_reservation_bytes: u64,
+    aggregate_num_rows: u64,
+    num_columns: usize,
+    frames: Vec<ResidentGpuFrame>,
+}
+
+impl ResidentFrameStreamPayload {
+    pub(in crate::exec::bounded) fn new(frames: Vec<ResidentGpuFrame>) -> Self {
+        let aggregate_reservation_bytes =
+            frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()));
+        let aggregate_num_rows =
+            frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.frame.num_rows() as u64));
+        let num_columns = frames.first().map_or(0, |frame| frame.frame.num_columns());
+        Self {
+            max_per_frame_reservation_bytes: aggregate_reservation_bytes,
+            aggregate_reservation_bytes,
+            live_reservation_bytes: aggregate_reservation_bytes,
+            aggregate_num_rows,
+            num_columns,
+            frames,
+        }
+    }
+
+    pub(in crate::exec::bounded) fn max_per_frame_reservation_bytes(&self) -> u64 {
+        self.max_per_frame_reservation_bytes
+    }
+
+    #[allow(dead_code)]
+    pub(in crate::exec::bounded) fn aggregate_reservation_bytes(&self) -> u64 {
+        self.aggregate_reservation_bytes
+    }
+
+    pub(in crate::exec::bounded) fn live_reservation_bytes(&self) -> u64 {
+        self.live_reservation_bytes
+    }
+
+    pub(in crate::exec::bounded) fn num_rows(&self) -> u64 {
+        self.aggregate_num_rows
+    }
+
+    pub(in crate::exec::bounded) fn num_columns(&self) -> usize {
+        self.num_columns
+    }
+
+    pub(in crate::exec::bounded) fn frames(&self) -> &[ResidentGpuFrame] {
+        &self.frames
+    }
+
+    pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    pub(in crate::exec::bounded) fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub(in crate::exec::bounded) fn into_frames(self) -> Vec<ResidentGpuFrame> {
+        self.frames
+    }
+
+    pub(in crate::exec::bounded) fn into_frame_iter(self) -> std::vec::IntoIter<ResidentGpuFrame> {
+        self.frames.into_iter()
+    }
 }
 
 impl CompiledGpuResource {
@@ -75,15 +169,13 @@ impl CompiledGpuResource {
     }
 
     pub(in crate::exec::bounded) fn frame_stream(frames: Vec<ResidentGpuFrame>) -> Self {
-        Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(frames) }
+        Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(ResidentFrameStreamPayload::new(frames)) }
     }
 
     pub fn num_rows(&self) -> usize {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_rows(),
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
-                frames.iter().map(|frame| frame.frame.num_rows()).sum()
-            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_rows() as usize,
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -91,9 +183,7 @@ impl CompiledGpuResource {
     pub fn num_columns(&self) -> usize {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_columns(),
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
-                frames.first().map_or(0, |frame| frame.frame.num_columns())
-            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_columns(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -113,9 +203,7 @@ impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
-                frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()))
-            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.live_reservation_bytes(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -235,10 +323,28 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             let payload = state.resource_payload(*resource)?;
             Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
         })?;
-        if input_estimate > 0 {
-            return Ok(input_estimate);
+        let operator_overlap = self.stream_consumer_operator_admission_bytes(task, state)?;
+        Ok(input_estimate.saturating_add(operator_overlap))
+    }
+
+    fn stream_consumer_operator_admission_bytes(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<u64> {
+        if task.kind() != PipelineTaskKind::Aggregate {
+            return Ok(0);
         }
-        Ok(0)
+        task.input_resources().iter().try_fold(0_u64, |total, resource| {
+            let payload = state.resource_payload(*resource)?;
+            match &payload.payload {
+                CompiledGpuResourcePayload::ResidentFrameStream(_) => {
+                    Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
+                },
+                CompiledGpuResourcePayload::ResidentFrame { .. }
+                | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => Ok(total),
+            }
+        })
     }
 
     fn reclaimable_input_bytes(
@@ -257,11 +363,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     }
 
     fn resource_admission_estimate_bytes(&self, resource: &CompiledGpuResource) -> u64 {
+        // Per Phase 4.B / design v5: scheduler admission consumes the
+        // worst-case-per-step footprint, not the aggregate. For
+        // Vec-backed payloads this equals `aggregate_reservation_bytes`
+        // because the consumer holds every frame simultaneously; for
+        // lazy producers (Phase 4.E.3a onward) this is the max
+        // per-partition upper bound.
         match &resource.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
-                frames.iter().fold(0_u64, |total, frame| total.saturating_add(frame.reservation.bytes()))
-            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.max_per_frame_reservation_bytes(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => stream
                 .estimated_source_read_bytes()
                 .unwrap_or_else(|| self.coarse_reservation_slot_bytes())
@@ -410,7 +520,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             },
                         )
                         .map(CompiledGpuResource::new),
-                        CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                        CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                            let frames = stream.into_frames();
                             let mut outputs = Vec::with_capacity(frames.len());
                             for frame in frames {
                                 match execute_bounded_generic_unary(
@@ -506,7 +617,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             },
                         )
                         .map(CompiledGpuResource::new),
-                        CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                        CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                            let frames = stream.into_frames();
                             let mut outputs = Vec::with_capacity(frames.len());
                             for frame in frames {
                                 match execute_bounded_generic_unary(
@@ -741,13 +853,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
-                CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                     execute_bounded_compiled_join_probe_from_frame_stream(
                         self.context,
                         node_id,
                         node,
                         build,
-                        frames,
+                        stream.into_frames(),
                         &mut self.reservations,
                         self.metrics,
                     )
@@ -849,7 +961,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let frame = if can_consume_stream {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
             match input_payload.payload {
-                CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                     execute_compiled_bounded_aggregate_from_stream(
                         self.context,
                         node_id,
@@ -863,7 +975,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             })?
                             .output_schema(),
                         node.output_schema(),
-                        frames,
+                        stream,
                         &mut self.reservations,
                         self.metrics,
                     )
@@ -1135,7 +1247,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     ) -> Result<()> {
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(frame),
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => inputs.extend(frames),
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => inputs.extend(stream.into_frames()),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                 if !consumed {
                     return Err(invalid("compiled union task cannot share a deferred join leaf source")
@@ -1169,8 +1281,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     reservation: self.union_alias_reservation(node_id, &frame.reservation),
                 });
             },
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
-                for frame in frames {
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                for frame in stream.frames() {
                     inputs.push(ResidentGpuFrame {
                         frame: frame.frame.clone(),
                         reservation: self.union_alias_reservation(node_id, &frame.reservation),
@@ -1433,9 +1545,9 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
                 self.reservations.release(frame.reservation, self.metrics);
                 self.reservations.clear_diagnostic_context();
             },
-            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
-                for frame in frames {
+                for frame in stream.into_frames() {
                     self.reservations.release(frame.reservation, self.metrics);
                 }
                 self.reservations.clear_diagnostic_context();

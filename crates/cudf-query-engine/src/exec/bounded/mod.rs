@@ -26,6 +26,7 @@ pub use adaptive::{
     adaptive_bounded_pipeline_admission_with_memory_history,
 };
 use aggregate::*;
+pub use aggregate::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;

@@ -20,6 +20,7 @@ pub use state::{CompiledPipelineState, ReleasedCompiledResource};
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
+pub(in crate::exec::bounded) use tasks::ResidentFrameStreamPayload;
 pub use tasks::{CompiledGpuResource, CompiledGpuTaskExecutor};
 
 use crate::{

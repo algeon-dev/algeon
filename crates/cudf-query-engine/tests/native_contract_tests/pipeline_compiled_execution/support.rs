@@ -567,6 +567,25 @@ pub(super) fn int32_int64_pairs_sorted(
     pairs
 }
 
+pub(super) fn string_int64_pairs_sorted(
+    batch: &RecordBatch,
+    left_column: usize,
+    right_column: usize,
+) -> Vec<(Option<String>, Option<i64>)> {
+    let left = string_values(batch, left_column);
+    let right = int64_values(batch, right_column);
+    let mut pairs = left.into_iter().zip(right).collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+fn string_values(batch: &RecordBatch, column: usize) -> Vec<Option<String>> {
+    let array = batch.column(column).as_any().downcast_ref::<StringArray>().unwrap();
+    (0..array.len())
+        .map(|index| if array.is_null(index) { None } else { Some(array.value(index).to_string()) })
+        .collect()
+}
+
 type Int32Quad = (Option<i32>, Option<i32>, Option<i32>, Option<i32>);
 
 pub(super) fn int32_quads_sorted(

@@ -512,6 +512,65 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
+    assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics);
+}
+
+#[test]
+fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_reservations() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-string-group-aggregate");
+    let customers_path = dir.join("customers.parquet");
+    let orders_path = dir.join("orders.parquet");
+    write_string_group_join_post_root_parquets(&customers_path, &orders_path);
+    let plan = string_group_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("string grouped aggregate plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan)
+        .expect("compiled stream aggregate should size string group keys inside reservations");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(
+        string_int64_pairs_sorted(batch, 0, 1),
+        vec![(Some("A".to_string()), Some(2)), (Some("BBBB".to_string()), Some(1)), (Some("CCC".to_string()), Some(0)),]
+    );
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_aggregate_string_length_sizing"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::ChunkOperator
+    }));
+}
+
+fn assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics: &QueryMetrics) {
+    assert!(metrics.partial_aggregate_count > 0);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_aggregate_partial_state_work"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::PartialState
+    }));
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_aggregate_partial_state"
+            && event.action == MemoryReservationEventAction::Transfer
+            && event.reservation_kind == ReservationKind::PartialState
+    }));
+    assert!(!metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_aggregate_partial_state"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::PartialState
+    }));
 }
 
 #[test]

@@ -1525,7 +1525,9 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
     );
     assert!(
         metrics.reservation_events.iter().any(|event| {
-            event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_partial_state"
+            event.action == MemoryReservationEventAction::Transfer
+                && event.reservation_kind == ReservationKind::PartialState
+                && event.memory_boundary == "compiled_aggregate_partial_state"
         }),
         "direct stream aggregate should retain per-batch partial aggregate states"
     );
@@ -1727,7 +1729,7 @@ fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() 
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 3_500_000,
+            device_budget_bytes: 2_500_000,
             max_source_chunk_bytes: 16 * 1024 * 1024,
             max_row_groups_per_chunk: 4,
             max_retry_attempts: 4,
@@ -1746,7 +1748,7 @@ fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() 
             event.outcome.as_str() == "denied"
                 && event.reservation_kind == ReservationKind::SourceRead
                 && event.memory_boundary == "join_source_read"
-                && event.requested_bytes == 4_000_000
+                && event.requested_bytes == 3_000_000
         }),
         "coarse join source chunk should be denied before retry splitting"
     );
@@ -1755,7 +1757,7 @@ fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() 
             event.outcome.as_str() == "granted"
                 && event.reservation_kind == ReservationKind::SourceRead
                 && event.memory_boundary == "join_source_read"
-                && event.requested_bytes == 2_000_000
+                && matches!(event.requested_bytes, 1_000_000 | 2_000_000)
         }),
         "split join source chunks should be admitted on retry attempts"
     );

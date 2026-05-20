@@ -64,8 +64,6 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_concat_output"),
             (ReservationKind::OperatorOutput, "compiled_aggregate"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
@@ -148,7 +146,7 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
-    assert_eq!(error.fact_value("source_read_contract_quality"), Some("projected_uncompressed_estimate"));
+    assert_eq!(error.fact_value("source_read_contract_quality"), Some("exact_lower_level_contract"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
     assert!(error.fact_value("compiled_task_id").is_some());

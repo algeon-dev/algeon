@@ -124,6 +124,30 @@ pub(super) fn write_single_join_post_root_parquets(customers_path: &Path, orders
     write_parquet(orders_path, Arc::clone(&orders_schema), &orders_batch);
 }
 
+pub(super) fn write_string_group_join_post_root_parquets(customers_path: &Path, orders_path: &Path) {
+    let customer_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_name", DataType::Utf8, false),
+    ]));
+    let customer_batch = RecordBatch::try_new(
+        Arc::clone(&customer_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(StringArray::from(vec!["A", "BBBB", "CCC"]))],
+    )
+    .unwrap();
+    write_parquet(customers_path, Arc::clone(&customer_schema), &customer_batch);
+
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let orders_batch = RecordBatch::try_new(
+        Arc::clone(&orders_schema),
+        vec![Arc::new(Int32Array::from(vec![10, 20, 30])), Arc::new(Int32Array::from(vec![1, 1, 2]))],
+    )
+    .unwrap();
+    write_parquet(orders_path, Arc::clone(&orders_schema), &orders_batch);
+}
+
 pub(super) fn write_d3_6_contract_parquets() {
     remove_d3_6_contract_parquets();
     for label in [

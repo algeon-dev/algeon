@@ -901,6 +901,63 @@ pub(super) fn single_join_post_root_aggregate_data_plan(customers_path: &Path, o
     builder.finish_with_host_sink(aggregate)
 }
 
+pub(super) fn string_group_join_post_root_aggregate_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_name", DataType::Utf8, false),
+    ]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_name", DataType::Utf8, false),
+        Field::new("o_orderkey", DataType::Int32, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_name", DataType::Utf8, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        customers_path,
+        customer_schema,
+        vec!["c_custkey".into(), "c_name".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        orders_path,
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let join = builder.add_join(
+        customers,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_name", "c_name"), "c_name"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("c_name")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        aggregate_schema,
+    );
+    builder.finish_with_host_sink(aggregate)
+}
+
 pub(super) fn single_join_post_root_aggregate_sort_limit_data_plan(
     customers_path: &Path,
     orders_path: &Path,

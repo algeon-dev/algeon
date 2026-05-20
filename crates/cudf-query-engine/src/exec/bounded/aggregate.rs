@@ -1,10 +1,14 @@
-use super::*;
+use std::collections::BTreeMap;
+
+use super::{compiled::ResidentFrameStreamPayload, *};
 
 mod final_merge;
 mod plan;
+pub mod sizing;
 
 pub(super) use final_merge::{execute_final_aggregate_merge, reduce_merge_fan_in};
 pub(super) use plan::BoundedPlan;
+pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -278,7 +282,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     aggregate: &AggregateNode,
     input_schema: &arrow::datatypes::SchemaRef,
     output_schema: &arrow::datatypes::SchemaRef,
-    inputs: Vec<ResidentGpuFrame>,
+    inputs: ResidentFrameStreamPayload,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
@@ -291,7 +295,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
         .with_fact("node_id", node_id));
     }
     if aggregate_spec_has_stddev_samp(&aggregate.spec) {
-        let input = execute_bounded_generic_union(context, node_id, inputs, reservations, metrics)?;
+        let input = execute_bounded_generic_union(context, node_id, inputs.into_frames(), reservations, metrics)?;
         return execute_bounded_generic_unary(
             context,
             node_id,
@@ -321,14 +325,15 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             aggregate,
             input_schema,
             output_schema,
-            inputs,
+            inputs.into_frames(),
             reservations,
             metrics,
         );
     }
 
     let mut partials = Vec::with_capacity(inputs.len());
-    for input in inputs {
+    let mut inputs = inputs.into_frame_iter();
+    while let Some(input) = inputs.next() {
         match execute_compiled_bounded_partial_aggregate_from_frame(
             context,
             node_id,
@@ -342,6 +347,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             Ok(partial) => partials.push(partial),
             Err(error) => {
                 release_partials_reverse(reservations, partials, metrics);
+                release_resident_frames_reverse(reservations, inputs.collect(), metrics);
                 return Err(error);
             },
         }
@@ -484,14 +490,29 @@ fn execute_compiled_bounded_partial_aggregate_from_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let input_reserved_bytes = input.reservation.bytes();
     let input_rows = input.frame.num_rows() as u64;
-    let operator_request =
-        MemoryReservationRequest::new(ReservationKind::ChunkOperator, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary("compiled_aggregate_partial")
+    let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
+        context,
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        &input.frame,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
+    let work_request =
+        MemoryReservationRequest::new(ReservationKind::PartialState, upper_bound_bytes, reservations.budget())
+            .with_memory_boundary("compiled_aggregate_partial_state_work")
             .with_node_id(node_id)
             .with_stage("compiled_aggregate");
-    let operator_reservation = match reservations.try_reserve_work(operator_request, metrics) {
+    let mut work_reservation = match reservations.try_reserve_work(work_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
             drop(input.frame);
@@ -501,14 +522,14 @@ fn execute_compiled_bounded_partial_aggregate_from_frame(
     };
     let token = match execution_budget_token_for_boundary(
         context,
-        reservations.available_bytes_including(&operator_reservation),
-        "compiled_aggregate_partial",
+        reservations.available_bytes_including(&work_reservation),
+        "compiled_aggregate_partial_state_work",
         "cudf_query_engine.bounded.aggregate.compiled_stream_partial.budget_token",
         "failed to create bounded native compiled stream aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(operator_reservation, metrics);
+            reservations.release(work_reservation, metrics);
             reservations.release(input.reservation, metrics);
             return Err(error);
         },
@@ -522,18 +543,528 @@ fn execute_compiled_bounded_partial_aggregate_from_frame(
         &token,
         metrics,
     );
-    reservations.release(operator_reservation, metrics);
-    reservations.release(input.reservation, metrics);
-    let frame = output?;
-    let partial_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let frame = match output {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
+    let partial_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(frame);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
     let partial_request =
         MemoryReservationRequest::new(ReservationKind::PartialState, partial_bytes, reservations.budget())
             .with_memory_boundary("compiled_aggregate_partial_state")
             .with_node_id(node_id)
             .with_stage("compiled_aggregate");
-    let partial_reservation = reservations.try_reserve(partial_request, metrics)?;
+    if partial_bytes > work_reservation.bytes() {
+        let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
+        drop(frame);
+        reservations.release(work_reservation, metrics);
+        reservations.release(input.reservation, metrics);
+        return Err(error);
+    }
+    reservations.shrink_to_observed_with_request(
+        &mut work_reservation,
+        partial_bytes,
+        partial_request.clone(),
+        metrics,
+    );
+    let partial_reservation = reservations.transfer(work_reservation, partial_request, metrics);
+    reservations.release(input.reservation, metrics);
     metrics.record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_reservation.bytes());
     Ok(CommittedPartial { frame, reservation: partial_reservation })
+}
+
+fn partial_aggregate_work_reservation_upper_bound_bytes(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<u64> {
+    let shape = if aggregate.spec.group_exprs.is_empty() {
+        PartialAggregateShape::Global
+    } else {
+        PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 }
+    };
+    let columns = partial_aggregate_upper_bound_columns(
+        context,
+        node_id,
+        aggregate,
+        input_schema,
+        aggregate_output_schema,
+        input,
+        reservations,
+        metrics,
+    )?;
+    partial_aggregate_upper_bound_bytes(shape, &columns)
+}
+
+fn partial_aggregate_upper_bound_columns(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+    if aggregate.spec.group_exprs.is_empty() {
+        return global_partial_aggregate_upper_bound_columns(
+            context,
+            node_id,
+            &aggregate.spec,
+            input_schema,
+            aggregate_output_schema,
+            input,
+            reservations,
+            metrics,
+        );
+    }
+    grouped_partial_aggregate_upper_bound_columns(
+        context,
+        node_id,
+        &aggregate.spec,
+        input_schema,
+        aggregate_output_schema,
+        input,
+        reservations,
+        metrics,
+    )
+}
+
+fn global_partial_aggregate_upper_bound_columns(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+    let partial_schema = partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)?;
+    let mut fields_by_name =
+        partial_schema.fields().iter().map(|field| (field.name().as_str(), field.as_ref())).collect::<BTreeMap<_, _>>();
+    let mut columns = Vec::with_capacity(partial_schema.fields().len());
+
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        match expr.function {
+            AggregateFunction::Avg => {
+                let state = AvgStateAliases::for_aggregate_index(index);
+                columns.push(fixed_partial_column(take_partial_field(
+                    &mut fields_by_name,
+                    state.sum(),
+                    "global AVG sum state",
+                )?));
+                columns.push(fixed_partial_column(take_partial_field(
+                    &mut fields_by_name,
+                    state.count(),
+                    "global AVG count state",
+                )?));
+            },
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                columns.push(partial_column_for_field_and_optional_input(
+                    context,
+                    node_id,
+                    take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate value state")?,
+                    Some(&expr.expr),
+                    input_schema,
+                    input,
+                    reservations,
+                    metrics,
+                )?);
+                columns.push(fixed_partial_column(take_partial_field(
+                    &mut fields_by_name,
+                    global_valid_count_state_alias(expr.alias.as_str()).as_str(),
+                    "global aggregate valid-count state",
+                )?));
+            },
+            AggregateFunction::Count | AggregateFunction::StddevSamp => {
+                columns.push(partial_column_for_field_and_optional_input(
+                    context,
+                    node_id,
+                    take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
+                    None,
+                    input_schema,
+                    input,
+                    reservations,
+                    metrics,
+                )?);
+            },
+        }
+    }
+
+    Ok(columns)
+}
+
+fn grouped_partial_aggregate_upper_bound_columns(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+    let lowered = lower_partial_aggregate_spec(spec)?;
+    let mut columns = Vec::with_capacity(lowered.output_names.len());
+
+    for expr in &spec.group_exprs {
+        let (input_column, output_name) =
+            lower_named_column_expr(expr, "cudf_query_engine.bounded.aggregate.partial_sizing_group_key")?;
+        let field = input_schema.field_with_name(input_column.as_str()).map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.bounded.aggregate.partial_sizing",
+                "partial aggregate group key is missing from its input schema",
+            )
+            .with_fact("column", input_column.as_str())
+            .with_fact("output_name", output_name.as_str())
+            .with_fact("arrow_error", error.to_string())
+        })?;
+        columns.push(partial_column_for_field_and_input_column(
+            context,
+            node_id,
+            field,
+            input_column.as_str(),
+            input,
+            reservations,
+            metrics,
+        )?);
+    }
+
+    if let Some(grouping_sets) = &spec.grouping_sets {
+        let field =
+            aggregate_output_schema.field_with_name(grouping_sets.grouping_id_alias.as_str()).map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.bounded.aggregate.partial_sizing",
+                    "partial aggregate grouping-id column is missing from its output schema",
+                )
+                .with_fact("grouping_id_alias", grouping_sets.grouping_id_alias.as_str())
+                .with_fact("arrow_error", error.to_string())
+            })?;
+        columns.push(fixed_partial_column(field));
+    }
+
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        match expr.function {
+            AggregateFunction::Avg => {
+                let state = AvgStateAliases::for_aggregate_index(index);
+                let input_type = aggregate_input_data_type(&expr.expr, input_schema)?;
+                let output_field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.bounded.aggregate.partial_sizing",
+                        "AVG output field is missing from aggregate output schema",
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("arrow_error", error.to_string())
+                })?;
+                columns.push(JoinOutputColumnUpperBoundInput {
+                    data_type: avg_sum_state_data_type(&input_type, output_field.data_type())?,
+                    input_max_string_length_bytes: None,
+                });
+                columns.push(JoinOutputColumnUpperBoundInput {
+                    data_type: ArrowDataType::Int64,
+                    input_max_string_length_bytes: None,
+                });
+                debug_assert!(lowered.output_names.iter().any(|name| name == state.sum()));
+                debug_assert!(lowered.output_names.iter().any(|name| name == state.count()));
+            },
+            AggregateFunction::Count => {
+                let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.bounded.aggregate.partial_sizing",
+                        "COUNT output field is missing from aggregate output schema",
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("arrow_error", error.to_string())
+                })?;
+                columns.push(fixed_partial_column(field));
+            },
+            AggregateFunction::Sum
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::StddevSamp => {
+                let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.bounded.aggregate.partial_sizing",
+                        "aggregate output field is missing from aggregate output schema",
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("arrow_error", error.to_string())
+                })?;
+                columns.push(partial_column_for_field_and_optional_input(
+                    context,
+                    node_id,
+                    field,
+                    Some(&expr.expr),
+                    input_schema,
+                    input,
+                    reservations,
+                    metrics,
+                )?);
+            },
+        }
+    }
+
+    Ok(columns)
+}
+
+fn take_partial_field<'a>(
+    fields_by_name: &mut BTreeMap<&'a str, &'a Field>,
+    name: &str,
+    role: &'static str,
+) -> Result<&'a Field> {
+    fields_by_name.remove(name).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.aggregate.partial_sizing",
+            "partial aggregate state field is missing from its derived schema",
+        )
+        .with_fact("field", name)
+        .with_fact("role", role)
+    })
+}
+
+fn fixed_partial_column(field: &Field) -> JoinOutputColumnUpperBoundInput {
+    JoinOutputColumnUpperBoundInput { data_type: field.data_type().clone(), input_max_string_length_bytes: None }
+}
+
+fn partial_column_for_field_and_optional_input(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    field: &Field,
+    input_expr: Option<&Expr>,
+    input_schema: &arrow::datatypes::SchemaRef,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<JoinOutputColumnUpperBoundInput> {
+    if !partial_sizing_dtype_needs_string_max(field.data_type()) {
+        return Ok(fixed_partial_column(field));
+    }
+    let Some(input_expr) = input_expr else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.aggregate.partial_sizing",
+            "string partial aggregate state requires an input column for max-length sizing",
+        )
+        .with_fact("field", field.name().as_str())
+        .with_fact("data_type", format!("{:?}", field.data_type())));
+    };
+    let input_column = lower_column_expr(input_expr, "cudf_query_engine.bounded.aggregate.partial_sizing_string")?;
+    let schema_field = input_schema.field_with_name(input_column.as_str()).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.aggregate.partial_sizing",
+            "string partial aggregate input column is missing from input schema",
+        )
+        .with_fact("column", input_column.as_str())
+        .with_fact("field", field.name().as_str())
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    if !partial_sizing_dtype_needs_string_max(schema_field.data_type()) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.aggregate.partial_sizing",
+            "string partial aggregate output was derived from a non-string input column",
+        )
+        .with_fact("column", input_column.as_str())
+        .with_fact("input_type", format!("{:?}", schema_field.data_type()))
+        .with_fact("output_type", format!("{:?}", field.data_type())));
+    }
+    partial_column_for_field_and_input_column(
+        context,
+        node_id,
+        field,
+        input_column.as_str(),
+        input,
+        reservations,
+        metrics,
+    )
+}
+
+fn partial_column_for_field_and_input_column(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    field: &Field,
+    input_column: &str,
+    input: &GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<JoinOutputColumnUpperBoundInput> {
+    let input_max_string_length_bytes = if partial_sizing_dtype_needs_string_max(field.data_type()) {
+        Some(max_string_byte_length_for_partial_sizing(context, node_id, input, input_column, reservations, metrics)?)
+    } else {
+        None
+    };
+    Ok(JoinOutputColumnUpperBoundInput { data_type: field.data_type().clone(), input_max_string_length_bytes })
+}
+
+fn max_string_byte_length_for_partial_sizing(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    input: &GpuDataFrame,
+    input_column: &str,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<u64> {
+    if input.num_rows() == 0 {
+        return Ok(0);
+    }
+    let byte_count_bound = join_output_upper_bound_bytes(
+        input.num_rows() as u64,
+        &[JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Int32, input_max_string_length_bytes: None }],
+    )?;
+    let mut reservation = reservations.try_reserve_work(
+        MemoryReservationRequest::new(ReservationKind::ChunkOperator, byte_count_bound, reservations.budget())
+            .with_memory_boundary("compiled_aggregate_string_length_sizing")
+            .with_node_id(node_id)
+            .with_stage("compiled_aggregate_string_length_sizing"),
+        metrics,
+    )?;
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&reservation),
+        "compiled_aggregate_string_length_sizing",
+        "cudf_query_engine.bounded.aggregate.string_length_sizing.budget_token",
+        "failed to create bounded native partial aggregate string-length sizing budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(error);
+        },
+    };
+
+    let series = match input.frame().series(input_column) {
+        Ok(series) => series,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.string_length_sizing",
+                "failed to access string input column for partial aggregate sizing",
+                error,
+            )
+            .with_fact("column", input_column));
+        },
+    };
+    let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
+        Ok(byte_counts) => byte_counts,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.string_length_sizing",
+                "failed to compute string byte counts for partial aggregate sizing",
+                error,
+            )
+            .with_fact("column", input_column));
+        },
+    };
+    let observed = match byte_counts.device_allocated_size_bytes() {
+        Ok(bytes) => bytes as u64,
+        Err(error) => {
+            drop(byte_counts);
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.string_length_sizing",
+                "failed to observe string byte-count sizing memory",
+                error,
+            )
+            .with_fact("column", input_column));
+        },
+    };
+    if observed > reservation.bytes() {
+        let error = partial_aggregate_string_sizing_upper_bound_violation_error(node_id, reservation.bytes(), observed);
+        drop(byte_counts);
+        reservations.release(reservation, metrics);
+        return Err(error.with_fact("column", input_column));
+    }
+    reservations.shrink_to_observed(&mut reservation, observed, metrics);
+    let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
+        Ok(max_len) => max_len,
+        Err(error) => {
+            drop(byte_counts);
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.string_length_sizing",
+                "failed to reduce string byte-count sizing column",
+                error,
+            )
+            .with_fact("column", input_column));
+        },
+    };
+    drop(byte_counts);
+    reservations.release(reservation, metrics);
+    Ok(max_len.unwrap_or(0).max(0) as u64)
+}
+
+fn aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+    let input_column = lower_column_expr(expr, "cudf_query_engine.bounded.aggregate.partial_sizing_input_type")?;
+    input_schema.field_with_name(input_column.as_str()).map(|field| field.data_type().clone()).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.aggregate.partial_sizing",
+            "aggregate input column is missing from input schema",
+        )
+        .with_fact("column", input_column.as_str())
+        .with_fact("arrow_error", error.to_string())
+    })
+}
+
+fn partial_sizing_dtype_needs_string_max(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn partial_aggregate_upper_bound_violation_error(
+    node_id: NodeId,
+    upper_bound_bytes: u64,
+    observed_bytes: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "cudf_query_engine.bounded.aggregate.partial_upper_bound",
+        "partial aggregate output exceeded its strict bounded upper-bound reservation",
+    )
+    .with_fact("node_id", node_id)
+    .with_fact("contract", "partial_aggregate_output_work_reservation")
+    .with_fact("upper_bound_bytes", upper_bound_bytes)
+    .with_fact("observed_bytes", observed_bytes)
+}
+
+fn partial_aggregate_string_sizing_upper_bound_violation_error(
+    node_id: NodeId,
+    upper_bound_bytes: u64,
+    observed_bytes: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "cudf_query_engine.bounded.aggregate.string_length_sizing",
+        "string byte-count sizing output exceeded its strict bounded upper-bound reservation",
+    )
+    .with_fact("node_id", node_id)
+    .with_fact("contract", "partial_aggregate_string_length_work_reservation")
+    .with_fact("upper_bound_bytes", upper_bound_bytes)
+    .with_fact("observed_bytes", observed_bytes)
 }
 
 fn execute_compiled_bounded_final_aggregate_merge(

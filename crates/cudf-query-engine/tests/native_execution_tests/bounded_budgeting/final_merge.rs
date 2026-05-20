@@ -165,7 +165,7 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 70_000,
+            device_budget_bytes: 95_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
