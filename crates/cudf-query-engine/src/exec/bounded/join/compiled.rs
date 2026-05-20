@@ -4,7 +4,8 @@ use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-        reconcile_join_output_upper_bound, release_bounded_join_side_frame,
+        projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
+        release_bounded_join_side_frame,
     },
     *,
 };
@@ -1304,8 +1305,8 @@ impl CompiledJoinIndices {
     ) -> Result<u64> {
         match self {
             Self::Pair { .. } => {
-                let left_projection = projected_output_columns(projection, JoinSide::Left);
-                let right_projection = projected_output_columns(projection, JoinSide::Right);
+                let left_projection = projected_output_columns_for_retained_sizing(projection, JoinSide::Left);
+                let right_projection = projected_output_columns_for_retained_sizing(projection, JoinSide::Right);
                 let left_bytes = join_side_output_upper_bound_bytes(
                     context,
                     node_id,
@@ -1329,7 +1330,7 @@ impl CompiledJoinIndices {
                 Ok(left_bytes.saturating_add(right_bytes))
             },
             Self::LeftOnly(_) => {
-                let left_projection = projected_output_columns(projection, JoinSide::Left);
+                let left_projection = projected_output_columns_for_retained_sizing(projection, JoinSide::Left);
                 join_side_output_upper_bound_bytes(
                     context,
                     node_id,

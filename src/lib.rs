@@ -15,6 +15,23 @@ pub mod session;
 pub mod table_format;
 mod workload;
 
+pub use clickbench::{
+    CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE,
+    CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV, CUDF_CLICKBENCH_GENERATION_COMMAND_ENV,
+    CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+    CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, CUDF_CLICKBENCH_PARQUET_DIR_ENV, ClickbenchDatasetMetadata,
+    ClickbenchExecutionProgressEvent, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
+    ClickbenchWorkloadResult, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET,
+    DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR, clickbench_datafusion_execution_workload_items,
+    clickbench_datafusion_execution_workload_items_filtered,
+    clickbench_datafusion_execution_workload_items_with_optimizer_config,
+    clickbench_datafusion_planning_workload_items, clickbench_datafusion_planning_workload_items_with_optimizer_config,
+    clickbench_fallback_pressure_workload_items, clickbench_native_optimizer_config, clickbench_query_ids,
+    clickbench_report_session_config, clickbench_tuned_cpu_session_config, describe_clickbench_dataset,
+    describe_clickbench_dataset_with_content_fingerprint, discover_clickbench_layout,
+    external_clickbench_dataset_metadata, prepare_clickbench_report_dataset, register_clickbench_table,
+};
 pub use cudf_query_engine::{
     AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
     NativePipelineExecutionMode, SemijoinReductionOptions,
@@ -112,4 +129,4 @@ pub use tpch::{
     tpch_fallback_pressure_workload_items, tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, tpch_tuned_cpu_session_config, write_tiny_tpch_parquet_dataset,
 };
-pub use workload::{tpcds, tpch};
+pub use workload::{clickbench, tpcds, tpch};

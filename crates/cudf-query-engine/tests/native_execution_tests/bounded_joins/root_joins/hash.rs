@@ -174,6 +174,187 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
 }
 
 #[test]
+fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-stream-topk");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
+    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2), output_schema);
+    let plan = builder.finish_with_host_sink(limit);
+    let context = bounded_join_execution_context(&runtime);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
+        "root join stream feeding TopK should not materialize one concatenated join output"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == ReservationKind::FinalSort
+            && event.memory_boundary == "final_sort_topk_stream_chunk"
+    }));
+    assert!(metrics.budgeted_execution_events.iter().any(|event| {
+        event.operation == "cudf_query_engine.final_sort.topk_prepare"
+            && event.boundary == "final_sort_topk_stream_chunk"
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 2]);
+    assert_eq!(int32_array(batch, 1).values().as_ref(), &[30, 25]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-shared-hash-join-stream");
+    let fact_path = dir.join("fact.parquet");
+    let prefix_dim_path = dir.join("prefix_dim.parquet");
+    let first_dim_path = dir.join("first_dim.parquet");
+    let second_dim_path = dir.join("second_dim.parquet");
+    let fact_schema = write_join_left_parquet(&runtime, &fact_path);
+    let prefix_dim_schema = write_join_right_parquet(&runtime, &prefix_dim_path);
+    let first_dim_schema = write_join_right_parquet(&runtime, &first_dim_path);
+    let second_dim_schema = write_join_right_parquet(&runtime, &second_dim_path);
+    let prefix_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let branch_schema = Arc::new(Schema::new(vec![
+        Field::new("branch", DataType::Int32, false),
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut prefix_dim = join_right_source(&prefix_dim_path, &prefix_dim_schema, &["order_id", "category"]);
+    prefix_dim.files[0].row_group_rows = Some(vec![100_000_000]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&fact_path, &fact_schema, &["order_id", "qty"])));
+    let prefix_dim = builder.add_source(SourceNode::LocalParquet(prefix_dim));
+    let prefix = builder.add_join(
+        fact,
+        prefix_dim,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&prefix_schema),
+    );
+    let first_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &first_dim_path,
+        &first_dim_schema,
+        &["order_id"],
+    )));
+    let second_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &second_dim_path,
+        &second_dim_schema,
+        &["order_id"],
+    )));
+    let first = builder.add_join(
+        prefix,
+        first_dim,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&prefix_schema),
+    );
+    let second = builder.add_join(
+        prefix,
+        second_dim,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&prefix_schema),
+    );
+    let first_projected = builder.add_projection(
+        first,
+        projection_outputs(
+            vec![Expr::literal(LiteralValue::Int32(1)), Expr::column("order_id"), Expr::column("qty")],
+            Arc::clone(&branch_schema),
+        ),
+    );
+    let second_projected = builder.add_projection(
+        second,
+        projection_outputs(
+            vec![Expr::literal(LiteralValue::Int32(2)), Expr::column("order_id"), Expr::column("qty")],
+            Arc::clone(&branch_schema),
+        ),
+    );
+    let union = builder.add_union(vec![first_projected, second_projected], Arc::clone(&branch_schema));
+    let plan = builder.finish_with_host_sink(union);
+    let context = bounded_join_execution_context(&runtime);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert!(
+        metrics.reservation_events.iter().all(|event| {
+            event.memory_boundary != "join_output_stream_concat" || event.node_id.as_deref() != Some("n2")
+        }),
+        "shared partitioned join output should remain chunked instead of concatenating for fan-out"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "applied"
+            && event.action == MemoryReservationEventAction::AliasAcquire
+            && event.memory_boundary == "compiled_join_probe_stream_alias"
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 6);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-inner-residual-one-shot");

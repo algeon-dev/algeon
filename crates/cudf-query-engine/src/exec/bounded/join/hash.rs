@@ -2,7 +2,8 @@ use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-        reconcile_join_output_upper_bound, release_bounded_join_side_frame,
+        projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
+        release_bounded_join_side_frame,
     },
     *,
 };
@@ -545,8 +546,8 @@ fn materialize_bounded_root_hash_join_probe_chunk(
     } else {
         (indices.build().clone(), indices.probe().clone())
     };
-    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-    let right_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
+    let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
     super::common::trace_preflight_entry(
         "execute_bounded_root_hash_join_materialize",
         "root_hash_join",

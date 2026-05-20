@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
     time::Instant,
 };
@@ -30,7 +30,8 @@ use crate::{
             execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_generic_union,
             execute_bounded_join_leaf_source, execute_compiled_bounded_aggregate_from_frame,
             execute_compiled_bounded_aggregate_from_stream, execute_final_sort_node_from_committed_with_retry,
-            execute_final_sort_node_from_frame_with_retry, materialize_bounded_join_leaf_local_parquet_source_stream,
+            execute_final_sort_node_from_frame_with_retry, execute_final_sort_node_from_stream_with_retry,
+            materialize_bounded_join_leaf_local_parquet_source_stream,
             plan_bounded_join_leaf_local_parquet_source_stream, release_bounded_compiled_join_build_state,
             release_bounded_compiled_join_probe_state, release_reservations_reverse,
         },
@@ -70,17 +71,14 @@ enum CompiledGpuResourcePayload {
 /// `live_reservation_bytes` exists so the scheduler can distinguish
 /// "how big is the consumer's per-step input footprint" (the admission
 /// estimate) from "how many bytes can the consumer reclaim right now by
-/// dropping inputs" (the reclaim accounting). For Phase 4.B (Vec-backed
-/// payload) all frames are already resident so the three reservation
-/// fields hold equal values. Phase 4.E.3a's lazy producer will let
-/// `max_per_frame_reservation_bytes` shrink to one partition's upper
-/// bound while `live_reservation_bytes` tracks frames currently held by
-/// the consumer.
+/// dropping inputs" (the reclaim accounting). Eager payloads can keep
+/// many chunks live for shared fan-out, while stream-aware consumers
+/// still process one yielded frame at a time. Lazy producers use the
+/// same per-frame estimate without retaining all frames up front.
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// Worst-case bytes a single yielded "step" can occupy on the
     /// device. Consumed by `resource_admission_estimate_bytes` (the
-    /// scheduler's admission input sizing). For Vec-backed payloads
-    /// this equals `aggregate_reservation_bytes`.
+    /// scheduler's admission input sizing).
     max_per_frame_reservation_bytes: u64,
     /// Sum of per-frame reservation bytes across the whole stream.
     /// Diagnostic / sanity-check only; not consumed by the scheduler.
@@ -96,7 +94,7 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     live_reservation_bytes: Rc<Cell<u64>>,
     aggregate_num_rows: u64,
     num_columns: usize,
-    frames: Vec<ResidentGpuFrame>,
+    frames: VecDeque<ResidentGpuFrame>,
     producer: Option<ResidentFrameStreamProducer>,
 }
 
@@ -256,16 +254,18 @@ impl ResidentFrameStreamPayload {
     pub(in crate::exec::bounded) fn new(frames: Vec<ResidentGpuFrame>) -> Self {
         let aggregate_reservation_bytes =
             frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()));
+        let max_per_frame_reservation_bytes =
+            frames.iter().fold(0u64, |max_bytes, frame| max_bytes.max(frame.reservation.bytes()));
         let aggregate_num_rows =
             frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.frame.num_rows() as u64));
         let num_columns = frames.first().map_or(0, |frame| frame.frame.num_columns());
         Self {
-            max_per_frame_reservation_bytes: aggregate_reservation_bytes,
+            max_per_frame_reservation_bytes,
             aggregate_reservation_bytes,
             live_reservation_bytes: Rc::new(Cell::new(aggregate_reservation_bytes)),
             aggregate_num_rows,
             num_columns,
-            frames,
+            frames: frames.into(),
             producer: None,
         }
     }
@@ -285,7 +285,7 @@ impl ResidentFrameStreamPayload {
             live_reservation_bytes: Rc::new(Cell::new(0)),
             aggregate_num_rows,
             num_columns,
-            frames: Vec::new(),
+            frames: VecDeque::new(),
             producer: Some(ResidentFrameStreamProducer::new(producer_reservations, source)),
         }
     }
@@ -311,9 +311,48 @@ impl ResidentFrameStreamPayload {
         self.num_columns
     }
 
-    pub(in crate::exec::bounded) fn frames(&self) -> &[ResidentGpuFrame] {
+    pub(in crate::exec::bounded) fn frames(&self) -> impl Iterator<Item = &ResidentGpuFrame> {
         assert!(self.producer.is_none(), "lazy frame streams cannot expose an eager frame slice");
-        &self.frames
+        self.frames.iter()
+    }
+
+    pub(in crate::exec::bounded) fn is_eager(&self) -> bool {
+        self.producer.is_none()
+    }
+
+    pub(in crate::exec::bounded) fn alias_eager(
+        &self,
+        node_id: NodeId,
+        reservation_kind: ReservationKind,
+        memory_boundary: &'static str,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<Self> {
+        if !self.is_eager() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.exec.bounded.compiled.frame_stream",
+                "lazy resident frame streams cannot be shared by alias",
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("memory_boundary", memory_boundary));
+        }
+        let frames = self
+            .frames
+            .iter()
+            .map(|frame| ResidentGpuFrame {
+                frame: frame.frame.clone(),
+                reservation: reservations.alias_reservation(
+                    &frame.reservation,
+                    MemoryReservationRequest::new(reservation_kind, frame.reservation.bytes(), reservations.budget())
+                        .with_memory_boundary(memory_boundary)
+                        .with_node_id(node_id)
+                        .with_stage(memory_boundary),
+                    metrics,
+                ),
+            })
+            .collect::<Vec<_>>();
+        Ok(Self::new(frames))
     }
 
     pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
@@ -330,7 +369,7 @@ impl ResidentFrameStreamPayload {
         metrics: &mut QueryMetrics,
     ) -> Option<Result<YieldedFrame>> {
         if !self.frames.is_empty() {
-            let frame = self.frames.remove(0);
+            let frame = self.frames.pop_front().expect("non-empty frame stream had no front frame");
             return Some(Ok(YieldedFrame::from_existing_payload_frame(frame, Rc::clone(&self.live_reservation_bytes))));
         }
         let producer = self.producer.as_mut()?;
@@ -374,7 +413,7 @@ impl ResidentFrameStreamPayload {
         reservations: &mut ReservationTracker,
         metrics: &mut QueryMetrics,
     ) {
-        while let Some(frame) = self.frames.pop() {
+        while let Some(frame) = self.frames.pop_back() {
             reservations.release(frame.reservation, metrics);
         }
         self.live_reservation_bytes.set(0);
@@ -839,7 +878,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         task: &PipelineTask,
         state: &CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<u64> {
-        if task.kind() != PipelineTaskKind::Aggregate {
+        if !matches!(task.kind(), PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort) {
             return Ok(0);
         }
         task.input_resources().iter().try_fold(0_u64, |total, resource| {
@@ -1326,6 +1365,36 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     &mut self.reservations,
                     self.metrics,
                 )
+            } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
+                if !self.join_probe_task_can_consume_frame_stream(task) {
+                    release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
+                    return Err(invalid("compiled join probe cannot share this resident frame stream")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id)
+                        .with_fact("resident_resource_id", input));
+                }
+                let stream = match stream.alias_eager(
+                    node_id,
+                    ReservationKind::ProbeSide,
+                    "compiled_join_probe_stream_alias",
+                    &mut self.reservations,
+                    self.metrics,
+                ) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
+                        return Err(error);
+                    },
+                };
+                execute_bounded_compiled_join_probe_from_frame_stream(
+                    self.context,
+                    node_id,
+                    node,
+                    build,
+                    stream,
+                    &mut self.reservations,
+                    self.metrics,
+                )
             } else {
                 execute_bounded_compiled_join_probe_from_frame(
                     self.context,
@@ -1371,7 +1440,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 BoundedCompiledJoinMaterializeOutput::Frame(frame) => CompiledGpuResource::new(*frame),
                 BoundedCompiledJoinMaterializeOutput::Stream(frames) => CompiledGpuResource::frame_stream(frames),
                 BoundedCompiledJoinMaterializeOutput::LazyStream(stream) => {
-                    CompiledGpuResource::frame_stream_payload(stream)
+                    if self.resource_has_multiple_consumers(output) {
+                        CompiledGpuResource::frame_stream(
+                            stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                        )
+                    } else {
+                        CompiledGpuResource::frame_stream_payload(stream)
+                    }
                 },
             }
         } else {
@@ -1528,20 +1603,35 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             && state.can_consume_task_input_resource(task, input)
         {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            let CompiledGpuResourcePayload::ResidentFrame { frame: input_frame, .. } = input_payload.payload else {
-                return Err(invalid("compiled final sort can only fuse limit over resident frame input")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id));
-            };
-            let frame = execute_final_sort_node_from_committed_with_retry(
-                self.context,
-                node_id,
-                &sort,
-                Some(&limit),
-                input_frame,
-                &mut self.reservations,
-                self.metrics,
-            )
+            let frame = match input_payload.payload {
+                CompiledGpuResourcePayload::ResidentFrame { frame: input_frame, .. } => {
+                    execute_final_sort_node_from_committed_with_retry(
+                        self.context,
+                        node_id,
+                        &sort,
+                        Some(&limit),
+                        input_frame,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
+                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                    execute_final_sort_node_from_stream_with_retry(
+                        self.context,
+                        node_id,
+                        &sort,
+                        &limit,
+                        stream,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
+                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
+                    Err(invalid("compiled final sort cannot consume a deferred join leaf source")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id))
+                },
+            }
             .map_err(|error| attach_task_facts(error, task, node_id))?;
             return Ok(CompiledTaskOutput::new(vec![(
                 output,
@@ -1868,6 +1958,16 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         if first_resource.producer() != task {
             return false;
         }
+        if first_resource.consumers().len() > 1 {
+            return first_resource.consumers().iter().all(|consumer| {
+                self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
+                    |consumer_task| {
+                        consumer_task.kind() == PipelineTaskKind::JoinProbe
+                            && self.join_probe_task_can_consume_frame_stream(consumer_task)
+                    },
+                )
+            });
+        }
         let mut current_resource = resource;
         let mut visited = BTreeSet::new();
         loop {
@@ -1887,6 +1987,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             match consumer_task.kind() {
                 PipelineTaskKind::Aggregate => return true,
                 PipelineTaskKind::JoinProbe => return self.join_probe_task_can_consume_frame_stream(consumer_task),
+                PipelineTaskKind::FinalSort => return self.final_sort_task_can_consume_frame_stream(consumer_task),
                 PipelineTaskKind::Unary => {
                     let [next_resource] = consumer_task.output_resources() else {
                         return false;
@@ -1896,6 +1997,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 _ => return false,
             }
         }
+    }
+
+    fn final_sort_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
+        let [output] = task.output_resources() else {
+            return false;
+        };
+        self.downstream_fused_limit(task, *output).ok().flatten().is_some()
     }
 
     fn join_probe_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {

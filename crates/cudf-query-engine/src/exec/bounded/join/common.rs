@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use arrow::datatypes::DataType as ArrowDataType;
 
 use super::*;
@@ -327,16 +329,24 @@ pub(super) fn join_side_output_upper_bound_bytes(
     }
 
     let mut upper_bound_columns = Vec::with_capacity(columns.len());
+    let mut column_cache: BTreeMap<String, JoinOutputColumnUpperBoundInput> = BTreeMap::new();
     for column in columns {
-        upper_bound_columns.push(join_output_upper_bound_column_for_frame_column(
-            context,
-            node_id,
-            frame,
-            column.as_str(),
-            side,
-            reservations,
-            metrics,
-        )?);
+        let upper_bound = if let Some(upper_bound) = column_cache.get(column.as_str()) {
+            upper_bound.clone()
+        } else {
+            let upper_bound = join_output_upper_bound_column_for_frame_column(
+                context,
+                node_id,
+                frame,
+                column.as_str(),
+                side,
+                reservations,
+                metrics,
+            )?;
+            column_cache.insert(column.clone(), upper_bound.clone());
+            upper_bound
+        };
+        upper_bound_columns.push(upper_bound);
     }
     join_output_upper_bound_bytes(expected_output_rows, &upper_bound_columns).map_err(|error| {
         error
@@ -344,6 +354,13 @@ pub(super) fn join_side_output_upper_bound_bytes(
             .with_fact_if_absent("side", side)
             .with_fact_if_absent("expected_output_rows", expected_output_rows)
     })
+}
+
+pub(super) fn projected_output_columns_for_retained_sizing(
+    projection: &[JoinOutputColumn],
+    side: JoinSide,
+) -> Vec<String> {
+    projection.iter().filter(|column| column.side == side).map(|column| column.column.name().to_string()).collect()
 }
 
 fn join_output_upper_bound_column_for_frame_column(
