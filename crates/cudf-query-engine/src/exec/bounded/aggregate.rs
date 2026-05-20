@@ -282,87 +282,100 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     aggregate: &AggregateNode,
     input_schema: &arrow::datatypes::SchemaRef,
     output_schema: &arrow::datatypes::SchemaRef,
-    inputs: ResidentFrameStreamPayload,
+    mut inputs: ResidentFrameStreamPayload,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    if inputs.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "cudf_query_engine.bounded.aggregate.compiled_stream",
-            "compiled aggregate stream requires at least one input frame",
-        )
-        .with_fact("node_id", node_id));
-    }
-    if aggregate_spec_has_stddev_samp(&aggregate.spec) {
-        let input = execute_bounded_generic_union(context, node_id, inputs.into_frames(), reservations, metrics)?;
-        return execute_bounded_generic_unary(
-            context,
-            node_id,
-            "compiled_stddev_aggregate",
-            "compiled_stddev_aggregate_output",
-            input,
-            reservations,
-            metrics,
-            true,
-            |context, input, token, metrics| {
-                execute_aggregate_with_budget(
-                    context,
-                    aggregate,
-                    input_schema,
-                    input,
-                    output_schema,
-                    token.expect("budget token is created for compiled bounded stddev aggregate stages"),
-                    metrics,
-                )
-            },
-        );
-    }
-    if aggregate_spec_has_distinct(&aggregate.spec) {
-        return execute_compiled_bounded_distinct_aggregate_from_stream(
-            context,
-            node_id,
-            aggregate,
-            input_schema,
-            output_schema,
-            inputs.into_frames(),
-            reservations,
-            metrics,
-        );
-    }
-
-    let mut partials = Vec::with_capacity(inputs.len());
-    let mut inputs = inputs.into_frame_iter();
-    while let Some(input) = inputs.next() {
-        match execute_compiled_bounded_partial_aggregate_from_frame(
-            context,
-            node_id,
-            aggregate,
-            input_schema,
-            output_schema,
-            input,
-            reservations,
-            metrics,
-        ) {
-            Ok(partial) => partials.push(partial),
-            Err(error) => {
-                release_partials_reverse(reservations, partials, metrics);
-                release_resident_frames_reverse(reservations, inputs.collect(), metrics);
-                return Err(error);
-            },
+    let result = (|| -> Result<ResidentGpuFrame> {
+        if inputs.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.bounded.aggregate.compiled_stream",
+                "compiled aggregate stream requires at least one input frame",
+            )
+            .with_fact("node_id", node_id));
         }
-    }
+        if aggregate_spec_has_stddev_samp(&aggregate.spec) {
+            let frames = inputs.collect_remaining_frames_owned(reservations, metrics)?;
+            let input = execute_bounded_generic_union(context, node_id, frames, reservations, metrics)?;
+            return execute_bounded_generic_unary(
+                context,
+                node_id,
+                "compiled_stddev_aggregate",
+                "compiled_stddev_aggregate_output",
+                input,
+                reservations,
+                metrics,
+                true,
+                |context, input, token, metrics| {
+                    execute_aggregate_with_budget(
+                        context,
+                        aggregate,
+                        input_schema,
+                        input,
+                        output_schema,
+                        token.expect("budget token is created for compiled bounded stddev aggregate stages"),
+                        metrics,
+                    )
+                },
+            );
+        }
+        if aggregate_spec_has_distinct(&aggregate.spec) {
+            let frames = inputs.collect_remaining_frames_owned(reservations, metrics)?;
+            return execute_compiled_bounded_distinct_aggregate_from_stream(
+                context,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                frames,
+                reservations,
+                metrics,
+            );
+        }
 
-    execute_compiled_bounded_final_aggregate_merge(
-        context,
-        node_id,
-        aggregate,
-        input_schema,
-        output_schema,
-        partials,
-        reservations,
-        metrics,
-    )
+        let mut partials = Vec::with_capacity(inputs.len());
+        while let Some(input) = inputs.next_yielded_frame() {
+            let mut input = match input {
+                Ok(input) => input,
+                Err(error) => {
+                    release_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                },
+            };
+            let input = input.take_for_release();
+            match execute_compiled_bounded_partial_aggregate_from_frame(
+                context,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                input,
+                reservations,
+                metrics,
+            ) {
+                Ok(partial) => partials.push(partial),
+                Err(error) => {
+                    release_partials_reverse(reservations, partials, metrics);
+                    inputs.release_remaining_frames(reservations, metrics);
+                    return Err(error);
+                },
+            }
+        }
+
+        execute_compiled_bounded_final_aggregate_merge(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partials,
+            reservations,
+            metrics,
+        )
+    })();
+    inputs.release_producer_reservations(reservations, metrics);
+    result
 }
 
 fn execute_compiled_bounded_distinct_aggregate_from_stream(

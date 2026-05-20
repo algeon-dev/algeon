@@ -1,5 +1,7 @@
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
+    rc::Rc,
     time::Instant,
 };
 
@@ -41,7 +43,7 @@ use crate::{
         SinkBoundaryKind,
     },
     plan::{JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
-    runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind},
+    runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind},
     source::SourceNode,
 };
 
@@ -88,10 +90,150 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// `reclaimable_input_bytes` (`tasks.rs:reclaimable_input_bytes`).
     /// For Vec-backed payloads this equals `aggregate_reservation_bytes`
     /// because all frames are immediately live.
-    live_reservation_bytes: u64,
+    live_reservation_bytes: Rc<Cell<u64>>,
     aggregate_num_rows: u64,
     num_columns: usize,
     frames: Vec<ResidentGpuFrame>,
+    producer: Option<ResidentFrameStreamProducer>,
+}
+
+pub(in crate::exec::bounded) struct YieldedFrame {
+    frame: Option<ResidentGpuFrame>,
+    release_guard: YieldedFrameReleaseGuard,
+}
+
+impl YieldedFrame {
+    pub(in crate::exec::bounded) fn yield_from_producer(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
+        let contributed_bytes = frame.reservation.bytes();
+        Self { frame: Some(frame), release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, true) }
+    }
+
+    fn from_existing_payload_frame(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
+        let contributed_bytes = frame.reservation.bytes();
+        Self {
+            frame: Some(frame),
+            release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, false),
+        }
+    }
+
+    pub(in crate::exec::bounded) fn take_for_release(&mut self) -> ResidentGpuFrame {
+        let frame = self.frame.take().expect("YieldedFrame::take_for_release called twice");
+        self.release_guard.take_for_release("YieldedFrame::take_for_release called twice");
+        frame
+    }
+
+    #[allow(dead_code)]
+    pub(in crate::exec::bounded) fn frame(&self) -> &ResidentGpuFrame {
+        self.frame.as_ref().expect("YieldedFrame::frame called after take_for_release")
+    }
+}
+
+struct YieldedFrameReleaseGuard {
+    live_counter: Rc<Cell<u64>>,
+    contributed_bytes: u64,
+    drained: bool,
+}
+
+impl YieldedFrameReleaseGuard {
+    fn new(live_counter: Rc<Cell<u64>>, contributed_bytes: u64, increment_on_create: bool) -> Self {
+        if increment_on_create {
+            live_counter.set(live_counter.get().saturating_add(contributed_bytes));
+        }
+        Self { live_counter, contributed_bytes, drained: false }
+    }
+
+    fn take_for_release(&mut self, double_take_message: &'static str) {
+        assert!(!self.drained, "{double_take_message}");
+        self.live_counter.set(self.live_counter.get().saturating_sub(self.contributed_bytes));
+        self.drained = true;
+    }
+}
+
+impl Drop for YieldedFrameReleaseGuard {
+    fn drop(&mut self) {
+        if self.drained {
+            return;
+        }
+        self.live_counter.set(self.live_counter.get().saturating_sub(self.contributed_bytes));
+        debug_assert!(
+            false,
+            "YieldedFrame dropped without explicit release; reservation bytes={} now leak the device pool",
+            self.contributed_bytes
+        );
+    }
+}
+
+#[doc(hidden)]
+pub struct YieldedFrameCounterTestHarness {
+    live_counter: Rc<Cell<u64>>,
+}
+
+#[doc(hidden)]
+impl YieldedFrameCounterTestHarness {
+    pub fn new() -> Self {
+        Self { live_counter: Rc::new(Cell::new(0)) }
+    }
+
+    pub fn live_bytes(&self) -> u64 {
+        self.live_counter.get()
+    }
+
+    pub fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameCounterTestGuard {
+        YieldedFrameCounterTestGuard {
+            release_guard: YieldedFrameReleaseGuard::new(Rc::clone(&self.live_counter), contributed_bytes, true),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub struct YieldedFrameCounterTestGuard {
+    release_guard: YieldedFrameReleaseGuard,
+}
+
+#[doc(hidden)]
+impl YieldedFrameCounterTestGuard {
+    pub fn take_for_release(&mut self) {
+        self.release_guard.take_for_release("YieldedFrameCounterTestGuard::take_for_release called twice");
+    }
+}
+
+pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
+    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>>;
+}
+
+struct ResidentFrameStreamProducer {
+    producer_reservations: Vec<ActiveReservation>,
+    inner: Option<Box<dyn ResidentFrameStreamSource>>,
+}
+
+impl ResidentFrameStreamProducer {
+    fn new(producer_reservations: Vec<ActiveReservation>, inner: Box<dyn ResidentFrameStreamSource>) -> Self {
+        Self { producer_reservations, inner: Some(inner) }
+    }
+
+    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
+        self.inner.as_mut()?.next_frame()
+    }
+
+    fn release(mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        drop(self.inner.take());
+        for reservation in self.producer_reservations.drain(..).rev() {
+            reservations.release(reservation, metrics);
+        }
+    }
+}
+
+impl Drop for ResidentFrameStreamProducer {
+    fn drop(&mut self) {
+        if self.producer_reservations.is_empty() {
+            return;
+        }
+        debug_assert!(
+            false,
+            "ResidentFrameStreamProducer dropped without explicit release; producer_reservation_count={}",
+            self.producer_reservations.len()
+        );
+    }
 }
 
 impl ResidentFrameStreamPayload {
@@ -104,10 +246,31 @@ impl ResidentFrameStreamPayload {
         Self {
             max_per_frame_reservation_bytes: aggregate_reservation_bytes,
             aggregate_reservation_bytes,
-            live_reservation_bytes: aggregate_reservation_bytes,
+            live_reservation_bytes: Rc::new(Cell::new(aggregate_reservation_bytes)),
             aggregate_num_rows,
             num_columns,
             frames,
+            producer: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(in crate::exec::bounded) fn from_producer(
+        max_per_frame_reservation_bytes: u64,
+        aggregate_reservation_bytes: u64,
+        aggregate_num_rows: u64,
+        num_columns: usize,
+        producer_reservations: Vec<ActiveReservation>,
+        source: Box<dyn ResidentFrameStreamSource>,
+    ) -> Self {
+        Self {
+            max_per_frame_reservation_bytes,
+            aggregate_reservation_bytes,
+            live_reservation_bytes: Rc::new(Cell::new(0)),
+            aggregate_num_rows,
+            num_columns,
+            frames: Vec::new(),
+            producer: Some(ResidentFrameStreamProducer::new(producer_reservations, source)),
         }
     }
 
@@ -121,7 +284,7 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn live_reservation_bytes(&self) -> u64 {
-        self.live_reservation_bytes
+        self.live_reservation_bytes.get()
     }
 
     pub(in crate::exec::bounded) fn num_rows(&self) -> u64 {
@@ -133,11 +296,12 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn frames(&self) -> &[ResidentGpuFrame] {
+        assert!(self.producer.is_none(), "lazy frame streams cannot expose an eager frame slice");
         &self.frames
     }
 
     pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
-        self.frames.is_empty()
+        self.frames.is_empty() && self.producer.is_none()
     }
 
     pub(in crate::exec::bounded) fn len(&self) -> usize {
@@ -145,11 +309,169 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn into_frames(self) -> Vec<ResidentGpuFrame> {
+        assert!(self.producer.is_none(), "lazy frame streams must be consumed through yielded frames");
         self.frames
     }
 
+    #[allow(dead_code)]
     pub(in crate::exec::bounded) fn into_frame_iter(self) -> std::vec::IntoIter<ResidentGpuFrame> {
+        assert!(self.producer.is_none(), "lazy frame streams must be consumed through yielded frames");
         self.frames.into_iter()
+    }
+
+    pub(in crate::exec::bounded) fn next_yielded_frame(&mut self) -> Option<Result<YieldedFrame>> {
+        if !self.frames.is_empty() {
+            let frame = self.frames.remove(0);
+            return Some(Ok(YieldedFrame::from_existing_payload_frame(frame, Rc::clone(&self.live_reservation_bytes))));
+        }
+        let producer = self.producer.as_mut()?;
+        producer.next_frame().map(|result| {
+            result.map(|frame| YieldedFrame::yield_from_producer(frame, Rc::clone(&self.live_reservation_bytes)))
+        })
+    }
+
+    pub(in crate::exec::bounded) fn collect_remaining_frames_owned(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<Vec<ResidentGpuFrame>> {
+        let mut accumulated = Vec::new();
+        loop {
+            match self.next_yielded_frame() {
+                Some(Ok(mut yielded)) => accumulated.push(yielded.take_for_release()),
+                Some(Err(error)) => {
+                    while let Some(frame) = accumulated.pop() {
+                        reservations.release(frame.reservation, metrics);
+                    }
+                    return Err(error);
+                },
+                None => return Ok(accumulated),
+            }
+        }
+    }
+
+    pub(in crate::exec::bounded) fn release_remaining_frames(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) {
+        while let Some(frame) = self.frames.pop() {
+            reservations.release(frame.reservation, metrics);
+        }
+        self.live_reservation_bytes.set(0);
+    }
+
+    pub(in crate::exec::bounded) fn release_producer_reservations(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) {
+        let Some(producer) = self.producer.take() else { return };
+        producer.release(reservations, metrics);
+    }
+
+    pub(in crate::exec::bounded) fn release_all(
+        mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) {
+        self.release_remaining_frames(reservations, metrics);
+        self.release_producer_reservations(reservations, metrics);
+    }
+}
+
+struct EmptyResidentFrameStreamSource;
+
+impl ResidentFrameStreamSource for EmptyResidentFrameStreamSource {
+    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
+        None
+    }
+}
+
+struct ErrorResidentFrameStreamSource {
+    emitted: bool,
+}
+
+impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
+    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
+        if self.emitted {
+            return None;
+        }
+        self.emitted = true;
+        Some(Err(QueryError::new(
+            QueryErrorCode::Internal,
+            "cudf_query_engine.exec.bounded.compiled.resident_frame_stream_test",
+            "injected resident frame stream source failure",
+        )))
+    }
+}
+
+#[doc(hidden)]
+pub struct ResidentFrameStreamProducerTestHarness {
+    payload: Option<ResidentFrameStreamPayload>,
+    reservations: ReservationTracker,
+    metrics: QueryMetrics,
+}
+
+#[doc(hidden)]
+impl ResidentFrameStreamProducerTestHarness {
+    pub fn new(producer_reservation_bytes: &[u64]) -> Result<Self> {
+        Self::with_source(producer_reservation_bytes, Box::new(EmptyResidentFrameStreamSource))
+    }
+
+    pub fn new_erroring(producer_reservation_bytes: &[u64]) -> Result<Self> {
+        Self::with_source(producer_reservation_bytes, Box::new(ErrorResidentFrameStreamSource { emitted: false }))
+    }
+
+    fn with_source(producer_reservation_bytes: &[u64], source: Box<dyn ResidentFrameStreamSource>) -> Result<Self> {
+        let budget = producer_reservation_bytes.iter().fold(1u64, |total, bytes| total.saturating_add(*bytes)).max(1);
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, budget);
+        let mut producer_reservations = Vec::with_capacity(producer_reservation_bytes.len());
+        for (index, bytes) in producer_reservation_bytes.iter().enumerate() {
+            let request = MemoryReservationRequest::new(ReservationKind::OperatorOutput, *bytes, budget)
+                .with_memory_boundary("resident_frame_stream_producer_test")
+                .with_stage("resident_frame_stream_producer_test")
+                .with_chunk_index(index);
+            producer_reservations.push(reservations.try_reserve_owned_resident(request, &mut metrics)?);
+        }
+        let aggregate_reservation_bytes =
+            producer_reservation_bytes.iter().fold(0u64, |total, bytes| total.saturating_add(*bytes));
+        let max_per_frame_reservation_bytes = producer_reservation_bytes.iter().copied().max().unwrap_or(0);
+        let payload = ResidentFrameStreamPayload::from_producer(
+            max_per_frame_reservation_bytes,
+            aggregate_reservation_bytes,
+            0,
+            0,
+            producer_reservations,
+            source,
+        );
+        Ok(Self { payload: Some(payload), reservations, metrics })
+    }
+
+    pub fn reserved_bytes(&self) -> u64 {
+        self.reservations.reserved_bytes()
+    }
+
+    pub fn release_producer_reservations(&mut self) {
+        if let Some(payload) = self.payload.as_mut() {
+            payload.release_producer_reservations(&mut self.reservations, &mut self.metrics);
+        }
+    }
+
+    pub fn collect_remaining_frames_owned_then_release(&mut self) -> Result<usize> {
+        let result = self
+            .payload
+            .as_mut()
+            .expect("producer test payload already dropped")
+            .collect_remaining_frames_owned(&mut self.reservations, &mut self.metrics)
+            .map(|frames| frames.len());
+        self.release_producer_reservations();
+        result
+    }
+
+    pub fn drop_payload_without_release(&mut self) {
+        drop(self.payload.take());
     }
 }
 
@@ -1547,9 +1869,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             },
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
-                for frame in stream.into_frames() {
-                    self.reservations.release(frame.reservation, self.metrics);
-                }
+                stream.release_all(&mut self.reservations, self.metrics);
                 self.reservations.clear_diagnostic_context();
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},

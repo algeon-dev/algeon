@@ -34,8 +34,8 @@ mod validate;
 pub use bounded::strict::{
     CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
     CompiledPipelineState, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    StrictBoundedPipelineAdmission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-    strict_bounded_pipeline_admission,
+    ResidentFrameStreamProducerTestHarness, StrictBoundedPipelineAdmission, YieldedFrameCounterTestHarness,
+    compiled_bounded_pipeline_support, compiled_bounded_query_plan_support, strict_bounded_pipeline_admission,
 };
 pub use bounded::{
     AdaptivePipelineAdmission, JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES,

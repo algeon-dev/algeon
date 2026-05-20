@@ -72,6 +72,8 @@ mod reservation_tracker_contracts;
 mod source_contracts;
 #[path = "native_contract_tests/type_support.rs"]
 mod type_support;
+#[path = "native_contract_tests/yielded_frame.rs"]
+mod yielded_frame;
 
 #[test]
 fn query_error_codes_and_facts_are_stable_without_datafusion() {
