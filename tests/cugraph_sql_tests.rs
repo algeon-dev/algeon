@@ -20,9 +20,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm, CugraphAlgorithmParams,
-    CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec,
-    parse_cugraph_algorithm_spec, stable_result_schema,
+    CUGRAPH_OPERATION_REGISTRY, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
+    CugraphAlgorithmParams, CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy,
+    NativeCudfComposedExec, parse_cugraph_algorithm_spec, stable_result_schema,
 };
 
 #[tokio::test]
@@ -30,10 +30,44 @@ async fn cugraph_sql_planning_registers_udtfs_on_session_state_builder() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let functions = state.table_functions();
 
-    assert!(functions.contains_key("cugraph_pagerank"));
-    assert!(functions.contains_key("cugraph_bfs"));
-    assert!(functions.contains_key("cugraph_louvain"));
-    assert!(!functions.contains_key("cugraph_degrees"));
+    for definition in CUGRAPH_OPERATION_REGISTRY {
+        assert!(
+            functions.contains_key(definition.sql_function_name),
+            "SQL surface must register every cuGraph operation registry entry: {}",
+            definition.sql_function_name,
+        );
+    }
+
+    let registered_cugraph_udtfs: std::collections::BTreeSet<&str> =
+        functions.keys().filter_map(|name| name.strip_prefix("cugraph_").map(|_| name.as_str())).collect();
+    let registry_function_names: std::collections::BTreeSet<&str> =
+        CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect();
+    assert_eq!(
+        registered_cugraph_udtfs, registry_function_names,
+        "every `cugraph_*` UDTF on the session must come from the registry; \
+         add a registry entry rather than registering a function out of band",
+    );
+}
+
+#[test]
+fn cugraph_sql_operation_registry_matches_native_engine_inventory() {
+    use cudf_query_engine::GRAPH_OPERATION_REGISTRY;
+
+    let sql_algorithms: Vec<_> = CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.native_algorithm).collect();
+    let native_algorithms: Vec<_> = GRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.algorithm).collect();
+    assert_eq!(
+        sql_algorithms, native_algorithms,
+        "SQL-side cuGraph registry must mirror the cudf-query-engine graph operation registry, in order",
+    );
+
+    for entry in CUGRAPH_OPERATION_REGISTRY {
+        let native_name = entry.native_algorithm.definition().name;
+        assert_eq!(
+            entry.sql_function_name,
+            format!("cugraph_{native_name}"),
+            "SQL UDTF name must follow the cugraph_<native_name> convention",
+        );
+    }
 }
 
 #[tokio::test]
@@ -44,6 +78,63 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_pagerank('graph_edges')", CugraphAlgorithm::PageRank).await;
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_bfs('graph_edges', 0)", CugraphAlgorithm::Bfs).await;
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_louvain('graph_edges')", CugraphAlgorithm::Louvain).await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_eigenvector_centrality('graph_edges')",
+        CugraphAlgorithm::EigenvectorCentrality,
+    )
+    .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_katz_centrality('graph_edges')", CugraphAlgorithm::KatzCentrality)
+        .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_hits('graph_edges')", CugraphAlgorithm::Hits).await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_sssp('graph_edges', 0)", CugraphAlgorithm::Sssp).await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_degrees_all('graph_edges')", CugraphAlgorithm::DegreesAll).await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_in_degrees_all('graph_edges')", CugraphAlgorithm::InDegreesAll)
+        .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_out_degrees_all('graph_edges')", CugraphAlgorithm::OutDegreesAll)
+        .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_weakly_connected_components('graph_edges')",
+        CugraphAlgorithm::WeaklyConnectedComponents,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_strongly_connected_components('graph_edges')",
+        CugraphAlgorithm::StronglyConnectedComponents,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_triangle_count_all('graph_edges')",
+        CugraphAlgorithm::TriangleCountAll,
+    )
+    .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_core_number('graph_edges')", CugraphAlgorithm::CoreNumber).await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_k_core('graph_edges')", CugraphAlgorithm::KCore).await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_minimum_spanning_tree('graph_edges', 'src', 'dst', 'weight')",
+        CugraphAlgorithm::MinimumSpanningTree,
+    )
+    .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_pagerank_strict('graph_edges')", CugraphAlgorithm::PageRankStrict)
+        .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_leiden('graph_edges')", CugraphAlgorithm::Leiden).await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_ecg('graph_edges')", CugraphAlgorithm::Ecg).await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_spectral_modularity_maximization('graph_edges')",
+        CugraphAlgorithm::SpectralModularityMaximization,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_balanced_cut_clustering('graph_edges')",
+        CugraphAlgorithm::BalancedCutClustering,
+    )
+    .await;
 }
 
 #[test]
@@ -76,6 +167,19 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     assert_eq!(spec.weight_col, None);
     assert_eq!(spec.graph_options.directed, false);
     assert_eq!(spec.graph_options.renumber, false);
+
+    // WCC must default to directed=false since it requires a symmetric graph.
+    let spec =
+        parse_cugraph_algorithm_spec(CugraphAlgorithm::WeaklyConnectedComponents, &[lit("edges")], &config).unwrap();
+    assert_eq!(spec.graph_options.directed, false, "WCC must default to directed=false");
+
+    // triangle_count_all / core_number / k_core must also default to
+    // directed=false so their parity oracles (which Python cuGraph forces
+    // undirected) are computed under the same semantics as the adapter.
+    for algorithm in [CugraphAlgorithm::TriangleCountAll, CugraphAlgorithm::CoreNumber, CugraphAlgorithm::KCore] {
+        let spec = parse_cugraph_algorithm_spec(algorithm, &[lit("edges")], &config).unwrap();
+        assert_eq!(spec.graph_options.directed, false, "{} must default to directed=false", algorithm.function_name());
+    }
 }
 
 #[test]
@@ -128,6 +232,512 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     )
     .unwrap();
     assert_eq!(spec.params, CugraphAlgorithmParams::Louvain(datafusion_cudf::CugraphLouvainParams { resolution: 2.5 }));
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::EigenvectorCentrality,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"epsilon":0.0005,"max_iterations":80}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::EigenvectorCentrality(datafusion_cudf::CugraphEigenvectorCentralityParams {
+            epsilon: 0.0005,
+            max_iterations: 80,
+        })
+    );
+
+    // Eigenvector centrality must reject zero max_iterations the same way
+    // PageRank does, since the underlying cugraph-rs newtype requires >= 1.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::EigenvectorCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_iterations":0}"#),
+            ],
+            &config,
+        ),
+        "max_iterations must be at least 1",
+    );
+
+    // epsilon=0 must also be rejected at planning. cugraph-rs's
+    // `NonNegativeF64` accepts zero, but libcugraph's convergence test
+    // `diff_sum < vertex_count * epsilon` never accepts on a non-empty
+    // graph when the tolerance is zero, so the solver burns all
+    // max_iterations of GPU work before failing.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::EigenvectorCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"epsilon":0}"#),
+            ],
+            &config,
+        ),
+        "epsilon must be positive",
+    );
+
+    // Katz centrality accepts alpha/beta/epsilon/max_iterations.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::KatzCentrality,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"alpha":0.02,"beta":0.5,"epsilon":1e-7,"max_iterations":250}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::KatzCentrality(datafusion_cudf::CugraphKatzCentralityParams {
+            alpha: 0.02,
+            beta: 0.5,
+            epsilon: 1.0e-7,
+            max_iterations: 250,
+        }),
+    );
+
+    // Same epsilon=0 reasoning as eigenvector centrality: libcugraph
+    // never converges when the tolerance is zero on a non-empty graph.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::KatzCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"epsilon":0}"#),
+            ],
+            &config,
+        ),
+        "epsilon must be positive",
+    );
+
+    // alpha must be strictly positive — alpha=0 makes Katz centrality
+    // degenerate to the constant `beta` vector.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::KatzCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"alpha":0}"#),
+            ],
+            &config,
+        ),
+        "alpha must be positive",
+    );
+
+    // libcugraph caps alpha at 1 (Katz attenuation factor must be
+    // smaller than the inverse of the graph's largest eigenvalue);
+    // alpha > 1 fails inside the kernel, so reject at planning.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::KatzCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"alpha":2}"#),
+            ],
+            &config,
+        ),
+        "alpha must be <= 1",
+    );
+
+    // beta=0 with the zero initial vector reaches normalization with
+    // all-zero scores. cugraph-rs's `NonNegativeF64` accepts zero, so
+    // the only place left to reject it is the SQL planner.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::KatzCentrality,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"beta":0}"#),
+            ],
+            &config,
+        ),
+        "beta must be positive",
+    );
+
+    // HITS accepts epsilon/max_iterations/normalize. Mirrors
+    // PageRank's pattern; `normalize` defaults to false matching the
+    // cugraph-rs `HitsParams::default()` convention.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Hits,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"epsilon":0.0001,"max_iterations":50,"normalize":true}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Hits(datafusion_cudf::CugraphHitsParams {
+            epsilon: 0.0001,
+            max_iterations: 50,
+            normalize: true,
+        }),
+    );
+
+    // epsilon=0 is the same trap as the other centrality solvers:
+    // libcugraph never converges on a non-empty graph at zero
+    // tolerance, so reject at planning.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Hits,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"epsilon":0}"#),
+            ],
+            &config,
+        ),
+        "epsilon must be positive",
+    );
+
+    // max_iterations=0 is rejected by cugraph-rs's IterationCount
+    // newtype at runtime; surface that at planning so the failure
+    // path is consistent with PageRank / eigenvector / Katz.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Hits,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_iterations":0}"#),
+            ],
+            &config,
+        ),
+        "max_iterations must be at least 1",
+    );
+
+    // SSSP: source_vertex as second positional arg, optional cutoff in JSON.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Sssp,
+        &[
+            lit("graph_edges"),
+            lit(5_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"cutoff":10.5}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Sssp(datafusion_cudf::CugraphSsspParams { source_vertex: 5, cutoff: Some(10.5) }),
+    );
+    // cutoff < 0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Sssp,
+            &[
+                lit("graph_edges"),
+                lit(0_i64),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"cutoff":-1.0}"#),
+            ],
+            &config,
+        ),
+        "cutoff must be non-negative",
+    );
+
+    // CoreNumber: degree_type option.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::CoreNumber,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"degree_type":"in"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::CoreNumber(datafusion_cudf::CugraphCoreNumberParams {
+            degree_type: datafusion_cudf::CugraphKCoreDegreeType::In,
+        }),
+    );
+
+    // KCore: k and degree_type.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::KCore,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"k":3,"degree_type":"out"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::KCore(datafusion_cudf::CugraphKCoreParams {
+            k: 3,
+            degree_type: datafusion_cudf::CugraphKCoreDegreeType::Out,
+        }),
+    );
+    // k=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::KCore,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"k":0}"#),
+            ],
+            &config,
+        ),
+        "k_core k must be at least 1",
+    );
+    // Invalid degree_type rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::CoreNumber,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"degree_type":"both"}"#),
+            ],
+            &config,
+        ),
+        "unsupported 'degree_type' value 'both'",
+    );
+
+    // PageRank strict: same options as PageRank.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::PageRankStrict,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"alpha":0.9,"epsilon":0.0001,"max_iterations":50}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::PageRankStrict(datafusion_cudf::CugraphPageRankParams {
+            alpha: 0.9,
+            epsilon: 0.0001,
+            max_iterations: 50,
+        }),
+    );
+    // PageRank strict: epsilon=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::PageRankStrict,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"epsilon":0}"#),
+            ],
+            &config,
+        ),
+        "PageRank strict epsilon must be positive",
+    );
+
+    // Leiden: max_level, resolution, theta, seed.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Leiden,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"max_level":50,"resolution":0.8,"theta":0.5,"seed":42}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Leiden(datafusion_cudf::CugraphLeidenParams {
+            max_level: 50,
+            resolution: 0.8,
+            theta: 0.5,
+            seed: 42,
+        }),
+    );
+    // Leiden: max_level=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Leiden,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_level":0}"#),
+            ],
+            &config,
+        ),
+        "Leiden max_level must be at least 1",
+    );
+    // Leiden: resolution=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Leiden,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"resolution":0}"#),
+            ],
+            &config,
+        ),
+        "resolution must be positive",
+    );
+
+    // ECG: min_weight, ensemble_size, max_level, threshold, resolution, seed.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Ecg,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"min_weight":0.01,"ensemble_size":5,"max_level":50,"threshold":1e-5,"resolution":0.9,"seed":7}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Ecg(datafusion_cudf::CugraphEcgParams {
+            min_weight: 0.01,
+            ensemble_size: 5,
+            max_level: 50,
+            threshold: 1e-5,
+            resolution: 0.9,
+            seed: 7,
+        }),
+    );
+    // ECG: ensemble_size=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Ecg,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"ensemble_size":0}"#),
+            ],
+            &config,
+        ),
+        "ECG ensemble_size must be at least 1",
+    );
+
+    // SpectralModularityMaximization: n_clusters, n_eigenvectors, seed.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::SpectralModularityMaximization,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"n_clusters":4,"n_eigenvectors":3,"seed":99}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::SpectralModularityMaximization(datafusion_cudf::CugraphSpectralClusteringParams {
+            n_clusters: 4,
+            n_eigenvectors: 3,
+            seed: 99,
+            ..Default::default()
+        }),
+    );
+    // SpectralModularityMaximization: n_clusters=0 rejected.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::SpectralModularityMaximization,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"n_clusters":0}"#),
+            ],
+            &config,
+        ),
+        "n_clusters must be at least 1",
+    );
+
+    // BalancedCutClustering: same params struct as SpectralModularityMaximization.
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::BalancedCutClustering,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"n_clusters":3,"seed":11}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::BalancedCutClustering(datafusion_cudf::CugraphSpectralClusteringParams {
+            n_clusters: 3,
+            seed: 11,
+            ..Default::default()
+        }),
+    );
 }
 
 #[test]
@@ -260,6 +870,19 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
         ),
         "resolution must be positive",
     );
+    // MST without weight_col is rejected at planning time.
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(CugraphAlgorithm::MinimumSpanningTree, &[lit("graph_edges")], &config),
+        "requires a weight column",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::MinimumSpanningTree,
+            &[lit("graph_edges"), lit("src"), lit("dst"), datafusion::logical_expr::lit(ScalarValue::Null)],
+            &config,
+        ),
+        "requires a weight column",
+    );
 }
 
 async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm: CugraphAlgorithm) {
@@ -297,6 +920,86 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
         schema_fields(CugraphAlgorithm::Louvain),
         vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false),],
     );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::EigenvectorCentrality),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false),],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::KatzCentrality),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false),],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::Hits),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("hub_score", DataType::Float64, false),
+            Field::new("authority_score", DataType::Float64, false),
+        ],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::Sssp),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Float64, false),
+            Field::new("predecessor", DataType::Int64, true),
+        ],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::DegreesAll),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("in_degree", DataType::Int64, false),
+            Field::new("out_degree", DataType::Int64, false),
+        ],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::InDegreesAll),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("in_degree", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::OutDegreesAll),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("out_degree", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::WeaklyConnectedComponents),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::StronglyConnectedComponents),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::TriangleCountAll),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("triangle_count", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::CoreNumber),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("core_number", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::KCore),
+        vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::MinimumSpanningTree),
+        vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)],
+    );
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::PageRankStrict),
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)],
+    );
+    for algorithm in [
+        CugraphAlgorithm::Leiden,
+        CugraphAlgorithm::Ecg,
+        CugraphAlgorithm::SpectralModularityMaximization,
+        CugraphAlgorithm::BalancedCutClustering,
+    ] {
+        assert_eq!(
+            schema_fields(algorithm),
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)],
+            "community algorithm {algorithm:?} must expose vertex + partition schema",
+        );
+    }
 }
 
 #[tokio::test]
@@ -476,249 +1179,12 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     fs::remove_dir_all(dir).ok();
 }
 
-#[tokio::test]
-#[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
-async fn cugraph_sql_gpu_pagerank_matches_python_cugraph_oracle() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-pagerank");
-    let path = dir.join("tiny_directed_edges.parquet");
-    write_tiny_directed_edges(&path);
-
-    let Some(oracle) = python_pagerank_oracle(&path) else {
-        eprintln!("skipping cuGraph PageRank e2e because the Python cuGraph oracle is unavailable");
-        fs::remove_dir_all(dir).ok();
-        return;
-    };
-    eprintln!("Python cuGraph oracle versions: {}", oracle.versions);
-
-    let mut config = SessionConfig::new()
-        .with_target_partitions(1)
-        .with_repartition_file_scans(false)
-        .with_repartition_aggregations(false)
-        .with_repartition_sorts(false);
-    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    ctx.sql(
-        "CREATE VIEW graph_edges AS \
-         SELECT src, dst, weight FROM tiny_directed_edges WHERE active",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-    ctx.sql(
-        "CREATE VIEW keep_last_directed_edges AS \
-         SELECT src, dst, weight \
-         FROM tiny_directed_edges \
-         WHERE active AND NOT (src = 0 AND dst = 1 AND weight = 1.0)",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-
-    for variant in [
-        CugraphOracleVariant {
-            label: "default insertion",
-            sql: "SELECT vertex, value \
-                  FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: true,
-        },
-        CugraphOracleVariant {
-            label: "pre-deduped default",
-            sql: "SELECT vertex, value \
-                  FROM cugraph_pagerank('keep_last_directed_edges', 'src', 'dst', 'weight') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: true,
-        },
-        CugraphOracleVariant {
-            label: "explicit raw over keep-last input",
-            sql: "SELECT vertex, value \
-                  FROM cugraph_pagerank('keep_last_directed_edges', 'src', 'dst', 'weight', \
-                                        '{\"construction_policy\":\"raw_libcugraph\"}') \
-                  ORDER BY vertex",
-            construction_policy: "raw_libcugraph",
-            edge_normalize_inserted: false,
-        },
-    ] {
-        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
-        let actual = pagerank_rows(&batches);
-        assert_pagerank_rows_match(variant.label, &actual, &oracle.rows);
-    }
-    fs::remove_dir_all(dir).ok();
-}
-
-#[tokio::test]
-#[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
-async fn cugraph_sql_gpu_bfs_matches_python_cugraph_oracle() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-bfs");
-    let path = dir.join("tiny_directed_edges.parquet");
-    write_tiny_directed_edges(&path);
-
-    let Some(oracle) = python_bfs_oracle(&path) else {
-        eprintln!("skipping cuGraph BFS e2e because the Python cuGraph oracle is unavailable");
-        fs::remove_dir_all(dir).ok();
-        return;
-    };
-    eprintln!("Python cuGraph oracle versions: {}", oracle.versions);
-
-    let mut config = SessionConfig::new()
-        .with_target_partitions(1)
-        .with_repartition_file_scans(false)
-        .with_repartition_aggregations(false)
-        .with_repartition_sorts(false);
-    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    ctx.sql(
-        "CREATE VIEW graph_edges AS \
-         SELECT src, dst, weight FROM tiny_directed_edges WHERE active",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-    ctx.sql(
-        "CREATE VIEW canonical_directed_edges AS \
-         SELECT src, dst \
-         FROM tiny_directed_edges \
-         WHERE active \
-         GROUP BY src, dst",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-
-    for variant in [
-        CugraphOracleVariant {
-            label: "default insertion",
-            sql: "SELECT vertex, distance, predecessor \
-                  FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', 'weight') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: true,
-        },
-        CugraphOracleVariant {
-            label: "pre-normalized unweighted default",
-            sql: "SELECT vertex, distance, predecessor \
-                  FROM cugraph_bfs('canonical_directed_edges', 0, 'src', 'dst') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: false,
-        },
-        CugraphOracleVariant {
-            label: "explicit raw over pre-normalized unweighted input",
-            sql: "SELECT vertex, distance, predecessor \
-                  FROM cugraph_bfs('canonical_directed_edges', 0, 'src', 'dst', NULL, \
-                                   '{\"construction_policy\":\"raw_libcugraph\"}') \
-                  ORDER BY vertex",
-            construction_policy: "raw_libcugraph",
-            edge_normalize_inserted: false,
-        },
-    ] {
-        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
-        let actual = bfs_rows(&batches);
-        assert_eq!(actual, oracle.rows, "{} BFS rows diverged from Python cuGraph oracle", variant.label);
-    }
-    fs::remove_dir_all(dir).ok();
-}
-
-#[tokio::test]
-#[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
-async fn cugraph_sql_gpu_louvain_matches_python_cugraph_oracle() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-louvain");
-    let path = dir.join("tiny_communities.parquet");
-    write_tiny_communities(&path);
-
-    let Some(oracle) = python_louvain_oracle(&path) else {
-        eprintln!("skipping cuGraph Louvain e2e because the Python cuGraph oracle is unavailable");
-        fs::remove_dir_all(dir).ok();
-        return;
-    };
-    eprintln!("Python cuGraph oracle versions: {}", oracle.versions);
-
-    let mut config = SessionConfig::new()
-        .with_target_partitions(1)
-        .with_repartition_file_scans(false)
-        .with_repartition_aggregations(false)
-        .with_repartition_sorts(false);
-    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("tiny_communities", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    ctx.sql(
-        "CREATE VIEW min_weight_undirected_edges AS \
-         SELECT src, dst, weight FROM ( \
-           SELECT src, dst, weight FROM tiny_communities WHERE NOT (src = 2 AND dst = 3 AND weight = 4.0) \
-           UNION ALL \
-           SELECT dst AS src, src AS dst, weight FROM tiny_communities WHERE NOT (src = 2 AND dst = 3 AND weight = 4.0) \
-         ) e",
-    )
-    .await
-    .unwrap()
-    .collect()
-    .await
-    .unwrap();
-    for variant in [
-        CugraphOracleVariant {
-            label: "default insertion",
-            sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', \
-                                       '{\"directed\":false,\"resolution\":1.0}') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: true,
-        },
-        CugraphOracleVariant {
-            label: "pre-deduped default",
-            sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('min_weight_undirected_edges', 'src', 'dst', 'weight', \
-                                       '{\"directed\":false,\"resolution\":1.0}') \
-                  ORDER BY vertex",
-            construction_policy: "python_cugraph",
-            edge_normalize_inserted: true,
-        },
-        CugraphOracleVariant {
-            label: "explicit raw over min-weight expanded input",
-            sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('min_weight_undirected_edges', 'src', 'dst', 'weight', \
-                                       '{\"directed\":false,\"resolution\":1.0,\"construction_policy\":\"raw_libcugraph\"}') \
-                  ORDER BY vertex",
-            construction_policy: "raw_libcugraph",
-            edge_normalize_inserted: false,
-        },
-    ] {
-        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
-        let actual = louvain_rows(&batches);
-        assert_eq!(actual, oracle.rows, "{} Louvain rows diverged from Python cuGraph oracle", variant.label);
-    }
-    fs::remove_dir_all(dir).ok();
-}
+// Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain
+// previously lived here. They have been subsumed by the registry-driven
+// `tests/cugraph_parity.rs` harness, which reads checked-in oracle JSON
+// produced by `scripts/cugraph_oracle.py`. The composition test below
+// stays in place and will move into the harness as a Phase 2
+// composition entry.
 
 #[tokio::test]
 #[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
@@ -839,74 +1305,6 @@ struct PythonPageRankOracle {
     rows: Vec<PageRankRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BfsRow {
-    vertex: i64,
-    distance: i64,
-    predecessor: i64,
-}
-
-#[derive(Debug)]
-struct PythonBfsOracle {
-    versions: String,
-    rows: Vec<BfsRow>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LouvainRow {
-    vertex: i64,
-    partition: i64,
-}
-
-#[derive(Debug)]
-struct PythonLouvainOracle {
-    versions: String,
-    rows: Vec<LouvainRow>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CugraphOracleVariant {
-    label: &'static str,
-    sql: &'static str,
-    construction_policy: &'static str,
-    edge_normalize_inserted: bool,
-}
-
-async fn collect_cugraph_oracle_variant(ctx: &SessionContext, variant: CugraphOracleVariant) -> Vec<RecordBatch> {
-    let df = ctx.sql(variant.sql).await.unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    let plan_display = displayable(plan.as_ref()).indent(false).to_string();
-    let policy_marker = format!("construction_policy={}", variant.construction_policy);
-    let normalize_marker = format!("edge_normalize_inserted={}", variant.edge_normalize_inserted);
-    assert!(
-        plan_display.contains(&policy_marker),
-        "{} cuGraph SQL plan should contain {policy_marker}:\n{plan_display}",
-        variant.label
-    );
-    assert!(
-        plan_display.contains(&normalize_marker),
-        "{} cuGraph SQL plan should contain {normalize_marker}:\n{plan_display}",
-        variant.label
-    );
-    datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap()
-}
-
-fn assert_pagerank_rows_match(label: &str, actual: &[PageRankRow], expected: &[PageRankRow]) {
-    assert_eq!(actual.len(), expected.len(), "{label} PageRank row count diverged from Python cuGraph oracle");
-    for (actual, expected) in actual.iter().zip(expected) {
-        assert_eq!(actual.vertex, expected.vertex, "{label} PageRank vertex ordering diverged");
-        let delta = (actual.value - expected.value).abs();
-        assert!(
-            delta <= 1.0e-6,
-            "{label} PageRank mismatch for vertex {}: actual={} expected={} delta={}",
-            actual.vertex,
-            actual.value,
-            expected.value,
-            delta
-        );
-    }
-}
-
 fn pagerank_rows(batches: &[RecordBatch]) -> Vec<PageRankRow> {
     let mut rows = Vec::new();
     for batch in batches {
@@ -914,35 +1312,6 @@ fn pagerank_rows(batches: &[RecordBatch]) -> Vec<PageRankRow> {
         let values = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
         for index in 0..batch.num_rows() {
             rows.push(PageRankRow { vertex: vertices.value(index), value: values.value(index) });
-        }
-    }
-    rows
-}
-
-fn bfs_rows(batches: &[RecordBatch]) -> Vec<BfsRow> {
-    let mut rows = Vec::new();
-    for batch in batches {
-        let vertices = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-        let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-        let predecessors = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
-        for index in 0..batch.num_rows() {
-            rows.push(BfsRow {
-                vertex: vertices.value(index),
-                distance: distances.value(index),
-                predecessor: predecessors.value(index),
-            });
-        }
-    }
-    rows
-}
-
-fn louvain_rows(batches: &[RecordBatch]) -> Vec<LouvainRow> {
-    let mut rows = Vec::new();
-    for batch in batches {
-        let vertices = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-        let partitions = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-        for index in 0..batch.num_rows() {
-            rows.push(LouvainRow { vertex: vertices.value(index), partition: partitions.value(index) });
         }
     }
     rows
@@ -1005,134 +1374,6 @@ print(json.dumps({
         .map(|row| PageRankRow { vertex: row["vertex"].as_i64().unwrap(), value: row["value"].as_f64().unwrap() })
         .collect();
     Some(PythonPageRankOracle { versions, rows })
-}
-
-fn python_bfs_oracle(path: &Path) -> Option<PythonBfsOracle> {
-    let script = r#"
-import json
-import sys
-
-try:
-    import cudf
-    import cugraph
-except Exception as exc:
-    print(f"Python cuGraph oracle unavailable: {exc}", file=sys.stderr)
-    sys.exit(77)
-
-df = cudf.read_parquet(sys.argv[1])
-df = df[df["active"]][["src", "dst", "weight"]]
-graph = cugraph.Graph(directed=True)
-graph.from_cudf_edgelist(df, source="src", destination="dst", edge_attr="weight", renumber=True)
-result = cugraph.bfs(graph, 0)
-result["vertex"] = result["vertex"].astype("int64")
-result["distance"] = result["distance"].astype("int64")
-result["predecessor"] = result["predecessor"].astype("int64")
-result = result.sort_values("vertex")
-rows = [
-    {"vertex": int(row.vertex), "distance": int(row.distance), "predecessor": int(row.predecessor)}
-    for row in result.to_pandas().itertuples()
-]
-print(json.dumps({
-    "versions": {
-        "cudf": getattr(cudf, "__version__", "unknown"),
-        "cugraph": getattr(cugraph, "__version__", "unknown"),
-    },
-    "rows": rows,
-}))
-"#;
-    let output = match Command::new("python3").arg("-c").arg(script).arg(path).output() {
-        Ok(output) => output,
-        Err(error) => {
-            handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
-        },
-    };
-    if output.status.code() == Some(77) {
-        handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
-    }
-    assert!(
-        output.status.success(),
-        "Python cuGraph oracle failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let versions = value["versions"].to_string();
-    let rows = value["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| BfsRow {
-            vertex: row["vertex"].as_i64().unwrap(),
-            distance: row["distance"].as_i64().unwrap(),
-            predecessor: row["predecessor"].as_i64().unwrap(),
-        })
-        .collect();
-    Some(PythonBfsOracle { versions, rows })
-}
-
-fn python_louvain_oracle(path: &Path) -> Option<PythonLouvainOracle> {
-    let script = r#"
-import json
-import sys
-
-try:
-    import cudf
-    import cugraph
-except Exception as exc:
-    print(f"Python cuGraph oracle unavailable: {exc}", file=sys.stderr)
-    sys.exit(77)
-
-df = cudf.read_parquet(sys.argv[1])
-graph = cugraph.Graph(directed=False)
-graph.from_cudf_edgelist(df, source="src", destination="dst", edge_attr="weight", renumber=True)
-result, modularity = cugraph.louvain(graph, max_level=100, resolution=1.0, threshold=1.0e-7)
-result["vertex"] = result["vertex"].astype("int64")
-result["partition"] = result["partition"].astype("int64")
-result = result.sort_values("vertex")
-rows = [
-    {"vertex": int(row.vertex), "partition": int(row.partition)}
-    for row in result.to_pandas().itertuples()
-]
-print(json.dumps({
-    "versions": {
-        "cudf": getattr(cudf, "__version__", "unknown"),
-        "cugraph": getattr(cugraph, "__version__", "unknown"),
-    },
-    "modularity": float(modularity),
-    "rows": rows,
-}))
-"#;
-    let output = match Command::new("python3").arg("-c").arg(script).arg(path).output() {
-        Ok(output) => output,
-        Err(error) => {
-            handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
-        },
-    };
-    if output.status.code() == Some(77) {
-        handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
-    }
-    assert!(
-        output.status.success(),
-        "Python cuGraph oracle failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let versions = value["versions"].to_string();
-    let rows = value["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| LouvainRow {
-            vertex: row["vertex"].as_i64().unwrap(),
-            partition: row["partition"].as_i64().unwrap(),
-        })
-        .collect();
-    Some(PythonLouvainOracle { versions, rows })
 }
 
 fn handle_python_oracle_unavailable(message: impl AsRef<str>) {

@@ -261,6 +261,68 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string())
         ),
         super::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
+        super::GraphAlgorithmParams::EigenvectorCentrality(params) => {
+            format!("epsilon={}:max_iterations={}", params.epsilon, params.max_iterations)
+        },
+        super::GraphAlgorithmParams::KatzCentrality(params) => format!(
+            "alpha={}:beta={}:epsilon={}:max_iterations={}",
+            params.alpha, params.beta, params.epsilon, params.max_iterations,
+        ),
+        super::GraphAlgorithmParams::Hits(params) => format!(
+            "epsilon={}:max_iterations={}:normalize={}",
+            params.epsilon, params.max_iterations, params.normalize,
+        ),
+        super::GraphAlgorithmParams::Sssp(params) => format!(
+            "source_vertex={}:cutoff={}",
+            params.source_vertex,
+            params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        ),
+        super::GraphAlgorithmParams::DegreesAll(_) => String::new(),
+        super::GraphAlgorithmParams::InDegreesAll(_) => String::new(),
+        super::GraphAlgorithmParams::OutDegreesAll(_) => String::new(),
+        super::GraphAlgorithmParams::WeaklyConnectedComponents(_) => String::new(),
+        super::GraphAlgorithmParams::StronglyConnectedComponents(_) => String::new(),
+        super::GraphAlgorithmParams::TriangleCountAll(_) => String::new(),
+        super::GraphAlgorithmParams::CoreNumber(params) => {
+            format!("degree_type={}", params.degree_type.as_str())
+        },
+        super::GraphAlgorithmParams::KCore(params) => {
+            format!("k={}:degree_type={}", params.k, params.degree_type.as_str())
+        },
+        super::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
+        super::GraphAlgorithmParams::PageRankStrict(params) => {
+            format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
+        },
+        super::GraphAlgorithmParams::Leiden(params) => format!(
+            "max_level={}:resolution={}:theta={}:seed={}",
+            params.max_level, params.resolution, params.theta, params.seed,
+        ),
+        super::GraphAlgorithmParams::Ecg(params) => format!(
+            "min_weight={}:ensemble_size={}:max_level={}:threshold={}:resolution={}:seed={}",
+            params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
+        ),
+        super::GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
+            "n_clusters={}:n_eigenvectors={}:evs_tolerance={}:evs_max_iterations={}:\
+             k_means_tolerance={}:k_means_max_iterations={}:seed={}",
+            params.n_clusters,
+            params.n_eigenvectors,
+            params.evs_tolerance,
+            params.evs_max_iterations,
+            params.k_means_tolerance,
+            params.k_means_max_iterations,
+            params.seed,
+        ),
+        super::GraphAlgorithmParams::BalancedCutClustering(params) => format!(
+            "n_clusters={}:n_eigenvectors={}:evs_tolerance={}:evs_max_iterations={}:\
+             k_means_tolerance={}:k_means_max_iterations={}:seed={}",
+            params.n_clusters,
+            params.n_eigenvectors,
+            params.evs_tolerance,
+            params.evs_max_iterations,
+            params.k_means_tolerance,
+            params.k_means_max_iterations,
+            params.seed,
+        ),
     }
 }
 

@@ -13,8 +13,12 @@ use arrow::{
 use cudf_query_engine::{
     ExecutionContext, GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeColumnBindings, GraphLouvainParams, GraphPageRankParams, LimitSpec, ProjectionOutput, QueryMetrics,
-    QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
+    GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams,
+    GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams,
+    GraphPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
+    GraphWccParams, LimitSpec, ProjectionOutput, QueryMetrics, QueryOutput, QueryPlanBuilder, SourceNode,
+    execute_query_plan, execute_query_plan_with_gpu_inputs,
 };
 use datafusion::{
     common::{DataFusionError, Result},
@@ -34,7 +38,8 @@ use datafusion::{
 use futures::{TryStreamExt, future::BoxFuture};
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, plan_error,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy,
+    CugraphKCoreDegreeType, plan_error,
 };
 use crate::{
     error::{Error, ErrorCode},
@@ -755,11 +760,7 @@ fn native_graph_spec(spec: &CugraphAlgorithmSpec, edge_normalize_inserted: bool)
 }
 
 fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
-    match algorithm {
-        CugraphAlgorithm::PageRank => GraphAlgorithm::PageRank,
-        CugraphAlgorithm::Bfs => GraphAlgorithm::Bfs,
-        CugraphAlgorithm::Louvain => GraphAlgorithm::Louvain,
-    }
+    algorithm.native_algorithm()
 }
 
 fn native_algorithm_params(params: &CugraphAlgorithmParams) -> GraphAlgorithmParams {
@@ -776,5 +777,96 @@ fn native_algorithm_params(params: &CugraphAlgorithmParams) -> GraphAlgorithmPar
         CugraphAlgorithmParams::Louvain(params) => {
             GraphAlgorithmParams::Louvain(GraphLouvainParams { resolution: params.resolution })
         },
+        CugraphAlgorithmParams::EigenvectorCentrality(params) => {
+            GraphAlgorithmParams::EigenvectorCentrality(GraphEigenvectorCentralityParams {
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+            })
+        },
+        CugraphAlgorithmParams::KatzCentrality(params) => {
+            GraphAlgorithmParams::KatzCentrality(GraphKatzCentralityParams {
+                alpha: params.alpha,
+                beta: params.beta,
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+            })
+        },
+        CugraphAlgorithmParams::Hits(params) => GraphAlgorithmParams::Hits(GraphHitsParams {
+            epsilon: params.epsilon,
+            max_iterations: params.max_iterations,
+            normalize: params.normalize,
+        }),
+        CugraphAlgorithmParams::Sssp(params) => {
+            GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: params.source_vertex, cutoff: params.cutoff })
+        },
+        CugraphAlgorithmParams::DegreesAll(_) => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
+        CugraphAlgorithmParams::InDegreesAll(_) => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
+        CugraphAlgorithmParams::OutDegreesAll(_) => GraphAlgorithmParams::OutDegreesAll(GraphOutDegreesAllParams),
+        CugraphAlgorithmParams::WeaklyConnectedComponents(_) => {
+            GraphAlgorithmParams::WeaklyConnectedComponents(GraphWccParams)
+        },
+        CugraphAlgorithmParams::StronglyConnectedComponents(_) => {
+            GraphAlgorithmParams::StronglyConnectedComponents(GraphSccParams)
+        },
+        CugraphAlgorithmParams::TriangleCountAll(_) => {
+            GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams)
+        },
+        CugraphAlgorithmParams::CoreNumber(params) => GraphAlgorithmParams::CoreNumber(GraphCoreNumberParams {
+            degree_type: sql_degree_type_to_native(params.degree_type),
+        }),
+        CugraphAlgorithmParams::KCore(params) => GraphAlgorithmParams::KCore(GraphKCoreParams {
+            k: params.k,
+            degree_type: sql_degree_type_to_native(params.degree_type),
+        }),
+        CugraphAlgorithmParams::MinimumSpanningTree(_) => GraphAlgorithmParams::MinimumSpanningTree(GraphMstParams),
+        CugraphAlgorithmParams::PageRankStrict(params) => GraphAlgorithmParams::PageRankStrict(GraphPageRankParams {
+            alpha: params.alpha,
+            epsilon: params.epsilon,
+            max_iterations: params.max_iterations,
+        }),
+        CugraphAlgorithmParams::Leiden(params) => GraphAlgorithmParams::Leiden(GraphLeidenParams {
+            max_level: params.max_level,
+            resolution: params.resolution,
+            theta: params.theta,
+            seed: params.seed,
+        }),
+        CugraphAlgorithmParams::Ecg(params) => GraphAlgorithmParams::Ecg(GraphEcgParams {
+            min_weight: params.min_weight,
+            ensemble_size: params.ensemble_size,
+            max_level: params.max_level,
+            threshold: params.threshold,
+            resolution: params.resolution,
+            seed: params.seed,
+        }),
+        CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
+            GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams {
+                n_clusters: params.n_clusters,
+                n_eigenvectors: params.n_eigenvectors,
+                evs_tolerance: params.evs_tolerance,
+                evs_max_iterations: params.evs_max_iterations,
+                k_means_tolerance: params.k_means_tolerance,
+                k_means_max_iterations: params.k_means_max_iterations,
+                seed: params.seed,
+            })
+        },
+        CugraphAlgorithmParams::BalancedCutClustering(params) => {
+            GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams {
+                n_clusters: params.n_clusters,
+                n_eigenvectors: params.n_eigenvectors,
+                evs_tolerance: params.evs_tolerance,
+                evs_max_iterations: params.evs_max_iterations,
+                k_means_tolerance: params.k_means_tolerance,
+                k_means_max_iterations: params.k_means_max_iterations,
+                seed: params.seed,
+            })
+        },
+    }
+}
+
+fn sql_degree_type_to_native(degree_type: CugraphKCoreDegreeType) -> GraphKCoreDegreeType {
+    match degree_type {
+        CugraphKCoreDegreeType::In => GraphKCoreDegreeType::In,
+        CugraphKCoreDegreeType::Out => GraphKCoreDegreeType::Out,
+        CugraphKCoreDegreeType::InOut => GraphKCoreDegreeType::InOut,
     }
 }

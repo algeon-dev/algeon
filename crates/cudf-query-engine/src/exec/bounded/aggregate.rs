@@ -7,7 +7,7 @@ mod plan;
 pub mod sizing;
 
 pub(super) use final_merge::{execute_final_aggregate_merge, reduce_merge_fan_in};
-pub(super) use plan::BoundedPlan;
+pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
 pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,
@@ -796,10 +796,12 @@ fn grouped_partial_aggregate_upper_bound_columns(
                 columns.push(JoinOutputColumnUpperBoundInput {
                     data_type: avg_sum_state_data_type(&input_type, output_field.data_type())?,
                     input_max_string_length_bytes: None,
+                    input_total_string_bytes: None,
                 });
                 columns.push(JoinOutputColumnUpperBoundInput {
                     data_type: ArrowDataType::Int64,
                     input_max_string_length_bytes: None,
+                    input_total_string_bytes: None,
                 });
                 debug_assert!(lowered.output_names.iter().any(|name| name == state.sum()));
                 debug_assert!(lowered.output_names.iter().any(|name| name == state.count()));
@@ -863,7 +865,11 @@ fn take_partial_field<'a>(
 }
 
 fn fixed_partial_column(field: &Field) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type: field.data_type().clone(), input_max_string_length_bytes: None }
+    JoinOutputColumnUpperBoundInput {
+        data_type: field.data_type().clone(),
+        input_max_string_length_bytes: None,
+        input_total_string_bytes: None,
+    }
 }
 
 fn partial_column_for_field_and_optional_input(
@@ -929,28 +935,51 @@ fn partial_column_for_field_and_input_column(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<JoinOutputColumnUpperBoundInput> {
-    let input_max_string_length_bytes = if partial_sizing_dtype_needs_string_max(field.data_type()) {
-        Some(max_string_byte_length_for_partial_sizing(context, node_id, input, input_column, reservations, metrics)?)
-    } else {
-        None
-    };
-    Ok(JoinOutputColumnUpperBoundInput { data_type: field.data_type().clone(), input_max_string_length_bytes })
+    let (input_max_string_length_bytes, input_total_string_bytes) =
+        if partial_sizing_dtype_needs_string_max(field.data_type()) {
+            let stats = string_byte_length_stats_for_partial_sizing(
+                context,
+                node_id,
+                input,
+                input_column,
+                reservations,
+                metrics,
+            )?;
+            (Some(stats.max_len), Some(stats.total_bytes))
+        } else {
+            (None, None)
+        };
+    Ok(JoinOutputColumnUpperBoundInput {
+        data_type: field.data_type().clone(),
+        input_max_string_length_bytes,
+        input_total_string_bytes,
+    })
 }
 
-fn max_string_byte_length_for_partial_sizing(
+#[derive(Debug, Clone, Copy)]
+struct StringByteLengthStats {
+    max_len: u64,
+    total_bytes: u64,
+}
+
+fn string_byte_length_stats_for_partial_sizing(
     context: &ExecutionContext,
     node_id: NodeId,
     input: &GpuDataFrame,
     input_column: &str,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<u64> {
+) -> Result<StringByteLengthStats> {
     if input.num_rows() == 0 {
-        return Ok(0);
+        return Ok(StringByteLengthStats { max_len: 0, total_bytes: 0 });
     }
     let byte_count_bound = join_output_upper_bound_bytes(
         input.num_rows() as u64,
-        &[JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Int32, input_max_string_length_bytes: None }],
+        &[JoinOutputColumnUpperBoundInput {
+            data_type: ArrowDataType::Int32,
+            input_max_string_length_bytes: None,
+            input_total_string_bytes: None,
+        }],
     )?;
     let mut reservation = reservations.try_reserve_work(
         MemoryReservationRequest::new(ReservationKind::ChunkOperator, byte_count_bound, reservations.budget())
@@ -1030,9 +1059,25 @@ fn max_string_byte_length_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
+    let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
+        Ok(total_bytes) => total_bytes,
+        Err(error) => {
+            drop(byte_counts);
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.aggregate.string_length_sizing",
+                "failed to sum string byte-count sizing column",
+                error,
+            )
+            .with_fact("column", input_column));
+        },
+    };
     drop(byte_counts);
     reservations.release(reservation, metrics);
-    Ok(max_len.unwrap_or(0).max(0) as u64)
+    Ok(StringByteLengthStats {
+        max_len: max_len.unwrap_or(0).max(0) as u64,
+        total_bytes: total_bytes.max(0) as u64,
+    })
 }
 
 fn aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
@@ -1591,125 +1636,140 @@ fn release_partials_reverse(
     }
 }
 
-pub(super) fn execute_post_aggregate_projection(
+pub(super) fn execute_post_aggregate_stages(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let Some((projection, output_schema)) = bounded.post_aggregate_projection else {
+    execute_post_final_stages(context, &bounded.post_aggregate_stages, input, reservations, metrics)
+}
+
+pub(super) fn execute_post_sort_projections(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    execute_post_final_stages(context, &bounded.post_sort_projections, input, reservations, metrics)
+}
+
+pub(super) fn execute_standalone_limit(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    if bounded.sort.is_some() {
+        return Ok(input);
+    }
+    let Some((node_id, limit)) = bounded.limit else {
         return Ok(input);
     };
-    debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
-
-    let request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
-            .with_memory_boundary("post_aggregate_projection")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("post_aggregate_projection")
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(
-                bounded.aggregate_id,
-                "post_aggregate_projection",
-            ));
-    let work_reservation = reservations.try_reserve(request, metrics)?;
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
-            .with_memory_boundary("post_aggregate_projection_output")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("post_aggregate_projection")
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(
-                bounded.aggregate_id,
-                "post_aggregate_projection",
-            ));
-    let mut output_reservation = match reservations.try_reserve(output_request, metrics) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input.reservation, metrics);
-            return Err(error);
-        },
-    };
-    // Input remains live while cuDF evaluates the projection. The token may spend only the explicit
-    // work/output reservations plus truly unreserved bytes, so it does not borrow from live input.
-    let token_budget = reservations.available_bytes_including(&work_reservation);
-    let token_budget = token_budget.saturating_add(output_reservation.bytes());
-    let token = match execution_budget_token_for_boundary(
+    execute_post_final_stage(
         context,
-        token_budget,
-        "post_aggregate_projection",
-        "cudf_query_engine.post_aggregate_projection.budget_token",
-        "failed to create bounded native post-aggregate projection budget token",
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            reservations.release(output_reservation, metrics);
-            reservations.release(work_reservation, metrics);
-            reservations.release(input.reservation, metrics);
-            return Err(RuntimeResourceFacts {
-                memory_boundary: "post_aggregate_projection",
-                stage: "post_aggregate_projection",
-                node_id: bounded.aggregate_id,
-                attempt: 1,
-                max_attempts: 1,
-                resume_boundary: "post_aggregate_projection",
-                metrics,
-            }
-            .attach_to(error));
-        },
-    };
-    let result = execute_projection_with_budget(context, projection, input.frame, &token, metrics);
-    reservations.release(work_reservation, metrics);
-    let frame = match result {
-        Ok(frame) => frame,
-        Err(error) => {
-            reservations.release(output_reservation, metrics);
-            reservations.release(input.reservation, metrics);
-            return Err(RuntimeResourceFacts {
-                memory_boundary: "post_aggregate_projection",
-                stage: "post_aggregate_projection",
-                node_id: bounded.aggregate_id,
-                attempt: 1,
-                max_attempts: 1,
-                resume_boundary: "post_aggregate_projection",
-                metrics,
-            }
-            .attach_to(error));
-        },
-    };
+        node_id,
+        "post_aggregate_limit",
+        "post_aggregate_limit_output",
+        input,
+        reservations,
+        metrics,
+        |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
+        false,
+    )
+}
 
-    reservations.release(input.reservation, metrics);
-    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "post_aggregate_projection_output",
-            stage: "post_aggregate_projection",
-            node_id: bounded.aggregate_id,
-            attempt: 1,
-            max_attempts: 1,
-            resume_boundary: "post_aggregate_projection",
-            metrics,
-        }
-        .attach_to(error)
-    })?;
-    if output_bytes > output_reservation.bytes() {
-        let grow_request = MemoryReservationRequest::new(
-            ReservationKind::FinalMerge,
-            output_bytes.saturating_sub(output_reservation.bytes()),
-            reservations.budget(),
-        )
-        .with_memory_boundary("post_aggregate_projection_output")
-        .with_node_id(bounded.aggregate_id)
-        .with_stage("post_aggregate_projection")
-        .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "post_aggregate_projection"));
-        if let Err(error) = reservations.try_grow(&mut output_reservation, grow_request, metrics) {
-            drop(frame);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
+fn execute_post_final_stages(
+    context: &ExecutionContext,
+    stages: &[BoundedUnaryStage<'_>],
+    mut input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    for stage in stages {
+        input = match stage {
+            BoundedUnaryStage::Filter { node_id, node } => execute_post_final_stage(
+                context,
+                *node_id,
+                "post_aggregate_filter",
+                "post_aggregate_filter_output",
+                input,
+                reservations,
+                metrics,
+                |context, input, token, metrics| {
+                    execute_filter_with_budget(
+                        context,
+                        node,
+                        input,
+                        token.expect("budget token is created for bounded post-aggregate filter stages"),
+                        metrics,
+                    )
+                },
+                true,
+            )?,
+            BoundedUnaryStage::Projection { node_id, node, output_schema } => {
+                debug_assert_eq!(node.output_schema().as_ref(), output_schema.as_ref());
+                execute_post_final_stage(
+                    context,
+                    *node_id,
+                    "post_aggregate_projection",
+                    "post_aggregate_projection_output",
+                    input,
+                    reservations,
+                    metrics,
+                    |context, input, token, metrics| {
+                        execute_projection_with_budget(
+                            context,
+                            node,
+                            input,
+                            token.expect("budget token is created for bounded post-aggregate projection stages"),
+                            metrics,
+                        )
+                    },
+                    true,
+                )?
+            },
+        };
     }
-    Ok(CommittedPartial { frame, reservation: output_reservation })
+    Ok(input)
+}
+
+fn execute_post_final_stage(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+    use_budget_token: bool,
+) -> Result<CommittedPartial> {
+    let input_reserved_bytes = input.reservation.bytes();
+    let input_reservation = input.reservation;
+    let result = execute_bounded_generic_unary_from_frame_with_reservation_kind(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input.frame,
+        input_reserved_bytes,
+        ReservationKind::FinalMerge,
+        reservations,
+        metrics,
+        use_budget_token,
+        execute,
+    );
+    reservations.release(input_reservation, metrics);
+    result
 }
 
 pub(super) fn execute_final_aggregate_projection(

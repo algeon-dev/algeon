@@ -1764,6 +1764,7 @@ dependencies = [
  "parquet",
  "prost",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",

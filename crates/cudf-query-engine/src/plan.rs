@@ -26,10 +26,15 @@ pub(crate) use estimates::{estimated_output_bytes, estimated_output_rows};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use graph_algorithm::{
     EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GraphAlgorithm,
-    GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract,
-    GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLouvainParams,
-    GraphPageRankParams, stable_graph_result_schema,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
+    GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
+    GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
+    GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams,
+    GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
+    GraphOperationDefinition, GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams,
+    GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
+    stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,

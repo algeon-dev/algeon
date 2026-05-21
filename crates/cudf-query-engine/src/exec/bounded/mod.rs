@@ -80,43 +80,19 @@ pub(super) fn execute_bounded_query_plan(
         return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
     }
 
-    let bounded = BoundedPlan::analyze(plan)?;
-    validate_local_parquet_source(bounded.source)?;
-    bounded.validate_capabilities()?;
-
+    let bounded = match BoundedPlan::analyze(plan) {
+        Ok(bounded) => bounded,
+        Err(_error) => return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics),
+    };
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let chunk_plan = plan_local_parquet_source_chunks(
-        bounded.source_id,
-        bounded.source,
-        aggregate_source_chunk_planning_policy(context, &bounded),
-    )?;
-    for chunk in &chunk_plan.chunks {
-        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
-    }
-    if chunk_plan.chunks.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "cudf_query_engine.bounded.plan",
-            "bounded execution requires at least one planned source chunk",
-        )
-        .with_fact("source_node_id", bounded.source_id));
-    }
-    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
-
     let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
-    let partials = execute_bounded_chunks_with_source_scheduler(
-        context,
-        &bounded,
-        &chunk_plan.chunks,
-        &mut reservations,
-        metrics,
-    )?;
-
-    let frame = execute_final_aggregate_merge(context, &bounded, partials, &mut reservations, metrics)?;
-    let frame = execute_post_aggregate_projection(context, &bounded, frame, &mut reservations, metrics)?;
+    let frame = execute_bounded_aggregate_to_frame(context, &bounded, &mut reservations, metrics)?;
+    let frame = execute_post_aggregate_stages(context, &bounded, frame, &mut reservations, metrics)?;
     let frame = execute_final_sort_limit_with_retry(context, &bounded, frame, &mut reservations, metrics)?;
+    let frame = execute_post_sort_projections(context, &bounded, frame, &mut reservations, metrics)?;
+    let frame = execute_standalone_limit(context, &bounded, frame, &mut reservations, metrics)?;
 
     record_device_memory_observation(&frame.frame, metrics)?;
     match plan.sink() {
@@ -168,6 +144,38 @@ fn aggregate_source_chunk_planning_policy(
             policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_AGGREGATE_MAX_ROW_GROUPS_PER_CHUNK);
     }
     policy
+}
+
+fn execute_bounded_aggregate_to_frame(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_local_parquet_source(bounded.source)?;
+    bounded.validate_capabilities()?;
+
+    let chunk_plan = plan_local_parquet_source_chunks(
+        bounded.source_id,
+        bounded.source,
+        aggregate_source_chunk_planning_policy(context, bounded),
+    )?;
+    for chunk in &chunk_plan.chunks {
+        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+    }
+    if chunk_plan.chunks.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.bounded.plan",
+            "bounded execution requires at least one planned source chunk",
+        )
+        .with_fact("source_node_id", bounded.source_id));
+    }
+    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
+
+    let partials =
+        execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
+    execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
@@ -375,9 +383,39 @@ fn execute_bounded_generic_node(
                 .collect::<Result<Vec<_>>>()?;
             execute_bounded_generic_union(context, id, inputs, reservations, metrics)
         },
-        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+        PlanNode::Aggregate(aggregate) => {
+            let input = match plan.node(aggregate.input).map(|node| &node.kind) {
+                Some(PlanNode::Aggregate(_)) => {
+                    let bounded = BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input)?;
+                    execute_bounded_aggregate_to_frame(context, &bounded, reservations, metrics)?
+                },
+                _ => execute_bounded_generic_node(context, plan, aggregate.input, gpu_inputs, reservations, metrics)?,
+            };
+            let input_schema = plan
+                .node(aggregate.input)
+                .ok_or_else(|| invalid_node_reference(aggregate.input, "aggregate references a missing input"))?
+                .output_schema()
+                .clone();
+            let output_schema = node.output_schema().clone();
+            let input_reserved_bytes = input.reservation.bytes();
+            let input_reservation = input.reservation;
+            let result = execute_compiled_bounded_aggregate_from_frame(
+                context,
+                id,
+                aggregate,
+                &input_schema,
+                &output_schema,
+                input.frame,
+                input_reserved_bytes,
+                reservations,
+                metrics,
+            );
+            reservations.release(input_reservation, metrics);
+            result
+        },
+        PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
             Err(unsupported_bounded_shape(
-            "bounded generic execution supports only source, filter, projection, window, sort, limit, and union nodes",
+            "bounded generic execution supports only source, filter, projection, aggregate, window, sort, limit, and union nodes",
             "bounded_generic_plan_shape_unsupported",
         )
         .with_fact("node_id", id)

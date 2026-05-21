@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "description": "Vendored cuGraph datasets and curated reference outputs used by the datafusion-cudf cuGraph parity harness. Source: ../cugraph-rs/cugraph/datasets/ (Apache-2.0). Edge CSVs are space-separated 'dst src weight' triples following the cuGraph convention. Reference outputs under ref/ are cuGraph-curated.",
+  "source_repo": "rapidsai/cugraph (vendored via ../cugraph-rs)",
+  "license": "Apache-2.0",
+  "datasets": [
+    {
+      "id": "karate",
+      "path": "karate.csv",
+      "format": "space_separated_edges",
+      "edge_columns": ["dst", "src", "weight"],
+      "vertices": 34,
+      "edges": 156,
+      "directed": false,
+      "weighted": false,
+      "sha256": "4f0f2f55a69c5171ad36920a077f3e0c9cd1e8a5a3973e4fe39d6e929e3582ce"
+    },
+    {
+      "id": "dolphins",
+      "path": "dolphins.csv",
+      "format": "space_separated_edges",
+      "edge_columns": ["dst", "src", "weight"],
+      "vertices": 62,
+      "edges": 318,
+      "directed": false,
+      "weighted": false,
+      "sha256": "f374ea652424d074393231640368b7fc78fb503f364576085ffefc0499a454dd"
+    },
+    {
+      "id": "polbooks",
+      "path": "polbooks.csv",
+      "format": "space_separated_edges",
+      "edge_columns": ["dst", "src", "weight"],
+      "vertices": 105,
+      "edges": 441,
+      "directed": false,
+      "weighted": false,
+      "sha256": "fba8a14552167e087497d8ea0b8b56b7806463da2592ce986c98948d4e9414bf"
+    }
+  ],
+  "references": [
+    {
+      "id": "katz/karate",
+      "path": "ref/katz/karate.csv",
+      "format": "vertex_rank",
+      "columns": ["vertex"],
+      "dataset": "karate",
+      "sha256": "a9cc0a7fb2d46e00fa5b688b5ced3930931c06e23946678b6886245d5738e475"
+    },
+    {
+      "id": "katz/dolphins",
+      "path": "ref/katz/dolphins.csv",
+      "format": "vertex_rank",
+      "columns": ["vertex"],
+      "dataset": "dolphins",
+      "sha256": "a4858a416c6729169d706b2527aaa7f4d5067fa4cb9a8967d21c96a407fdbafb"
+    },
+    {
+      "id": "katz/polbooks",
+      "path": "ref/katz/polbooks.csv",
+      "format": "vertex_rank",
+      "columns": ["vertex"],
+      "dataset": "polbooks",
+      "sha256": "59f5e57f744d29fb5a1c9d6e01aa1699b659a635a4ff9af59b1dc820a265231f"
+    }
+  ]
+}

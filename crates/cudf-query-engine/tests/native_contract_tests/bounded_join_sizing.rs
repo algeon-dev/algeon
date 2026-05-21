@@ -5,11 +5,15 @@ use cudf_query_engine::{
 };
 
 fn fixed_column(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None }
+    JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None, input_total_string_bytes: None }
 }
 
 fn string_column(max_len: u64) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Utf8, input_max_string_length_bytes: Some(max_len) }
+    JoinOutputColumnUpperBoundInput {
+        data_type: ArrowDataType::Utf8,
+        input_max_string_length_bytes: Some(max_len),
+        input_total_string_bytes: None,
+    }
 }
 
 fn expected_null_mask_bytes(rows: u64) -> u64 {
@@ -140,8 +144,11 @@ fn large_utf8_and_utf8view_match_utf8_bound() {
     let max_len = 64;
     let baseline = join_output_upper_bound_bytes(rows, &[string_column(max_len)]).unwrap();
     for dtype in [ArrowDataType::LargeUtf8, ArrowDataType::Utf8View] {
-        let column =
-            JoinOutputColumnUpperBoundInput { data_type: dtype.clone(), input_max_string_length_bytes: Some(max_len) };
+        let column = JoinOutputColumnUpperBoundInput {
+            data_type: dtype.clone(),
+            input_max_string_length_bytes: Some(max_len),
+            input_total_string_bytes: None,
+        };
         let bound = join_output_upper_bound_bytes(rows, &[column]).unwrap();
         assert_eq!(bound, baseline, "dtype {dtype:?}");
     }
@@ -149,8 +156,11 @@ fn large_utf8_and_utf8view_match_utf8_bound() {
 
 #[test]
 fn string_column_without_max_length_returns_invalid_plan() {
-    let column =
-        JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Utf8, input_max_string_length_bytes: None };
+    let column = JoinOutputColumnUpperBoundInput {
+        data_type: ArrowDataType::Utf8,
+        input_max_string_length_bytes: None,
+        input_total_string_bytes: None,
+    };
     let error = join_output_upper_bound_bytes(10, &[column]).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
 }

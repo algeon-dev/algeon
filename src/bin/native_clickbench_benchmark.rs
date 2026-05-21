@@ -37,11 +37,20 @@ const SCHEMA_VERSION: u32 = 1;
 /// 2. The fixture in practice exhibits ties at the LIMIT boundary.
 ///
 /// Current entries:
+/// - q04: `SELECT AVG("UserID") FROM hits` — UInt64 values near 10^18 are not
+///   exactly representable in Float64; different summation orders (batch-sequential
+///   on CPU vs chunk-parallel on GPU) yield different last-bit results.
+/// - q10: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied COUNT(*) at
+///   the 10th-row boundary; different groups are selected by each engine.
 /// - q18: `GROUP BY ... LIMIT 10` with no `ORDER BY`.
+/// - q23: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied COUNT(*) at
+///   the 10th-row boundary.
 /// - q25: `ORDER BY EventTime LIMIT 10` — timestamp ties at the boundary.
 /// - q26: `ORDER BY SearchPhrase LIMIT 10` — many duplicate phrases at the
 ///   boundary even with `WHERE SearchPhrase <> ''`.
-const NONDETERMINISTIC_QUERIES: &[&str] = &["q18", "q25", "q26"];
+/// - q31, q32, q33: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied
+///   COUNT(*) at the 10th-row boundary.
+const NONDETERMINISTIC_QUERIES: &[&str] = &["q04", "q10", "q18", "q23", "q25", "q26", "q31", "q32", "q33"];
 
 const QUERY_IDS_ENV: &str = "CUDF_CLICKBENCH_BENCH_QUERY_IDS";
 const WARMUPS_ENV: &str = "CUDF_CLICKBENCH_BENCH_WARMUPS";

@@ -86,7 +86,6 @@ impl TableFunctionImpl for CugraphTableFunction {
 
 pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
     CugraphAlgorithm::all()
-        .into_iter()
         .filter(|algorithm| config.allows(*algorithm))
         .map(|algorithm| {
             Arc::new(TableFunction::new(

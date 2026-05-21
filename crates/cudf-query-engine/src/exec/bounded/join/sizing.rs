@@ -42,6 +42,12 @@ pub struct JoinOutputColumnUpperBoundInput {
     /// the bound stays valid because non-null output rows ≤
     /// `expected_output_rows`.
     pub input_max_string_length_bytes: Option<u64>,
+    /// Optional tighter cap for operators whose string output values are a
+    /// subset of one input column's values. Joins leave this unset because
+    /// gathers can duplicate string payloads; grouped aggregate partials can
+    /// set it because each output group/value is selected from disjoint input
+    /// rows.
+    pub input_total_string_bytes: Option<u64>,
 }
 
 /// Compute the closed-form upper bound (in bytes) for the device
@@ -88,6 +94,7 @@ fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumn
                 .with_fact("dtype", format!("{:?}", column.data_type))
             })?;
             let data = expected_output_rows.saturating_mul(max_len);
+            let data = column.input_total_string_bytes.map_or(data, |total| data.min(total));
             let offsets = expected_output_rows.saturating_add(1).saturating_mul(STRING_OFFSET_BYTES_CONSERVATIVE);
             data.saturating_add(offsets)
         },
