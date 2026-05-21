@@ -1,5 +1,6 @@
 use crate::{
-    cudf_column_handle, cudf_column_view_handle, cudf_datetime_component_t, cudf_exec_options_t, cudf_status_t,
+    cudf_column_handle, cudf_column_view_handle, cudf_datetime_component_t, cudf_datetime_rounding_frequency_t,
+    cudf_exec_options_t, cudf_status_t,
 };
 
 extern "C" {
@@ -15,6 +16,19 @@ extern "C" {
     pub fn cudf_datetime_extract_component_ex(
         input: cudf_column_view_handle,
         component: cudf_datetime_component_t,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_datetime_floor(
+        input: cudf_column_view_handle,
+        frequency: cudf_datetime_rounding_frequency_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_datetime_floor_ex(
+        input: cudf_column_view_handle,
+        frequency: cudf_datetime_rounding_frequency_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;

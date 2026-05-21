@@ -1,4 +1,5 @@
 use super::*;
+use crate::ops::datetime::DatetimeRoundingFrequency;
 
 // ===========================================================================
 // Datetime expression methods
@@ -25,6 +26,11 @@ impl ExprDatetimeNamespace {
     /// Extract the one-based day of month.
     pub fn day(self) -> Expr {
         Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Day }
+    }
+
+    /// Floor timestamp values to the requested frequency.
+    pub fn floor(self, frequency: DatetimeRoundingFrequency) -> Expr {
+        Expr::DateTimeFloor { input: Box::new(self.0), frequency }
     }
 
     /// Add a calendrical interval to a timestamp expression.

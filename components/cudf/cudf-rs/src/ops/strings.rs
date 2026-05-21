@@ -216,6 +216,65 @@ pub(crate) fn like_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+/// Regex replacement using a back-reference replacement template.
+///
+/// The pattern uses libcudf regex syntax. The replacement template may include
+/// back-reference markers such as `\1`.
+///
+/// # Synchronization
+/// The C shim synchronizes the selected stream before returning so libcudf no
+/// longer borrows the host pattern or replacement bytes.
+pub fn replace_with_backrefs(input: &ColumnView<'_>, pattern: &str, replacement: &str) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::replace_with_backrefs")?;
+    replace_with_backrefs_impl(
+        input,
+        pattern,
+        replacement,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "strings::replace_with_backrefs",
+    )
+}
+
+pub(crate) fn replace_with_backrefs_impl(
+    input: &ColumnView<'_>,
+    pattern: &str,
+    replacement: &str,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let pattern_len = error::usize_to_i32(pattern.len(), operation, "pattern_len")?;
+    let replacement_len = error::usize_to_i32(replacement.len(), operation, "replacement_len")?;
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_strings_replace_with_backrefs_ex(
+                input.raw_handle(),
+                pattern.as_ptr() as *const c_char,
+                pattern_len,
+                replacement.as_ptr() as *const c_char,
+                replacement_len,
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_strings_replace_with_backrefs(
+                input.raw_handle(),
+                pattern.as_ptr() as *const c_char,
+                pattern_len,
+                replacement.as_ptr() as *const c_char,
+                replacement_len,
+                &mut out,
+            )
+        },
+    };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
 pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();

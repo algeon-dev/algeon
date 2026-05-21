@@ -97,6 +97,30 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Element-wise regex replacement with back-reference templates. Returns STRING column.
+    pub fn cudf_strings_replace_with_backrefs(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        replacement: *const c_char,
+        replacement_len: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Element-wise regex replacement with back-reference templates and explicit execution context.
+    ///
+    /// The selected stream is synchronized before return on success so
+    /// borrowed `pattern` and `replacement` host memory is no longer in use.
+    pub fn cudf_strings_replace_with_backrefs_ex(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        replacement: *const c_char,
+        replacement_len: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     /// Slice each string by character positions `[start, stop)` and `step`.
     pub fn cudf_strings_slice(
         input: cudf_column_view_handle,

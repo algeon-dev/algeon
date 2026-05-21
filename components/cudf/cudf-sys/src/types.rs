@@ -292,6 +292,18 @@ pub enum cudf_datetime_component_t {
     CUDF_DATETIME_COMPONENT_DAY = 2,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_datetime_rounding_frequency_t {
+    CUDF_DATETIME_ROUNDING_DAY = 0,
+    CUDF_DATETIME_ROUNDING_HOUR = 1,
+    CUDF_DATETIME_ROUNDING_MINUTE = 2,
+    CUDF_DATETIME_ROUNDING_SECOND = 3,
+    CUDF_DATETIME_ROUNDING_MILLISECOND = 4,
+    CUDF_DATETIME_ROUNDING_MICROSECOND = 5,
+    CUDF_DATETIME_ROUNDING_NANOSECOND = 6,
+}
+
 // ---------------------------------------------------------------------------
 // Row-predicate filtering nodes
 // ---------------------------------------------------------------------------

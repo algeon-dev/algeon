@@ -100,6 +100,30 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
                                    cudf_column_handle* out,
                                    const cudf_exec_options_t* options);
 
+/// Element-wise regex replacement with back-reference templates. Returns STRING column.
+///
+/// `pattern` and `replacement` are borrowed host byte ranges. Null pointers are
+/// accepted only when the corresponding length is zero.
+cudf_status_t cudf_strings_replace_with_backrefs(cudf_column_view_handle input,
+                                                 const char* pattern,
+                                                 int32_t pattern_len,
+                                                 const char* replacement,
+                                                 int32_t replacement_len,
+                                                 cudf_column_handle* out);
+
+/// Element-wise regex replacement with back-reference templates and explicit
+/// execution context.
+///
+/// On success, synchronizes the selected stream before returning so borrowed
+/// `pattern` and `replacement` host memory is no longer in use.
+cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle input,
+                                                    const char* pattern,
+                                                    int32_t pattern_len,
+                                                    const char* replacement,
+                                                    int32_t replacement_len,
+                                                    cudf_column_handle* out,
+                                                    const cudf_exec_options_t* options);
+
 // ---------------------------------------------------------------------------
 // Slice
 // ---------------------------------------------------------------------------

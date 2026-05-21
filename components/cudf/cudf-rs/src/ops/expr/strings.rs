@@ -18,6 +18,7 @@ pub enum StringOperator {
     StartsWith(String),
     EndsWith(String),
     Like { pattern: String, escape: Option<String> },
+    ReplaceWithBackrefs { pattern: String, replacement: String },
     Slice(StringSliceOptions),
 }
 
@@ -95,6 +96,14 @@ impl ExprStringNamespace {
         Expr::StringOp {
             input: Box::new(self.0),
             op: StringOperator::Like { pattern: pattern.into(), escape: Some(escape.into()) },
+        }
+    }
+
+    /// Regex replacement using a back-reference replacement template.
+    pub fn replace_with_backrefs(self, pattern: impl Into<String>, replacement: impl Into<String>) -> Expr {
+        Expr::StringOp {
+            input: Box::new(self.0),
+            op: StringOperator::ReplaceWithBackrefs { pattern: pattern.into(), replacement: replacement.into() },
         }
     }
 

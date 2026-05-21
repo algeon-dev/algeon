@@ -69,7 +69,7 @@ use std::{cell::RefCell, sync::Arc};
 use super::{
     binary::{self, BinaryOperator},
     concatenate, copying,
-    datetime::{self as datetime_ops, DatetimeComponent},
+    datetime::{self as datetime_ops, DatetimeComponent, DatetimeRoundingFrequency},
     reduction::{self, ReduceAgg, ScanAgg, ScanType},
     replace::{self, FillPolicy},
     search,
