@@ -103,9 +103,13 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
             validate_general_expr_capability(expr)
         },
-        Expr::Cast { expr, .. } | Expr::Extract { expr, .. } | Expr::Lower(expr) | Expr::Upper(expr) => {
-            validate_general_expr_capability(expr)
-        },
+        Expr::Cast { expr, .. }
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. } => validate_general_expr_capability(expr),
         Expr::Abs(expr) => validate_general_expr_capability(expr),
         Expr::Concat(exprs) => {
             if exprs.is_empty() {
@@ -210,9 +214,12 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(ExpressionCapabilityRejection {
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(ExpressionCapabilityRejection {
             reason: "join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
         }),
@@ -237,7 +244,10 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
         Expr::Cast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr) => validate_post_join_residual_expr_capability(expr),
         Expr::Round { expr, .. } => validate_post_join_residual_expr_capability(expr),
         Expr::Concat(exprs) => {
@@ -438,12 +448,15 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::Substring { .. } => "substring",
         Expr::Lower(_) => "lower",
         Expr::Upper(_) => "upper",
+        Expr::StringLength { .. } => "string_length",
+        Expr::RegexpReplace { .. } => "regexp_replace",
         Expr::Concat(_) => "concat",
         Expr::Abs(_) => "abs",
         Expr::Round { .. } => "round",
         Expr::InList { .. } => "in_list",
         Expr::Case { .. } => "case",
         Expr::Extract { .. } => "extract",
+        Expr::DateTrunc { .. } => "date_trunc",
         Expr::Alias { .. } => "alias",
     }
 }

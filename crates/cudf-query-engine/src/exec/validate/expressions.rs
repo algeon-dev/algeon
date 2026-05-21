@@ -6,13 +6,14 @@ use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 use super::{
     types::{
         is_decimal_type, require_arithmetic_type, require_boolean, require_comparable_types, require_compatible_types,
-        require_date_or_timestamp, require_integral_type, require_string, temporal_duration_binary_output_type,
+        require_date_or_timestamp, require_integral_type, require_string, require_timestamp_second,
+        temporal_duration_binary_output_type,
     },
     *,
 };
 use crate::{
     datatypes::{is_supported_arrow_cast, is_supported_arrow_type},
-    expr::CaseWhen,
+    expr::{CaseWhen, DatePart},
     plan::ProjectionOutput,
 };
 
@@ -71,6 +72,18 @@ pub(super) fn validate_expr(
             require_string(&data_type, "string case input")?;
             Ok(data_type)
         },
+        Expr::StringLength { expr, output_type } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_string(&data_type, "string length input")?;
+            require_integral_type(output_type, "string length output")?;
+            Ok(output_type.clone())
+        },
+        Expr::RegexpReplace { expr, output_type, .. } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_string(&data_type, "REGEXP_REPLACE input")?;
+            require_string(output_type, "REGEXP_REPLACE output")?;
+            Ok(output_type.clone())
+        },
         Expr::Concat(exprs) => validate_concat_expr(exprs, input_schema, available_columns),
         Expr::Abs(expr) => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
@@ -94,13 +107,52 @@ pub(super) fn validate_expr(
         },
         Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns),
         Expr::Case { branches, else_expr } => validate_case_expr(branches, else_expr, input_schema, available_columns),
-        Expr::Extract { expr, .. } => {
+        Expr::Extract { field, expr } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
-            require_date_or_timestamp(&data_type, "EXTRACT input")?;
+            match field {
+                DatePart::Year | DatePart::Month | DatePart::Day => {
+                    require_date_or_timestamp(&data_type, "EXTRACT input")?
+                },
+                DatePart::Minute => validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns)?,
+            }
             Ok(ArrowDataType::Int32)
+        },
+        Expr::DateTrunc { field, expr, output_type } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            match field {
+                DatePart::Minute => {
+                    require_timestamp_second(&data_type, "DATE_TRUNC minute input")?;
+                    require_timestamp_second(output_type, "DATE_TRUNC minute output")?;
+                    Ok(output_type.clone())
+                },
+                DatePart::Year | DatePart::Month | DatePart::Day => Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.plan.validate_expr",
+                    "native DATE_TRUNC does not support this field",
+                )
+                .with_fact("field", field.to_string())),
+            }
         },
         Expr::Alias { expr, .. } => validate_expr(expr, input_schema, available_columns),
     }
+}
+
+fn validate_timestamp_second_integer_cast_expr(
+    expr: &Expr,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<()> {
+    let Expr::Cast { expr, target_type } = expr else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.plan.validate_expr",
+            "native second timestamp minute operations currently require an integer-to-timestamp cast",
+        )
+        .with_fact("expression", expr));
+    };
+    require_timestamp_second(target_type, "timestamp cast target")?;
+    let source_type = validate_expr(expr, input_schema, available_columns)?;
+    require_integral_type(&source_type, "timestamp cast source")
 }
 
 pub(super) fn validate_projection_output_expr(

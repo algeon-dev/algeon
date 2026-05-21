@@ -661,9 +661,12 @@ pub(super) fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. } => expr_references_input(expr, input_index),
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. } => expr_references_input(expr, input_index),
         Expr::Concat(exprs) => exprs.iter().any(|expr| expr_references_input(expr, input_index)),
         Expr::InList { expr, list, .. } => {
             expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))

@@ -80,6 +80,24 @@ pub enum Expr {
     Lower(Box<Expr>),
     /// SQL `UPPER(expr)` string expression.
     Upper(Box<Expr>),
+    /// SQL `CHARACTER_LENGTH(expr)` string expression.
+    StringLength {
+        /// String expression whose characters are counted.
+        expr: Box<Expr>,
+        /// Declared frontend output type.
+        output_type: DataType,
+    },
+    /// SQL `REGEXP_REPLACE(expr, pattern, replacement)` string expression.
+    RegexpReplace {
+        /// String expression being transformed.
+        expr: Box<Expr>,
+        /// Regex pattern.
+        pattern: String,
+        /// Replacement template, including optional back-references.
+        replacement: String,
+        /// Declared frontend output type.
+        output_type: DataType,
+    },
     /// SQL `CONCAT(expr, ...)` string expression.
     ///
     /// Native execution follows DataFusion semantics: null inputs contribute
@@ -129,6 +147,15 @@ pub enum Expr {
         field: DatePart,
         /// Date, timestamp, or compatible temporal expression.
         expr: Box<Expr>,
+    },
+    /// SQL `DATE_TRUNC(field, expr)` expression.
+    DateTrunc {
+        /// Field to truncate the input expression to.
+        field: DatePart,
+        /// Timestamp expression being truncated.
+        expr: Box<Expr>,
+        /// Declared frontend output type.
+        output_type: DataType,
     },
     /// Output alias for projection and aggregate argument naming.
     Alias {
@@ -232,6 +259,26 @@ impl Expr {
         Self::Upper(Box::new(expr))
     }
 
+    /// Build a SQL `CHARACTER_LENGTH(expr)` expression.
+    pub fn string_length(expr: Self, output_type: DataType) -> Self {
+        Self::StringLength { expr: Box::new(expr), output_type }
+    }
+
+    /// Build a SQL `REGEXP_REPLACE(expr, pattern, replacement)` expression.
+    pub fn regexp_replace(
+        expr: Self,
+        pattern: impl Into<String>,
+        replacement: impl Into<String>,
+        output_type: DataType,
+    ) -> Self {
+        Self::RegexpReplace {
+            expr: Box::new(expr),
+            pattern: pattern.into(),
+            replacement: replacement.into(),
+            output_type,
+        }
+    }
+
     /// Build a SQL `CONCAT(expr, ...)` string expression.
     pub fn concat(exprs: Vec<Self>) -> Self {
         Self::Concat(exprs)
@@ -271,6 +318,11 @@ impl Expr {
     /// Build a SQL `EXTRACT(field FROM expr)` expression.
     pub fn extract(field: DatePart, expr: Self) -> Self {
         Self::Extract { field, expr: Box::new(expr) }
+    }
+
+    /// Build a SQL `DATE_TRUNC(field, expr)` expression.
+    pub fn date_trunc(field: DatePart, expr: Self, output_type: DataType) -> Self {
+        Self::DateTrunc { field, expr: Box::new(expr), output_type }
     }
 
     /// Wrap this expression in an output alias.
@@ -317,6 +369,10 @@ impl fmt::Display for Expr {
             },
             Self::Lower(expr) => write!(f, "LOWER({expr})"),
             Self::Upper(expr) => write!(f, "UPPER({expr})"),
+            Self::StringLength { expr, output_type } => write!(f, "CHARACTER_LENGTH({expr})::{output_type}"),
+            Self::RegexpReplace { expr, pattern, replacement, output_type } => {
+                write!(f, "REGEXP_REPLACE({expr}, {pattern:?}, {replacement:?})::{output_type}")
+            },
             Self::Concat(exprs) => {
                 f.write_str("CONCAT(")?;
                 for (index, expr) in exprs.iter().enumerate() {
@@ -350,6 +406,9 @@ impl fmt::Display for Expr {
                 write!(f, " ELSE {else_expr} END")
             },
             Self::Extract { field, expr } => write!(f, "EXTRACT({field} FROM {expr})"),
+            Self::DateTrunc { field, expr, output_type } => {
+                write!(f, "DATE_TRUNC({field}, {expr})::{output_type}")
+            },
             Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
         }
     }
@@ -380,6 +439,8 @@ pub enum DatePart {
     Month,
     /// Calendar day-of-month field.
     Day,
+    /// Minute-of-hour field.
+    Minute,
 }
 
 impl fmt::Display for DatePart {
@@ -388,6 +449,7 @@ impl fmt::Display for DatePart {
             Self::Year => "YEAR",
             Self::Month => "MONTH",
             Self::Day => "DAY",
+            Self::Minute => "MINUTE",
         })
     }
 }

@@ -17,8 +17,8 @@ use std::{
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LimitSpec as NativeLimitSpec,
-    NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
+    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, NodeId as NativeNodeId,
+    ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 use datafusion::physical_expr::expressions::Column;
@@ -222,7 +222,7 @@ fn lower_native_input(
         },
         NormalizedNativeInput::Limit(limit) => {
             let input = lower_native_input(&limit.input, builder, required_output_fields)?;
-            let node = builder.add_limit(input.node, NativeLimitSpec::fetch(limit.fetch), Arc::clone(&input.schema));
+            let node = builder.add_limit(input.node, limit.spec, Arc::clone(&input.schema));
             Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
         },
         NormalizedNativeInput::Aggregate(aggregate) => {

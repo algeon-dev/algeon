@@ -295,9 +295,25 @@ fn collect_required_columns_for_scalar_function(
                 return Err(FallbackReason::UnsupportedExpression);
             };
             match literal_string(field)?.to_ascii_lowercase().as_str() {
-                "year" | "month" | "day" => {},
+                "year" | "month" | "day" | "minute" => {},
                 _ => return Err(FallbackReason::UnsupportedExpression),
             }
+            collect_required_columns(expr, input_schema, required)
+        },
+        "date_trunc" => {
+            let [field, expr] = function.args() else {
+                return Err(FallbackReason::UnsupportedExpression);
+            };
+            match literal_string(field)?.to_ascii_lowercase().as_str() {
+                "minute" => {},
+                _ => return Err(FallbackReason::UnsupportedExpression),
+            }
+            collect_required_columns(expr, input_schema, required)
+        },
+        "to_timestamp_seconds" => {
+            let [expr] = function.args() else {
+                return Err(FallbackReason::UnsupportedExpression);
+            };
             collect_required_columns(expr, input_schema, required)
         },
         _ => {

@@ -1,3 +1,4 @@
+use cudf_query_engine::LimitSpec as NativeLimitSpec;
 use datafusion::{
     datasource::source::DataSourceExec,
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
@@ -70,7 +71,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
             NativeStackRoot::SortPreservingMergeFetch,
             plan.schema().fields().len(),
             sort,
-            Some(fetch),
+            Some(NativeLimitSpec::fetch(fetch)),
         );
     }
 
@@ -79,23 +80,32 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
             native_stack_candidate(NativeStackRoot::LocalLimit, plan.schema().fields().len(), false, true, true, false);
         let sort = required_child::<SortExec>(limit.input().as_ref(), candidate)?;
         let fetch = sort.fetch().map_or(limit.fetch(), |sort_fetch| sort_fetch.min(limit.fetch()));
-        return normalize_sort_stack(NativeStackRoot::LocalLimit, plan.schema().fields().len(), sort, Some(fetch));
+        return normalize_sort_stack(
+            NativeStackRoot::LocalLimit,
+            plan.schema().fields().len(),
+            sort,
+            Some(NativeLimitSpec::fetch(fetch)),
+        );
     }
 
     if let Some(limit) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
-        let limit_fetch =
-            global_limit_fetch(limit, GpuCandidate::new("GlobalLimitExec", plan.schema().fields().len()))?;
-        return normalize_global_limit_root(plan.schema().fields().len(), limit.input().as_ref(), limit_fetch);
+        let limit_spec = global_limit_spec(limit, GpuCandidate::new("GlobalLimitExec", plan.schema().fields().len()))?;
+        return normalize_global_limit_root(plan.schema().fields().len(), limit.input().as_ref(), limit_spec);
     }
 
     if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
         let root = if sort.fetch().is_some() { NativeStackRoot::SortFetch } else { NativeStackRoot::Sort };
-        return normalize_sort_stack(root, plan.schema().fields().len(), sort, sort.fetch());
+        return normalize_sort_stack(
+            root,
+            plan.schema().fields().len(),
+            sort,
+            sort.fetch().map(NativeLimitSpec::fetch),
+        );
     }
 
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         if let Some(limit) = projection.input().as_any().downcast_ref::<GlobalLimitExec>() {
-            let limit_fetch = global_limit_fetch(
+            let limit_spec = global_limit_spec(
                 limit,
                 GpuCandidate::with_operator_count(
                     wrap_shape("ProjectionExec", "GlobalLimitExec".to_string()),
@@ -108,7 +118,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                 Ok(aggregate) => {
                     let normalized =
                         normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate)?;
-                    return Ok(with_global_limit_fetch(normalized, limit_fetch));
+                    return Ok(with_global_limit(normalized, limit_spec));
                 },
                 Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
                     let normalized = normalize_input_root(
@@ -120,7 +130,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                         limit.input().as_ref(),
                         candidate,
                     )?;
-                    return Ok(with_global_limit_fetch(normalized, limit_fetch));
+                    return Ok(with_global_limit(normalized, limit_spec));
                 },
                 Err(rejection) => return Err(rejection),
             }
@@ -132,7 +142,12 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                 return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
             },
             Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
-                let sort_fetch = projection.input().as_any().downcast_ref::<SortExec>().and_then(SortExec::fetch);
+                let sort_fetch = projection
+                    .input()
+                    .as_any()
+                    .downcast_ref::<SortExec>()
+                    .and_then(SortExec::fetch)
+                    .map(NativeLimitSpec::fetch);
                 return normalize_input_root(
                     plan.schema().fields().len(),
                     None,
@@ -186,7 +201,7 @@ fn normalize_sort_stack(
     root: NativeStackRoot,
     output_schema_fields: usize,
     sort: &SortExec,
-    limit_fetch: Option<usize>,
+    limit: Option<NativeLimitSpec>,
 ) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
     let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true, false);
     if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
@@ -198,7 +213,7 @@ fn normalize_sort_stack(
     let (post_aggregate_projection, aggregate) = match peel_post_aggregate_projection(sort, initial_candidate.clone()) {
         Ok(stack) => stack,
         Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
-            return normalize_sort_input_root(root, output_schema_fields, sort, limit_fetch, initial_candidate);
+            return normalize_sort_input_root(root, output_schema_fields, sort, limit, initial_candidate);
         },
         Err(rejection) => return Err(rejection),
     };
@@ -225,7 +240,7 @@ fn normalize_sort_stack(
             post_aggregate_projection,
         }),
         sort: Some(sort),
-        limit_fetch,
+        limit,
     })
 }
 
@@ -258,21 +273,21 @@ fn normalize_global_aggregate_stack<'a>(
             post_aggregate_projection,
         }),
         sort: None,
-        limit_fetch: None,
+        limit: None,
     })
 }
 
 fn normalize_global_limit_root<'a>(
     output_schema_fields: usize,
     input: &'a dyn ExecutionPlan,
-    limit_fetch: usize,
+    limit: NativeLimitSpec,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     if let Some(projection) = input.as_any().downcast_ref::<ProjectionExec>() {
         let candidate = global_aggregate_candidate(output_schema_fields, true, false, false, false);
         match required_child::<AggregateExec>(projection.input().as_ref(), candidate.clone()) {
             Ok(aggregate) => {
                 let normalized = normalize_global_aggregate_stack(output_schema_fields, Some(projection), aggregate)?;
-                return Ok(with_global_limit_fetch(normalized, limit_fetch));
+                return Ok(with_global_limit(normalized, limit));
             },
             Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
                 let normalized = normalize_input_root(
@@ -284,7 +299,7 @@ fn normalize_global_limit_root<'a>(
                     projection.input().as_ref(),
                     candidate,
                 )?;
-                return Ok(with_global_limit_fetch(normalized, limit_fetch));
+                return Ok(with_global_limit(normalized, limit));
             },
             Err(rejection) => return Err(rejection),
         }
@@ -292,16 +307,16 @@ fn normalize_global_limit_root<'a>(
 
     if let Some(aggregate) = input.as_any().downcast_ref::<AggregateExec>() {
         let normalized = normalize_global_aggregate_stack(output_schema_fields, None, aggregate)?;
-        return Ok(with_global_limit_fetch(normalized, limit_fetch));
+        return Ok(with_global_limit(normalized, limit));
     }
 
     let candidate = input_root_candidate(None, output_schema_fields, input.name().to_string(), false, 1);
     let normalized = normalize_input_root(output_schema_fields, None, None, None, None, input, candidate)?;
-    Ok(with_global_limit_fetch(normalized, limit_fetch))
+    Ok(with_global_limit(normalized, limit))
 }
 
-fn with_global_limit_fetch(mut normalized: NormalizedNativePlan<'_>, fetch: usize) -> NormalizedNativePlan<'_> {
-    normalized.limit_fetch = Some(normalized.limit_fetch.map_or(fetch, |existing| existing.min(fetch)));
+fn with_global_limit(mut normalized: NormalizedNativePlan<'_>, limit: NativeLimitSpec) -> NormalizedNativePlan<'_> {
+    normalized.limit = Some(normalized.limit.map_or(limit, |existing| compose_limits(existing, limit)));
     normalized.candidate = GpuCandidate::with_operator_count(
         wrap_shape("GlobalLimitExec", normalized.candidate.shape),
         normalized.candidate.output_schema_fields,
@@ -310,18 +325,20 @@ fn with_global_limit_fetch(mut normalized: NormalizedNativePlan<'_>, fetch: usiz
     normalized
 }
 
-fn global_limit_fetch(limit: &GlobalLimitExec, candidate: GpuCandidate) -> Result<usize, NativePlanRejection> {
-    if limit.skip() != 0 {
-        return Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator });
-    }
-    limit.fetch().ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
+fn compose_limits(inner: NativeLimitSpec, outer: NativeLimitSpec) -> NativeLimitSpec {
+    NativeLimitSpec::new(inner.skip.saturating_add(outer.skip), inner.fetch.saturating_sub(outer.skip).min(outer.fetch))
+}
+
+fn global_limit_spec(limit: &GlobalLimitExec, candidate: GpuCandidate) -> Result<NativeLimitSpec, NativePlanRejection> {
+    let fetch = limit.fetch().ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })?;
+    Ok(NativeLimitSpec::new(limit.skip(), fetch))
 }
 
 fn normalize_sort_input_root(
     root: NativeStackRoot,
     output_schema_fields: usize,
     sort: &SortExec,
-    limit_fetch: Option<usize>,
+    limit: Option<NativeLimitSpec>,
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
     if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
@@ -331,14 +348,14 @@ fn normalize_sort_input_root(
         });
     }
     let (projection, input) = peel_root_projection(sort.input().as_ref());
-    normalize_input_root(output_schema_fields, Some(root), Some(sort), limit_fetch, projection, input, candidate)
+    normalize_input_root(output_schema_fields, Some(root), Some(sort), limit, projection, input, candidate)
 }
 
 fn normalize_input_root<'a>(
     output_schema_fields: usize,
     stack_root: Option<NativeStackRoot>,
     sort: Option<&'a SortExec>,
-    limit_fetch: Option<usize>,
+    limit: Option<NativeLimitSpec>,
     projection: Option<&'a ProjectionExec>,
     input_plan: &'a dyn ExecutionPlan,
     candidate: GpuCandidate,
@@ -355,7 +372,7 @@ fn normalize_input_root<'a>(
         candidate,
         root: NormalizedNativeRoot::Input(NormalizedNativeInputRoot { input, projection }),
         sort,
-        limit_fetch,
+        limit,
     })
 }
 
@@ -441,9 +458,9 @@ fn normalize_native_input<'a>(
         }));
     }
     if let Some(limit) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
-        let fetch = global_limit_fetch(limit, candidate.clone())?;
+        let spec = global_limit_spec(limit, candidate.clone())?;
         let input = normalize_native_input(limit.input().as_ref(), candidate)?;
-        return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit { fetch, input: Box::new(input) }));
+        return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit { spec, input: Box::new(input) }));
     }
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
         let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;

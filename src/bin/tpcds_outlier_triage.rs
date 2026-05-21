@@ -195,10 +195,7 @@ async fn triage_query(
     ))
 }
 
-async fn dump_engine_plans(
-    ctx: &SessionContext,
-    sql: &str,
-) -> Result<(String, String, String), Box<dyn Error>> {
+async fn dump_engine_plans(ctx: &SessionContext, sql: &str) -> Result<(String, String, String), Box<dyn Error>> {
     let df = ctx.sql(sql).await?;
     let unopt_logical = df.logical_plan().display_indent().to_string();
     let opt_logical = df.clone().into_optimized_plan()?.display_indent().to_string();
@@ -229,10 +226,7 @@ fn describe_session_config(config: &SessionConfig) -> String {
         "enable_join_dynamic_filter_pushdown={}\n",
         options.optimizer.enable_join_dynamic_filter_pushdown,
     ));
-    out.push_str(&format!(
-        "enable_dynamic_filter_pushdown={}\n",
-        options.optimizer.enable_dynamic_filter_pushdown,
-    ));
+    out.push_str(&format!("enable_dynamic_filter_pushdown={}\n", options.optimizer.enable_dynamic_filter_pushdown,));
     out.push_str(&format!("parquet_pushdown_filters={}\n", options.execution.parquet.pushdown_filters));
     out.push_str(&format!("parquet_reorder_filters={}\n", options.execution.parquet.reorder_filters));
     out.push_str(&format!("collect_statistics={}\n", options.execution.collect_statistics));
@@ -288,7 +282,9 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str("| file | what it is |\n|---|---|\n");
     out.push_str("| query.sql | the SQL submitted to both engines |\n");
     out.push_str("| session_config.cpu.txt | tuned CPU DataFusion session config |\n");
-    out.push_str("| session_config.gpu.txt | native-GPU report session config (target_partitions=1, no repartition) |\n");
+    out.push_str(
+        "| session_config.gpu.txt | native-GPU report session config (target_partitions=1, no repartition) |\n",
+    );
     out.push_str("| logical_plan.unopt.cpu.txt | CPU `df.logical_plan()` (post-analyzer, pre-logical-optimizer) |\n");
     out.push_str("| logical_plan.opt.cpu.txt | CPU `df.into_optimized_plan()` (post-logical-optimizer) |\n");
     out.push_str("| physical_plan.cpu.txt | CPU final physical plan (post-physical-optimizer, executed) |\n");
@@ -297,7 +293,9 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str("| physical_plan.gpu.preRule.txt | GPU session physical plan WITHOUT `CudfNativePhysicalOptimizerRule` (the input the rule sees) |\n");
     out.push_str("| physical_plan.gpu.postRule.txt | GPU session physical plan WITH the rule (NativeCudfExec wrappers visible) |\n");
     out.push_str("| native_ir.gpu.txt | lowered `cudf_query_engine::QueryPlan` per rewritten candidate |\n");
-    out.push_str("| planning_report.gpu.txt | `PlanningReport` outcomes (rewritten / rejected with FallbackReason code) |\n\n");
+    out.push_str(
+        "| planning_report.gpu.txt | `PlanningReport` outcomes (rewritten / rejected with FallbackReason code) |\n\n",
+    );
 
     out.push_str("## Lowering snapshot\n\n");
     out.push_str(&format!("- candidate_count = {}\n", lowering.candidate_count()));

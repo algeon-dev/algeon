@@ -1,3 +1,4 @@
+use arrow::datatypes::TimeUnit;
 use cudf::ops::{
     binary::BinaryOperator,
     expr::{concat, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
@@ -49,12 +50,17 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
         Expr::Lower(expr) => Ok(lower_expr(expr)?.str().lower()),
         Expr::Upper(expr) => Ok(lower_expr(expr)?.str().upper()),
+        Expr::StringLength { expr, output_type } => lower_string_length(expr, output_type),
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
+            lower_regexp_replace(expr, pattern, replacement, output_type)
+        },
         Expr::Concat(exprs) => lower_concat(exprs),
         Expr::Abs(expr) => Ok(lower_expr(expr)?.abs()),
         Expr::Round { expr, decimal_places, output_type } => lower_round(expr, *decimal_places, output_type),
         Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
         Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
         Expr::Extract { field, expr } => lower_extract(*field, expr),
+        Expr::DateTrunc { field, expr, output_type } => lower_date_trunc(*field, expr, output_type),
         Expr::Alias { expr, alias } => Ok(lower_expr(expr)?.alias(alias)),
     }
 }
@@ -362,6 +368,37 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf:
     Ok(lower_expr(expr)?.str().slice(options))
 }
 
+fn lower_string_length(expr: &Expr, output_type: &ArrowDataType) -> Result<cudf::Expr> {
+    let length = lower_expr(expr)?.str().len();
+    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_string_length",
+            "native string length output type is not supported",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+    })?;
+    Ok(length.cast(target))
+}
+
+fn lower_regexp_replace(
+    expr: &Expr,
+    pattern: &str,
+    replacement: &str,
+    output_type: &ArrowDataType,
+) -> Result<cudf::Expr> {
+    let replaced = lower_expr(expr)?.str().replace_with_backrefs(pattern, replacement);
+    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_regexp_replace",
+            "native REGEXP_REPLACE output type is not supported",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+    })?;
+    Ok(replaced.cast(target))
+}
+
 fn lower_concat(exprs: &[Expr]) -> Result<cudf::Expr> {
     if exprs.is_empty() {
         return Err(QueryError::new(
@@ -485,13 +522,66 @@ fn lower_case(branches: &[CaseWhen], else_expr: &Expr) -> Result<cudf::Expr> {
 }
 
 fn lower_extract(field: DatePart, expr: &Expr) -> Result<cudf::Expr> {
-    let expr = lower_expr(expr)?.dt();
+    if matches!(field, DatePart::Minute) {
+        let raw_seconds = lower_timestamp_second_integer_cast_raw(expr)?;
+        return Ok(lower_timestamp_second_minute(raw_seconds).cast(cudf::DataType::new(cudf::TypeId::Int32)));
+    }
+    let lowered = lower_expr(expr)?;
     let component = match field {
-        DatePart::Year => expr.year(),
-        DatePart::Month => expr.month(),
-        DatePart::Day => expr.day(),
+        DatePart::Year => lowered.dt().year(),
+        DatePart::Month => lowered.dt().month(),
+        DatePart::Day => lowered.dt().day(),
+        DatePart::Minute => unreachable!("minute extraction is handled before datetime component lowering"),
     };
     Ok(component.cast(cudf::DataType::new(cudf::TypeId::Int32)))
+}
+
+fn lower_timestamp_second_minute(expr: cudf::Expr) -> cudf::Expr {
+    cudf_binary_expr(expr.floor_div(lit(60_i64)), BinaryOperator::Pymod, lit(60_i64))
+}
+
+fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -> Result<cudf::Expr> {
+    if !matches!(field, DatePart::Minute) || !matches!(output_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_date_trunc",
+            "native DATE_TRUNC currently supports minute truncation for timezone-free second timestamps",
+        )
+        .with_fact("field", field.to_string())
+        .with_fact("output_type", format!("{output_type:?}")));
+    }
+    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_date_trunc",
+            "native DATE_TRUNC output type is not supported",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+    })?;
+    if let Ok(raw_seconds) = lower_timestamp_second_integer_cast_raw(expr) {
+        return Ok((raw_seconds.floor_div(lit(60_i64)) * lit(60_i64)).cast(target));
+    }
+    Ok(lower_expr(expr)?.dt().floor(cudf::ops::datetime::DatetimeRoundingFrequency::Minute).cast(target))
+}
+
+fn lower_timestamp_second_integer_cast_raw(expr: &Expr) -> Result<cudf::Expr> {
+    let Expr::Cast { expr, target_type } = expr else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_timestamp_second_raw",
+            "native second timestamp minute operations currently require an integer-to-timestamp cast",
+        )
+        .with_fact("expression", expr));
+    };
+    if !matches!(target_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_timestamp_second_raw",
+            "native second timestamp minute operations require Timestamp(Second, None)",
+        )
+        .with_fact("target_type", format!("{target_type:?}")));
+    }
+    Ok(lower_expr(expr)?.cast(cudf::DataType::new(cudf::TypeId::Int64)))
 }
 
 pub(super) struct LoweredSort {

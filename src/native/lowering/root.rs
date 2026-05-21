@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use cudf_query_engine::{
-    LimitSpec as NativeLimitSpec, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 use datafusion::{
@@ -282,12 +282,8 @@ pub(super) fn lower_slice1_plan(
     } else {
         sort_input
     };
-    let output = if let Some(limit_fetch) = normalized.limit_fetch {
-        let node = builder.add_limit(
-            sorted_or_projected.node,
-            NativeLimitSpec::fetch(limit_fetch),
-            Arc::clone(&sorted_or_projected.schema),
-        );
+    let output = if let Some(limit) = normalized.limit {
+        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
         LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
         sorted_or_projected
@@ -333,12 +329,8 @@ pub(super) fn lower_table_format_zero_column_count_plan(
     } else {
         sort_input
     };
-    let output = if let Some(limit_fetch) = normalized.limit_fetch {
-        let node = builder.add_limit(
-            sorted_or_projected.node,
-            NativeLimitSpec::fetch(limit_fetch),
-            Arc::clone(&sorted_or_projected.schema),
-        );
+    let output = if let Some(limit) = normalized.limit {
+        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
         LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
         sorted_or_projected
@@ -416,12 +408,8 @@ pub(super) fn lower_joined_aggregate_plan(
     } else {
         sort_input
     };
-    let output = if let Some(limit_fetch) = normalized.limit_fetch {
-        let node = builder.add_limit(
-            sorted_or_projected.node,
-            NativeLimitSpec::fetch(limit_fetch),
-            Arc::clone(&sorted_or_projected.schema),
-        );
+    let output = if let Some(limit) = normalized.limit {
+        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
         LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
         sorted_or_projected
@@ -459,12 +447,8 @@ pub(super) fn lower_input_root_plan(
     } else {
         projected
     };
-    let output = if let Some(limit_fetch) = normalized.limit_fetch {
-        let node = builder.add_limit(
-            sorted_or_projected.node,
-            NativeLimitSpec::fetch(limit_fetch),
-            Arc::clone(&sorted_or_projected.schema),
-        );
+    let output = if let Some(limit) = normalized.limit {
+        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
         LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
         sorted_or_projected

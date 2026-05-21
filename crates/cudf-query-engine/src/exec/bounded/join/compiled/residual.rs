@@ -334,6 +334,16 @@ pub(super) fn rewrite_join_residual_for_candidate(
         },
         Expr::Lower(expr) => Ok(Expr::lower(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
         Expr::Upper(expr) => Ok(Expr::upper(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::StringLength { expr, output_type } => Ok(Expr::string_length(
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            output_type.clone(),
+        )),
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => Ok(Expr::regexp_replace(
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            pattern.clone(),
+            replacement.clone(),
+            output_type.clone(),
+        )),
         Expr::Abs(expr) => Ok(Expr::abs(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
         Expr::Concat(exprs) => Ok(Expr::concat(
             exprs
@@ -369,6 +379,11 @@ pub(super) fn rewrite_join_residual_for_candidate(
         Expr::Extract { field, expr } => {
             Ok(Expr::extract(*field, rewrite_join_residual_for_candidate(expr, residual_output_names)?))
         },
+        Expr::DateTrunc { field, expr, output_type } => Ok(Expr::date_trunc(
+            *field,
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            output_type.clone(),
+        )),
         Expr::Alias { expr, alias } => {
             Ok(rewrite_join_residual_for_candidate(expr, residual_output_names)?.alias(alias.clone()))
         },

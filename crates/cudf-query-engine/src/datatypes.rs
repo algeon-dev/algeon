@@ -79,6 +79,9 @@ pub fn is_supported_numeric_widening_cast(source_type: &ArrowDataType, target_ty
             | (ArrowDataType::UInt8, ArrowDataType::UInt16 | ArrowDataType::UInt32 | ArrowDataType::UInt64)
             | (ArrowDataType::UInt16, ArrowDataType::UInt32 | ArrowDataType::UInt64)
             | (ArrowDataType::UInt32, ArrowDataType::UInt64)
+            | (ArrowDataType::UInt8, ArrowDataType::Int16 | ArrowDataType::Int32 | ArrowDataType::Int64)
+            | (ArrowDataType::UInt16, ArrowDataType::Int32 | ArrowDataType::Int64)
+            | (ArrowDataType::UInt32, ArrowDataType::Int64)
             | (
                 ArrowDataType::Int8
                     | ArrowDataType::Int16
@@ -172,6 +175,24 @@ fn is_supported_timestamp_cast(source_type: &ArrowDataType, target_type: &ArrowD
         (ArrowDataType::Date32, ArrowDataType::Timestamp(_, None))
             | (ArrowDataType::Timestamp(_, None), ArrowDataType::Date32)
             | (ArrowDataType::Timestamp(_, None), ArrowDataType::Timestamp(_, None))
+            | (
+                ArrowDataType::Int8
+                    | ArrowDataType::Int16
+                    | ArrowDataType::Int32
+                    | ArrowDataType::UInt8
+                    | ArrowDataType::UInt16,
+                ArrowDataType::Date32,
+            )
+            | (
+                ArrowDataType::Int8
+                    | ArrowDataType::Int16
+                    | ArrowDataType::Int32
+                    | ArrowDataType::Int64
+                    | ArrowDataType::UInt8
+                    | ArrowDataType::UInt16
+                    | ArrowDataType::UInt32,
+                ArrowDataType::Timestamp(_, None),
+            )
     )
 }
 

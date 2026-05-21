@@ -27,6 +27,14 @@ pub(super) fn require_date_or_timestamp(data_type: &ArrowDataType, context: &'st
     }
 }
 
+pub(super) fn require_timestamp_second(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if matches!(data_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+        Ok(())
+    } else {
+        unsupported_type(context, data_type, "expected timezone-free second timestamp")
+    }
+}
+
 pub(super) fn require_integral_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_integral_type(data_type) { Ok(()) } else { unsupported_type(context, data_type, "expected integral") }
 }

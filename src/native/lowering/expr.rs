@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
+use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef, TimeUnit};
 use cudf_query_engine::{
     BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
 };
@@ -18,7 +18,7 @@ use datafusion::{
 
 use crate::{
     native::{
-        literal::{NativeLiteralContext, native_literal_value},
+        literal::{NativeLiteralContext, native_literal_value, parse_yyyy_mm_dd_date32},
         lowering::FieldBinding,
         validate::{
             bounded_nonnegative_integral_cast_is_supported, is_supported_native_cast, is_supported_native_type,
@@ -86,6 +86,9 @@ pub(super) fn lower_physical_expr_with_bindings(
     if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
         let source_type =
             cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        if let Some(value) = lower_literal_string_date32_cast(cast.expr(), cast.cast_type()) {
+            return Ok(NativeExpr::literal(value));
+        }
         if !is_supported_native_cast(&source_type, cast.cast_type())
             && !bounded_nonnegative_integral_cast_is_supported(cast.expr(), &source_type, cast.cast_type())
         {
@@ -116,6 +119,21 @@ pub(super) fn lower_physical_expr_with_bindings(
         return Err(FallbackReason::UnsupportedExpression);
     }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn lower_literal_string_date32_cast(
+    expr: &Arc<dyn PhysicalExpr>,
+    target_type: &ArrowDataType,
+) -> Option<cudf_query_engine::LiteralValue> {
+    if !matches!(target_type, ArrowDataType::Date32) {
+        return None;
+    }
+    expr.as_any().downcast_ref::<Literal>().and_then(|literal| match literal.value() {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
+            parse_yyyy_mm_dd_date32(value).map(cudf_query_engine::LiteralValue::Date32)
+        },
+        _ => None,
+    })
 }
 
 fn lower_like_expr(
@@ -204,8 +222,12 @@ fn lower_scalar_function_expr(
     match function.name().to_ascii_lowercase().as_str() {
         "substring" | "substr" => lower_substring_function(function, input_schema, bindings),
         "date_part" | "extract" => lower_extract_function(function, input_schema, bindings),
+        "date_trunc" => lower_date_trunc_function(function, input_schema, bindings),
+        "to_timestamp_seconds" => lower_to_timestamp_seconds_function(function, input_schema, bindings),
         "lower" => lower_string_case_function(function, input_schema, bindings, NativeExpr::lower),
         "upper" => lower_string_case_function(function, input_schema, bindings, NativeExpr::upper),
+        "character_length" | "length" => lower_string_length_function(function, input_schema, bindings),
+        "regexp_replace" => lower_regexp_replace_function(function, input_schema, bindings),
         "concat" => lower_concat_function(function, input_schema, bindings),
         "abs" => lower_abs_function(function, input_schema, bindings),
         "round" => lower_round_function(function, input_schema, bindings),
@@ -252,9 +274,46 @@ fn lower_extract_function(
         "year" => NativeDatePart::Year,
         "month" => NativeDatePart::Month,
         "day" => NativeDatePart::Day,
+        "minute" => NativeDatePart::Minute,
         _ => return Err(FallbackReason::UnsupportedExpression),
     };
     Ok(NativeExpr::extract(field, lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
+}
+
+fn lower_date_trunc_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [field, expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let field = match literal_string(field)?.to_ascii_lowercase().as_str() {
+        "minute" => NativeDatePart::Minute,
+        _ => return Err(FallbackReason::UnsupportedExpression),
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(output_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(NativeExpr::date_trunc(field, lower_physical_expr_with_bindings(expr, input_schema, bindings)?, output_type))
+}
+
+fn lower_to_timestamp_seconds_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(output_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(NativeExpr::cast(lower_physical_expr_with_bindings(expr, input_schema, bindings)?, output_type))
 }
 
 fn lower_string_case_function(
@@ -267,6 +326,43 @@ fn lower_string_case_function(
         return Err(FallbackReason::UnsupportedExpression);
     };
     Ok(constructor(lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
+}
+
+fn lower_string_length_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(&output_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(NativeExpr::string_length(lower_physical_expr_with_bindings(expr, input_schema, bindings)?, output_type))
+}
+
+fn lower_regexp_replace_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr, pattern, replacement] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(&output_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(NativeExpr::regexp_replace(
+        lower_physical_expr_with_bindings(expr, input_schema, bindings)?,
+        literal_string(pattern)?,
+        literal_string(replacement)?,
+        output_type,
+    ))
 }
 
 fn lower_concat_function(
@@ -437,15 +533,39 @@ pub(super) fn collect_required_field_indices(
                     return Err(FallbackReason::UnsupportedExpression);
                 };
                 match literal_string(field)?.to_ascii_lowercase().as_str() {
-                    "year" | "month" | "day" => {},
+                    "year" | "month" | "day" | "minute" => {},
                     _ => return Err(FallbackReason::UnsupportedExpression),
                 }
                 collect_required_field_indices(expr, input_schema, required)
             },
-            "lower" | "upper" => {
+            "date_trunc" => {
+                let [field, expr] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                match literal_string(field)?.to_ascii_lowercase().as_str() {
+                    "minute" => {},
+                    _ => return Err(FallbackReason::UnsupportedExpression),
+                }
+                collect_required_field_indices(expr, input_schema, required)
+            },
+            "to_timestamp_seconds" => {
                 let [expr] = function.args() else {
                     return Err(FallbackReason::UnsupportedExpression);
                 };
+                collect_required_field_indices(expr, input_schema, required)
+            },
+            "lower" | "upper" | "character_length" | "length" => {
+                let [expr] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                collect_required_field_indices(expr, input_schema, required)
+            },
+            "regexp_replace" => {
+                let [expr, pattern, replacement] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                literal_string(pattern)?;
+                literal_string(replacement)?;
                 collect_required_field_indices(expr, input_schema, required)
             },
             "concat" => {
