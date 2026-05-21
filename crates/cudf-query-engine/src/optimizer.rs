@@ -35,9 +35,13 @@ use crate::plan::QueryPlan;
 /// Native optimizer pass configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerOptions {
+    /// Options for pushing left-semi key filters below eligible joins.
     pub semijoin_reduction: SemijoinReductionOptions,
+    /// Options for rewriting null-rejected left outer joins to inner joins.
     pub outer_join_null_rejection: OuterJoinNullRejectionOptions,
+    /// Options for moving join filters across preserved-side join structure.
     pub join_filter_reassociation: JoinFilterReassociationOptions,
+    /// Options for choosing smaller hash-join build sides.
     pub join_build_side_selection: JoinBuildSideSelectionOptions,
 }
 
@@ -56,11 +60,14 @@ impl NativeOptimizerOptions {
 /// Whether an optimizer invocation changed the native IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOptimizerChange {
+    /// No native IR nodes were changed.
     Unchanged,
+    /// At least one optimizer rule changed the native IR.
     Changed,
 }
 
 impl NativeOptimizerChange {
+    /// Returns true when an optimizer pass changed the native IR.
     pub fn changed(self) -> bool {
         matches!(self, Self::Changed)
     }
@@ -69,12 +76,16 @@ impl NativeOptimizerChange {
 /// Result returned by the native optimizer entry point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeOptimizerResult {
+    /// Optimized native query plan.
     pub plan: QueryPlan,
+    /// Whether any pass changed the plan.
     pub change: NativeOptimizerChange,
+    /// Rule diagnostics collected while optimizing.
     pub diagnostics: NativeOptimizerDiagnostics,
 }
 
 impl NativeOptimizerResult {
+    /// Returns true when any optimizer pass changed the native IR.
     pub fn changed(&self) -> bool {
         self.change.changed()
     }
@@ -83,13 +94,18 @@ impl NativeOptimizerResult {
 /// Diagnostics emitted by native optimizer rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerDiagnostics {
+    /// Diagnostics from the semijoin-reduction pass.
     pub semijoin_reduction: SemijoinReductionDiagnostics,
+    /// Diagnostics from the outer-join null-rejection pass.
     pub outer_join_null_rejection: OuterJoinNullRejectionDiagnostics,
+    /// Diagnostics from the join-filter reassociation pass.
     pub join_filter_reassociation: JoinFilterReassociationDiagnostics,
+    /// Diagnostics from the join build-side selection pass.
     pub join_build_side_selection: JoinBuildSideSelectionDiagnostics,
 }
 
 impl NativeOptimizerDiagnostics {
+    /// Returns true when no optimizer pass considered or applied candidates.
     pub fn is_empty(&self) -> bool {
         self.semijoin_reduction.is_empty()
             && self.outer_join_null_rejection.is_empty()
@@ -97,6 +113,7 @@ impl NativeOptimizerDiagnostics {
             && self.join_build_side_selection.is_empty()
     }
 
+    /// Merges diagnostics from another optimizer invocation into this one.
     pub fn merge(&mut self, other: Self) {
         self.semijoin_reduction.merge(other.semijoin_reduction);
         self.outer_join_null_rejection.merge(other.outer_join_null_rejection);

@@ -1,12 +1,24 @@
+//! Arrow-to-cuDF datatype support policy.
+//!
+//! These helpers define the native engine's admitted Arrow surface before a
+//! plan reaches cudf-rs. Returning `false` or `None` means the query should be
+//! rejected by capability analysis rather than attempted at execution time.
+#![deny(missing_docs)]
+
 use arrow::datatypes::{
     DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, TimeUnit, validate_decimal_precision_and_scale,
 };
 use cudf::{DataType as CudfDataType, TimestampResolution, TypeId};
 
+/// Returns whether this Arrow type has a native cuDF physical representation.
 pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
     cudf_dtype_from_arrow_type(data_type).is_some()
 }
 
+/// Converts a supported Arrow type to its cuDF dtype.
+///
+/// Timezone-aware timestamps, unsupported nested types, and decimal shapes
+/// outside the native policy return `None`.
 pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
     match data_type {
         ArrowDataType::Boolean => Some(CudfDataType::new(TypeId::Bool8)),
@@ -37,6 +49,7 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
     }
 }
 
+/// Converts Arrow's decimal scale to cuDF fixed-point scale convention.
 pub fn arrow_decimal_scale_to_cudf_scale(scale: i8) -> i32 {
     debug_assert!(
         scale <= DECIMAL128_MAX_SCALE,
@@ -45,6 +58,7 @@ pub fn arrow_decimal_scale_to_cudf_scale(scale: i8) -> i32 {
     -i32::from(scale)
 }
 
+/// Converts an Arrow temporal unit to the matching cuDF timestamp resolution.
 pub fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution {
     match unit {
         TimeUnit::Second => TimestampResolution::Seconds,
@@ -54,6 +68,7 @@ pub fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution
     }
 }
 
+/// Returns whether the native engine supports an explicit cast.
 pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     is_supported_arrow_implicit_cast(source_type, target_type)
         || is_supported_decimal_to_float64_cast(source_type, target_type)
@@ -61,6 +76,7 @@ pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowD
         || is_supported_decimal_to_integral_cast(source_type, target_type)
 }
 
+/// Returns whether the native engine may insert or preserve an implicit cast.
 pub fn is_supported_arrow_implicit_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     (source_type == target_type && is_supported_arrow_type(source_type))
         || is_supported_numeric_widening_cast(source_type, target_type)
@@ -70,6 +86,7 @@ pub fn is_supported_arrow_implicit_cast(source_type: &ArrowDataType, target_type
         || is_supported_duration_cast(source_type, target_type)
 }
 
+/// Returns whether a numeric cast widens without narrowing range or precision class.
 pub fn is_supported_numeric_widening_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     matches!(
         (source_type, target_type),

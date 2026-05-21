@@ -3,14 +3,18 @@ use crate::{
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
 };
 
+/// Stable rule name used in optimizer diagnostics.
 pub const OUTER_JOIN_NULL_REJECTION_RULE_NAME: &str = "outer_join_null_rejection";
 
+/// Configuration for rewriting null-rejected outer joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OuterJoinNullRejectionOptions {
+    /// Whether the pass is allowed to rewrite eligible joins.
     pub enabled: bool,
 }
 
 impl OuterJoinNullRejectionOptions {
+    /// Returns options with the pass disabled.
     pub fn disabled() -> Self {
         Self { enabled: false }
     }
@@ -22,18 +26,24 @@ impl Default for OuterJoinNullRejectionOptions {
     }
 }
 
+/// Diagnostics for outer-join null-rejection candidates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OuterJoinNullRejectionDiagnostics {
+    /// Number of candidates considered.
     pub considered_count: usize,
+    /// Number of candidates rewritten.
     pub applied_count: usize,
+    /// Per-candidate evidence in discovery order.
     pub candidates: Vec<OuterJoinNullRejectionCandidateDiagnostics>,
 }
 
 impl OuterJoinNullRejectionDiagnostics {
+    /// Returns true when the pass produced no candidate evidence.
     pub fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
+    /// Merges another diagnostics value into this one.
     pub fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -41,21 +51,33 @@ impl OuterJoinNullRejectionDiagnostics {
     }
 }
 
+/// Per-candidate evidence for outer-join null rejection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OuterJoinNullRejectionCandidateDiagnostics {
+    /// Stable rule name for this diagnostic row.
     pub rule_name: &'static str,
+    /// Outer join node that may be rewritten.
     pub candidate_node_id: NodeId,
+    /// Downstream join whose keys reject nulls from the outer join.
     pub rejecting_node_id: NodeId,
+    /// Side of the downstream join that rejects nulls.
     pub rejecting_join_side: JoinSide,
+    /// Key columns proving null rejection.
     pub rejecting_columns: Vec<String>,
+    /// True when the returned plan contains the rewrite.
     pub applied: bool,
+    /// Rejection reason when no rewrite was applied.
     pub rejected_reason: Option<OuterJoinNullRejectionRejectedReason>,
 }
 
+/// Reasons an outer-join null-rejection candidate was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OuterJoinNullRejectionRejectedReason {
+    /// Downstream join shape cannot prove null rejection.
     UnsupportedRejectingJoinShape,
+    /// No right-side null-rejecting key reached the outer join.
     NoRightSideNullRejectingKey,
+    /// Outer-join output is shared, so rewriting would affect another consumer.
     SharedOuterJoinOutput,
 }
 

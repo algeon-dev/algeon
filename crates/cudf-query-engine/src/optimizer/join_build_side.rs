@@ -1,18 +1,24 @@
 use crate::plan::{JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows};
 
+/// Stable rule name used in optimizer diagnostics.
 pub const JOIN_BUILD_SIDE_SELECTION_RULE_NAME: &str = "join_build_side_selection";
 
 const DEFAULT_SMALL_BUILD_SIDE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_SMALL_BUILD_SIDE_ROWS: u64 = 1_000_000;
 
+/// Configuration for choosing smaller hash-join build sides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinBuildSideSelectionOptions {
+    /// Whether the pass is allowed to change join build-side orientation.
     pub enabled: bool,
+    /// Byte threshold under which a side is treated as a small build candidate.
     pub small_build_side_bytes: u64,
+    /// Row threshold under which a side is treated as a small build candidate.
     pub small_build_side_rows: u64,
 }
 
 impl JoinBuildSideSelectionOptions {
+    /// Returns options with the pass disabled and default thresholds preserved.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -32,18 +38,24 @@ impl Default for JoinBuildSideSelectionOptions {
     }
 }
 
+/// Diagnostics for build-side selection candidates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinBuildSideSelectionDiagnostics {
+    /// Number of join candidates considered.
     pub considered_count: usize,
+    /// Number of joins whose build side changed.
     pub applied_count: usize,
+    /// Per-candidate evidence in discovery order.
     pub candidates: Vec<JoinBuildSideSelectionCandidateDiagnostics>,
 }
 
 impl JoinBuildSideSelectionDiagnostics {
+    /// Returns true when the pass produced no candidate evidence.
     pub fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
+    /// Merges another diagnostics value into this one.
     pub fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -51,24 +63,39 @@ impl JoinBuildSideSelectionDiagnostics {
     }
 }
 
+/// Per-candidate build-side selection evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinBuildSideSelectionCandidateDiagnostics {
+    /// Stable rule name for this diagnostic row.
     pub rule_name: &'static str,
+    /// Join node considered by the pass.
     pub candidate_node_id: NodeId,
+    /// Build side before optimization.
     pub before_build_side: JoinSide,
+    /// Build side after optimization when changed.
     pub after_build_side: Option<JoinSide>,
+    /// Estimated rows on the left input, if known.
     pub left_estimated_rows: Option<u64>,
+    /// Estimated rows on the right input, if known.
     pub right_estimated_rows: Option<u64>,
+    /// Estimated bytes on the left input, if known.
     pub left_estimated_bytes: Option<u64>,
+    /// Estimated bytes on the right input, if known.
     pub right_estimated_bytes: Option<u64>,
+    /// True when the returned plan uses the selected build side.
     pub applied: bool,
+    /// Rejection reason when no change was applied.
     pub rejected_reason: Option<JoinBuildSideSelectionRejectedReason>,
 }
 
+/// Reasons a build-side candidate was not changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinBuildSideSelectionRejectedReason {
+    /// Pass was disabled.
     PassDisabled,
+    /// Join shape cannot safely flip build/probe orientation.
     UnsupportedJoinShape,
+    /// Existing build side was already best or estimates were insufficient.
     NoBetterBuildSide,
 }
 

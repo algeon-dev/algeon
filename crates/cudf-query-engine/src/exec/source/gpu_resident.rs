@@ -1,5 +1,9 @@
 use super::*;
 
+/// Read a caller-supplied GPU-resident source by plan-local input name.
+///
+/// The handle must match the declared source schema and the same runtime/device
+/// placement as the execution context. The returned frame stays on device.
 pub fn read_gpu_resident_source(
     context: &ExecutionContext,
     source: &crate::source::GpuResidentSource,

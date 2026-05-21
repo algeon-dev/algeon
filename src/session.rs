@@ -1,3 +1,12 @@
+//! Session-state helpers for installing datafusion-cudf public integrations.
+//!
+//! The native physical optimizer uses two insertion points. A count-only probe
+//! is placed before DataFusion aggregate statistics so count queries can be
+//! detected early. The final native rewrite is placed immediately before
+//! DataFusion's final sanity check so rewritten plans are still validated.
+
+#![deny(missing_docs)]
+
 use std::sync::Arc;
 
 use datafusion::{
@@ -9,11 +18,14 @@ use datafusion::{
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
 use crate::planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig};
 
+/// Public name and deduplication key for the final native rewrite rule.
 pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
+/// Public name and deduplication key for the count-only native probe rule.
 pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native_count_only";
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
+/// DataFusion physical optimizer rule list after datafusion-cudf insertion.
 pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
 /// Return DataFusion's default physical optimizer rules with the cudf native
@@ -33,6 +45,7 @@ pub fn cudf_native_physical_optimizer_rules_with_rule(
     rules
 }
 
+/// Extension methods for adding native GPU planning to a DataFusion session.
 pub trait CudfSessionStateBuilderExt {
     /// Register cudf native rewriting before DataFusion's final physical-plan
     /// validation rule.

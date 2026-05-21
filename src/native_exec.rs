@@ -1,3 +1,12 @@
+//! DataFusion `ExecutionPlan` wrappers around native cuDF query plans.
+//!
+//! Host-sink wrappers materialize native results back into Arrow streams for
+//! DataFusion. Composed wrappers can pass GPU-resident fragment results between
+//! native subplans, but the final DataFusion-facing boundary still streams
+//! host Arrow.
+
+#![deny(missing_docs)]
+
 mod common;
 mod composed;
 mod config;

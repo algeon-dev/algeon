@@ -3,6 +3,8 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
+#![deny(missing_docs)]
+
 use std::{any::Any, fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -42,6 +44,11 @@ type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
 /// DataFusion table provider that plans Iceberg metadata into adapter-owned
 /// scan facts instead of delegating to the upstream Arrow reader path.
+///
+/// The provider supports projection-only scans. Pushed-down DataFusion filters
+/// are rejected at this boundary because Iceberg residual and row-selection
+/// semantics must be represented as structured table-format facts before
+/// native lowering can admit them.
 #[derive(Clone)]
 pub struct CudfIcebergTableProvider {
     schema: SchemaRef,
@@ -50,15 +57,24 @@ pub struct CudfIcebergTableProvider {
 }
 
 impl CudfIcebergTableProvider {
+    /// Builds a provider from an `iceberg-rust` table handle.
+    ///
+    /// The table schema is converted eagerly; file planning remains lazy and
+    /// happens in `TableProvider::scan`.
     pub fn try_new(table: Table) -> Result<Self> {
         let schema = iceberg_schema_to_arrow_schema(table.current_schema_ref().as_ref())?;
         Ok(Self::from_table_format_planner(schema, Arc::new(IcebergTableFormatPlanner::new(table))))
     }
 
+    /// Builds a provider around an already supplied table-format planner.
+    ///
+    /// This keeps tests and custom catalog integrations credential-free at the
+    /// DataFusion provider boundary.
     pub fn from_table_format_planner(schema: SchemaRef, planner: Arc<dyn TableFormatPlanner + Send + Sync>) -> Self {
         Self { schema, planner, catalog_type: None }
     }
 
+    /// Records a stable catalog label in scan requests and diagnostics.
     pub fn with_catalog_type(mut self, catalog_type: impl Into<String>) -> Self {
         self.catalog_type = Some(catalog_type.into());
         self
@@ -129,6 +145,11 @@ impl TableProvider for CudfIcebergTableProvider {
 
 /// Planner that resolves an `iceberg-rust` table scan into adapter-owned scan
 /// facts for later native admission.
+///
+/// Snapshot ids are parsed as Iceberg `i64` ids. `None` projection selects all
+/// columns; an empty projection requests `select_empty`. Row-selection support
+/// is recorded as an unsupported feature until native scan facts can represent
+/// page-index semantics.
 #[derive(Debug, Clone)]
 pub struct IcebergTableFormatPlanner {
     table: Table,
@@ -136,15 +157,22 @@ pub struct IcebergTableFormatPlanner {
 }
 
 impl IcebergTableFormatPlanner {
+    /// Builds a planner around an `iceberg-rust` table handle.
     pub fn new(table: Table) -> Self {
         Self { table, catalog_type: None }
     }
 
+    /// Records a default catalog label when the scan request does not provide one.
     pub fn with_catalog_type(mut self, catalog_type: impl Into<String>) -> Self {
         self.catalog_type = Some(catalog_type.into());
         self
     }
 
+    /// Resolves Iceberg scan metadata into adapter-owned scan facts.
+    ///
+    /// The result is metadata-only: data files, delete files, partition values,
+    /// projected columns, and unsupported-feature facts. It does not read data
+    /// files and must not expose credentials in diagnostics.
     pub async fn plan_table_format_scan(&self, request: TableFormatScanRequest) -> Result<TableFormatScanPlan> {
         let row_selection_enabled = request.row_selection_enabled;
         let mut scan_builder = self

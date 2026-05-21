@@ -3,6 +3,7 @@
 //! The report model is DataFusion-free and gate-first: it projects capability
 //! requirements and compiled reservation gates without routing through bounded
 //! join family/path compatibility vocabulary.
+#![deny(missing_docs)]
 
 use std::fmt;
 
@@ -30,6 +31,7 @@ pub struct StrictBoundedContractReport {
 }
 
 impl StrictBoundedContractReport {
+    /// Builds a strict contract report from already-materialized gate rows.
     pub fn from_gate_rows(
         execution_mode: StrictBoundedExecutionMode,
         gate_rows: Vec<StrictBoundedContractGateRow>,
@@ -37,6 +39,7 @@ impl StrictBoundedContractReport {
         Self::new(execution_mode, gate_rows)
     }
 
+    /// Builds a report from compiled reservation gates and validates capability backing.
     pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
         let execution_mode = if analysis.has_rejections()
             || pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled)
@@ -55,6 +58,10 @@ impl StrictBoundedContractReport {
         Self::new(execution_mode, gate_rows)
     }
 
+    /// Builds a report directly from capability-analysis requirements.
+    ///
+    /// This is used before pipeline compilation or when admission failed before
+    /// concrete reservation gates could be emitted.
     pub fn from_capability_analysis(analysis: &CapabilityAnalysis) -> Result<Self> {
         let execution_mode = if analysis.has_rejections()
             || analysis.requirements.iter().any(|requirement| requirement.status != ContractStatus::Modeled)
@@ -128,19 +135,23 @@ impl StrictBoundedContractReport {
         Self::new(execution_mode, gate_rows)
     }
 
+    /// Returns the strict bounded readiness mode represented by every row.
     pub fn execution_mode(&self) -> StrictBoundedExecutionMode {
         self.execution_mode
     }
 
+    /// Returns gate rows in stable report order.
     pub fn gate_rows(&self) -> &[StrictBoundedContractGateRow] {
         &self.gate_rows
     }
 
+    /// Returns true when every gate is modeled for strict bounded execution.
     pub fn is_strict_bounded_ready(&self) -> bool {
         self.execution_mode == StrictBoundedExecutionMode::StrictBounded
             && self.gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
     }
 
+    /// Serializes each row as a stable comma-separated key/value string.
     pub fn stable_kv_rows(&self) -> Vec<String> {
         self.gate_rows.iter().map(StrictBoundedContractGateRow::to_stable_kv_row).collect()
     }
@@ -225,6 +236,7 @@ impl StrictBoundedContractGateRow {
         })
     }
 
+    /// Builds a synthetic report row for the first capability rejection.
     pub fn from_capability_rejection_projection(
         execution_mode: StrictBoundedExecutionMode,
         index: usize,
@@ -246,6 +258,7 @@ impl StrictBoundedContractGateRow {
         Ok(row)
     }
 
+    /// Serializes this row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "execution_mode={},contract_scope={},gate_id={},owner={},reservation_kind={},memory_boundary={},required_contract={},contract_status={},contract_quality={},unresolved_preflight_gap={}",
@@ -275,7 +288,12 @@ pub enum StrictBoundedContractGateId {
     /// Row comes from a reservation gate in a compiled pipeline graph.
     Compiled(ReservationGateId),
     /// Row comes from a capability requirement before graph compilation.
-    CapabilityRequirement { scope: ReservationRequirementScope, index: usize },
+    CapabilityRequirement {
+        /// Capability scope that owns the requirement.
+        scope: ReservationRequirementScope,
+        /// Stable row index within the generated capability requirement rows.
+        index: usize,
+    },
 }
 
 impl fmt::Display for StrictBoundedContractGateId {
@@ -297,7 +315,12 @@ pub enum StrictBoundedContractOwner {
     /// Node-local capability owner.
     CapabilityNode(NodeId),
     /// Producer-consumer capability owner.
-    CapabilityEdge { producer: NodeId, consumer: EdgeConsumer },
+    CapabilityEdge {
+        /// Producer node for the capability edge.
+        producer: NodeId,
+        /// Consumer endpoint for the capability edge.
+        consumer: EdgeConsumer,
+    },
     /// Subgraph invariant capability owner.
     CapabilitySubgraph(InvariantId),
     /// Whole-analysis admission owner used only for fallback projection.

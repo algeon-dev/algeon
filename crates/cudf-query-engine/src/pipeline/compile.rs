@@ -1,5 +1,7 @@
 //! QueryPlan to CompiledPipeline graph construction.
 
+#![deny(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
@@ -20,6 +22,13 @@ use crate::{
 
 const OPERATION: &str = "cudf_query_engine.pipeline.compile";
 
+/// Compile a native plan and matching capability analysis into a symbolic pipeline.
+///
+/// `analysis` must cover the same reachable plan graph. Any local node, edge,
+/// or invariant rejection is returned as an error instead of being converted to
+/// a report-family fallback. The resulting graph is mode-agnostic; strict and
+/// adaptive execution apply their own admission and runtime policy after this
+/// step.
 pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::Result<CompiledPipeline> {
     reject_local_capability_rejections(analysis)?;
 

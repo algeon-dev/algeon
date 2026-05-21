@@ -4,6 +4,8 @@
 //! strict gaps as missing contracts, but they do not represent strict readiness
 //! evidence and must never use `execution_mode=strict_bounded`.
 
+#![deny(missing_docs)]
+
 use std::fmt;
 
 use crate::{
@@ -19,6 +21,7 @@ use crate::{
     runtime::ReservationKind,
 };
 
+/// Stable rejection reason used when adaptive diagnostics cannot be constructed.
 pub const ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON: &str = "adaptive_diagnostic_construction_failed";
 
 /// Report for one adaptive bounded-pipeline admission decision.
@@ -29,6 +32,11 @@ pub struct AdaptivePipelineReport {
 }
 
 impl AdaptivePipelineReport {
+    /// Build an adaptive report from capability analysis and runtime evidence.
+    ///
+    /// Admitted candidates use `execution_mode=adaptive`; rejected candidates
+    /// use `execution_mode=unsupported_adaptive`. Strict contract gaps remain
+    /// explanatory evidence only.
     pub fn from_admission_parts(
         analysis: &CapabilityAnalysis,
         plan: &QueryPlan,
@@ -58,18 +66,22 @@ impl AdaptivePipelineReport {
         Self::new(execution_mode, row)
     }
 
+    /// Adaptive execution mode represented by this report.
     pub fn execution_mode(&self) -> AdaptiveExecutionMode {
         self.execution_mode
     }
 
+    /// Borrow the stable row payload.
     pub fn row(&self) -> &AdaptivePipelineReportRow {
         &self.row
     }
 
+    /// Serialize the row as stable comma-separated key/value diagnostics.
     pub fn stable_kv_row(&self) -> String {
         self.row.to_stable_kv_row()
     }
 
+    /// Build a rejected report when diagnostics themselves fail.
     pub fn diagnostic_failure(plan: &QueryPlan, rejection_reason: &'static str) -> Self {
         let execution_mode = AdaptiveExecutionMode::UnsupportedAdaptive;
         let row = AdaptivePipelineReportRow {
@@ -107,18 +119,30 @@ impl AdaptivePipelineReport {
 /// One report row for adaptive admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptivePipelineReportRow {
+    /// Adaptive or unsupported-adaptive mode; never strict bounded.
     pub execution_mode: AdaptiveExecutionMode,
+    /// Whether adaptive admission accepted the candidate.
     pub candidate_status: AdaptiveCandidateStatus,
+    /// Strict bounded gaps referenced as explanatory evidence.
     pub missing_strict_contracts: Vec<AdaptiveMissingStrictContract>,
+    /// Adaptive strategy selected for the candidate.
     pub adaptive_strategy: AdaptiveStrategy,
+    /// Runtime actions this adaptive strategy may take.
     pub runtime_actions_allowed: AdaptiveRuntimeActionsAllowed,
+    /// Memory-history evidence consulted during admission.
     pub memory_history_evidence: AdaptiveMemoryHistoryEvidence,
+    /// Adaptive runtime actions observed or promised for this row.
     pub runtime_action_counts: AdaptiveRuntimeActionCounts,
+    /// Final sink and materialization mode for the candidate.
     pub final_sink_boundary: AdaptiveFinalSinkBoundary,
+    /// Stable rejection reason, or `None` for admitted rows.
     pub rejection_reason: Option<&'static str>,
 }
 
 impl AdaptivePipelineReportRow {
+    /// Serialize this row using stable key names and sentinel values.
+    ///
+    /// Empty lists use `none`; absent rejection reasons use `none`.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "execution_mode={},candidate_status={},missing_strict_contracts={},adaptive_strategy={},runtime_actions_allowed={},memory_history_evidence={},retry_count={},spill_count={},downgrade_count={},final_sink_boundary={},materialization_mode={},rejection_reason={}",
@@ -141,18 +165,23 @@ impl AdaptivePipelineReportRow {
 /// Adaptive runtime evidence read during admission.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct AdaptiveAdmissionRuntimeEvidence {
+    /// Runtime actions allowed by the selected adaptive strategy.
     pub runtime_actions_allowed: AdaptiveRuntimeActionsAllowed,
+    /// Query-level memory-history evidence used by admission.
     pub memory_history_evidence: AdaptiveMemoryHistoryEvidence,
 }
 
 /// Whether adaptive admission currently accepts the candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdaptiveCandidateStatus {
+    /// Candidate can execute through the adaptive bounded pipeline.
     Admitted,
+    /// Candidate lacks required adaptive support.
     Rejected,
 }
 
 impl AdaptiveCandidateStatus {
+    /// Stable report string for this status.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Admitted => "admitted",
@@ -164,11 +193,14 @@ impl AdaptiveCandidateStatus {
 /// Strategy selected by adaptive admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdaptiveStrategy {
+    /// Run the compiled pipeline with conservative adaptive evidence.
     ConservativeCompiledPipeline,
+    /// No adaptive execution strategy is available for the candidate.
     Unsupported,
 }
 
 impl AdaptiveStrategy {
+    /// Stable report string for this strategy.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ConservativeCompiledPipeline => "conservative_compiled_pipeline",
@@ -180,16 +212,24 @@ impl AdaptiveStrategy {
 /// Runtime actions that a future adaptive executor may take for this candidate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct AdaptiveRuntimeActionsAllowed {
+    /// Strategy may consult memory history during admission.
     pub memory_history_lookup: bool,
+    /// Strategy may retry after out-of-memory/resource-exhausted failures.
     pub oom_retry: bool,
+    /// Strategy may adjust source chunk sizing.
     pub source_chunk_adjustment: bool,
+    /// Strategy may spill intermediate data to host memory.
     pub spill_to_host: bool,
+    /// Strategy may spill intermediate data to disk.
     pub spill_to_disk: bool,
+    /// Strategy may downgrade to host-materialized execution boundaries.
     pub downgrade_to_host_materialized: bool,
+    /// Strategy may admit only part of the candidate.
     pub partial_admission: bool,
 }
 
 impl AdaptiveRuntimeActionsAllowed {
+    /// Stable comma-separated action list, or `none`.
     pub fn to_stable_value(self) -> String {
         let mut actions = Vec::new();
         if self.memory_history_lookup {
@@ -221,12 +261,16 @@ impl AdaptiveRuntimeActionsAllowed {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum AdaptiveMemoryHistoryEvidence {
     #[default]
+    /// Memory history was not consulted.
     NotUsed,
+    /// Memory history was consulted but no matching observation existed.
     LookupMiss,
+    /// Matching memory history was found.
     Observed(AdaptiveMemoryHistorySummary),
 }
 
 impl AdaptiveMemoryHistoryEvidence {
+    /// Stable report string for the evidence class.
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::NotUsed => "not_used",
@@ -235,14 +279,17 @@ impl AdaptiveMemoryHistoryEvidence {
         }
     }
 
+    /// Whether admission attempted a memory-history lookup.
     pub fn lookup_attempted(&self) -> bool {
         !matches!(self, Self::NotUsed)
     }
 
+    /// Whether admission found matching memory-history evidence.
     pub fn lookup_hit(&self) -> bool {
         matches!(self, Self::Observed(_))
     }
 
+    /// Stable report value including summary counters for observed history.
     pub fn to_stable_value(&self) -> String {
         match self {
             Self::NotUsed => "not_used".to_string(),
@@ -263,15 +310,20 @@ impl AdaptiveMemoryHistoryEvidence {
 /// Runtime action counters owned by adaptive mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct AdaptiveRuntimeActionCounts {
+    /// Number of adaptive retry actions.
     pub retry_count: u64,
+    /// Number of adaptive spill actions.
     pub spill_count: u64,
+    /// Number of adaptive downgrade actions.
     pub downgrade_count: u64,
 }
 
 /// Final sink and materialization labels for adaptive rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveFinalSinkBoundary {
+    /// Sink kind requested by the native query plan.
     pub sink_kind: AdaptiveSinkKind,
+    /// Output materialization mode derived from the sink.
     pub materialization_mode: QueryOutputMode,
 }
 
@@ -288,11 +340,14 @@ impl AdaptiveFinalSinkBoundary {
 /// Sink kind used by adaptive rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdaptiveSinkKind {
+    /// Host Arrow output sink.
     HostArrow,
+    /// GPU-resident output sink.
     GpuResident,
 }
 
 impl AdaptiveSinkKind {
+    /// Stable report string for this sink kind.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::HostArrow => "host_arrow",
@@ -304,13 +359,21 @@ impl AdaptiveSinkKind {
 /// A strict bounded gap referenced by an adaptive row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveMissingStrictContract {
+    /// Scope of the missing strict contract.
     pub contract_scope: ReservationRequirementScope,
+    /// Stable owner label such as a node, edge, invariant, or admission name.
     pub owner: String,
+    /// Reservation kind associated with the missing contract.
     pub reservation_kind: ReservationKind,
+    /// Stable memory-boundary string.
     pub memory_boundary: &'static str,
+    /// Required lower-level or query-engine contract string.
     pub required_contract: &'static str,
+    /// Strict contract status explaining the gap.
     pub contract_status: ContractStatus,
+    /// Quality of the strict contract evidence.
     pub contract_quality: ContractQuality,
+    /// Lower-level preflight gap when the contract is blocked below this crate.
     pub unresolved_preflight_gap: Option<&'static str>,
 }
 

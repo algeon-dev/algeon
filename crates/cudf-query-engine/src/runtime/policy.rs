@@ -1,5 +1,7 @@
 //! Public runtime policy and diagnostic value types.
 
+#![deny(missing_docs)]
+
 use crate::error::{QueryError, Result};
 
 /// Effective device placement for a native execution context.
@@ -10,7 +12,10 @@ use crate::error::{QueryError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DevicePlacement {
     /// All work for the context runs on one CUDA device ordinal.
-    SingleDevice { device_ordinal: usize },
+    SingleDevice {
+        /// CUDA device ordinal selected by the native execution context.
+        device_ordinal: usize,
+    },
 }
 
 /// Memory space accounted by bounded reservation events.
@@ -21,7 +26,10 @@ pub enum DevicePlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemorySpaceId {
     /// CUDA device memory for one runtime device ordinal.
-    Device { device_ordinal: usize },
+    Device {
+        /// CUDA device ordinal charged by reservation accounting.
+        device_ordinal: usize,
+    },
 }
 
 impl std::fmt::Display for MemorySpaceId {

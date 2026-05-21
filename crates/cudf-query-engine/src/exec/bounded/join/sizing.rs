@@ -33,6 +33,7 @@ pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = 256;
 /// Description of one output column for the upper-bound calculation.
 #[derive(Debug, Clone)]
 pub struct JoinOutputColumnUpperBoundInput {
+    /// Arrow type of the materialized output column.
     pub data_type: ArrowDataType,
     /// Required for string-typed columns (`Utf8`, `LargeUtf8`,
     /// `Utf8View`); ignored otherwise. The maximum byte length over

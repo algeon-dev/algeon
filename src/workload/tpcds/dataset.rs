@@ -12,6 +12,7 @@ use parquet::{
 
 use super::{TpcdsWorkloadError, TpcdsWorkloadResult, tiny::write_tiny_tpcds_parquet_dataset};
 
+/// Canonical TPC-DS table names in registration/report order.
 pub const TPCDS_TABLES: &[&str] = &[
     "call_center",
     "catalog_page",
@@ -38,9 +39,16 @@ pub const TPCDS_TABLES: &[&str] = &[
     "web_sales",
     "web_site",
 ];
+/// Explicit Parquet fixture root. When unset, report helpers try the default
+/// SF1 fixture before generating tiny data.
 pub const CUDF_TPCDS_PARQUET_DIR_ENV: &str = "CUDF_TPCDS_PARQUET_DIR";
+/// Reported scale-factor label; set this explicitly for non-SF1 fixtures.
 pub const CUDF_TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_TPCDS_SCALE_FACTOR";
+/// Free-form provenance command recorded in dataset metadata.
 pub const CUDF_TPCDS_GENERATION_COMMAND_ENV: &str = "CUDF_TPCDS_GENERATION_COMMAND";
+/// Optional caller-supplied content fingerprint. When unset, only the cheaper
+/// metadata fingerprint is recorded unless the caller explicitly requests a
+/// content-fingerprint pass.
 pub const CUDF_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCDS_CONTENT_FINGERPRINT";
 
 /// Default on-host NVMe Parquet root for the TPC-DS SF1 fixture, staged at
@@ -67,64 +75,105 @@ pub fn default_tpcds_sf1_parquet_root() -> &'static str {
     }
 }
 
+/// TPC-DS fixture metadata recorded in report headers.
+///
+/// `metadata_fingerprint` is derived from paths, schema, row counts, row-group
+/// metadata, and byte sizes. `content_fingerprint`, when present, requires
+/// reading Parquet contents and is intentionally opt-in for large fixtures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsDatasetMetadata {
+    /// Fixture root used for table discovery.
     pub root: PathBuf,
+    /// Report label such as `sf1`, `sf10`, `sf100`, `tiny`, or `unknown`.
     pub scale_factor: String,
+    /// Stable provenance label written to report headers.
     pub provenance: String,
+    /// Free-form generation command or fixture description.
     pub generation_command: String,
+    /// Number of discovered TPC-DS tables.
     pub table_count: usize,
+    /// Total Parquet file count across all tables.
     pub file_count: usize,
+    /// Total row count from Parquet metadata.
     pub total_rows: u64,
+    /// Total compressed file bytes from filesystem metadata.
     pub total_bytes: u64,
+    /// Stable metadata hash; changes with paths, schema, row counts, row groups, or sizes.
     pub metadata_fingerprint: String,
+    /// Optional content hash; computing it reads Parquet contents.
     pub content_fingerprint: Option<String>,
+    /// Per-table metadata in canonical TPC-DS table order.
     pub tables: Vec<TpcdsTableMetadata>,
 }
 
+/// Per-table TPC-DS fixture metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsTableMetadata {
+    /// Logical TPC-DS table name.
     pub table: String,
+    /// Registration anchor: a single file or table directory.
     pub path: PathBuf,
+    /// Canonical Arrow schema string used by metadata fingerprints.
     pub schema: String,
+    /// File metadata in deterministic path order.
     pub files: Vec<TpcdsTableFileMetadata>,
+    /// Number of Parquet files for this table.
     pub file_count: usize,
+    /// Total table row count from Parquet metadata.
     pub row_count: u64,
+    /// Total table byte size from filesystem metadata.
     pub byte_size: u64,
+    /// Total table row-group count.
     pub row_group_count: usize,
+    /// Row counts per row group, flattened in file order.
     pub row_group_rows: Vec<u64>,
+    /// Compressed bytes per row group, flattened in file order.
     pub row_group_bytes: Vec<u64>,
 }
 
+/// Per-file TPC-DS Parquet metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsTableFileMetadata {
+    /// Absolute or caller-relative Parquet path as discovered.
     pub path: PathBuf,
+    /// Path relative to the dataset root, used in fingerprints.
     pub relative_path: String,
+    /// Canonical Arrow schema string.
     pub schema: String,
+    /// File byte size from filesystem metadata.
     pub byte_size: u64,
+    /// Row count from Parquet row-group metadata.
     pub row_count: u64,
+    /// Number of row groups in this file.
     pub row_group_count: usize,
+    /// Row counts per row group in file order.
     pub row_group_rows: Vec<u64>,
+    /// Compressed bytes per row group in file order.
     pub row_group_bytes: Vec<u64>,
 }
 
 impl TpcdsDatasetMetadata {
+    /// Formats per-table row counts as stable `table=value` pairs.
     pub fn table_row_counts(&self) -> String {
         format_table_metadata(&self.tables, |table| table.row_count)
     }
 
+    /// Formats per-table byte sizes as stable `table=value` pairs.
     pub fn table_byte_sizes(&self) -> String {
         format_table_metadata(&self.tables, |table| table.byte_size)
     }
 
+    /// Formats per-table file counts as stable `table=value` pairs.
     pub fn table_file_counts(&self) -> String {
         format_table_metadata(&self.tables, |table| table.file_count as u64)
     }
 
+    /// Formats per-table row-group counts as stable `table=value` pairs.
     pub fn table_row_group_counts(&self) -> String {
         format_table_metadata(&self.tables, |table| table.row_group_count as u64)
     }
 
+    /// Converts TPC-DS metadata into the shared report dataset header shape.
     pub fn to_workload_dataset_metadata(&self) -> crate::native_report::WorkloadDatasetMetadata {
         crate::native_report::WorkloadDatasetMetadata {
             workload: "tpcds",
@@ -146,10 +195,12 @@ impl TpcdsDatasetMetadata {
     }
 }
 
+/// Describes the generated tiny TPC-DS fixture under `root`.
 pub fn tiny_tpcds_dataset_metadata(root: &Path) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
     describe_tpcds_dataset(root, "tiny", "generated_tiny", "datafusion-cudf::write_tiny_tpcds_parquet_dataset")
 }
 
+/// Describes an externally supplied TPC-DS Parquet fixture.
 pub fn external_tpcds_dataset_metadata(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -158,6 +209,12 @@ pub fn external_tpcds_dataset_metadata(
     describe_tpcds_dataset(root, scale_factor, "external_parquet_root", generation_command)
 }
 
+/// Selects the TPC-DS fixture for report helpers.
+///
+/// `CUDF_TPCDS_PARQUET_DIR` is strict: if set, that fixture must be complete.
+/// When unset, the helper tries the implicit SF1 default and falls back to
+/// generating tiny data under `tiny_root`. A truthy
+/// `CUDF_TPCDS_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(PathBuf, TpcdsDatasetMetadata)> {
     if let Ok(root) = std::env::var(CUDF_TPCDS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
@@ -207,6 +264,7 @@ fn try_default_nvme_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata
     Some((root, metadata))
 }
 
+/// Describes a complete TPC-DS fixture without reading Parquet contents.
 pub fn describe_tpcds_dataset(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -216,6 +274,11 @@ pub fn describe_tpcds_dataset(
     describe_tpcds_dataset_with_content_fingerprint(root, scale_factor, provenance, generation_command, false)
 }
 
+/// Describes a complete TPC-DS fixture and optionally hashes file contents.
+///
+/// Metadata fingerprints are cheap and derived from Parquet metadata. Content
+/// fingerprints scan table bytes and use a stable `tpcds-content-fnv1a64-v1`
+/// report vocabulary.
 pub fn describe_tpcds_dataset_with_content_fingerprint(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -253,18 +316,26 @@ pub fn describe_tpcds_dataset_with_content_fingerprint(
     })
 }
 
+/// Physical layout for one TPC-DS table fixture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsTableLayout {
+    /// Registration anchor: single file or table directory.
     pub anchor: PathBuf,
+    /// Concrete Parquet files in deterministic order.
     pub files: Vec<PathBuf>,
 }
 
 impl TpcdsTableLayout {
+    /// Builds a table layout from previously collected table metadata.
     pub fn from_metadata(table: &TpcdsTableMetadata) -> Self {
         Self { anchor: table.path.clone(), files: table.files.iter().map(|file| file.path.clone()).collect() }
     }
 }
 
+/// Discovers one TPC-DS table layout under a fixture root.
+///
+/// Accepted layouts are `<table>.parquet` or `<table>/` containing Parquet
+/// files recursively. Missing or empty layouts are fixture errors.
 pub fn discover_tpcds_table_layout(root: &Path, table: &str) -> TpcdsWorkloadResult<TpcdsTableLayout> {
     let file_path = root.join(format!("{table}.parquet"));
     if file_path.is_file() {

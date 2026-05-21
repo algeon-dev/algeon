@@ -1,3 +1,11 @@
+//! Planner/executor facts attached to native plan nodes.
+//!
+//! Facts describe already-established contracts such as output schema,
+//! placement, ordering, and schema provenance. They are not hidden optimizer
+//! hints.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Planner/executor facts attached to a node's output.

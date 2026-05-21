@@ -40,21 +40,38 @@ pub use tiny::write_tiny_tpcds_parquet_dataset;
 
 pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpcds_query_ids};
 
+/// Device-byte budget for bounded native TPC-DS execution.
+///
+/// When unset, the workload uses `nvidia-smi` memory.total minus 500 MiB, with
+/// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
+/// during config construction.
 pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
+/// Planning target, in bytes, for native Parquet source chunks.
 pub const CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+/// Planning target for row groups per native Parquet source chunk.
 pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+/// Maximum bounded retry attempts after resource or reservation pressure.
 pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
+/// Minimum row-group granularity used when retrying with smaller chunks.
 pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 
+/// Result type used by TPC-DS fixture and workload helpers.
 pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
 
+/// Error categories surfaced by TPC-DS fixture discovery and workload helpers.
 #[derive(Debug)]
 pub enum TpcdsWorkloadError {
+    /// Filesystem or process I/O failed.
     Io(std::io::Error),
+    /// Arrow schema or record-batch handling failed.
     Arrow(ArrowError),
+    /// Parquet reading or writing failed.
     Parquet(ParquetError),
+    /// DataFusion planning or execution failed.
     DataFusion(DataFusionError),
+    /// A fixture path could not be represented as UTF-8.
     NonUtf8Path(PathBuf),
+    /// Fixture metadata was incomplete or inconsistent.
     InvalidDataset(String),
 }
 
@@ -108,6 +125,11 @@ impl From<DataFusionError> for TpcdsWorkloadError {
     }
 }
 
+/// Session config used by TPC-DS native report surfaces.
+///
+/// Uses one target partition, disables DataFusion repartitioning and dynamic
+/// filter pushdown, and leaves Parquet pushdown filters enabled for scan
+/// pruning parity with report binaries.
 pub fn tpcds_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -122,6 +144,11 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config
 }
 
+/// Native optimizer config used by TPC-DS report surfaces.
+///
+/// All env vars parse unsigned integers. Source chunk bytes and row-group
+/// limits are planning targets; positive-value validation happens when the
+/// native execution context is built.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
     let device_budget_bytes =
         optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).unwrap_or_else(default_tpcds_device_budget_bytes);
@@ -183,6 +210,10 @@ fn optional_env_usize(name: &'static str) -> Option<usize> {
     })
 }
 
+/// Builds fallback-pressure planning items for all TPC-DS queries.
+///
+/// Planning failures are returned as per-query workload items so reports keep
+/// a row for each query instead of aborting the whole workload.
 pub async fn tpcds_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
@@ -214,6 +245,7 @@ pub async fn tpcds_fallback_pressure_workload_items(
     Ok(items)
 }
 
+/// Builds native-planning report items using the default TPC-DS native config.
 pub async fn tpcds_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -226,6 +258,10 @@ pub async fn tpcds_datafusion_planning_workload_items(
     .await
 }
 
+/// Builds native-planning report items using an explicit optimizer config.
+///
+/// The native rule retains diagnostics for the most recently planned query;
+/// missing diagnostics are captured as per-query planning failures.
 pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
@@ -271,6 +307,10 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
     Ok(items)
 }
 
+/// Builds native execution report items using the default TPC-DS native config.
+///
+/// Native runtime starts only for queries where the optimizer produced at
+/// least one native rewrite; other rows keep `NotStarted` runtime status.
 pub async fn tpcds_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -283,6 +323,9 @@ pub async fn tpcds_datafusion_execution_workload_items(
     .await
 }
 
+/// Builds native execution report items using an explicit optimizer config.
+///
+/// This may touch CUDA because accepted native plans are executed.
 pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
@@ -294,10 +337,35 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
 /// Per-query lifecycle events emitted by the filtered TPC-DS execution loop.
 /// `query_index` is 1-based and counts only the queries selected for this run.
 pub enum TpcdsExecutionProgressEvent<'a> {
-    QueryStarted { query_index: usize, total: usize, query_id: &'a str },
-    QueryFinished { query_index: usize, total: usize, query_id: &'a str, elapsed_ms: u128, runtime_outcome: &'a str },
+    /// A selected query is about to be planned and possibly executed.
+    QueryStarted {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable TPC-DS query id.
+        query_id: &'a str,
+    },
+    /// A selected query finished. `elapsed_ms` is wall-clock milliseconds.
+    QueryFinished {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable TPC-DS query id.
+        query_id: &'a str,
+        /// Elapsed wall-clock milliseconds for planning and execution.
+        elapsed_ms: u128,
+        /// Stable runtime outcome label.
+        runtime_outcome: &'a str,
+    },
 }
 
+/// Builds execution report items for an optional exact query-id subset.
+///
+/// Unknown query ids are silently ignored. Progress callbacks are emitted in
+/// selected-query order: one start event, then one finish event per query.
+/// Runtime outcome strings match the execution report vocabulary.
 pub async fn tpcds_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,

@@ -4,6 +4,8 @@
 //! participate in strict bounded contract validation and are intentionally kept
 //! outside the mode-agnostic pipeline graph.
 
+#![deny(missing_docs)]
+
 use std::{collections::BTreeMap, sync::RwLock};
 
 use arrow::datatypes::DataType;
@@ -26,6 +28,7 @@ use crate::{
 pub struct AdaptiveMemoryHistoryKey(String);
 
 impl AdaptiveMemoryHistoryKey {
+    /// Build a query-level key from native IR shape and output boundary facts.
     pub fn for_query_plan(plan: &QueryPlan) -> Self {
         let mut parts = vec![
             format!("node_count={}", plan.node_count()),
@@ -45,6 +48,7 @@ impl AdaptiveMemoryHistoryKey {
         Self(parts.join("|"))
     }
 
+    /// Stable structural key text used for diagnostics and map lookup.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -59,10 +63,15 @@ impl AdaptiveMemoryHistoryKey {
 pub struct AdaptiveTaskMemoryHistoryKey(String);
 
 impl AdaptiveTaskMemoryHistoryKey {
+    /// Build a task-level key for one compiled task in a query plan.
+    ///
+    /// `input_basis_bytes` is a coarse byte signal used to avoid reusing memory
+    /// history across materially different input sizes for the same task shape.
     pub fn for_plan_task(plan: &QueryPlan, task: &PipelineTask, input_basis_bytes: u64) -> Self {
         Self::for_task_shape(&AdaptiveTaskMemoryHistoryShape::for_plan_task(plan, task), input_basis_bytes)
     }
 
+    /// Build a task-level key from a precomputed structural shape.
     pub fn for_task_shape(shape: &AdaptiveTaskMemoryHistoryShape, input_basis_bytes: u64) -> Self {
         Self(format!(
             "operator_kind={}:input_basis_bytes={}:schema={}:expression={}",
@@ -70,6 +79,7 @@ impl AdaptiveTaskMemoryHistoryKey {
         ))
     }
 
+    /// Stable structural key text used for diagnostics and map lookup.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -87,6 +97,7 @@ pub struct AdaptiveTaskMemoryHistoryShape {
 }
 
 impl AdaptiveTaskMemoryHistoryShape {
+    /// Extract a reusable task shape from a compiled task and its native plan.
     pub fn for_plan_task(plan: &QueryPlan, task: &PipelineTask) -> Self {
         let (schema, expression) = task.plan_node().and_then(|node_id| plan.node(node_id)).map_or_else(
             || ("none".to_string(), "none".to_string()),
@@ -103,22 +114,31 @@ impl AdaptiveTaskMemoryHistoryShape {
 /// One query observation that can be folded into adaptive memory history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveMemoryObservation {
+    /// Observed resident dataframe peak in device bytes, when available.
     pub resident_dataframe_peak_bytes: Option<u64>,
+    /// Cumulative reservation-granted bytes recorded for the query.
     pub reservation_granted_bytes: u64,
+    /// Number of source chunks committed by the query.
     pub source_chunks_committed: u64,
 }
 
 /// One compiled task observation that can be folded into adaptive memory history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveTaskMemoryObservation {
+    /// Cumulative reservation-requested bytes for this task.
     pub reservation_requested_bytes: u64,
+    /// Cumulative reservation-granted bytes for this task.
     pub reservation_granted_bytes: u64,
+    /// Maximum observed task peak in device bytes, when available.
     pub observed_peak_bytes: Option<u64>,
+    /// Maximum retained device bytes for this task, when available.
     pub retained_bytes: Option<u64>,
+    /// Cumulative reservation-released bytes for this task.
     pub reservation_released_bytes: u64,
 }
 
 impl AdaptiveTaskMemoryObservation {
+    /// Build an adaptive task observation from compiled task runtime metrics.
     pub fn from_task_metrics(metrics: &TaskRuntimeMetrics) -> Self {
         Self {
             reservation_requested_bytes: metrics.reservation_requested_bytes,
@@ -131,6 +151,7 @@ impl AdaptiveTaskMemoryObservation {
 }
 
 impl AdaptiveMemoryObservation {
+    /// Build an adaptive query observation from query-level metrics.
     pub fn from_query_metrics(metrics: &QueryMetrics) -> Self {
         Self {
             resident_dataframe_peak_bytes: metrics.resident_dataframe_peak_bytes,
@@ -143,9 +164,13 @@ impl AdaptiveMemoryObservation {
 /// Aggregated adaptive memory evidence for one structural query key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct AdaptiveMemoryHistorySummary {
+    /// Number of query observations folded into this summary.
     pub observation_count: u64,
+    /// Maximum observed resident dataframe peak in device bytes.
     pub max_resident_dataframe_peak_bytes: Option<u64>,
+    /// Maximum cumulative reservation-granted bytes seen for matching queries.
     pub max_reservation_granted_bytes: u64,
+    /// Maximum committed source-chunk count seen for matching queries.
     pub max_source_chunks_committed: u64,
 }
 
@@ -167,11 +192,17 @@ impl AdaptiveMemoryHistorySummary {
 /// Aggregated adaptive memory evidence for one structural task key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct AdaptiveTaskMemoryHistorySummary {
+    /// Number of task observations folded into this summary.
     pub observation_count: u64,
+    /// Maximum cumulative reservation-requested bytes seen for matching tasks.
     pub max_reservation_requested_bytes: u64,
+    /// Maximum cumulative reservation-granted bytes seen for matching tasks.
     pub max_reservation_granted_bytes: u64,
+    /// Maximum observed task peak in device bytes.
     pub max_observed_peak_bytes: Option<u64>,
+    /// Maximum retained device bytes seen for matching tasks.
     pub max_retained_bytes: Option<u64>,
+    /// Maximum cumulative reservation-released bytes seen for matching tasks.
     pub max_reservation_released_bytes: u64,
 }
 
@@ -188,6 +219,10 @@ impl AdaptiveTaskMemoryHistorySummary {
             self.max_reservation_released_bytes.max(observation.reservation_released_bytes);
     }
 
+    /// Recommend a smaller reservation from observed bytes plus headroom.
+    ///
+    /// Returns `None` when history is absent, zero, or no tighter than the
+    /// conservative bound. The recommendation is capped by `conservative_bytes`.
     pub fn recommended_reservation_bytes(&self, conservative_bytes: u64) -> Option<u64> {
         let observed_bytes = max_optional(self.max_observed_peak_bytes, self.max_retained_bytes)?;
         if observed_bytes == 0 || observed_bytes >= conservative_bytes {
@@ -198,6 +233,11 @@ impl AdaptiveTaskMemoryHistorySummary {
 }
 
 /// In-memory adaptive history store.
+///
+/// The store is thread-safe and process-local. Reads and writes use `RwLock`s;
+/// poisoned locks panic because history corruption is treated as a runtime
+/// invariant violation. Values are summaries keyed by structural fingerprints,
+/// not by SQL text or table paths.
 #[derive(Debug, Default)]
 pub struct AdaptiveMemoryHistory {
     summaries: RwLock<BTreeMap<AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary>>,
@@ -205,23 +245,28 @@ pub struct AdaptiveMemoryHistory {
 }
 
 impl AdaptiveMemoryHistory {
+    /// Create an empty adaptive memory history store.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Merge one query-level observation into the summary for `key`.
     pub fn record_observation(&self, key: AdaptiveMemoryHistoryKey, observation: AdaptiveMemoryObservation) {
         let mut summaries = self.summaries.write().expect("adaptive memory history lock poisoned");
         summaries.entry(key).or_default().record(&observation);
     }
 
+    /// Look up the query-level summary for an exact structural key.
     pub fn lookup(&self, key: &AdaptiveMemoryHistoryKey) -> Option<AdaptiveMemoryHistorySummary> {
         self.summaries.read().expect("adaptive memory history lock poisoned").get(key).cloned()
     }
 
+    /// Look up query-level history for a native query plan.
     pub fn lookup_query_plan(&self, plan: &QueryPlan) -> Option<AdaptiveMemoryHistorySummary> {
         self.lookup(&AdaptiveMemoryHistoryKey::for_query_plan(plan))
     }
 
+    /// Merge one compiled-task observation into the summary for `key`.
     pub fn record_task_observation(
         &self,
         key: AdaptiveTaskMemoryHistoryKey,
@@ -231,10 +276,12 @@ impl AdaptiveMemoryHistory {
         summaries.entry(key).or_default().record(&observation);
     }
 
+    /// Look up the task-level summary for an exact structural key.
     pub fn lookup_task(&self, key: &AdaptiveTaskMemoryHistoryKey) -> Option<AdaptiveTaskMemoryHistorySummary> {
         self.task_summaries.read().expect("adaptive task memory history lock poisoned").get(key).cloned()
     }
 
+    /// Recommend task reservation bytes using a precomputed structural shape.
     pub fn recommended_task_reservation_bytes_for_shape(
         &self,
         shape: &AdaptiveTaskMemoryHistoryShape,
@@ -245,6 +292,7 @@ impl AdaptiveMemoryHistory {
             .recommended_reservation_bytes(conservative_bytes)
     }
 
+    /// Recommend task reservation bytes for a compiled task in a query plan.
     pub fn recommended_task_reservation_bytes_for_plan_task(
         &self,
         plan: &QueryPlan,
@@ -259,6 +307,11 @@ impl AdaptiveMemoryHistory {
         )
     }
 
+    /// Fold all compiled-task metrics from one query execution into history.
+    ///
+    /// Tasks without runtime metrics are skipped. The input-basis byte signal is
+    /// the max of requested, granted, observed peak, and retained bytes for that
+    /// task.
     pub fn record_task_observations_from_query_metrics(
         &self,
         plan: &QueryPlan,

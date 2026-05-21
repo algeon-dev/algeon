@@ -12,6 +12,8 @@
 //! - REST and Hive backends can be added as additional implementations of
 //!   [`IcebergCatalogBackend`] without changing the DataFusion-facing layer.
 
+#![deny(missing_docs)]
+
 use std::{
     any::Any,
     collections::{BTreeMap, HashMap},
@@ -46,6 +48,9 @@ const CATALOG_BACKEND_OP: &str = "datafusion_cudf.iceberg.catalog_backend";
 /// DataFusion's synchronous [`CatalogProvider`] and [`SchemaProvider`] methods
 /// read from a startup cache populated by [`build_catalog_provider_from_backend`];
 /// [`SchemaProvider::table`] (which *is* async) loads tables lazily.
+///
+/// Implementations should avoid leaking credentials in errors. `load_table`
+/// must accept identifiers previously returned by `list_tables`.
 #[async_trait]
 pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// List all top-level namespaces exposed by this catalog.
@@ -110,6 +115,8 @@ impl CatalogProvider for CudfIcebergCatalogProvider {
 ///
 /// `table_names()` returns the list discovered at startup.  `table()` loads
 /// the Iceberg table on first access through the backend and caches the result.
+/// The cache has no refresh policy; concurrent first access can call the
+/// backend more than once, with the first inserted provider retained.
 #[derive(Debug)]
 pub struct CudfIcebergSchemaProvider {
     namespace: NamespaceIdent,
@@ -218,7 +225,8 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
 /// Individual tables are loaded lazily on first access via `table()`.
 ///
 /// Multi-level namespace identifiers (two or more parts) are joined with `.`
-/// to form a flat DataFusion schema name.
+/// to form a flat DataFusion schema name. If two namespaces flatten to the
+/// same name, the later insertion replaces the earlier one.
 pub async fn build_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
@@ -257,13 +265,18 @@ pub struct GlueIcebergCatalogConfig {
     /// Internal catalog handle passed to `GlueCatalogBuilder::load`.
     /// Independent of the DataFusion catalog name chosen by the operator.
     pub catalog_handle: String,
+    /// Iceberg warehouse URI, typically an `s3://...` root.
     pub warehouse: String,
+    /// AWS region used by Glue/S3 calls.
     pub region: String,
+    /// Optional Glue catalog id for cross-account catalog access.
     pub catalog_id: Option<String>,
+    /// Optional AWS profile selector; empty values are ignored at connect time.
     pub profile: Option<String>,
 }
 
 impl GlueIcebergCatalogConfig {
+    /// Builds catalog-level Glue configuration.
     pub fn new(catalog_handle: impl Into<String>, warehouse: impl Into<String>, region: impl Into<String>) -> Self {
         Self {
             catalog_handle: catalog_handle.into(),
@@ -274,11 +287,13 @@ impl GlueIcebergCatalogConfig {
         }
     }
 
+    /// Sets an explicit Glue catalog id.
     pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = Some(catalog_id.into());
         self
     }
 
+    /// Sets an AWS profile selector.
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
         self.profile = Some(profile.into());
         self
@@ -306,6 +321,9 @@ impl fmt::Debug for GlueIcebergCatalogBackend {
 
 impl GlueIcebergCatalogBackend {
     /// Builds a connected Glue backend from pre-assembled catalog properties.
+    ///
+    /// Properties are passed through to `GlueCatalogBuilder` as-is and may
+    /// contain secrets; callers should avoid logging them.
     pub async fn from_props(catalog_handle: impl Into<String>, props: HashMap<String, String>) -> Result<Self> {
         let glue = GlueCatalogBuilder::default().load(catalog_handle, props).await.map_err(|error| {
             Error::new(
@@ -319,8 +337,11 @@ impl GlueIcebergCatalogBackend {
         Ok(Self { catalog: Arc::new(glue) })
     }
 
-    /// Builds a connected Glue backend from a [`GlueIcebergCatalogConfig`],
-    /// reading AWS credentials from the provided environment accessor.
+    /// Builds a connected Glue backend from a [`GlueIcebergCatalogConfig`].
+    ///
+    /// Empty catalog id/profile values are ignored. Access key and secret key
+    /// must both be non-empty before static credentials are passed through; a
+    /// session token can come from `AWS_SESSION_TOKEN` or `AWS_SECURITY_TOKEN`.
     pub async fn from_config(
         config: GlueIcebergCatalogConfig,
         mut get: impl FnMut(&str) -> Option<String>,

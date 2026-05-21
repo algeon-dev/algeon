@@ -41,22 +41,39 @@ pub use super::clickbench_queries::{
     CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, ClickbenchQuery, clickbench_query_ids,
 };
 
+/// Device-byte budget for bounded native ClickBench execution.
+///
+/// When unset, the workload uses `nvidia-smi` memory.total minus 500 MiB, with
+/// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
+/// during config construction.
 pub const CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
+/// Planning target, in bytes, for native Parquet source chunks. Default: 64 MiB.
 pub const CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+/// Planning target for row groups per native Parquet source chunk. Default: 1.
 pub const CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+/// Maximum bounded retry attempts after resource or reservation pressure. Default: 3.
 pub const CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS";
+/// Minimum row-group granularity used when retrying with smaller chunks. Default: 1.
 pub const CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
     "CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 
+/// Result type used by ClickBench fixture and workload helpers.
 pub type ClickbenchWorkloadResult<T> = std::result::Result<T, ClickbenchWorkloadError>;
 
+/// Error categories surfaced by ClickBench fixture discovery and workload helpers.
 #[derive(Debug)]
 pub enum ClickbenchWorkloadError {
+    /// Filesystem error while discovering or reading fixtures.
     Io(std::io::Error),
+    /// Arrow schema/record-batch error.
     Arrow(ArrowError),
+    /// Parquet metadata or reader error.
     Parquet(ParquetError),
+    /// DataFusion planning, registration, or execution error.
     DataFusion(DataFusionError),
+    /// Non-UTF-8 path where DataFusion registration requires a string path.
     NonUtf8Path(PathBuf),
+    /// Ambiguous, incomplete, schema-mismatched, or otherwise invalid fixture.
     InvalidDataset(String),
 }
 
@@ -110,10 +127,11 @@ impl From<DataFusionError> for ClickbenchWorkloadError {
     }
 }
 
-/// Decision-grade session config for ClickBench reports. Mirrors the TPC-H/DS
-/// report configs (single partition, no repartitioning, dynamic filter
-/// pushdown disabled) and toggles `binary_as_string=true` because the
-/// upstream Parquet encoding stores every string column as `BYTE_ARRAY`.
+/// Decision-grade session config for ClickBench reports.
+///
+/// Uses one target partition, disables file/aggregate/join/sort repartitioning
+/// and dynamic filter pushdown, leaves Parquet pushdown filters enabled, and
+/// sets `binary_as_string=true` for upstream `BYTE_ARRAY` string columns.
 pub fn clickbench_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -129,9 +147,11 @@ pub fn clickbench_report_session_config() -> SessionConfig {
     config
 }
 
-/// Tuned CPU session config for ClickBench parity baselines. Mirrors
-/// `tpch_tuned_cpu_session_config` but keeps the ClickBench-specific
-/// `binary_as_string` toggle.
+/// Tuned CPU session config for ClickBench parity baselines.
+///
+/// Uses available CPU parallelism, batch size 8192, repartitioning enabled for
+/// scans/aggregates/joins/sorts, dynamic filters enabled, Parquet pushdown
+/// filters disabled, and `binary_as_string=true`.
 pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
     let target_partitions = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
     let mut config = SessionConfig::new()
@@ -150,6 +170,12 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
     config
 }
 
+/// Native optimizer config used by ClickBench report and benchmark surfaces.
+///
+/// All env vars parse unsigned integers. Source chunk bytes and row-group
+/// limits are planning targets; positive-value validation happens when the
+/// native execution context is built. The config uses `GpuPreferred` fallback
+/// policy with bounded native execution.
 pub fn clickbench_native_optimizer_config() -> CudfOptimizerConfig {
     let device_budget_bytes = optional_env_u64(CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV)
         .unwrap_or_else(default_clickbench_device_budget_bytes);
@@ -284,6 +310,11 @@ async fn register_clickbench_partitioned_shards(
     Ok(())
 }
 
+/// Builds fallback-pressure planning items for all ClickBench queries.
+///
+/// SQL and physical-planning failures are encoded as per-query rows so report
+/// consumers can distinguish planning failures from native shape rejection.
+/// Output follows canonical ClickBench query order.
 pub async fn clickbench_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
@@ -316,6 +347,9 @@ pub async fn clickbench_fallback_pressure_workload_items(
     Ok(items)
 }
 
+/// Builds native-planning report items using the default ClickBench native config.
+///
+/// Output follows canonical ClickBench query order.
 pub async fn clickbench_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -328,6 +362,11 @@ pub async fn clickbench_datafusion_planning_workload_items(
     .await
 }
 
+/// Builds native-planning report items using an explicit optimizer config.
+///
+/// The native rule retains diagnostics for the most recently planned query;
+/// missing diagnostics are captured as per-query planning failures. Output
+/// follows canonical ClickBench query order.
 pub async fn clickbench_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
@@ -374,6 +413,10 @@ pub async fn clickbench_datafusion_planning_workload_items_with_optimizer_config
     Ok(items)
 }
 
+/// Builds native execution report items using the default ClickBench native config.
+///
+/// Native runtime starts only for queries where the optimizer produced at
+/// least one native rewrite; other rows keep `NotStarted` runtime status.
 pub async fn clickbench_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -386,6 +429,9 @@ pub async fn clickbench_datafusion_execution_workload_items(
     .await
 }
 
+/// Builds native execution report items using an explicit optimizer config.
+///
+/// This may touch CUDA because accepted native plans are executed.
 pub async fn clickbench_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
@@ -398,10 +444,37 @@ pub async fn clickbench_datafusion_execution_workload_items_with_optimizer_confi
 /// loop. `query_index` is 1-based and counts only the queries selected for
 /// this run.
 pub enum ClickbenchExecutionProgressEvent<'a> {
-    QueryStarted { query_index: usize, total: usize, query_id: &'a str },
-    QueryFinished { query_index: usize, total: usize, query_id: &'a str, elapsed_ms: u128, runtime_outcome: &'a str },
+    /// A selected query is about to be planned and possibly executed.
+    QueryStarted {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable ClickBench query id.
+        query_id: &'a str,
+    },
+    /// A selected query finished. `elapsed_ms` covers SQL planning, physical
+    /// planning, and any native execution.
+    QueryFinished {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable ClickBench query id.
+        query_id: &'a str,
+        /// Elapsed wall-clock milliseconds for planning and execution.
+        elapsed_ms: u128,
+        /// Stable runtime outcome label.
+        runtime_outcome: &'a str,
+    },
 }
 
+/// Builds execution report items for an optional exact query-id subset.
+///
+/// Unknown query ids are silently ignored. Progress callbacks are emitted in
+/// selected-query order: one start event, then one finish event per query.
+/// Duplicate requested ids do not duplicate output. Runtime outcome strings
+/// are `planning_failure`, `not_started`, `succeeded`, or `failed`.
 pub async fn clickbench_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,

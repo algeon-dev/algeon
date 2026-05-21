@@ -3,21 +3,41 @@
 //! This crate deliberately does not depend on DataFusion. DataFusion-specific
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `datafusion-cudf`.
+//!
+//! Public APIs fall into four groups:
+//!
+//! - [`plan`] and [`expr`] define the DataFusion-free query IR.
+//! - [`capability`] and [`pipeline`] prove and compile bounded-execution
+//!   contracts without naming legacy execution families.
+//! - [`runtime`] owns device, memory, boundary, and scheduler policy.
+//! - [`exec`] executes a validated [`QueryPlan`] and returns
+//!   either host Arrow output or GPU-resident handles according to its
+//!   [`ResultSink`].
+//!
+//! Byte counts in native reports and runtime contracts are device bytes unless
+//! explicitly labeled as host or Arrow bytes. Native ids and cache keys are
+//! local identities for one plan or runtime; callers should not treat them as
+//! stable global handles.
 
 pub mod adaptive_report;
 pub mod adaptive_runtime;
 pub(crate) mod bounded;
+/// Capability-analysis model and admission helpers for native execution.
 pub mod capability;
 pub mod chunk;
 pub mod contract_report;
+/// Arrow-to-cuDF datatype support and cast policy helpers.
 pub mod datatypes;
 pub mod error;
 pub mod exec;
+/// DataFusion-free expression IR used by native query plans.
 pub mod expr;
+/// Runtime metrics, counters, and memory-reservation event records.
 pub mod metrics;
 pub mod mode;
 pub mod optimizer;
 pub mod pipeline;
+/// DataFusion-free query plan IR and graph operators.
 pub mod plan;
 pub mod runtime;
 pub mod source;

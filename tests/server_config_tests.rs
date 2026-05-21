@@ -74,21 +74,16 @@ fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
 
 #[cfg(feature = "iceberg")]
 #[test]
-fn server_iceberg_config_requires_tables_when_catalog_requested() {
+fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
     let env = BTreeMap::from([
         (DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
         (datafusion_cudf::server::DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_cudf::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let iceberg = config.iceberg.expect("iceberg config must be present");
 
-    // Error mentions the tables env var (either neutral or Glue-specific).
-    let msg = error.to_string();
-    assert!(
-        msg.contains(datafusion_cudf::server::DATAFUSION_CUDF_ICEBERG_TABLES_ENV)
-            || msg.contains(datafusion_cudf::server::DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV),
-        "error should mention a tables env var: {msg}"
-    );
+    assert!(iceberg.tables.is_empty(), "dynamic catalog mode: tables must be empty when no tables env var is set");
 }
 
 #[cfg(feature = "iceberg")]

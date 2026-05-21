@@ -5,6 +5,8 @@
 //! boundaries, and reservation gates without naming bounded executor families or
 //! calling cuDF operators.
 
+#![deny(missing_docs)]
+
 mod compile;
 mod display;
 mod model;

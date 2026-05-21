@@ -1,3 +1,11 @@
+//! DataFusion-free expression IR for native plan nodes.
+//!
+//! Expressions use Arrow datatypes and native column references but do not
+//! depend on DataFusion physical-expression objects. Unsupported expression
+//! forms should be rejected during capability analysis or validation before
+//! reaching cudf-rs execution.
+#![deny(missing_docs)]
+
 use std::{fmt, ops::Not};
 
 use arrow::datatypes::DataType;
@@ -538,16 +546,21 @@ impl fmt::Display for BinaryOp {
 /// `sqrt(m2 / (count - 1))`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateSpec {
+    /// Grouping key expressions in output key order.
     pub group_exprs: Vec<Expr>,
+    /// Aggregate expressions in output aggregate order.
     pub aggr_exprs: Vec<AggregateExpr>,
+    /// Optional grouping-set masks appended to the group expression contract.
     pub grouping_sets: Option<GroupingSetsSpec>,
 }
 
 impl AggregateSpec {
+    /// Creates a standard aggregate without grouping sets.
     pub fn new(group_exprs: Vec<Expr>, aggr_exprs: Vec<AggregateExpr>) -> Self {
         Self { group_exprs, aggr_exprs, grouping_sets: None }
     }
 
+    /// Attaches GROUPING SETS / ROLLUP / CUBE masks to this aggregate.
     pub fn with_grouping_sets(mut self, grouping_sets: GroupingSetsSpec) -> Self {
         self.grouping_sets = Some(grouping_sets);
         self
@@ -562,15 +575,19 @@ impl AggregateSpec {
 /// names the generated grouping id key appended after the group expressions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupingSetsSpec {
+    /// Grouping-set masks; `true` means the corresponding key is nulled.
     pub groups: Vec<Vec<bool>>,
+    /// Output alias for the generated grouping-id column.
     pub grouping_id_alias: String,
 }
 
 impl GroupingSetsSpec {
+    /// Creates grouping-set metadata from masks and a grouping-id alias.
     pub fn new(groups: Vec<Vec<bool>>, grouping_id_alias: impl Into<String>) -> Self {
         Self { groups, grouping_id_alias: grouping_id_alias.into() }
     }
 
+    /// Returns true when at least one grouping-set mask is present.
     pub fn is_grouping_sets(&self) -> bool {
         !self.groups.is_empty()
     }
@@ -583,17 +600,23 @@ impl GroupingSetsSpec {
 /// literal or the native zero-column count source representation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateExpr {
+    /// Aggregate function to apply.
     pub function: AggregateFunction,
+    /// Aggregate argument expression.
     pub expr: Expr,
+    /// Output field alias for this aggregate.
     pub alias: String,
+    /// Whether SQL DISTINCT semantics are requested for the argument.
     pub distinct: bool,
 }
 
 impl AggregateExpr {
+    /// Creates a non-DISTINCT aggregate expression.
     pub fn new(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
         Self { function, expr, alias: alias.into(), distinct: false }
     }
 
+    /// Sets the SQL DISTINCT flag.
     pub fn with_distinct(mut self, distinct: bool) -> Self {
         self.distinct = distinct;
         self
@@ -607,11 +630,17 @@ impl AggregateExpr {
 /// non-null COUNT as state before final division.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateFunction {
+    /// SQL SUM over non-null inputs.
     Sum,
+    /// SQL MIN over non-null inputs.
     Min,
+    /// SQL MAX over non-null inputs.
     Max,
+    /// SQL COUNT over non-null inputs or count-star representation.
     Count,
+    /// SQL AVG represented logically; execution expands it to sum/count state.
     Avg,
+    /// SQL sample standard deviation.
     StddevSamp,
 }
 

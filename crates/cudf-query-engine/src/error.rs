@@ -4,11 +4,13 @@
 //! The DataFusion adapter wraps them in its own `datafusion_cudf::Error` so it
 //! can preserve native classification facts while exposing adapter-level
 //! planning and execution categories to DataFusion.
+#![deny(missing_docs)]
 
 use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
+/// Native query-engine result type.
 pub type Result<T> = std::result::Result<T, QueryError>;
 
 /// Stable, machine-readable native-engine error codes.
@@ -66,6 +68,7 @@ pub enum QueryErrorCode {
 }
 
 impl QueryErrorCode {
+    /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UnsupportedPlanShape => "unsupported_plan_shape",
@@ -85,10 +88,12 @@ impl QueryErrorCode {
         }
     }
 
+    /// Returns the stable coarse error category for this code.
     pub const fn kind(self) -> QueryErrorKind {
         kind_for_code(self)
     }
 
+    /// Returns the retry/remediation status for this code.
     pub const fn status(self) -> QueryErrorStatus {
         status_for_code(self)
     }
@@ -100,6 +105,7 @@ impl fmt::Display for QueryErrorCode {
     }
 }
 
+/// Coarse native-engine error category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QueryErrorKind {
@@ -120,6 +126,7 @@ pub enum QueryErrorKind {
 }
 
 impl QueryErrorKind {
+    /// Stable snake-case category label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Planning => "planning",
@@ -139,6 +146,7 @@ impl fmt::Display for QueryErrorKind {
     }
 }
 
+/// Retry and remediation status for native-engine errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {
     /// Non-retryable without changing the query, input, configuration, or code.
@@ -154,6 +162,7 @@ pub enum QueryErrorStatus {
 }
 
 impl QueryErrorStatus {
+    /// Stable snake-case status label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Permanent => "permanent",
@@ -256,6 +265,7 @@ impl Facts {
     }
 }
 
+/// Structured native-engine error with stable classification and facts.
 pub struct QueryError {
     code: QueryErrorCode,
     operation: &'static str,
@@ -354,34 +364,42 @@ impl QueryError {
         error
     }
 
+    /// Returns the stable machine-readable error code.
     pub fn code(&self) -> QueryErrorCode {
         self.code
     }
 
+    /// Returns the coarse category derived from [`Self::code`].
     pub fn kind(&self) -> QueryErrorKind {
         self.code.kind()
     }
 
+    /// Returns the retry/remediation status derived from [`Self::code`].
     pub fn status(&self) -> QueryErrorStatus {
         self.code.status()
     }
 
+    /// Returns the stable dotted operation id that produced the error.
     pub fn operation(&self) -> &'static str {
         self.operation
     }
 
+    /// Returns the human-facing diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
 
+    /// Returns the sorted machine-readable fact set.
     pub fn facts(&self) -> &Facts {
         &self.facts
     }
 
+    /// Returns one fact value by key.
     pub fn fact_value(&self, key: &str) -> Option<&str> {
         self.facts.get(key)
     }
 
+    /// Returns the underlying source error when one was attached.
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }

@@ -11,6 +11,13 @@ members = [".", "crates/cudf-query-engine"]
 default-members = [".", "crates/cudf-query-engine"]
 resolver = "3"
 
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+bare_urls = "deny"
+
+[lints]
+workspace = true
+
 [workspace.dependencies]
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 cudf = { path = "../cudf-rs/cudf-rs" }

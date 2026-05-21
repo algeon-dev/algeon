@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 use super::{admission::*, edge::*, graph::*, invariant::*, model::*, node::*, *};
 
 impl QueryPlan {

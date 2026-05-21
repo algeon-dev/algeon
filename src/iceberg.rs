@@ -3,6 +3,8 @@
 //! This module is available with the `iceberg` Cargo feature. Lower-level,
 //! format-neutral scan facts remain under [`crate::table_format`].
 
+#![deny(missing_docs)]
+
 pub mod catalog;
 
 use std::{collections::HashMap, fmt, sync::Arc};
@@ -25,18 +27,30 @@ pub use crate::table_format::iceberg::{
 
 const LOAD_GLUE_TABLE_OPERATION: &str = "datafusion_cudf.iceberg.load_glue_table";
 
+/// Glue catalog name used when constructing an Iceberg catalog from env.
 pub const CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_NAME";
+/// Glue database name used by env-driven Iceberg helpers.
 pub const CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "CUDF_ICEBERG_GLUE_DATABASE";
+/// Glue table name used by env-driven Iceberg helpers.
 pub const CUDF_ICEBERG_GLUE_TABLE_ENV: &str = "CUDF_ICEBERG_GLUE_TABLE";
+/// Iceberg warehouse URI, typically an `s3://...` root.
 pub const CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "CUDF_ICEBERG_GLUE_WAREHOUSE";
+/// Optional Glue catalog id for cross-account catalog targeting.
 pub const CUDF_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_ID";
 
+/// Optional AWS profile name. Non-secret; preferred over raw env credentials.
 pub const AWS_PROFILE_ENV: &str = "AWS_PROFILE";
+/// Preferred AWS region env var.
 pub const AWS_REGION_ENV: &str = "AWS_REGION";
+/// Fallback AWS region env var when `AWS_REGION` is unset.
 pub const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
+/// AWS access key id consumed at load time and never retained in diagnostics.
 pub const AWS_ACCESS_KEY_ID_ENV: &str = "AWS_ACCESS_KEY_ID";
+/// AWS secret key consumed at load time and never retained in diagnostics.
 pub const AWS_SECRET_ACCESS_KEY_ENV: &str = "AWS_SECRET_ACCESS_KEY";
+/// AWS session token consumed at load time and never retained in diagnostics.
 pub const AWS_SESSION_TOKEN_ENV: &str = "AWS_SESSION_TOKEN";
+/// Legacy session-token env var accepted as a fallback.
 pub const AWS_SECURITY_TOKEN_ENV: &str = "AWS_SECURITY_TOKEN";
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
@@ -65,16 +79,24 @@ pub fn register_table(
 /// not retained here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlueIcebergTableConfig {
+    /// Iceberg catalog name passed to `iceberg-catalog-glue`.
     pub catalog_name: String,
+    /// Glue database namespace.
     pub database: String,
+    /// Glue table name within `database`; distinct from DataFusion registration name.
     pub table: String,
+    /// Iceberg warehouse URI passed to the Glue catalog builder.
     pub warehouse: String,
+    /// Optional AWS account/catalog id for cross-account Glue access.
     pub catalog_id: Option<String>,
+    /// AWS region used for Glue and S3 calls.
     pub region: String,
+    /// Optional AWS profile selector; raw credentials are still read only at load time.
     pub profile: Option<String>,
 }
 
 impl GlueIcebergTableConfig {
+    /// Builds a Glue table config with required catalog/table identity.
     pub fn new(
         catalog_name: impl Into<String>,
         database: impl Into<String>,
@@ -93,59 +115,71 @@ impl GlueIcebergTableConfig {
         }
     }
 
+    /// Replaces the Iceberg catalog name.
     pub fn with_catalog_name(mut self, catalog_name: impl Into<String>) -> Self {
         self.catalog_name = catalog_name.into();
         self
     }
 
+    /// Replaces the Glue database namespace.
     pub fn with_database(mut self, database: impl Into<String>) -> Self {
         self.database = database.into();
         self
     }
 
+    /// Replaces the Glue table name.
     pub fn with_table(mut self, table: impl Into<String>) -> Self {
         self.table = table.into();
         self
     }
 
+    /// Replaces the Iceberg warehouse URI.
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
         self.warehouse = warehouse.into();
         self
     }
 
+    /// Sets an explicit Glue catalog id.
     pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = Some(catalog_id.into());
         self
     }
 
+    /// Clears the explicit Glue catalog id.
     pub fn without_catalog_id(mut self) -> Self {
         self.catalog_id = None;
         self
     }
 
+    /// Replaces the AWS region.
     pub fn with_region(mut self, region: impl Into<String>) -> Self {
         self.region = region.into();
         self
     }
 
+    /// Sets an AWS profile selector.
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
         self.profile = Some(profile.into());
         self
     }
 
+    /// Clears the AWS profile selector.
     pub fn without_profile(mut self) -> Self {
         self.profile = None;
         self
     }
 
+    /// Returns `database.table` for diagnostics.
     pub fn table_ident_display(&self) -> String {
         format!("{}.{}", self.database, self.table)
     }
 
+    /// Builds credential-safe diagnostics from process environment.
     pub fn diagnostics_from_env(&self) -> GlueIcebergTableDiagnostics {
         self.diagnostics_with_env(|name| std::env::var(name).ok())
     }
 
+    /// Builds credential-safe diagnostics from an injected env lookup.
     pub fn diagnostics_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> GlueIcebergTableDiagnostics {
         let profile = self.profile.clone().or_else(|| non_empty(get(AWS_PROFILE_ENV)));
         let has_access_key = non_empty(get(AWS_ACCESS_KEY_ID_ENV)).is_some();
@@ -174,13 +208,18 @@ impl GlueIcebergTableConfig {
 /// Credential source classification for Glue/S3 diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlueIcebergCredentialSource {
+    /// Explicit profile from config or `AWS_PROFILE`.
     AwsProfileEnv,
+    /// Access key, secret key, and session token env vars were all present.
     StsEnv,
+    /// Access key and secret key env vars were present without a session token.
     StaticKeyEnv,
+    /// The AWS SDK default chain will decide credentials.
     AwsDefaultChain,
 }
 
 impl GlueIcebergCredentialSource {
+    /// Stable diagnostic code for this credential source class.
     pub const fn code(self) -> &'static str {
         match self {
             Self::AwsProfileEnv => "aws_profile_env",
@@ -216,17 +255,26 @@ impl fmt::Display for GlueIcebergCredentialSource {
 /// secret keys, or session token values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlueIcebergTableDiagnostics {
+    /// Iceberg catalog name passed to the Glue catalog builder.
     pub catalog_name: String,
+    /// Glue database namespace.
     pub database: String,
+    /// Glue table name within `database`.
     pub table: String,
+    /// Iceberg warehouse URI.
     pub warehouse: String,
+    /// Optional Glue catalog id for cross-account access.
     pub catalog_id: Option<String>,
+    /// AWS region used for Glue/S3 calls.
     pub region: String,
+    /// Selected AWS profile, if any.
     pub profile: Option<String>,
+    /// Credential source class; never contains credential values.
     pub credential_source: GlueIcebergCredentialSource,
 }
 
 impl GlueIcebergTableDiagnostics {
+    /// Returns `database.table` for report rows and error facts.
     pub fn table_ident_display(&self) -> String {
         format!("{}.{}", self.database, self.table)
     }
@@ -234,13 +282,17 @@ impl GlueIcebergTableDiagnostics {
 
 /// Loaded Glue Iceberg table and credential-safe diagnostics.
 pub struct LoadedGlueIcebergTable {
+    /// Loaded `iceberg-rust` table handle.
     pub table: Table,
+    /// Credential-safe load diagnostics.
     pub diagnostics: GlueIcebergTableDiagnostics,
 }
 
 /// Result of registering a Glue Iceberg table in a DataFusion session.
 pub struct GlueIcebergTableRegistration {
+    /// Credential-safe load diagnostics.
     pub diagnostics: GlueIcebergTableDiagnostics,
+    /// Previously registered provider for the same DataFusion table reference, if any.
     pub previous: Option<Arc<dyn TableProvider>>,
 }
 

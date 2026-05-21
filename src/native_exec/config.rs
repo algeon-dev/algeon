@@ -1,3 +1,11 @@
+//! Native execution settings copied into rewritten DataFusion plan nodes.
+//!
+//! The config is cloneable and cheap to pass through planning. cuDF runtime
+//! construction, allocator setup, memory-control validation, and cache wiring
+//! happen later when execution builds the native query context.
+
+#![deny(missing_docs)]
+
 use std::sync::Arc;
 
 use cudf_query_engine::{
@@ -47,9 +55,12 @@ impl NativeCudfExecutionConfig {
 
     /// Use default runtime allocator construction with bounded native memory-control settings.
     ///
-    /// The bounded fields are expected to be nonzero where the native engine requires positive
-    /// limits. Validation is performed when the native `ExecutionContext` is built, which keeps this
-    /// builder lightweight and reports native validation failures as adapter execution errors.
+    /// Byte fields are device-byte budgets. `max_source_chunk_bytes` and
+    /// `max_row_groups_per_chunk` are planning targets for source chunking, not
+    /// absolute promises that every emitted chunk will be smaller. Positive
+    /// value validation is performed when the native `ExecutionContext` is
+    /// built, which keeps this builder lightweight and reports native
+    /// validation failures as adapter execution errors.
     pub fn bounded(
         device_budget_bytes: u64,
         max_source_chunk_bytes: u64,
@@ -157,22 +168,27 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Memory-control policy copied into the lazily built native context.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
     }
 
+    /// Boundary policy controlling source/build/probe/result residency.
     pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
         self.boundary_policy
     }
 
+    /// Source scheduling policy used by bounded native source reads.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.source_scheduler_policy
     }
 
+    /// Strict bounded or adaptive pipeline execution mode.
     pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
         self.native_pipeline_execution_mode
     }
 
+    /// Adaptive-only memory history store, if configured.
     pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
         self.adaptive_memory_history.as_ref().map(Arc::clone)
     }

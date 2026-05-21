@@ -1,3 +1,11 @@
+//! GPU-resident native fragment producer for composed execution.
+//!
+//! Producers are internal children of composed native execution. Their public
+//! wrapper type is exposed for diagnostics and plan inspection, but executing
+//! them through the ordinary DataFusion streaming path is invalid.
+
+#![deny(missing_docs)]
+
 use std::{any::Any, sync::Arc};
 
 use cudf_query_engine::{ExecutionContext, GpuResultHandle, QueryOutput, QueryPlan, execute_query_plan};
@@ -42,6 +50,11 @@ pub struct NativeCudfGpuProducerExec {
 }
 
 impl NativeCudfGpuProducerExec {
+    /// Create a native producer fragment for composed execution.
+    ///
+    /// The plan must use a GPU-resident result sink and must not itself depend
+    /// on external GPU-resident inputs. `input_name` is the local name the
+    /// composed consumer uses to look up the produced handle.
     pub fn try_new(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
@@ -78,10 +91,12 @@ impl NativeCudfGpuProducerExec {
         })
     }
 
+    /// Local GPU input name exposed to the composed native consumer.
     pub fn input_name(&self) -> &str {
         &self.input_name
     }
 
+    /// Native producer plan whose result stays device-resident.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }

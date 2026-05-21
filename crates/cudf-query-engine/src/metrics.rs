@@ -1,3 +1,9 @@
+//! Query execution metrics and stable diagnostic event rows.
+//!
+//! Byte counters are device bytes unless the field name explicitly says host,
+//! Arrow, or Parquet compressed bytes. Cumulative reservation totals can exceed
+//! device memory; live-peak fields are instantaneous maxima.
+
 use std::{collections::BTreeMap, time::Duration};
 
 use cudf::ExecutionBudgetReport;
@@ -6,14 +12,19 @@ use crate::runtime::{
     ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
 };
 
+/// Outcome of one memory-reservation event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryReservationEventOutcome {
+    /// Requested reservation was granted.
     Granted,
+    /// Requested reservation was denied.
     Denied,
+    /// Existing reservation state was changed without a new admission decision.
     Applied,
 }
 
 impl MemoryReservationEventOutcome {
+    /// Stable snake-case label emitted in debug rows.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Granted => "granted",
@@ -29,19 +40,29 @@ impl std::fmt::Display for MemoryReservationEventOutcome {
     }
 }
 
+/// Reservation timeline action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryReservationEventAction {
+    /// Initial reservation request.
     Reserve,
+    /// Reservation grew by a positive delta.
     Grow,
+    /// Reservation shrank by a negative delta.
     Shrink,
+    /// Reservation was fully released.
     Release,
+    /// Reservation ownership moved across boundaries.
     Transfer,
+    /// Alias acquired a shared reservation.
     AliasAcquire,
+    /// Alias changed its report-facing label.
     AliasRelabel,
+    /// Alias released its shared reservation.
     AliasRelease,
 }
 
 impl MemoryReservationEventAction {
+    /// Stable snake-case label emitted in debug rows.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Reserve => "reserve",
@@ -62,34 +83,49 @@ impl std::fmt::Display for MemoryReservationEventAction {
     }
 }
 
+/// One memory-reservation timeline row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReservationEvent {
+    /// Reservation class affected by this event.
     pub reservation_kind: ReservationKind,
+    /// Memory space whose budget was charged.
     pub memory_space: MemorySpaceId,
+    /// Stable boundary label from the reservation request.
     pub memory_boundary: String,
+    /// Reservation action applied at this point in the timeline.
     pub action: MemoryReservationEventAction,
+    /// Requested bytes for reserve/grow decisions.
     pub requested_bytes: u64,
+    /// Bytes granted or otherwise associated with this event.
     pub granted_bytes: u64,
+    /// Signed change to live charged bytes.
     pub charged_delta_bytes: i128,
+    /// Live reserved bytes after the event.
     pub current_reserved_bytes: u64,
+    /// Budget limit in bytes for the memory space.
     pub budget_bytes: u64,
+    /// Admission or application outcome.
     pub outcome: MemoryReservationEventOutcome,
     pub node_id: Option<String>,
     pub stage: Option<String>,
     pub chunk_index: Option<usize>,
     pub file_index: Option<usize>,
     pub path: Option<String>,
+    /// Present on source-read events; selects row groups within the file.
     pub row_groups: Option<Vec<usize>>,
     pub attempt: Option<usize>,
     pub max_attempts: Option<usize>,
     pub compiled_task_id: Option<String>,
     pub resident_resource_id: Option<String>,
     pub source_read_contract_quality: Option<String>,
+    /// Bytes used for admission sizing; may differ from the requested reservation.
     pub source_read_planning_bytes: Option<u64>,
+    /// Byte estimate carried for diagnostics only; not used for admission.
     pub source_read_estimated_bytes: Option<u64>,
 }
 
 impl MemoryReservationEvent {
+    /// Builds a granted reserve event from a reservation request.
     pub fn granted(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
         Self::from_request(
             request,
@@ -101,6 +137,7 @@ impl MemoryReservationEvent {
         )
     }
 
+    /// Builds a denied reserve event from a reservation request.
     pub fn denied(request: &MemoryReservationRequest, granted_bytes: u64) -> Self {
         Self::from_request(
             request,
@@ -112,6 +149,7 @@ impl MemoryReservationEvent {
         )
     }
 
+    /// Builds an event row from a request and explicit timeline state.
     pub fn from_request(
         request: &MemoryReservationRequest,
         outcome: MemoryReservationEventOutcome,
@@ -147,6 +185,7 @@ impl MemoryReservationEvent {
         }
     }
 
+    /// Serializes the event as a stable comma-separated debug row.
     pub fn to_stable_debug_row(&self) -> String {
         format!(
             "reservation_kind={},memory_space={},memory_boundary={},stage={},action={},outcome={},requested_bytes={},granted_bytes={},remaining_bytes={},current_reserved_bytes={},budget_bytes={},node_id={},compiled_task_id={},resident_resource_id={},chunk_index={},file_index={},path={},row_groups={},attempt={},max_attempts={},source_read_contract_quality={},source_read_planning_bytes={},source_read_estimated_bytes={}",
@@ -177,25 +216,40 @@ impl MemoryReservationEvent {
     }
 }
 
+/// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
+    /// Data-boundary transfer counters.
     pub boundary: BoundaryMetrics,
+    /// Operator-level metric rows in observation order.
     pub operators: Vec<OperatorMetrics>,
+    /// Graph algorithm runtime rows in observation order.
     pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
+    /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
+    /// Memory policy used by the native phase-C/bounded executor.
     pub phase_c_memory_control_policy: MemoryControlPolicy,
+    /// Boundary policy used for host/device materialization.
     pub execution_boundary_policy: ExecutionBoundaryPolicy,
+    /// Number of input batches observed by native execution.
     pub input_batches: u64,
+    /// Number of input rows observed by native execution.
     pub input_rows: u64,
     /// Backward-compatible alias for `resident_dataframe_peak_bytes`.
     ///
     /// This is not an allocator high-water mark.
     pub peak_device_memory_bytes: Option<u64>,
+    /// Peak bytes retained by resident cudf DataFrames.
     pub resident_dataframe_peak_bytes: Option<u64>,
+    /// cuDF allocator high-water bytes when reported by lower layers.
     pub allocator_high_water_bytes: Option<u64>,
+    /// Cumulative reservation bytes requested over the query lifetime.
     pub reservation_requested_bytes: u64,
+    /// Cumulative reservation bytes granted over the query lifetime.
     pub reservation_granted_bytes: u64,
+    /// Peak live reserved bytes observed at any instant.
     pub reservation_live_peak_bytes: u64,
+    /// Count of denied reservation requests.
     pub reservation_denied_count: u64,
     /// Largest compiled-pipeline task reservation request granted or applied during this query.
     pub max_task_reservation_bytes: u64,
@@ -204,9 +258,12 @@ pub struct QueryMetrics {
     /// Largest retained byte count reported by a task-like lower-level cuDF operation.
     pub max_task_retained_bytes: Option<u64>,
     pub(crate) task_kind_by_compiled_task_id: BTreeMap<String, String>,
+    /// Metrics aggregated by task operator kind.
     pub task_operator_metrics: BTreeMap<String, TaskOperatorMetrics>,
+    /// Metrics keyed by compiled pipeline task id.
     pub task_runtime_metrics: BTreeMap<String, TaskRuntimeMetrics>,
     pub(crate) current_compiled_task_id: Option<String>,
+    /// Memory reservation timeline events.
     pub reservation_events: Vec<MemoryReservationEvent>,
     /// Successful lower-level cuDF calls that returned an execution-budget report.
     ///
@@ -214,6 +271,7 @@ pub struct QueryMetrics {
     /// facts on errors, but they do not synthesize success events here.
     pub budgeted_execution_events: Vec<BudgetedExecutionEvent>,
     pub source_chunks_planned: u64,
+    /// Includes both first attempts and retries.
     pub source_chunks_attempted: u64,
     pub source_chunks_committed: u64,
     pub source_chunks_retried: u64,
@@ -221,22 +279,36 @@ pub struct QueryMetrics {
     pub source_read_prefetches_completed: u64,
     pub source_read_prefetches_skipped: u64,
     pub source_read_prefetches_abandoned: u64,
+    /// Query-scoped source cache hits.
     pub source_cache_hits: u64,
+    /// Query-scoped source cache misses.
     pub source_cache_misses: u64,
+    /// Query-scoped source cache insertions.
     pub source_cache_inserts: u64,
+    /// Query-scoped skipped source cache insertions.
     pub source_cache_insert_skipped: u64,
+    /// Peak retained source-cache bytes.
     pub source_cache_retained_bytes: u64,
+    /// Row groups planned across source chunks.
     pub row_groups_planned: u64,
+    /// Row groups committed across source chunks.
     pub row_groups_committed: u64,
+    /// Number of partial aggregate tasks.
     pub partial_aggregate_count: u64,
+    /// Input rows consumed by partial aggregates.
     pub partial_aggregate_input_rows: u64,
+    /// Rows produced by partial aggregates.
     pub partial_aggregate_rows: u64,
+    /// Peak retained bytes from partial aggregate outputs.
     pub partial_aggregate_retained_bytes: u64,
     pub final_merge_attempts: u64,
     pub final_merge_levels: u64,
+    /// Largest fan-in observed across final-merge levels.
     pub final_merge_max_fan_in: u64,
     pub retry_count: u64,
+    /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: u64,
+    /// Retries caused by reservation failure.
     pub retry_reservation_failure_count: u64,
     /// Number of reusable cuDF hash-join artifacts built during this query.
     pub hash_join_build_count: u64,
@@ -272,19 +344,33 @@ pub struct QueryMetrics {
     pub one_shot_join_materialization_bytes: u64,
     /// Observed device bytes of one-shot join output frames.
     pub one_shot_join_output_bytes: u64,
+    /// Number of Parquet files observed by source reads.
     pub parquet_files: u64,
+    /// Sum of known Parquet file bytes.
     pub parquet_bytes_known: u64,
+    /// Row groups selected by source reads.
     pub row_groups_selected: u64,
+    /// Physical read columns selected by source reads.
     pub read_columns: u64,
+    /// Time spent loading source metadata.
     pub source_metadata_load_time: Duration,
+    /// Time spent waiting in the source-read queue.
     pub source_read_queue_wait_time: Duration,
+    /// Time spent looking up source cache entries.
     pub source_cache_lookup_time: Duration,
+    /// Time spent inside Parquet read calls.
     pub parquet_read_time: Duration,
+    /// Time spent in source-read orchestration.
     pub source_read_time: Duration,
+    /// Time spent in non-source operators.
     pub operator_time: Duration,
+    /// Time spent in per-chunk operators.
     pub chunk_operator_time: Duration,
+    /// Time spent in final merge operators.
     pub final_merge_time: Duration,
+    /// Time spent in final sort operators.
     pub final_sort_time: Duration,
+    /// Time spent materializing final outputs.
     pub materialization_time: Duration,
     /// Bounded queries whose capability-admitted graph was accepted by the
     /// compiled-pipeline executor before execution started.
@@ -308,14 +394,17 @@ pub struct QueryMetrics {
 }
 
 impl QueryMetrics {
+    /// Appends one operator metric row.
     pub fn record_operator_metrics(&mut self, metrics: OperatorMetrics) {
         self.operators.push(metrics);
     }
 
+    /// Appends one graph algorithm runtime row.
     pub fn record_graph_algorithm_runtime(&mut self, metrics: GraphAlgorithmRuntimeMetrics) {
         self.graph_algorithm_runtime_rows.push(metrics);
     }
 
+    /// Records join-strategy diagnostics for a node.
     pub fn record_join_strategy_decision(&mut self, node_id: impl ToString, facts: &BTreeMap<&'static str, String>) {
         self.join_strategy_decisions.push(JoinStrategyDecisionMetrics {
             node_id: node_id.to_string(),
@@ -323,11 +412,13 @@ impl QueryMetrics {
         });
     }
 
+    /// Records one input batch and its row count.
     pub fn record_input_batch(&mut self, rows: u64) {
         self.input_batches += 1;
         self.input_rows += rows;
     }
 
+    /// Records one Parquet source file observation.
     pub fn record_parquet_source(&mut self, known_bytes: Option<u64>, selected_row_groups: u64, read_columns: u64) {
         self.parquet_files += 1;
         self.parquet_bytes_known += known_bytes.unwrap_or(0);
@@ -335,22 +426,26 @@ impl QueryMetrics {
         self.read_columns += read_columns;
     }
 
+    /// Records a resident DataFrame memory observation in bytes.
     pub fn record_device_memory_observation(&mut self, bytes: u64) {
         self.peak_device_memory_bytes = Some(self.peak_device_memory_bytes.map_or(bytes, |peak| peak.max(bytes)));
         self.resident_dataframe_peak_bytes =
             Some(self.resident_dataframe_peak_bytes.map_or(bytes, |peak| peak.max(bytes)));
     }
 
+    /// Adds a granted reservation to cumulative counters.
     pub fn record_reservation_granted(&mut self, requested_bytes: u64, granted_bytes: u64) {
         self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(requested_bytes);
         self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(granted_bytes);
     }
 
+    /// Adds a denied reservation to cumulative counters.
     pub fn record_reservation_denied(&mut self, requested_bytes: u64) {
         self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(requested_bytes);
         self.reservation_denied_count = self.reservation_denied_count.saturating_add(1);
     }
 
+    /// Records a granted reservation event and updates live/task peaks.
     pub fn record_reservation_granted_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
         self.record_reservation_granted(request.requested_bytes, granted_bytes);
         let event = MemoryReservationEvent::granted(request, granted_bytes);
@@ -359,6 +454,7 @@ impl QueryMetrics {
         self.reservation_events.push(event);
     }
 
+    /// Records a denied reservation event and updates live/task peaks.
     pub fn record_reservation_denied_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
         self.record_reservation_denied(request.requested_bytes);
         let event = MemoryReservationEvent::denied(request, granted_bytes);
@@ -367,6 +463,7 @@ impl QueryMetrics {
         self.reservation_events.push(event);
     }
 
+    /// Records a granted reservation timeline event with an explicit action.
     pub fn record_reservation_granted_timeline_event(
         &mut self,
         request: &MemoryReservationRequest,
@@ -389,6 +486,7 @@ impl QueryMetrics {
         self.reservation_events.push(event);
     }
 
+    /// Records a denied reservation timeline event with an explicit action.
     pub fn record_reservation_denied_timeline_event(
         &mut self,
         request: &MemoryReservationRequest,
@@ -410,6 +508,7 @@ impl QueryMetrics {
         self.reservation_events.push(event);
     }
 
+    /// Records an already-built reservation timeline event.
     pub fn record_reservation_timeline_event(&mut self, event: MemoryReservationEvent) {
         self.record_reservation_live_peak(event.current_reserved_bytes);
         self.record_task_reservation_event(&event);
@@ -420,6 +519,7 @@ impl QueryMetrics {
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(current_reserved_bytes);
     }
 
+    /// Records a lower-level cuDF execution-budget report.
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
         let observed_peak_bytes = report.allocator_high_water_bytes().map(|bytes| bytes as u64);
         let retained_bytes = report.retained_bytes().map(|bytes| bytes as u64);
@@ -431,6 +531,7 @@ impl QueryMetrics {
         self.budgeted_execution_events.push(BudgetedExecutionEvent::new(operation, report));
     }
 
+    /// Records execution of a compiled pipeline task.
     pub fn record_compiled_pipeline_task_execution(
         &mut self,
         compiled_task_id: impl ToString,
@@ -439,6 +540,7 @@ impl QueryMetrics {
         self.record_task_execution(compiled_task_id, operator_kind);
     }
 
+    /// Records execution of a task id and operator kind.
     pub fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
         let compiled_task_id = task_id.to_string();
         let operator_kind = operator_kind.into();
@@ -455,6 +557,7 @@ impl QueryMetrics {
         row.task_count = row.task_count.saturating_add(1);
     }
 
+    /// Adds elapsed time to a task and its operator-kind aggregate.
     pub fn record_task_elapsed(&mut self, task_id: impl ToString, operator_kind: impl Into<String>, elapsed: Duration) {
         let compiled_task_id = task_id.to_string();
         let operator_kind = operator_kind.into();
@@ -474,18 +577,22 @@ impl QueryMetrics {
         operator.elapsed_time += elapsed;
     }
 
+    /// Sets the compiled task id associated with subsequent budget reports.
     pub fn set_current_compiled_task(&mut self, compiled_task_id: impl ToString) {
         self.set_current_task(compiled_task_id);
     }
 
+    /// Sets the task id associated with subsequent budget reports.
     pub fn set_current_task(&mut self, task_id: impl ToString) {
         self.current_compiled_task_id = Some(task_id.to_string());
     }
 
+    /// Clears the current compiled task id.
     pub fn clear_current_compiled_task(&mut self) {
         self.clear_current_task();
     }
 
+    /// Clears the current task id.
     pub fn clear_current_task(&mut self) {
         self.current_compiled_task_id = None;
     }
@@ -580,160 +687,197 @@ impl QueryMetrics {
         operator.max_retained_bytes = max_optional(operator.max_retained_bytes, retained_bytes);
     }
 
+    /// Records that a source chunk was planned.
     pub fn record_source_chunk_planned(&mut self, row_groups: u64) {
         self.source_chunks_planned = self.source_chunks_planned.saturating_add(1);
         self.row_groups_planned = self.row_groups_planned.saturating_add(row_groups);
     }
 
+    /// Records one source chunk attempt.
     pub fn record_source_chunk_attempt(&mut self) {
         self.source_chunks_attempted = self.source_chunks_attempted.saturating_add(1);
     }
 
+    /// Records one committed source chunk and row-group count.
     pub fn record_source_chunk_commit(&mut self, row_groups: u64) {
         self.source_chunks_committed = self.source_chunks_committed.saturating_add(1);
         self.row_groups_committed = self.row_groups_committed.saturating_add(row_groups);
     }
 
+    /// Records one source chunk retry.
     pub fn record_source_chunk_retry(&mut self) {
         self.source_chunks_retried = self.source_chunks_retried.saturating_add(1);
     }
 
+    /// Records a started source-read prefetch.
     pub fn record_source_read_prefetch_started(&mut self) {
         self.source_read_prefetches_started = self.source_read_prefetches_started.saturating_add(1);
     }
 
+    /// Records a completed source-read prefetch.
     pub fn record_source_read_prefetch_completed(&mut self) {
         self.source_read_prefetches_completed = self.source_read_prefetches_completed.saturating_add(1);
     }
 
+    /// Records a skipped source-read prefetch.
     pub fn record_source_read_prefetch_skipped(&mut self) {
         self.source_read_prefetches_skipped = self.source_read_prefetches_skipped.saturating_add(1);
     }
 
+    /// Records an abandoned source-read prefetch.
     pub fn record_source_read_prefetch_abandoned(&mut self) {
         self.source_read_prefetches_abandoned = self.source_read_prefetches_abandoned.saturating_add(1);
     }
 
+    /// Adds source-read queue wait time.
     pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
         self.source_read_queue_wait_time += elapsed;
     }
 
+    /// Records a source cache hit and retained byte peak.
     pub fn record_source_cache_hit(&mut self, retained_bytes: u64) {
         self.source_cache_hits = self.source_cache_hits.saturating_add(1);
         self.record_source_cache_retained_bytes(retained_bytes);
     }
 
+    /// Records a source cache miss and retained byte peak.
     pub fn record_source_cache_miss(&mut self, retained_bytes: u64) {
         self.source_cache_misses = self.source_cache_misses.saturating_add(1);
         self.record_source_cache_retained_bytes(retained_bytes);
     }
 
+    /// Records a source cache insertion and retained byte peak.
     pub fn record_source_cache_insert(&mut self, retained_bytes: u64) {
         self.source_cache_inserts = self.source_cache_inserts.saturating_add(1);
         self.record_source_cache_retained_bytes(retained_bytes);
     }
 
+    /// Records a skipped source cache insertion and retained byte peak.
     pub fn record_source_cache_insert_skipped(&mut self, retained_bytes: u64) {
         self.source_cache_insert_skipped = self.source_cache_insert_skipped.saturating_add(1);
         self.record_source_cache_retained_bytes(retained_bytes);
     }
 
+    /// Adds source cache lookup time.
     pub fn record_source_cache_lookup_time(&mut self, elapsed: Duration) {
         self.source_cache_lookup_time += elapsed;
     }
 
+    /// Updates the peak retained source-cache bytes.
     pub fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
         self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(retained_bytes);
     }
 
+    /// Records one retry caused by resource exhaustion.
     pub fn record_retry_resource_exhausted(&mut self) {
         self.retry_count = self.retry_count.saturating_add(1);
         self.retry_resource_exhausted_count = self.retry_resource_exhausted_count.saturating_add(1);
     }
 
+    /// Records one retry caused by reservation failure.
     pub fn record_retry_reservation_failure(&mut self) {
         self.retry_count = self.retry_count.saturating_add(1);
         self.retry_reservation_failure_count = self.retry_reservation_failure_count.saturating_add(1);
     }
 
+    /// Records one query-scoped hash-join cache hit.
     pub fn record_hash_join_cache_hit(&mut self) {
         self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(1);
     }
 
+    /// Records one query-scoped hash-join cache miss.
     pub fn record_hash_join_cache_miss(&mut self) {
         self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(1);
     }
 
+    /// Records one durable hash-join cache hit.
     pub fn record_hash_join_durable_cache_hit(&mut self) {
         self.hash_join_durable_cache_hits = self.hash_join_durable_cache_hits.saturating_add(1);
     }
 
+    /// Records one durable hash-join cache miss.
     pub fn record_hash_join_durable_cache_miss(&mut self) {
         self.hash_join_durable_cache_misses = self.hash_join_durable_cache_misses.saturating_add(1);
     }
 
+    /// Records one durable hash-join cache insertion.
     pub fn record_hash_join_durable_cache_insert(&mut self) {
         self.hash_join_durable_cache_inserts = self.hash_join_durable_cache_inserts.saturating_add(1);
     }
 
+    /// Records one reusable hash-join build.
     pub fn record_hash_join_build(&mut self) {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);
     }
 
+    /// Records one reusable filtered-join build.
     pub fn record_filtered_join_build(&mut self) {
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(1);
     }
 
+    /// Records one one-shot join execution.
     pub fn record_one_shot_join(&mut self) {
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(1);
     }
 
+    /// Adds retained hash-join hash table bytes.
     pub fn record_hash_join_hash_table_bytes(&mut self, bytes: u64) {
         self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(bytes);
     }
 
+    /// Adds retained filtered-join hash table bytes.
     pub fn record_filtered_join_hash_table_bytes(&mut self, bytes: u64) {
         self.filtered_join_hash_table_bytes = self.filtered_join_hash_table_bytes.saturating_add(bytes);
     }
 
+    /// Adds retained filtered-join probe-state bytes.
     pub fn record_filtered_join_probe_state_bytes(&mut self, bytes: u64) {
         self.filtered_join_probe_state_bytes = self.filtered_join_probe_state_bytes.saturating_add(bytes);
     }
 
+    /// Adds retained mixed-join size-data bytes.
     pub fn record_mixed_join_size_data_bytes(&mut self, bytes: u64) {
         self.mixed_join_size_data_bytes = self.mixed_join_size_data_bytes.saturating_add(bytes);
     }
 
+    /// Adds one-shot join index-map bytes.
     pub fn record_one_shot_join_index_bytes(&mut self, bytes: u64) {
         self.one_shot_join_index_bytes = self.one_shot_join_index_bytes.saturating_add(bytes);
     }
 
+    /// Adds one-shot join output materialization reservation bytes.
     pub fn record_one_shot_join_materialization_bytes(&mut self, bytes: u64) {
         self.one_shot_join_materialization_bytes = self.one_shot_join_materialization_bytes.saturating_add(bytes);
     }
 
+    /// Adds one-shot join output bytes.
     pub fn record_one_shot_join_output_bytes(&mut self, bytes: u64) {
         self.one_shot_join_output_bytes = self.one_shot_join_output_bytes.saturating_add(bytes);
     }
 
+    /// Records one compiled-pipeline execution attempt.
     pub fn record_compiled_pipeline_attempt(&mut self) {
         self.compiled_pipeline_attempts = self.compiled_pipeline_attempts.saturating_add(1);
     }
 
+    /// Adds completed compiled-pipeline task count.
     pub fn record_compiled_pipeline_tasks_executed(&mut self, tasks: u64) {
         self.compiled_pipeline_tasks_executed = self.compiled_pipeline_tasks_executed.saturating_add(tasks);
     }
 
+    /// Records one compiled-pipeline Host Arrow sink.
     pub fn record_compiled_pipeline_host_arrow_sink(&mut self) {
         self.compiled_pipeline_host_arrow_sinks = self.compiled_pipeline_host_arrow_sinks.saturating_add(1);
     }
 
+    /// Adds adaptive runtime action counters.
     pub fn record_adaptive_runtime_action_counts(&mut self, retry_count: u64, spill_count: u64, downgrade_count: u64) {
         self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(retry_count);
         self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(spill_count);
         self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(downgrade_count);
     }
 
+    /// Records one adaptive memory-history lookup.
     pub fn record_adaptive_memory_history_lookup(&mut self, hit: bool) {
         self.adaptive_memory_history_lookup_count = self.adaptive_memory_history_lookup_count.saturating_add(1);
         if hit {
@@ -743,6 +887,7 @@ impl QueryMetrics {
         }
     }
 
+    /// Records one partial aggregate task summary.
     pub fn record_partial_aggregate(&mut self, input_rows: u64, output_rows: u64, retained_bytes: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_input_rows = self.partial_aggregate_input_rows.saturating_add(input_rows);
@@ -750,15 +895,18 @@ impl QueryMetrics {
         self.partial_aggregate_retained_bytes = self.partial_aggregate_retained_bytes.max(retained_bytes);
     }
 
+    /// Records one final merge attempt and fan-in.
     pub fn record_final_merge_attempt(&mut self, merge_fan_in: usize) {
         self.final_merge_attempts = self.final_merge_attempts.saturating_add(1);
         self.final_merge_max_fan_in = self.final_merge_max_fan_in.max(merge_fan_in as u64);
     }
 
+    /// Records one final merge level.
     pub fn record_final_merge_level(&mut self) {
         self.final_merge_levels = self.final_merge_levels.saturating_add(1);
     }
 
+    /// Merges another query metrics value into this one.
     pub fn merge_from(&mut self, other: QueryMetrics) {
         self.boundary.merge_from(other.boundary);
         self.operators.extend(other.operators);
@@ -920,22 +1068,35 @@ fn legacy_bounded_operator_kind_from_task_id(task_id: &str) -> Option<&str> {
     task_id.strip_prefix("legacy_bounded.")?.split('.').next()
 }
 
+/// Join-strategy decision facts captured for diagnostics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinStrategyDecisionMetrics {
+    /// Native join node id.
     pub node_id: String,
+    /// Stable decision fact keys and values.
     pub facts: BTreeMap<String, String>,
 }
 
+/// Metrics aggregated across tasks of the same operator kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskOperatorMetrics {
+    /// Operator-kind label shared by the aggregated tasks.
     pub operator_kind: String,
+    /// Number of tasks observed for this operator kind.
     pub task_count: u64,
+    /// Cumulative elapsed time across tasks.
     pub elapsed_time: Duration,
+    /// Cumulative reservation bytes requested.
     pub reservation_requested_bytes: u64,
+    /// Cumulative reservation bytes granted.
     pub reservation_granted_bytes: u64,
+    /// Cumulative reservation bytes released.
     pub reservation_released_bytes: u64,
+    /// Peak live reserved bytes for this operator kind.
     pub reservation_live_peak_bytes: u64,
+    /// Largest lower-level observed allocator peak for this operator kind.
     pub max_observed_peak_bytes: Option<u64>,
+    /// Largest lower-level retained byte count for this operator kind.
     pub max_retained_bytes: Option<u64>,
     pub(crate) live_reserved_bytes: u64,
 }
@@ -970,16 +1131,26 @@ impl TaskOperatorMetrics {
     }
 }
 
+/// Metrics for one compiled pipeline task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskRuntimeMetrics {
+    /// Stable compiled task id.
     pub compiled_task_id: String,
+    /// Operator-kind label for the task.
     pub operator_kind: String,
+    /// Cumulative elapsed task time.
     pub elapsed_time: Duration,
+    /// Cumulative reservation bytes requested by the task.
     pub reservation_requested_bytes: u64,
+    /// Cumulative reservation bytes granted to the task.
     pub reservation_granted_bytes: u64,
+    /// Cumulative reservation bytes released by the task.
     pub reservation_released_bytes: u64,
+    /// Peak live reserved bytes for the task.
     pub reservation_live_peak_bytes: u64,
+    /// Largest lower-level observed allocator peak for the task.
     pub max_observed_peak_bytes: Option<u64>,
+    /// Largest lower-level retained byte count for the task.
     pub max_retained_bytes: Option<u64>,
     pub(crate) live_reserved_bytes: u64,
 }
@@ -1024,18 +1195,30 @@ impl TaskRuntimeMetrics {
     }
 }
 
+/// Successful lower-level execution-budget report captured as a metrics row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedExecutionEvent {
+    /// Native operation label that produced the report.
     pub operation: String,
+    /// Lower-level budget boundary label.
     pub boundary: String,
+    /// Budget limit in bytes.
     pub budget_bytes: u64,
+    /// Lower-level budget enforcement label.
     pub enforcement: String,
+    /// Lower-level budget status label.
     pub status: String,
+    /// Allocator high-water bytes reported by lower layers.
     pub allocator_high_water_bytes: Option<u64>,
+    /// Retained bytes reported by lower layers.
     pub retained_bytes: Option<u64>,
+    /// Output bytes reported by lower layers.
     pub output_bytes: Option<u64>,
+    /// Output rows reported by lower layers.
     pub output_rows: Option<u64>,
+    /// Unresolved contract label when the lower layer reports one.
     pub unresolved_contract: Option<String>,
+    /// Additional lower-level context facts.
     pub context_facts: BTreeMap<String, String>,
 }
 
@@ -1057,55 +1240,93 @@ impl BudgetedExecutionEvent {
     }
 }
 
+/// Generic operator metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OperatorMetrics {
+    /// Native node id.
     pub node_id: String,
+    /// Operator-kind label.
     pub operator_kind: String,
+    /// Input rows consumed by the operator.
     pub input_rows: u64,
+    /// Input bytes consumed by the operator.
     pub input_bytes: u64,
+    /// Output rows produced by the operator.
     pub output_rows: u64,
+    /// Output bytes produced by the operator.
     pub output_bytes: u64,
+    /// Join-specific metrics when this is a join row.
     pub join: Option<JoinOperatorMetrics>,
 }
 
 impl OperatorMetrics {
+    /// Creates a join operator metric row.
     pub fn join(node_id: impl ToString, join: JoinOperatorMetrics) -> Self {
         Self { node_id: node_id.to_string(), operator_kind: "join".to_string(), join: Some(join), ..Default::default() }
     }
 }
 
+/// cuGraph algorithm runtime metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GraphAlgorithmRuntimeMetrics {
+    /// Native graph algorithm node id.
     pub node_id: String,
+    /// Stable graph algorithm label.
     pub algorithm: String,
+    /// Runtime outcome label.
     pub runtime_outcome: String,
+    /// Input boundary label.
     pub input_boundary: String,
+    /// Output boundary label.
     pub output_boundary: String,
+    /// Graph construction policy label.
     pub construction_policy: String,
+    /// Source vertex column name.
     pub source_column: String,
+    /// Destination vertex column name.
     pub destination_column: String,
+    /// Optional edge-weight column name.
     pub weight_column: Option<String>,
+    /// Whether the graph was treated as directed.
     pub directed: bool,
+    /// Whether cuGraph renumbering was enabled.
     pub renumber: bool,
+    /// Stable serialized algorithm parameters.
     pub algorithm_parameters: String,
+    /// Stable serialized algorithm metadata.
     pub algorithm_metadata: String,
+    /// Input row count.
     pub input_rows: u64,
+    /// Input column count.
     pub input_columns: u64,
+    /// Output row count.
     pub output_rows: u64,
+    /// Output column count.
     pub output_columns: u64,
+    /// Output device bytes when known.
     pub output_device_bytes: Option<u64>,
+    /// Runtime elapsed nanoseconds.
     pub elapsed_ns: u64,
+    /// GPU-resident input handoffs performed for this algorithm.
     pub gpu_resident_input_handoffs: u64,
+    /// Host-to-device uploads performed for this algorithm.
     pub host_to_device_uploads: u64,
+    /// Device-to-host materializations performed for this algorithm.
     pub device_to_host_materializations: u64,
 }
 
+/// Join-specific operator metrics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinOperatorMetrics {
+    /// Join type label.
     pub join_type: String,
+    /// Execution strategy label.
     pub execution_strategy: String,
+    /// Number of equality key pairs.
     pub key_count: usize,
+    /// Whether a residual predicate was present.
     pub residual_predicate: bool,
+    /// Null-equality policy label.
     pub null_equality: String,
     /// Planner orientation used to execute or describe this join.
     ///
@@ -1116,9 +1337,13 @@ pub struct JoinOperatorMetrics {
     pub build_side: String,
     /// The side opposite `build_side` in the planner orientation.
     pub probe_side: String,
+    /// Build-side input row count.
     pub build_rows: u64,
+    /// Build-side input bytes.
     pub build_bytes: u64,
+    /// Probe-side input row count.
     pub probe_rows: u64,
+    /// Probe-side input bytes.
     pub probe_bytes: u64,
     /// Device bytes retained by the reusable cuDF join build artifact.
     ///
@@ -1135,41 +1360,58 @@ pub struct JoinOperatorMetrics {
     /// This is a direct cudf-rs observation over the returned device index
     /// columns, not a row-count estimate.
     pub gather_map_bytes: u64,
+    /// Bytes reserved for join output materialization.
     pub output_reservation_bytes: u64,
+    /// Join output row count.
     pub output_rows: u64,
+    /// Join output bytes.
     pub output_bytes: u64,
 }
 
+/// Host/device boundary transfer metrics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryMetrics {
+    /// Number of GPU-resident input handoffs.
     pub gpu_resident_input_handoffs: u64,
+    /// Number of host-to-device uploads.
     pub host_to_device_uploads: u64,
+    /// Rows uploaded from host to device.
     pub host_to_device_uploaded_rows: u64,
+    /// Bytes uploaded from host to device.
     pub host_to_device_uploaded_bytes: u64,
+    /// Number of device-to-host materializations.
     pub device_to_host_materializations: u64,
+    /// Rows materialized from device to host.
     pub device_to_host_materialized_rows: u64,
+    /// Bytes materialized from device to host.
     pub device_to_host_materialized_bytes: u64,
+    /// Number of device-to-device copies.
     pub device_to_device_copies: u64,
+    /// Bytes copied device-to-device.
     pub device_to_device_copied_bytes: u64,
 }
 
 impl BoundaryMetrics {
+    /// Records one GPU-resident input handoff.
     pub fn record_gpu_resident_input_handoff(&mut self) {
         self.gpu_resident_input_handoffs += 1;
     }
 
+    /// Records one host-to-device upload.
     pub fn record_host_to_device_upload(&mut self, rows: u64, bytes: u64) {
         self.host_to_device_uploads += 1;
         self.host_to_device_uploaded_rows += rows;
         self.host_to_device_uploaded_bytes += bytes;
     }
 
+    /// Records one device-to-host materialization.
     pub fn record_device_to_host_materialization(&mut self, rows: u64, bytes: u64) {
         self.device_to_host_materializations += 1;
         self.device_to_host_materialized_rows += rows;
         self.device_to_host_materialized_bytes += bytes;
     }
 
+    /// Records one device-to-device copy.
     pub fn record_device_to_device_copy(&mut self, bytes: u64) {
         self.device_to_device_copies += 1;
         self.device_to_device_copied_bytes += bytes;

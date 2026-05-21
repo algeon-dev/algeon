@@ -1,4 +1,24 @@
 //! DataFusion adapter for native cudf-rs GPU execution.
+//!
+//! The crate exposes the DataFusion-facing boundary around the native
+//! [`cudf_query_engine`] IR:
+//!
+//! - [`session`] wires the native physical optimizer into a
+//!   `SessionStateBuilder` while preserving DataFusion's final validation rule.
+//! - [`planner`] owns native rewrite policy, fallback behavior, and the
+//!   strict/adaptive planning diagnostics consumed by reports.
+//! - [`native_exec`] contains the `ExecutionPlan` wrappers that either
+//!   materialize native GPU results back to Arrow or pass GPU-resident
+//!   fragments between native subplans.
+//! - [`native_report`] defines the TSV/report contracts emitted by benchmark
+//!   and diagnostic binaries. Column order and schema-version constants are
+//!   part of the public surface.
+//! - [`tpch`], [`tpcds`], and [`clickbench`] provide workload metadata,
+//!   fixture discovery, session configs, and workload-item builders.
+//!
+//! DataFusion-specific planning belongs here. DataFusion-free native IR,
+//! runtime policy, capability admission, and cudf-rs execution live in
+//! [`cudf_query_engine`].
 
 #[cfg(feature = "cugraph")]
 #[doc(hidden)]
@@ -12,7 +32,9 @@ pub mod native;
 pub mod native_exec;
 pub mod native_report;
 pub mod planner;
+/// GPU fallback policy and stable fallback reason vocabulary.
 pub mod policy;
+/// Native planning report candidate/outcome types.
 pub mod report;
 #[cfg(feature = "server")]
 pub mod server;

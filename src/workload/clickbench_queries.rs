@@ -1,10 +1,14 @@
-// Source: ClickBench/datafusion/queries.sql (upstream, vendored verbatim).
-// Each entry's `sql` is the canonical query string; only the `id` and
-// surrounding Rust scaffolding are owned by this crate. Re-vendor by copying
-// from `/home/ubuntu/code/ClickBench/datafusion/queries.sql` instead of
-// hand-editing individual queries.
+//! Vendored ClickBench DataFusion SQL query set.
+//!
+//! Source: `ClickBench/datafusion/queries.sql` upstream. Each entry's `sql` is
+//! the canonical query string; only the `id` and Rust scaffolding are owned by
+//! this crate. Re-vendor from the upstream file instead of hand-editing
+//! individual queries.
+
+/// Number of vendored ClickBench queries.
 pub const CLICKBENCH_QUERY_COUNT: usize = 43;
 
+/// Canonical ClickBench query table in query-id order.
 pub const CLICKBENCH_QUERIES: &[ClickbenchQuery] = &[
     ClickbenchQuery { id: "q01", sql: r#"SELECT COUNT(*) FROM hits"# },
     ClickbenchQuery { id: "q02", sql: r#"SELECT COUNT(*) FROM hits WHERE "AdvEngineID" <> 0"# },
@@ -153,11 +157,15 @@ pub const CLICKBENCH_QUERIES: &[ClickbenchQuery] = &[
     },
 ];
 
+/// One vendored ClickBench SQL query.
 pub struct ClickbenchQuery {
+    /// Stable query id such as `q01`.
     pub id: &'static str,
+    /// Canonical SQL text for DataFusion.
     pub sql: &'static str,
 }
 
+/// Returns ClickBench query ids in canonical order.
 pub fn clickbench_query_ids() -> impl Iterator<Item = &'static str> {
     CLICKBENCH_QUERIES.iter().map(|query| query.id)
 }

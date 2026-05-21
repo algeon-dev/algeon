@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
@@ -30,18 +32,22 @@ pub struct CudfTableFormatScanExec {
 }
 
 impl CudfTableFormatScanExec {
+    /// Creates a table-format planning leaf with conservative DataFusion plan properties.
     pub fn new(scan_plan: TableFormatScanPlan, schema: SchemaRef) -> Self {
         Self { cache: conservative_properties(schema), scan_plan }
     }
 
+    /// Returns the metadata-only table-format scan plan.
     pub fn scan_plan(&self) -> &TableFormatScanPlan {
         &self.scan_plan
     }
 
+    /// Returns the table format that produced the scan facts.
     pub fn table_format(&self) -> &TableFormat {
         &self.scan_plan.format
     }
 
+    /// Returns credential-free diagnostics derived from the scan plan.
     pub fn diagnostics(&self) -> TableFormatScanDiagnostics {
         self.scan_plan.diagnostics()
     }

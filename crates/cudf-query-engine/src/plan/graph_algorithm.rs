@@ -1,16 +1,30 @@
+//! DataFusion-free graph algorithm IR.
+//!
+//! This module defines stable graph algorithm names, graph construction
+//! options, edge-list normalization, parameter defaults, and result schemas.
+//! The IR can be built without the optional cuGraph feature; execution support
+//! is selected later by the adapter/runtime.
+
+#![deny(missing_docs)]
+
 use super::*;
 
+/// Strict bounded memory-boundary label for graph algorithm rejection facts.
 pub const GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY: &str = "graph_algorithm";
+/// Strict bounded required-contract label for graph algorithm rejection facts.
 pub const GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT: &str = "unsupported_graph_algorithm_reservation_contract";
 
 /// Lower-level cuGraph/cudf-rs contracts required before graph algorithms can
 /// be admitted under strict bounded execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphAlgorithmStrictBoundedLowerLevelContract {
+    /// Stable short contract name.
     pub name: &'static str,
+    /// Required lower-level cudf-rs/libcugraph surface before strict admission.
     pub required_surface: &'static str,
 }
 
+/// Lower-level graph contracts that currently block strict bounded admission.
 pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithmStrictBoundedLowerLevelContract] = &[
     GraphAlgorithmStrictBoundedLowerLevelContract {
         name: "graph_construction_memory",
@@ -39,30 +53,52 @@ pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithm
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphAlgorithm {
+    /// PageRank centrality.
     PageRank,
+    /// Breadth-first search.
     Bfs,
+    /// Louvain community detection.
     Louvain,
+    /// Eigenvector centrality.
     EigenvectorCentrality,
+    /// Katz centrality.
     KatzCentrality,
+    /// HITS hub/authority scores.
     Hits,
+    /// Single-source shortest paths.
     Sssp,
+    /// In-degree and out-degree for every vertex.
     DegreesAll,
+    /// In-degree for every vertex.
     InDegreesAll,
+    /// Out-degree for every vertex.
     OutDegreesAll,
+    /// Weakly connected components.
     WeaklyConnectedComponents,
+    /// Strongly connected components.
     StronglyConnectedComponents,
+    /// Triangle count for every vertex.
     TriangleCountAll,
+    /// Core number for every vertex.
     CoreNumber,
+    /// K-core subgraph extraction.
     KCore,
+    /// Minimum spanning tree edge list.
     MinimumSpanningTree,
+    /// PageRank variant that uses strict convergence/error behavior.
     PageRankStrict,
+    /// Leiden community detection.
     Leiden,
+    /// Ensemble clustering for graphs.
     Ecg,
+    /// Spectral modularity maximization clustering.
     SpectralModularityMaximization,
+    /// Balanced-cut spectral clustering.
     BalancedCutClustering,
 }
 
 impl GraphAlgorithm {
+    /// Stable lowercase algorithm code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PageRank => "pagerank",
@@ -121,12 +157,16 @@ impl fmt::Display for GraphAlgorithm {
 /// the executor still picks one concrete layout at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphLayoutRequirement {
+    /// Algorithm requires a forward graph layout.
     Forward,
+    /// Algorithm requires a transposed graph layout.
     Transposed,
+    /// Algorithm can run on either layout.
     Any,
 }
 
 impl GraphLayoutRequirement {
+    /// Stable lowercase layout code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Forward => "forward",
@@ -150,10 +190,12 @@ impl fmt::Display for GraphLayoutRequirement {
 /// the planner, executor, and SQL surface stay in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphOperationDefinition {
+    /// Algorithm variant described by this registry row.
     pub algorithm: GraphAlgorithm,
     /// Stable identifier used in plan display, runtime metrics, and SQL
     /// function naming (`cugraph_<name>`).
     pub name: &'static str,
+    /// cuGraph layout requirement for this operation.
     pub layout_requirement: GraphLayoutRequirement,
 }
 
@@ -277,24 +319,40 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
 ];
 
 /// Edge-list column bindings consumed by a graph algorithm.
+///
+/// `weight` is optional. When present, duplicate-edge normalization follows
+/// the selected [`GraphConstructionPolicy`] and [`EdgeWeightCombiner`] so
+/// conflicting weights are deterministic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEdgeColumnBindings {
+    /// Source-vertex column name in the edge-list input.
     pub source: String,
+    /// Destination-vertex column name in the edge-list input.
     pub destination: String,
+    /// Optional edge-weight column name.
     pub weight: Option<String>,
 }
 
 impl GraphEdgeColumnBindings {
+    /// Create edge-list column bindings.
     pub fn new(source: impl Into<String>, destination: impl Into<String>, weight: Option<impl Into<String>>) -> Self {
         Self { source: source.into(), destination: destination.into(), weight: weight.map(Into::into) }
     }
 }
 
-/// Graph construction options shared by the initial cuGraph algorithms.
+/// Graph construction options shared by cuGraph algorithms.
+///
+/// Defaults match Python cuGraph: directed graph construction, vertex
+/// renumbering enabled, and Python-compatible edge-list normalization. Changing
+/// `directed` affects whether reverse edges are inserted by the
+/// Python-compatible policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphConstructionOptions {
+    /// Whether graph construction treats edges as directed.
     pub directed: bool,
+    /// Whether cuGraph may renumber vertices internally.
     pub renumber: bool,
+    /// Edge-list normalization policy used before graph construction.
     pub policy: GraphConstructionPolicy,
 }
 
@@ -311,11 +369,14 @@ impl Default for GraphConstructionOptions {
 /// semantics and trade-offs between the two variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphConstructionPolicy {
+    /// Normalize edge lists to match Python cuGraph semantics.
     PythonCugraph,
+    /// Pass edge lists directly to libcugraph-compatible construction.
     RawLibcugraph,
 }
 
 impl GraphConstructionPolicy {
+    /// Stable lowercase construction-policy code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PythonCugraph => "python_cugraph",
@@ -331,15 +392,24 @@ impl fmt::Display for GraphConstructionPolicy {
 }
 
 /// Edge-list normalization inserted before raw cuGraph construction.
+///
+/// The Python-compatible policy drops duplicate directed edges and inserts
+/// reverse edges for undirected graphs before cuGraph construction. Weighted
+/// duplicate conflicts use [`EdgeWeightCombiner`] to define the retained value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeNormalizeSpec {
+    /// Edge-list columns used by normalization.
     pub edge_columns: GraphEdgeColumnBindings,
+    /// Whether reverse edges are inserted before deduplication.
     pub add_reverse: bool,
+    /// Duplicate-edge retention policy.
     pub dedup: EdgeDedupStrategy,
+    /// Duplicate-weight conflict policy.
     pub weight_combiner: EdgeWeightCombiner,
 }
 
 impl EdgeNormalizeSpec {
+    /// Build the Python-compatible edge normalization spec.
     pub fn python_cugraph(edge_columns: GraphEdgeColumnBindings, graph_options: &GraphConstructionOptions) -> Self {
         let has_weight = edge_columns.weight.is_some();
         let (dedup, weight_combiner) = match (graph_options.directed, has_weight) {
@@ -351,14 +421,19 @@ impl EdgeNormalizeSpec {
     }
 }
 
+/// Duplicate-edge handling applied by edge-list normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeDedupStrategy {
+    /// Keep duplicate edges.
     None,
+    /// Keep the first duplicate edge in input order.
     KeepFirst,
+    /// Keep the last duplicate edge in input order.
     KeepLast,
 }
 
 impl EdgeDedupStrategy {
+    /// Stable lowercase duplicate-edge policy code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -374,14 +449,19 @@ impl fmt::Display for EdgeDedupStrategy {
     }
 }
 
+/// Weighted duplicate-edge conflict policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeWeightCombiner {
+    /// No weight combination is required.
     None,
+    /// Keep the minimum weight among duplicate edges.
     MinWeight,
+    /// Keep the weight from the last duplicate in input order.
     KeepLastInputOrder,
 }
 
 impl EdgeWeightCombiner {
+    /// Stable lowercase weight-combiner code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -404,13 +484,17 @@ impl fmt::Display for EdgeWeightCombiner {
 /// feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GraphKCoreDegreeType {
+    /// Use incoming edges.
     In,
+    /// Use outgoing edges.
     Out,
     #[default]
+    /// Use both incoming and outgoing edges.
     InOut,
 }
 
 impl GraphKCoreDegreeType {
+    /// Stable lowercase degree-type code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::In => "in",
@@ -429,30 +513,52 @@ impl fmt::Display for GraphKCoreDegreeType {
 /// Algorithm-specific parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
+    /// PageRank parameters.
     PageRank(GraphPageRankParams),
+    /// Breadth-first search parameters.
     Bfs(GraphBfsParams),
+    /// Louvain parameters.
     Louvain(GraphLouvainParams),
+    /// Eigenvector centrality parameters.
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
+    /// Katz centrality parameters.
     KatzCentrality(GraphKatzCentralityParams),
+    /// HITS parameters.
     Hits(GraphHitsParams),
+    /// Single-source shortest path parameters.
     Sssp(GraphSsspParams),
+    /// All-degree parameters.
     DegreesAll(GraphDegreesAllParams),
+    /// In-degree parameters.
     InDegreesAll(GraphInDegreesAllParams),
+    /// Out-degree parameters.
     OutDegreesAll(GraphOutDegreesAllParams),
+    /// Weakly connected component parameters.
     WeaklyConnectedComponents(GraphWccParams),
+    /// Strongly connected component parameters.
     StronglyConnectedComponents(GraphSccParams),
+    /// Triangle count parameters.
     TriangleCountAll(GraphTriangleCountAllParams),
+    /// Core-number parameters.
     CoreNumber(GraphCoreNumberParams),
+    /// K-core parameters.
     KCore(GraphKCoreParams),
+    /// Minimum spanning tree parameters.
     MinimumSpanningTree(GraphMstParams),
+    /// Strict PageRank parameters.
     PageRankStrict(GraphPageRankParams),
+    /// Leiden parameters.
     Leiden(GraphLeidenParams),
+    /// ECG parameters.
     Ecg(GraphEcgParams),
+    /// Spectral modularity maximization parameters.
     SpectralModularityMaximization(GraphSpectralClusteringParams),
+    /// Balanced-cut clustering parameters.
     BalancedCutClustering(GraphSpectralClusteringParams),
 }
 
 impl GraphAlgorithmParams {
+    /// Algorithm variant associated with this parameter payload.
     pub const fn algorithm(&self) -> GraphAlgorithm {
         match self {
             Self::PageRank(_) => GraphAlgorithm::PageRank,
@@ -480,10 +586,18 @@ impl GraphAlgorithmParams {
     }
 }
 
+/// PageRank parameters.
+///
+/// `alpha` is the damping factor, `epsilon` is the positive convergence
+/// tolerance, and `max_iterations` is the positive iteration cap. Defaults
+/// match cuGraph's public defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPageRankParams {
+    /// Damping factor.
     pub alpha: f64,
+    /// Positive convergence tolerance.
     pub epsilon: f64,
+    /// Positive iteration cap.
     pub max_iterations: u32,
 }
 
@@ -493,14 +607,24 @@ impl Default for GraphPageRankParams {
     }
 }
 
+/// Breadth-first search parameters.
+///
+/// `source_vertex` is the traversal root. `depth_limit = None` means the
+/// traversal is unbounded by depth; when set, the limit must be non-negative.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphBfsParams {
+    /// Root vertex for traversal.
     pub source_vertex: i64,
+    /// Optional non-negative traversal depth limit.
     pub depth_limit: Option<i64>,
 }
 
+/// Louvain community detection parameters.
+///
+/// `resolution` controls community granularity and defaults to `1.0`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphLouvainParams {
+    /// Community granularity parameter.
     pub resolution: f64,
 }
 
@@ -597,29 +721,41 @@ pub struct GraphSsspParams {
     pub cutoff: Option<f64>,
 }
 
-/// Parameters for all-vertex degree computation (both in and out).
+/// Zero-argument all-vertex degree computation.
 ///
 /// No algorithm-specific options beyond the shared graph construction options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphDegreesAllParams;
 
-/// Parameters for all-vertex in-degree computation.
+/// Zero-argument all-vertex in-degree computation.
+///
+/// Direction is fixed by the algorithm; shared graph construction options
+/// still control directedness, renumbering, and edge normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphInDegreesAllParams;
 
-/// Parameters for all-vertex out-degree computation.
+/// Zero-argument all-vertex out-degree computation.
+///
+/// Direction is fixed by the algorithm; shared graph construction options
+/// still control directedness, renumbering, and edge normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphOutDegreesAllParams;
 
-/// Parameters for weakly connected components.
+/// Zero-argument weakly connected components.
+///
+/// Component labels follow cuGraph's stable result schema for the algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphWccParams;
 
-/// Parameters for strongly connected components.
+/// Zero-argument strongly connected components.
+///
+/// Component labels follow cuGraph's stable result schema for the algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphSccParams;
 
-/// Parameters for all-vertex triangle count.
+/// Zero-argument all-vertex triangle count.
+///
+/// Output schema is fixed by [`stable_graph_result_schema`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphTriangleCountAllParams;
 
@@ -752,14 +888,20 @@ impl Default for GraphSpectralClusteringParams {
 /// DataFusion-free graph algorithm specification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmSpec {
+    /// Algorithm to execute.
     pub algorithm: GraphAlgorithm,
+    /// Edge-list column bindings.
     pub edge_columns: GraphEdgeColumnBindings,
+    /// Shared graph construction options.
     pub graph_options: GraphConstructionOptions,
+    /// Algorithm-specific parameter payload.
     pub params: GraphAlgorithmParams,
+    /// Stable output schema expected from execution.
     pub output_schema: SchemaRef,
 }
 
 impl GraphAlgorithmSpec {
+    /// Create a graph algorithm spec with an explicit output schema.
     pub fn new(
         algorithm: GraphAlgorithm,
         edge_columns: GraphEdgeColumnBindings,
@@ -771,6 +913,7 @@ impl GraphAlgorithmSpec {
         Self { algorithm, edge_columns, graph_options, params, output_schema }
     }
 
+    /// Create a graph algorithm spec using this crate's stable result schema.
     pub fn with_stable_schema(
         algorithm: GraphAlgorithm,
         edge_columns: GraphEdgeColumnBindings,
@@ -784,11 +927,14 @@ impl GraphAlgorithmSpec {
 /// Native graph algorithm operation over one edge-list input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmNode {
+    /// Edge-list input node.
     pub input: NodeId,
+    /// Graph algorithm specification.
     pub spec: GraphAlgorithmSpec,
 }
 
 impl GraphAlgorithmNode {
+    /// Output schema declared by the graph algorithm spec.
     pub fn output_schema(&self) -> &SchemaRef {
         &self.spec.output_schema
     }

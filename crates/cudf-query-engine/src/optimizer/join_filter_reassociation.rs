@@ -8,14 +8,18 @@ use crate::{
     },
 };
 
+/// Stable rule name used in optimizer diagnostics.
 pub const JOIN_FILTER_REASSOCIATION_RULE_NAME: &str = "join_filter_reassociation";
 
+/// Configuration for moving filters across preserved-side join structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinFilterReassociationOptions {
+    /// Whether the pass is allowed to rewrite eligible join/filter shapes.
     pub enabled: bool,
 }
 
 impl JoinFilterReassociationOptions {
+    /// Returns options with the pass disabled.
     pub fn disabled() -> Self {
         Self { enabled: false }
     }
@@ -27,18 +31,24 @@ impl Default for JoinFilterReassociationOptions {
     }
 }
 
+/// Diagnostics for join-filter reassociation candidates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinFilterReassociationDiagnostics {
+    /// Number of candidates considered.
     pub considered_count: usize,
+    /// Number of candidates rewritten.
     pub applied_count: usize,
+    /// Per-candidate evidence in discovery order.
     pub candidates: Vec<JoinFilterReassociationCandidateDiagnostics>,
 }
 
 impl JoinFilterReassociationDiagnostics {
+    /// Returns true when the pass produced no candidate evidence.
     pub fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
+    /// Merges another diagnostics value into this one.
     pub fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -46,24 +56,39 @@ impl JoinFilterReassociationDiagnostics {
     }
 }
 
+/// Per-candidate evidence for join-filter reassociation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinFilterReassociationCandidateDiagnostics {
+    /// Stable rule name for this diagnostic row.
     pub rule_name: &'static str,
+    /// Parent join candidate considered for reassociation.
     pub candidate_node_id: NodeId,
+    /// Join crossed while moving the filter, if found.
     pub crossed_join_node_id: Option<NodeId>,
+    /// Child subtree that receives the filter after reassociation.
     pub filtered_child_node_id: Option<NodeId>,
+    /// Filter node introduced or moved by the rewrite.
     pub filtering_node_id: Option<NodeId>,
+    /// True when the returned plan contains the rewrite.
     pub applied: bool,
+    /// Rejection reason when no rewrite was applied.
     pub rejected_reason: Option<JoinFilterReassociationRejectedReason>,
 }
 
+/// Reasons a join-filter reassociation candidate was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinFilterReassociationRejectedReason {
+    /// Parent join shape is not supported by the pass.
     UnsupportedParentJoinShape,
+    /// Projection on the preserved side is not transparent enough to cross.
     NonPreservedSideProjection,
+    /// Preserved input shape cannot safely receive the filter.
     UnsupportedPreservedInputShape,
+    /// Required key lineage could not be found.
     MissingKeyLineage,
+    /// Key lineage matched more than one possible target.
     AmbiguousKeyLineage,
+    /// Crossed join shape is not safe for reassociation.
     UnsupportedCrossedJoinShape,
 }
 

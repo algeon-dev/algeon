@@ -1,8 +1,12 @@
+/// Policy controlling whether DataFusion may fall back to CPU execution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFallbackPolicy {
+    /// Require native GPU execution; rejected candidates become errors.
     GpuOnly,
+    /// Prefer native GPU execution but allow CPU DataFusion fallback.
     #[default]
     GpuPreferred,
+    /// Skip native GPU execution and use CPU DataFusion.
     CpuOnly,
 }
 
@@ -14,9 +18,13 @@ pub enum GpuFallbackPolicy {
 /// requirements that could not be mapped to a native local-Parquet source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackReason {
+    /// Physical operator is not supported by native lowering.
     UnsupportedOperator,
+    /// Physical expression is not supported by native lowering.
     UnsupportedExpression,
+    /// Data type or physical representation is not supported.
     UnsupportedType,
+    /// Caller selected an explicit CPU-only policy.
     ExplicitCpuPolicy,
     /// DataFusion produced a sort-preserving merge shape that the native
     /// planner does not lower as an execution boundary yet.
@@ -27,41 +35,68 @@ pub enum FallbackReason {
     /// DataFusion produced a partition-preserving sort shape that the native
     /// planner does not currently lower.
     NativePartitionPreservingSortUnsupported,
+    /// Strict bounded native join admission rejected the shape.
     NativeBoundedJoinUnsupported,
+    /// Adaptive native pipeline admission rejected the shape.
     NativeAdaptivePipelineUnsupported,
+    /// Source uses a non-local object store unsupported by native local reads.
     NativeSourceNonLocalObjectStore,
+    /// Source partition columns cannot be mapped to native source columns.
     NativeSourcePartitionColumns,
+    /// Source expression adapter cannot be represented in native source IR.
     NativeSourceExprAdapter,
     /// The DataFusion source uses a Parquet file reader factory that the native
     /// local-Parquet adapter cannot reproduce.
     NativeSourceParquetFileReaderFactory,
+    /// Source scan limit is not supported for this native source shape.
     NativeSourceScanLimit,
+    /// Source order-preservation requirements cannot be maintained natively.
     NativeSourcePreserveOrder,
+    /// Source output ordering cannot be represented in native source IR.
     NativeSourceOutputOrdering,
     /// The source has pushed-down Parquet predicates that native row-group
     /// pruning cannot translate without changing scan semantics.
     NativeSourcePushedDownParquetPredicate,
+    /// Source contains no files or row groups to read.
     NativeSourceEmpty,
+    /// Source partition values cannot be represented by native source IR.
     NativeSourcePartitionValues,
+    /// Source byte ranges are unsupported by native local reads.
     NativeSourceByteRange,
+    /// Source file ordering requirements cannot be maintained natively.
     NativeSourceFileOrdering,
+    /// Source row-selection metadata cannot be represented natively.
     NativeSourceRowSelection,
+    /// Source schema mapping cannot be represented natively.
     NativeSourceSchemaMapping,
+    /// Table-format scan requested an unsupported feature.
     TableFormatUnsupported,
+    /// Table-format planning failed before a native scan could be built.
     TableFormatPlanningFailed,
+    /// Iceberg data file is not Parquet.
     IcebergNonParquetDataFile,
+    /// Iceberg delete files are present and unsupported.
     IcebergDeleteFilesUnsupported,
+    /// Iceberg field-id mapping is required and unsupported.
     IcebergFieldIdMappingUnsupported,
+    /// Iceberg name mapping is required and unsupported.
     IcebergNameMappingUnsupported,
+    /// Iceberg projection includes nested fields unsupported by native scans.
     IcebergNestedProjectionUnsupported,
+    /// Iceberg partition transform cannot be represented natively.
     IcebergPartitionTransformUnsupported,
+    /// Iceberg residual predicate cannot be represented natively.
     IcebergResidualPredicateUnsupported,
+    /// Iceberg row selection cannot be represented natively.
     IcebergRowSelectionUnsupported,
+    /// Iceberg object-store read cannot be lowered to native local reads.
     IcebergObjectStoreReadUnsupported,
+    /// Iceberg snapshot selection or loading is unsupported.
     IcebergSnapshotUnsupported,
 }
 
 impl FallbackReason {
+    /// Stable snake-case reason code used by reports and tests.
     pub const fn code(self) -> &'static str {
         match self {
             Self::UnsupportedOperator => "unsupported_operator",

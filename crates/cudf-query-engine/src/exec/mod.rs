@@ -1,4 +1,14 @@
 //! Native query execution.
+//!
+//! Entrypoints validate local source contracts, derive output mode from the
+//! plan sink, and dispatch to unbounded, strict bounded, or adaptive bounded
+//! execution according to the [`ExecutionContext`].
+//! GPU-resident input lookup is by plan-local names supplied in
+//! [`GpuResidentInputMap`]. Metrics are owned by the returned
+//! [`QueryExecutionResult`] so callers can record them after choosing host or
+//! GPU-resident output handling.
+
+#![deny(missing_docs)]
 
 use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc, time::Instant};
 
@@ -53,6 +63,8 @@ pub use types::{
 
 #[doc(hidden)]
 pub mod reservation_contract_testing {
+    #![allow(missing_docs)]
+
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
@@ -376,10 +388,20 @@ impl HashJoinCacheKey {
     }
 }
 
+/// Execute a native plan with no external GPU-resident inputs.
+///
+/// The plan is validated before execution. Output residency follows
+/// [`ResultSink`]: host sinks materialize Arrow output, while GPU-resident
+/// sinks return a runtime/device-affine handle.
 pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
     execute_query_plan_with_gpu_inputs(context, plan, &GpuResidentInputMap::new())
 }
 
+/// Execute a native plan with caller-supplied GPU-resident inputs.
+///
+/// `gpu_inputs` is keyed by the names referenced by GPU-resident source nodes
+/// in `plan`. Bounded plans dispatch through the context's strict/adaptive
+/// pipeline mode; unbounded plans execute the operator tree directly.
 pub fn execute_query_plan_with_gpu_inputs(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -415,6 +437,7 @@ pub fn execute_query_plan_with_gpu_inputs(
     Ok(ExecutionResult::new(output, metrics))
 }
 
+/// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.
 pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
     materialize_to_host(handle, metrics)
 }

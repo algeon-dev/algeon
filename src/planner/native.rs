@@ -31,17 +31,36 @@ use strict_bounded::{
     accepted_plan_contract_diagnostics, rejected_plan_contract_diagnostics, strict_bounded_admission_is_rejected,
 };
 
+/// Last-observed native planning diagnostics from a retained optimizer rule.
+///
+/// The strict bounded and adaptive fields are intentionally separate. Report
+/// code should not project adaptive evidence into strict contract rows, or
+/// strict preflight failures into adaptive runtime history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlanningDiagnostics {
+    /// Root DataFusion execution node name seen before native optimization.
     pub input_plan_root: String,
+    /// Stable textual shape of the input physical plan used for report context.
     pub input_plan_shape: String,
+    /// Candidate rewrite outcomes from the native physical optimizer rule.
     pub report: PlanningReport,
+    /// DataFusion-free native optimizer diagnostics from the lowered plan.
     pub native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics,
+    /// Source-read diagnostics captured while lowering/planning native sources.
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
+    /// Strict bounded contract evidence; never populated from adaptive rows.
     pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
+    /// Adaptive admission evidence; never projected into strict contract rows.
     pub adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
 }
 
+/// DataFusion physical optimizer rule that rewrites supported plans to native cuDF execution.
+///
+/// The rule is reusable across sessions when callers want to inspect
+/// [`last_planning_diagnostics`](Self::last_planning_diagnostics). Session
+/// insertion deduplicates by the public rule names in [`crate::session`].
+/// `GpuPreferred` leaves rejected candidates on the original DataFusion plan;
+/// `GpuOnly` reports the first native rejection as an optimizer error.
 #[derive(Debug)]
 pub struct CudfNativePhysicalOptimizerRule {
     config: CudfOptimizerConfig,
@@ -67,6 +86,7 @@ enum NativeOptimizerPhase {
 }
 
 impl CudfNativePhysicalOptimizerRule {
+    /// Create the final native rewrite rule.
     pub fn new(config: CudfOptimizerConfig) -> Self {
         Self {
             config,
@@ -83,6 +103,7 @@ impl CudfNativePhysicalOptimizerRule {
         }
     }
 
+    /// Return the immutable config copied into rewritten native exec nodes.
     pub fn config(&self) -> &CudfOptimizerConfig {
         &self.config
     }
@@ -95,14 +116,20 @@ impl CudfNativePhysicalOptimizerRule {
         }
     }
 
+    /// Most recent planning report produced by this retained rule, if it has run.
     pub fn last_report(&self) -> Option<PlanningReport> {
         self.state.last_report.lock().expect("native planning report mutex poisoned").clone()
     }
 
+    /// Source diagnostics captured during the most recent native planning attempt.
     pub fn last_source_diagnostics(&self) -> Vec<cudf_query_engine::SourceDiagnostics> {
         self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
     }
 
+    /// Structured diagnostics from the most recent run of this retained rule.
+    ///
+    /// The result is overwritten on each optimizer invocation and is intended
+    /// for report harnesses and tests, not as a historical log.
     pub fn last_planning_diagnostics(&self) -> Option<NativePlanningDiagnostics> {
         self.last_report().map(|report| NativePlanningDiagnostics {
             input_plan_root: self

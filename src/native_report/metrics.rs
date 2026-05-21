@@ -9,84 +9,164 @@ const NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME: &str = "native_graph_runtime_rows";
 const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
 const NATIVE_TASK_RUNTIME_ROWS_METRIC_NAME: &str = "native_task_runtime_rows";
 
+/// Native metrics projected from DataFusion `MetricsSet` into report rows.
+///
+/// Count fields are cumulative over one query attempt. Byte fields are bytes;
+/// reservation requested/granted bytes are cumulative admission accounting,
+/// while live peak, observed peak, retained, cache, and hash-table byte fields
+/// describe resident device memory at an instant or retained by a cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeDataFusionExecutionMetrics {
+    /// Count of GPU-resident input handoffs.
     pub gpu_resident_input_handoffs: usize,
+    /// Count of host-to-device uploads.
     pub host_to_device_uploads: usize,
+    /// Rows uploaded from host to device.
     pub host_to_device_uploaded_rows: usize,
+    /// Bytes uploaded from host to device.
     pub host_to_device_uploaded_bytes: usize,
+    /// Count of device-to-host materializations.
     pub device_to_host_materializations: usize,
+    /// Rows materialized from device to host.
     pub device_to_host_materialized_rows: usize,
+    /// Bytes materialized from device to host.
     pub device_to_host_materialized_bytes: usize,
+    /// Count of device-to-device copies.
     pub device_to_device_copies: usize,
+    /// Bytes copied device-to-device.
     pub device_to_device_copied_bytes: usize,
+    /// Parquet files observed by native source reads.
     pub parquet_files: usize,
+    /// Sum of known Parquet file bytes.
     pub parquet_bytes_known: usize,
+    /// Row groups selected by native source reads.
     pub row_groups_selected: usize,
+    /// Physical read columns selected by native source reads.
     pub read_columns: usize,
+    /// Peak bytes retained by resident cudf DataFrames, when observed.
     pub resident_dataframe_peak_bytes: Option<usize>,
+    /// cuDF allocator high-water bytes, when reported by lower layers.
     pub allocator_high_water_bytes: Option<usize>,
+    /// Cumulative reservation bytes requested over the query lifetime.
     pub reservation_requested_bytes: usize,
+    /// Cumulative reservation bytes granted over the query lifetime.
     pub reservation_granted_bytes: usize,
+    /// Peak live reserved bytes observed at any instant.
     pub reservation_live_peak_bytes: usize,
+    /// Count of denied reservation requests.
     pub reservation_denied_count: usize,
+    /// Largest task reservation request granted or applied.
     pub max_task_reservation_bytes: usize,
+    /// Largest lower-level task allocator peak, when reported.
     pub max_task_observed_peak_bytes: Option<usize>,
+    /// Largest lower-level retained byte count, when reported.
     pub max_task_retained_bytes: Option<usize>,
+    /// Stable nested graph runtime metric rows.
     pub graph_runtime_rows: Vec<NativeGraphRuntimeMetricRow>,
+    /// Stable nested task metrics aggregated by operator kind.
     pub task_operator_rows: Vec<NativeTaskOperatorMetricRow>,
+    /// Stable nested task runtime metric rows keyed by compiled task id.
     pub task_runtime_rows: Vec<NativeTaskRuntimeMetricRow>,
+    /// Count of source chunks planned.
     pub source_chunks_planned: usize,
+    /// Count of source chunk attempts, including retries.
     pub source_chunks_attempted: usize,
+    /// Count of source chunks successfully committed.
     pub source_chunks_committed: usize,
+    /// Count of source chunk retries.
     pub source_chunks_retried: usize,
+    /// Count of source-read prefetches started.
     pub source_read_prefetches_started: usize,
+    /// Count of source-read prefetches completed.
     pub source_read_prefetches_completed: usize,
+    /// Count of source-read prefetches skipped.
     pub source_read_prefetches_skipped: usize,
+    /// Count of source-read prefetches abandoned.
     pub source_read_prefetches_abandoned: usize,
+    /// Query-scoped source cache hits.
     pub source_cache_hits: usize,
+    /// Query-scoped source cache misses.
     pub source_cache_misses: usize,
+    /// Query-scoped source cache insertions.
     pub source_cache_inserts: usize,
+    /// Query-scoped skipped source cache insertions.
     pub source_cache_insert_skipped: usize,
+    /// Peak retained source-cache bytes.
     pub source_cache_retained_bytes: usize,
+    /// Row groups planned across source chunks.
     pub row_groups_planned: usize,
+    /// Row groups committed across source chunks.
     pub row_groups_committed: usize,
+    /// Count of partial aggregate tasks.
     pub partial_aggregate_count: usize,
+    /// Input rows consumed by partial aggregates.
     pub partial_aggregate_input_rows: usize,
+    /// Rows produced by partial aggregates.
     pub partial_aggregate_rows: usize,
+    /// Peak retained bytes from partial aggregate outputs.
     pub partial_aggregate_retained_bytes: usize,
+    /// Count of final merge attempts.
     pub final_merge_attempts: usize,
+    /// Count of final merge levels.
     pub final_merge_levels: usize,
+    /// Largest final-merge fan-in.
     pub final_merge_max_fan_in: usize,
+    /// Total retry count.
     pub retry_count: usize,
+    /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: usize,
+    /// Retries caused by reservation failure.
     pub retry_reservation_failure_count: usize,
+    /// Adaptive executor retry actions.
     pub adaptive_retry_count: usize,
+    /// Adaptive executor spill actions.
     pub adaptive_spill_count: usize,
+    /// Adaptive executor downgrade actions.
     pub adaptive_downgrade_count: usize,
+    /// Adaptive memory-history lookups.
     pub adaptive_memory_history_lookup_count: usize,
+    /// Adaptive memory-history lookup hits.
     pub adaptive_memory_history_hit_count: usize,
+    /// Adaptive memory-history lookup misses.
     pub adaptive_memory_history_miss_count: usize,
+    /// Count of reusable cuDF hash-join artifacts built.
     pub hash_join_build_count: usize,
+    /// Count of reusable cuDF filtered-join artifacts built.
     pub filtered_join_build_count: usize,
+    /// Count of one-shot keyed equality joins executed.
     pub one_shot_join_count: usize,
+    /// Query-scoped reusable hash-join cache hits.
     pub hash_join_cache_hits: usize,
+    /// Query-scoped reusable hash-join cache misses.
     pub hash_join_cache_misses: usize,
+    /// Durable reusable hash-join cache hits.
     pub hash_join_durable_cache_hits: usize,
+    /// Durable reusable hash-join cache misses.
     pub hash_join_durable_cache_misses: usize,
+    /// Durable reusable hash-join cache insertions.
     pub hash_join_durable_cache_inserts: usize,
+    /// Unique device bytes retained by reusable hash-join build artifacts.
     pub hash_join_hash_table_bytes: usize,
+    /// Unique device bytes retained by reusable filtered-join build artifacts.
     pub filtered_join_hash_table_bytes: usize,
+    /// Unique device bytes retained by filtered-join probe states.
     pub filtered_join_probe_state_bytes: usize,
+    /// Device bytes retained by mixed join size-data states.
     pub mixed_join_size_data_bytes: usize,
+    /// Device bytes retained by one-shot join index maps.
     pub one_shot_join_index_bytes: usize,
+    /// Reservation bytes requested for one-shot join output materialization.
     pub one_shot_join_materialization_bytes: usize,
+    /// Observed device bytes of one-shot join output frames.
     pub one_shot_join_output_bytes: usize,
+    /// Device bytes retained by join gather maps.
     pub join_gather_map_bytes: usize,
+    /// Stable nested join strategy rows.
     pub join_strategy_rows: Vec<NativeJoinStrategyMetricRow>,
 }
 
 impl NativeDataFusionExecutionMetrics {
+    /// Extracts native execution metrics from a DataFusion metrics set.
     pub fn from_metrics(metrics: &MetricsSet) -> Self {
         Self {
             gpu_resident_input_handoffs: metric_count(metrics, "gpu_resident_input_handoffs"),
@@ -165,6 +245,7 @@ impl NativeDataFusionExecutionMetrics {
         }
     }
 
+    /// Merges join strategy rows by join site and keeps stable sort order.
     pub fn merge_join_strategy_rows(&mut self, rows: Vec<NativeJoinStrategyMetricRow>) {
         for row in rows {
             if let Some(existing) = self.join_strategy_rows.iter_mut().find(|existing| existing.same_site(&row)) {
@@ -176,6 +257,7 @@ impl NativeDataFusionExecutionMetrics {
         self.join_strategy_rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
     }
 
+    /// Appends graph runtime rows and restores stable sort order.
     pub fn merge_graph_runtime_rows(&mut self, rows: Vec<NativeGraphRuntimeMetricRow>) {
         self.graph_runtime_rows.extend(rows);
         self.graph_runtime_rows.sort_by(|left, right| {
@@ -188,6 +270,7 @@ impl NativeDataFusionExecutionMetrics {
         });
     }
 
+    /// Merges task operator rows by operator kind and keeps stable sort order.
     pub fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
         for row in rows {
             if let Some(existing) =
@@ -213,6 +296,7 @@ impl NativeDataFusionExecutionMetrics {
         self.task_operator_rows.sort_by(|left, right| left.operator_kind.cmp(&right.operator_kind));
     }
 
+    /// Merges task runtime rows by compiled task id and keeps stable sort order.
     pub fn merge_task_runtime_rows(&mut self, rows: Vec<NativeTaskRuntimeMetricRow>) {
         for row in rows {
             if let Some(existing) =
@@ -239,33 +323,57 @@ impl NativeDataFusionExecutionMetrics {
     }
 }
 
+/// Stable nested metric row for one graph algorithm execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeGraphRuntimeMetricRow {
+    /// Native graph algorithm node id.
     pub node_id: String,
+    /// Stable graph algorithm label.
     pub algorithm: String,
+    /// Runtime outcome label.
     pub runtime_outcome: String,
+    /// Input boundary label.
     pub input_boundary: String,
+    /// Output boundary label.
     pub output_boundary: String,
+    /// Graph construction policy label.
     pub construction_policy: String,
+    /// Source vertex column name.
     pub source_column: String,
+    /// Destination vertex column name.
     pub destination_column: String,
+    /// Optional edge-weight column name.
     pub weight_column: Option<String>,
+    /// Whether the graph was treated as directed.
     pub directed: bool,
+    /// Whether cuGraph renumbering was enabled.
     pub renumber: bool,
+    /// Stable serialized algorithm parameters.
     pub algorithm_parameters: String,
+    /// Stable serialized algorithm metadata.
     pub algorithm_metadata: String,
+    /// Input row count.
     pub input_rows: usize,
+    /// Input column count.
     pub input_columns: usize,
+    /// Output row count.
     pub output_rows: usize,
+    /// Output column count.
     pub output_columns: usize,
+    /// Output device bytes, when known.
     pub output_device_bytes: Option<usize>,
+    /// Runtime elapsed nanoseconds.
     pub elapsed_ns: usize,
+    /// GPU-resident input handoffs for this algorithm.
     pub gpu_resident_input_handoffs: usize,
+    /// Host-to-device uploads for this algorithm.
     pub host_to_device_uploads: usize,
+    /// Device-to-host materializations for this algorithm.
     pub device_to_host_materializations: usize,
 }
 
 impl NativeGraphRuntimeMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "node_id={},algorithm={},runtime_outcome={},input_boundary={},output_boundary={},construction_policy={},source_column={},destination_column={},weight_column={},directed={},renumber={},algorithm_parameters={},algorithm_metadata={},input_rows={},input_columns={},output_rows={},output_columns={},output_device_bytes={},elapsed_ns={},gpu_resident_input_handoffs={},host_to_device_uploads={},device_to_host_materializations={}",
@@ -295,20 +403,31 @@ impl NativeGraphRuntimeMetricRow {
     }
 }
 
+/// Aggregated task metrics by native operator kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeTaskOperatorMetricRow {
+    /// Operator-kind label shared by aggregated tasks.
     pub operator_kind: String,
+    /// Number of tasks observed for this operator kind.
     pub task_count: usize,
+    /// Cumulative elapsed nanoseconds across tasks.
     pub elapsed_ns: usize,
+    /// Cumulative reservation bytes requested.
     pub reservation_requested_bytes: usize,
+    /// Cumulative reservation bytes granted.
     pub reservation_granted_bytes: usize,
+    /// Cumulative reservation bytes released.
     pub reservation_released_bytes: usize,
+    /// Peak live reserved bytes for this operator kind.
     pub reservation_live_peak_bytes: usize,
+    /// Largest lower-level observed allocator peak for this operator kind.
     pub max_observed_peak_bytes: Option<usize>,
+    /// Largest lower-level retained byte count for this operator kind.
     pub max_retained_bytes: Option<usize>,
 }
 
 impl NativeTaskOperatorMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "operator_kind={},task_count={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
@@ -325,20 +444,31 @@ impl NativeTaskOperatorMetricRow {
     }
 }
 
+/// Runtime metric row for one compiled pipeline task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeTaskRuntimeMetricRow {
+    /// Stable compiled task id.
     pub compiled_task_id: String,
+    /// Operator-kind label for the task.
     pub operator_kind: String,
+    /// Cumulative elapsed task time in nanoseconds.
     pub elapsed_ns: usize,
+    /// Cumulative reservation bytes requested by the task.
     pub reservation_requested_bytes: usize,
+    /// Cumulative reservation bytes granted to the task.
     pub reservation_granted_bytes: usize,
+    /// Cumulative reservation bytes released by the task.
     pub reservation_released_bytes: usize,
+    /// Peak live reserved bytes for the task.
     pub reservation_live_peak_bytes: usize,
+    /// Largest lower-level observed allocator peak for the task.
     pub max_observed_peak_bytes: Option<usize>,
+    /// Largest lower-level retained byte count for the task.
     pub max_retained_bytes: Option<usize>,
 }
 
 impl NativeTaskRuntimeMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "compiled_task_id={},operator_kind={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
@@ -355,46 +485,83 @@ impl NativeTaskRuntimeMetricRow {
     }
 }
 
+/// Join strategy diagnostics with runtime counters merged by join site.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeJoinStrategyMetricRow {
+    /// Native join node id.
     pub node_id: String,
+    /// Planner-selected join strategy label.
     pub join_strategy: String,
+    /// Runtime execution strategy label.
     pub execution_strategy: String,
+    /// Join type label.
     pub join_type: String,
+    /// Build-side orientation label.
     pub build_side: String,
+    /// Number of equality key pairs.
     pub key_count: usize,
+    /// Estimated build-side rows, if known.
     pub estimated_build_rows: Option<usize>,
+    /// Observed build-side rows, if known.
     pub observed_build_rows: Option<usize>,
+    /// Build-side input bytes, if known.
     pub build_side_bytes: Option<usize>,
+    /// Probe-side input bytes, if known.
     pub probe_side_bytes: Option<usize>,
+    /// Probe reuse count, if known.
     pub probe_reuse_count: Option<usize>,
+    /// Partition count for partitioned join strategies, if known.
     pub partition_count: Option<usize>,
+    /// Partition target bytes for partitioned join strategies, if known.
     pub partition_target_bytes: Option<usize>,
+    /// Build partition batch count, if known.
     pub build_partition_batch_count: Option<usize>,
+    /// Probe partition batch count, if known.
     pub probe_partition_batch_count: Option<usize>,
+    /// Build-side partitioned bytes, if known.
     pub build_partitioned_bytes: Option<usize>,
+    /// Probe-side partitioned bytes, if known.
     pub probe_partitioned_bytes: Option<usize>,
+    /// Rejection reason for reusable hash join, or `None` when not rejected/reported.
     pub reusable_hash_join_rejected_reason: Option<String>,
+    /// Rejection reason for partitioned hash join, or `None` when not rejected/reported.
     pub partitioned_hash_join_rejected_reason: Option<String>,
+    /// Rejection reason for one-shot equi join, or `None` when not rejected/reported.
     pub one_shot_equi_rejected_reason: Option<String>,
+    /// Count of partitioned hash joins executed at this site.
     pub partitioned_hash_join_count: usize,
+    /// Count of reusable hash-join builds executed at this site.
     pub hash_join_build_count: usize,
+    /// Device bytes retained by hash-join build artifacts.
     pub hash_join_hash_table_bytes: usize,
+    /// Count of filtered-join builds executed at this site.
     pub filtered_join_build_count: usize,
+    /// Device bytes retained by filtered-join build artifacts.
     pub filtered_join_hash_table_bytes: usize,
+    /// Device bytes retained by filtered-join probe states.
     pub filtered_join_probe_state_bytes: usize,
+    /// Device bytes retained by mixed join size-data states.
     pub mixed_join_size_data_bytes: usize,
+    /// Count of one-shot joins executed at this site.
     pub one_shot_join_count: usize,
+    /// Device bytes retained by one-shot join index maps.
     pub one_shot_join_index_bytes: usize,
+    /// Reservation bytes requested for one-shot output materialization.
     pub one_shot_join_materialization_bytes: usize,
+    /// Observed device bytes of one-shot join output frames.
     pub one_shot_join_output_bytes: usize,
+    /// Device bytes retained by join gather maps.
     pub join_gather_map_bytes: usize,
+    /// Bytes reserved for join output materialization.
     pub join_output_reservation_bytes: usize,
+    /// Join output row count.
     pub join_output_rows: usize,
+    /// Join output bytes.
     pub join_output_bytes: usize,
 }
 
 impl NativeJoinStrategyMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_side_bytes={},probe_reuse_count={},partition_count={},partition_target_bytes={},build_partition_batch_count={},probe_partition_batch_count={},build_partitioned_bytes={},probe_partitioned_bytes={},reusable_hash_join_rejected_reason={},partitioned_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},partitioned_hash_join_count={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={},join_output_reservation_bytes={},join_output_rows={},join_output_bytes={}",

@@ -29,6 +29,10 @@ use crate::{
     runtime::ExecutionContext,
 };
 
+/// Strict bounded admission evidence for a compiled bounded pipeline.
+///
+/// Presence means capability analysis admitted the plan and compilation
+/// produced the exact pipeline that strict execution will run.
 #[derive(Debug, Clone)]
 pub struct StrictBoundedPipelineAdmission {
     analysis: CapabilityAnalysis,
@@ -36,19 +40,26 @@ pub struct StrictBoundedPipelineAdmission {
 }
 
 impl StrictBoundedPipelineAdmission {
+    /// Capability facts used to admit the plan.
     pub fn analysis(&self) -> &CapabilityAnalysis {
         &self.analysis
     }
 
+    /// Compiled pipeline admitted for strict bounded execution.
     pub fn pipeline(&self) -> &CompiledPipeline {
         &self.pipeline
     }
 
+    /// Native pipeline mode represented by this admission.
     pub const fn native_mode(&self) -> NativePipelineExecutionMode {
         NativePipelineExecutionMode::StrictBounded
     }
 }
 
+/// Run strict bounded admission for a query plan.
+///
+/// `Ok(None)` means the plan is outside strict compiled-pipeline support.
+/// `Ok(Some(_))` means every strict gate required for compilation was modeled.
 pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<StrictBoundedPipelineAdmission>> {
     let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
         return Ok(None);
