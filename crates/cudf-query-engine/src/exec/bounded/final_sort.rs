@@ -32,7 +32,15 @@ pub(super) fn execute_final_sort_limit_with_retry(
     let Some(sort) = bounded.sort else {
         return Ok(input);
     };
-    execute_final_sort_node_with_retry(context, bounded.aggregate_id, sort, bounded.limit.map(|(_, limit)| limit), input, reservations, metrics)
+    execute_final_sort_node_with_retry(
+        context,
+        bounded.aggregate_id,
+        sort,
+        bounded.limit.map(|(_, limit)| limit),
+        input,
+        reservations,
+        metrics,
+    )
 }
 
 pub(super) fn execute_final_sort_node_with_retry(

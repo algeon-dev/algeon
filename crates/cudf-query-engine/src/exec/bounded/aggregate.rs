@@ -1074,10 +1074,7 @@ fn string_byte_length_stats_for_partial_sizing(
     };
     drop(byte_counts);
     reservations.release(reservation, metrics);
-    Ok(StringByteLengthStats {
-        max_len: max_len.unwrap_or(0).max(0) as u64,
-        total_bytes: total_bytes.max(0) as u64,
-    })
+    Ok(StringByteLengthStats { max_len: max_len.unwrap_or(0).max(0) as u64, total_bytes: total_bytes.max(0) as u64 })
 }
 
 fn aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
@@ -1753,23 +1750,18 @@ fn execute_post_final_stage(
     ) -> Result<GpuDataFrame>,
     use_budget_token: bool,
 ) -> Result<CommittedPartial> {
-    let input_reserved_bytes = input.reservation.bytes();
-    let input_reservation = input.reservation;
-    let result = execute_bounded_generic_unary_from_frame_with_reservation_kind(
+    execute_bounded_generic_unary_consuming_input_with_reservation_kind(
         context,
         node_id,
         stage,
         output_boundary,
-        input.frame,
-        input_reserved_bytes,
+        input,
         ReservationKind::FinalMerge,
         reservations,
         metrics,
         use_budget_token,
         execute,
-    );
-    reservations.release(input_reservation, metrics);
-    result
+    )
 }
 
 pub(super) fn execute_final_aggregate_projection(
@@ -1984,4 +1976,136 @@ pub(super) fn aggregate_spec_has_global_final_state(spec: &AggregateSpec) -> boo
             && spec.aggr_exprs.iter().any(|expr| {
                 matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
             })
+}
+
+/// Correct execution path for grouped `COUNT(DISTINCT)` when the source spans
+/// multiple chunks.  Per-chunk `NUnique` values cannot be correctly merged with
+/// `Sum` because the same value may appear in multiple chunks for the same
+/// group key, which would be counted multiple times.
+///
+/// This function reads every chunk's raw data (source read + filter +
+/// projections, but NO partial aggregate), concatenates all raw frames into a
+/// single in-memory frame, then runs one full groupby aggregate — matching the
+/// semantics of `execute_compiled_bounded_distinct_aggregate_from_stream` for
+/// the legacy bounded path.
+pub(in crate::exec::bounded) fn execute_bounded_distinct_aggregate_from_raw_chunks(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let mut raw_frames: Vec<CommittedPartial> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        match execute_bounded_raw_source_chunk(context, bounded, chunk, reservations, metrics) {
+            Ok(raw) => {
+                metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+                raw_frames.push(raw);
+            },
+            Err(error) => {
+                release_partials_reverse(reservations, raw_frames, metrics);
+                return Err(error);
+            },
+        }
+    }
+
+    if raw_frames.len() == 1 {
+        let raw = raw_frames.pop().expect("single frame checked");
+        let input_reserved_bytes = raw.reservation.bytes();
+        let input_reservation = raw.reservation;
+        let result = execute_compiled_bounded_aggregate_from_frame(
+            context,
+            bounded.aggregate_id,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            bounded.aggregate.1,
+            raw.frame,
+            input_reserved_bytes,
+            reservations,
+            metrics,
+        );
+        reservations.release(input_reservation, metrics);
+        return result;
+    }
+
+    let total_reserved_bytes = raw_frames.iter().map(|f| f.reservation.bytes()).sum::<u64>();
+    let mut concat_reservation = match reservations.try_reserve_work(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, total_reserved_bytes, reservations.budget())
+            .with_memory_boundary("distinct_aggregate_concat")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("distinct_aggregate_concat"),
+        metrics,
+    ) {
+        Ok(r) => r,
+        Err(error) => {
+            release_partials_reverse(reservations, raw_frames, metrics);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&concat_reservation),
+        "distinct_aggregate_concat",
+        "cudf_query_engine.bounded.distinct_aggregate.concat.budget_token",
+        "failed to create bounded native distinct aggregate concat budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(concat_reservation, metrics);
+            release_partials_reverse(reservations, raw_frames, metrics);
+            return Err(error);
+        },
+    };
+
+    let first = raw_frames.remove(0);
+    let first_reservation = first.reservation;
+    let first_df = first.frame.into_frame();
+    let other_frame_refs: Vec<_> = raw_frames.iter().map(|f| f.frame.frame()).collect();
+    let concatenated = first_df.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+    for frame in raw_frames {
+        reservations.release(frame.reservation, metrics);
+    }
+    reservations.release(first_reservation, metrics);
+    let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
+        attach_budget_token_failure_facts(
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.distinct_aggregate.concat",
+                "failed to concatenate raw frames for bounded distinct aggregate",
+                error,
+            ),
+            &token,
+        )
+    })?;
+    let concat_bytes = observe_device_memory_bytes(&concatenated, metrics)?;
+    if concat_bytes > concat_reservation.bytes() {
+        let delta = concat_bytes.saturating_sub(concat_reservation.bytes());
+        if let Err(error) = reservations.try_grow(
+            &mut concat_reservation,
+            MemoryReservationRequest::new(ReservationKind::OperatorOutput, delta, reservations.budget())
+                .with_memory_boundary("distinct_aggregate_concat")
+                .with_node_id(bounded.aggregate_id)
+                .with_stage("distinct_aggregate_concat"),
+            metrics,
+        ) {
+            drop(concatenated);
+            reservations.release(concat_reservation, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(&mut concat_reservation, concat_bytes, metrics);
+    }
+
+    let result = execute_compiled_bounded_aggregate_from_frame(
+        context,
+        bounded.aggregate_id,
+        bounded.aggregate.0,
+        bounded.aggregate_input_schema,
+        bounded.aggregate.1,
+        concatenated,
+        concat_reservation.bytes(),
+        reservations,
+        metrics,
+    );
+    reservations.release(concat_reservation, metrics);
+    result
 }

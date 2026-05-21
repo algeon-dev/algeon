@@ -173,6 +173,16 @@ fn execute_bounded_aggregate_to_frame(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
+    if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
+        return execute_bounded_distinct_aggregate_from_raw_chunks(
+            context,
+            bounded,
+            &chunk_plan.chunks,
+            reservations,
+            metrics,
+        );
+    }
+
     let partials =
         execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
     execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)
@@ -846,22 +856,20 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
-    let input_reserved_bytes = input.reservation.bytes();
-    let result = execute_bounded_generic_unary_from_frame(
+    execute_bounded_generic_unary_consuming_input_with_reservation_kind(
         context,
         node_id,
         stage,
         output_boundary,
-        input.frame,
-        input_reserved_bytes,
+        input,
+        ReservationKind::OperatorOutput,
         reservations,
         metrics,
         use_budget_token,
         execute,
-    );
-    reservations.release(input.reservation, metrics);
-    result
+    )
 }
+
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -893,6 +901,106 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
         execute,
     )
 }
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_with_reservation_kind(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: ResidentGpuFrame,
+    reservation_kind: ReservationKind,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    use_budget_token: bool,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
+    let input_reserved_bytes = input.reservation.bytes();
+    let input_frame = input.frame;
+    let input_reservation = input.reservation;
+    let mut work_reservation = match reservations.try_reserve(
+        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary(stage)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(input_frame);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let token = if use_budget_token {
+        match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&work_reservation),
+            stage,
+            "cudf_query_engine.bounded_generic.budget_token",
+            "failed to create bounded native generic operator budget token",
+        ) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                drop(input_frame);
+                reservations.release(work_reservation, metrics);
+                reservations.release(input_reservation, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        }
+    } else {
+        None
+    };
+    let result = execute(context, input_frame, token.as_ref(), metrics);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+
+    reservations.release(input_reservation, metrics);
+
+    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_request = MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
+        .with_memory_boundary(output_boundary)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1);
+    if output_bytes > work_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(work_reservation.bytes());
+        if let Err(error) =
+            reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
+        {
+            drop(frame);
+            reservations.release(work_reservation, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed_with_request(
+            &mut work_reservation,
+            output_bytes,
+            output_request.clone(),
+            metrics,
+        );
+    }
+    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    Ok(ResidentGpuFrame { frame, reservation: output_reservation })
+}
+
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_reservation_kind(
     context: &ExecutionContext,
     node_id: NodeId,
