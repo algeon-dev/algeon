@@ -75,9 +75,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUGRAPH_CMAKE_BUILD_DIR");
     println!("cargo:rerun-if-changed=wrapper.h");
 
-    // layout_algorithms.h is not #included by wrapper.h (type collision workaround),
-    // so CargoCallbacks cannot track it. Track it explicitly so changes to the
-    // upstream layout API trigger binding regeneration.
+    // layout_algorithms.h is excluded from wrapper.h to avoid a generated type
+    // collision, so CargoCallbacks cannot track it. Track it explicitly so
+    // changes to the upstream layout API trigger binding regeneration.
     for include_dir in &contract.native_include_dirs {
         let layout_header = include_dir.join("cugraph_c/layout_algorithms.h");
         if layout_header.exists() {

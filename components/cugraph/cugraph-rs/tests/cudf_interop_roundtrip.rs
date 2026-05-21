@@ -1,4 +1,4 @@
-//! Integration tests for cugraph → cudf result pathway (Task 3).
+//! Integration tests for the cugraph → cudf result pathway.
 //!
 //! These tests run actual GPU algorithms and convert results to cudf DataFrames,
 //! verifying the full round-trip: GPU algorithm → result → cudf DataFrame → host Vec.
@@ -332,7 +332,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
-// ── Task 6: borrowed-table-view / graph_from_dataframe tests ────────────────
+// ── Borrowed-table-view and graph_from_dataframe coverage ───────────────────
 
 /// Load test Parquet into a cudf DataFrame, borrow its table view explicitly,
 /// run BFS from vertex 0, verify distances match expected topology.
@@ -484,7 +484,7 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
 }
 
-// ── Task 7: to_dataframe() tests ────────────────────────────────────────────
+// ── Result to_dataframe() coverage ──────────────────────────────────────────
 
 /// Run PageRank on a triangle graph, call .to_dataframe(), verify
 /// 2 columns named "vertex" and "value", row count == 3.

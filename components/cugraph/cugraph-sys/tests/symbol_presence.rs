@@ -63,6 +63,10 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_edge_centrality_result_free",
         // Traversal
         "cugraph_bfs",
+        "cugraph_bfs_with_predicates",
+        "cugraph_bfs_predicate_result_get_target_found",
+        "cugraph_bfs_predicate_result_get_target_distance",
+        "cugraph_bfs_predicate_result_free",
         "cugraph_sssp",
         "cugraph_paths_result_get_vertices",
         "cugraph_paths_result_get_distances",

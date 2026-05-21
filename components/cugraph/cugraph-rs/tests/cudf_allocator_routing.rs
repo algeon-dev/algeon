@@ -1,4 +1,4 @@
-//! Integration tests for Phase 7 allocator-routing evidence.
+//! Integration tests for runtime allocator-routing behavior.
 mod common;
 
 use std::{process::Command, ptr, sync::Arc};
@@ -53,7 +53,7 @@ fn runtime_with_explicit_pool_memory_resource() -> Arc<cudf::Runtime> {
 }
 
 fn run_current_allocator_probe(mode: &str) -> CurrentAllocatorProbeOutcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_phase7_allocator_probe"))
+    let output = Command::new(env!("CARGO_BIN_EXE_allocator_routing_probe"))
         .arg(mode)
         .output()
         .expect("allocator probe should start");

@@ -2,11 +2,15 @@
 
 use std::ptr;
 
-use cugraph_sys::{cugraph_bfs, cugraph_error_t, cugraph_paths_result_t};
+use cugraph_sys::{
+    cugraph_bfs, cugraph_bfs_predicate_result_free, cugraph_bfs_predicate_result_get_target_distance,
+    cugraph_bfs_predicate_result_get_target_found, cugraph_bfs_predicate_result_t, cugraph_bfs_with_predicates,
+    cugraph_error_t, cugraph_paths_result_t, cugraph_type_erased_device_array_view_t,
+};
 
 use crate::{
     array::DeviceArrayView,
-    error::{Error, Result, check_error},
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::EnteredContext,
     params::BfsDepthLimit,
@@ -15,7 +19,7 @@ use crate::{
         typed_results::{Distances, VertexIds},
     },
     traversal::paths::{ExtractPathsResult, PathsResult},
-    types::{CugraphElement, to_bool_t},
+    types::{CugraphElement, to_bool_t, try_from_bool_t},
 };
 
 /// Parameters for the BFS traversal algorithm.
@@ -83,6 +87,51 @@ impl BfsParams {
     }
 }
 
+/// Concrete GPU-resident predicate inputs for predicate-aware BFS.
+///
+/// This type intentionally accepts only device array views. SQL expressions,
+/// table names, logical-id mapping, and relation-backed edge alignment belong
+/// in higher query-engine layers before they call into `cugraph-rs`.
+#[derive(Debug, Clone, Copy)]
+#[must_use]
+pub struct BfsPredicateParams<'a, V: CugraphElement, E: CugraphElement = i32> {
+    /// Vertices allowed to be reached, using the graph's external vertex ID dtype.
+    pub include_vertices: Option<&'a DeviceArrayView<'a, V>>,
+    /// Vertices forbidden from being reached, using the graph's external vertex ID dtype.
+    pub exclude_vertices: Option<&'a DeviceArrayView<'a, V>>,
+    /// Target vertices used for target-hit metadata and optional early stop.
+    pub target_vertices: Option<&'a DeviceArrayView<'a, V>>,
+    /// External edge IDs allowed to be traversed. Requires a graph built with edge IDs.
+    pub include_edge_ids: Option<&'a DeviceArrayView<'a, E>>,
+    /// Stop after the first BFS depth where any target vertex is discovered.
+    pub stop_when_any_target_found: bool,
+}
+
+impl<'a, V: CugraphElement, E: CugraphElement> Default for BfsPredicateParams<'a, V, E> {
+    fn default() -> Self {
+        Self {
+            include_vertices: None,
+            exclude_vertices: None,
+            target_vertices: None,
+            include_edge_ids: None,
+            stop_when_any_target_found: false,
+        }
+    }
+}
+
+/// Target-discovery metadata returned by predicate-aware BFS when target vertices are provided.
+///
+/// The current cuGraph predicate C API exposes a stable `target_found` flag and
+/// minimum target distance. It deliberately does not expose a target vertex
+/// because multiple targets can be discovered at the same BFS depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BfsTargetInfo {
+    /// Whether any target vertex was discovered.
+    pub target_found: bool,
+    /// The first BFS depth containing a target vertex, or `None` if no target was reached.
+    pub target_distance: Option<i64>,
+}
+
 /// Perform breadth-first search from one or more source vertices.
 ///
 /// Prefer using [`Graph::bfs`](Graph::bfs) instead of calling
@@ -122,7 +171,155 @@ pub(crate) fn bfs<V: CugraphElement>(
     // the caller.
     let paths = unsafe { PathsResult::from_raw(result, handle.device(), "bfs") }?;
 
-    Ok(BfsResult { paths })
+    Ok(BfsResult { paths, target_info: None })
+}
+
+fn optional_view_ptr<T: CugraphElement>(
+    view: Option<&DeviceArrayView<'_, T>>,
+) -> *const cugraph_type_erased_device_array_view_t {
+    view.map(|view| view.as_ptr() as *const _).unwrap_or(ptr::null())
+}
+
+fn bfs_depth_limit(params: &BfsParams) -> usize {
+    // The C++ BFS defaults to std::numeric_limits<vertex_t>::max() for unlimited
+    // depth. Since vertex_t is typically int32_t, use i32::MAX as the existing
+    // safe wrapper does for non-predicate BFS.
+    params.depth_limit.map(usize::from).unwrap_or(i32::MAX as usize)
+}
+
+fn validate_predicates<V: CugraphElement, E: CugraphElement>(
+    graph: &Graph<Forward>,
+    predicates: &BfsPredicateParams<'_, V, E>,
+) -> Result<()> {
+    let operation = "Graph::bfs_with_predicates";
+
+    if predicates.include_vertices.is_some() && predicates.exclude_vertices.is_some() {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message("include_vertices and exclude_vertices are mutually exclusive"));
+    }
+
+    if predicates.include_edge_ids.is_some() {
+        if !graph.has_edge_ids() {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("include_edge_ids requires a graph with edge IDs"));
+        }
+
+        let dtype = E::data_type();
+        if !dtype.is_supported_index_type() {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message(format!("include_edge_ids dtype must be Int32 or Int64, got {dtype}")));
+        }
+
+        if let Some(edge_id_dtype) = graph.edge_id_dtype() {
+            if dtype != edge_id_dtype {
+                return Err(Error::new(ErrorKind::UnsupportedType, operation).with_message(format!(
+                    "include_edge_ids dtype {dtype} does not match graph edge-id dtype {edge_id_dtype}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct BfsPredicateResult {
+    raw: *mut cugraph_bfs_predicate_result_t,
+}
+
+impl BfsPredicateResult {
+    unsafe fn from_raw(raw: *mut cugraph_bfs_predicate_result_t) -> Result<Self> {
+        let raw = require_non_null(raw, "bfs_with_predicates", "predicate_result")?;
+        Ok(Self { raw })
+    }
+
+    fn target_info(&self) -> Result<BfsTargetInfo> {
+        // SAFETY: `self.raw` is a live predicate-result handle owned by this wrapper.
+        let found = unsafe { cugraph_bfs_predicate_result_get_target_found(self.raw) };
+        let target_found = try_from_bool_t(found).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidState, "bfs_with_predicates")
+                .with_message(format!("invalid target_found bool_t value: {}", found.0))
+        })?;
+
+        if !target_found {
+            return Ok(BfsTargetInfo { target_found, target_distance: None });
+        }
+
+        // SAFETY: `self.raw` is a live predicate-result handle owned by this wrapper.
+        let distance = unsafe { cugraph_bfs_predicate_result_get_target_distance(self.raw) };
+        let distance = i64::try_from(distance).map_err(|_| {
+            Error::new(ErrorKind::InvalidState, "bfs_with_predicates")
+                .with_message("target_distance does not fit in i64")
+                .with_context("target_distance", distance.to_string())
+        })?;
+
+        Ok(BfsTargetInfo { target_found, target_distance: Some(distance) })
+    }
+}
+
+impl Drop for BfsPredicateResult {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: `self.raw` is owned by this wrapper and freed at most once.
+            unsafe { cugraph_bfs_predicate_result_free(self.raw) };
+        }
+    }
+}
+
+/// Perform breadth-first search with optional edge, vertex, and target predicates.
+pub(crate) fn bfs_with_predicates<V: CugraphElement, E: CugraphElement>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<Forward>,
+    sources: &DeviceArrayView<'_, V>,
+    params: &BfsParams,
+    predicates: &BfsPredicateParams<'_, V, E>,
+) -> Result<BfsResult> {
+    validate_predicates(graph, predicates)?;
+
+    let mut result: *mut cugraph_paths_result_t = ptr::null_mut();
+    let mut predicate_result: *mut cugraph_bfs_predicate_result_t = ptr::null_mut();
+    let mut error: *mut cugraph_error_t = ptr::null_mut();
+
+    let predicate_result_out: *mut *mut cugraph_bfs_predicate_result_t =
+        if predicates.target_vertices.is_some() { &mut predicate_result } else { ptr::null_mut() };
+
+    // SAFETY: `graph`, `sources`, and all optional predicate views stay valid
+    // for the duration of the call. The public graph method validated source
+    // vertex dtype and this function validated Rust-side predicate invariants.
+    unsafe {
+        let code = cugraph_bfs_with_predicates(
+            handle.handle_ptr(),
+            graph.as_ptr(),
+            sources.as_ptr(),
+            optional_view_ptr(predicates.include_vertices),
+            optional_view_ptr(predicates.exclude_vertices),
+            optional_view_ptr(predicates.target_vertices),
+            optional_view_ptr(predicates.include_edge_ids),
+            to_bool_t(false), // direction_optimizing
+            bfs_depth_limit(params),
+            to_bool_t(params.compute_predecessors),
+            to_bool_t(predicates.stop_when_any_target_found),
+            to_bool_t(params.do_expensive_check),
+            &mut result,
+            predicate_result_out,
+            &mut error,
+        );
+        check_error(code, error, "bfs_with_predicates")?;
+    }
+
+    let predicate_result = if predicates.target_vertices.is_some() {
+        // SAFETY: `predicate_result` is initialized on successful calls when
+        // a predicate result out-pointer was supplied.
+        Some(unsafe { BfsPredicateResult::from_raw(predicate_result) }?)
+    } else {
+        None
+    };
+    let target_info = predicate_result.as_ref().map(BfsPredicateResult::target_info).transpose()?;
+
+    // SAFETY: on success, cuGraph transfers ownership of the paths result to
+    // the caller.
+    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "bfs_with_predicates") }?;
+
+    Ok(BfsResult { paths, target_info })
 }
 
 /// Result of a BFS computation.
@@ -131,6 +328,7 @@ pub(crate) fn bfs<V: CugraphElement>(
 /// Freed on drop.
 pub struct BfsResult {
     pub(crate) paths: PathsResult,
+    target_info: Option<BfsTargetInfo>,
 }
 
 impl std::fmt::Debug for BfsResult {
@@ -166,6 +364,14 @@ impl BfsResult {
     /// graph's vertex type.
     pub fn predecessors(&self) -> Result<Option<VertexIds<'_>>> {
         self.paths.predecessors("BfsResult::predecessors")
+    }
+
+    /// Return target-discovery metadata for predicate-aware BFS calls.
+    ///
+    /// Non-predicate BFS and predicate BFS calls without `target_vertices`
+    /// return `None`.
+    pub fn target_info(&self) -> Option<&BfsTargetInfo> {
+        self.target_info.as_ref()
     }
 
     /// Extract concrete row-major paths to the requested destination vertices.
@@ -327,5 +533,216 @@ mod tests {
         let params = BfsParams::default();
         let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
         assert!(result.predecessors().expect("predecessors").is_none(), "predecessors should be omitted");
+    }
+
+    #[test]
+    fn test_bfs_with_excluded_vertices() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_with_excluded_vertices").expect("entered");
+
+        let src_data = vec![0i32, 0, 1, 3];
+        let dst_data = vec![1i32, 3, 2, 2];
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let excluded = DeviceArray::from_slice(&entered, &[1i32]).expect("excluded");
+        let sources_view = sources.view().expect("sources_view");
+        let excluded_view = excluded.view().expect("excluded_view");
+        let predicates: BfsPredicateParams<'_, i32> =
+            BfsPredicateParams { exclude_vertices: Some(&excluded_view), ..BfsPredicateParams::default() };
+
+        let result =
+            graph.bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates).expect("bfs");
+        let dist_map = bfs_distance_map(&entered, &result);
+
+        assert_eq!(dist_map[&0], 0);
+        assert_eq!(dist_map[&1], i32::MAX);
+        assert_eq!(dist_map[&3], 1);
+        assert_eq!(dist_map[&2], 2);
+    }
+
+    #[test]
+    fn test_bfs_with_included_vertices() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_with_included_vertices").expect("entered");
+
+        let src_data = vec![0i32, 0, 1, 3];
+        let dst_data = vec![1i32, 3, 2, 2];
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let included = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("included");
+        let sources_view = sources.view().expect("sources_view");
+        let included_view = included.view().expect("included_view");
+        let predicates: BfsPredicateParams<'_, i32> =
+            BfsPredicateParams { include_vertices: Some(&included_view), ..BfsPredicateParams::default() };
+
+        let result =
+            graph.bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates).expect("bfs");
+        let dist_map = bfs_distance_map(&entered, &result);
+
+        assert_eq!(dist_map[&0], 0);
+        assert_eq!(dist_map[&1], 1);
+        assert_eq!(dist_map[&3], i32::MAX);
+        assert_eq!(dist_map[&2], 2);
+    }
+
+    #[test]
+    fn test_bfs_rejects_include_and_exclude_vertices_together() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_rejects_include_and_exclude_vertices_together").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let included = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("included");
+        let excluded = DeviceArray::from_slice(&entered, &[1i32]).expect("excluded");
+        let sources_view = sources.view().expect("sources_view");
+        let included_view = included.view().expect("included_view");
+        let excluded_view = excluded.view().expect("excluded_view");
+        let predicates: BfsPredicateParams<'_, i32> = BfsPredicateParams {
+            include_vertices: Some(&included_view),
+            exclude_vertices: Some(&excluded_view),
+            ..BfsPredicateParams::default()
+        };
+
+        let err = graph
+            .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
+            .expect_err("include/exclude vertex predicates are mutually exclusive");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.operation(), "Graph::bfs_with_predicates");
+        assert!(err.message().contains("include_vertices and exclude_vertices are mutually exclusive"));
+    }
+
+    #[test]
+    fn test_bfs_with_include_edge_ids() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_with_include_edge_ids").expect("entered");
+
+        let src_data = vec![0i32, 0, 1, 2];
+        let dst_data = vec![1i32, 2, 3, 3];
+        let edge_id_data = vec![10i32, 11, 12, 13];
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+        let edge_ids = DeviceArray::from_slice(&entered, &edge_id_data).expect("edge_ids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+        let mut graph =
+            GraphBuilder::new(&src_view, &dst_view).edge_ids(&edge_ids_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let allowed_edge_ids = DeviceArray::from_slice(&entered, &[11i32, 13]).expect("allowed_edge_ids");
+        let sources_view = sources.view().expect("sources_view");
+        let allowed_edge_ids_view = allowed_edge_ids.view().expect("allowed_edge_ids_view");
+        let predicates =
+            BfsPredicateParams { include_edge_ids: Some(&allowed_edge_ids_view), ..BfsPredicateParams::default() };
+
+        let result =
+            graph.bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates).expect("bfs");
+        let dist_map = bfs_distance_map(&entered, &result);
+
+        assert_eq!(dist_map[&0], 0);
+        assert_eq!(dist_map[&1], i32::MAX);
+        assert_eq!(dist_map[&2], 1);
+        assert_eq!(dist_map[&3], 2);
+    }
+
+    #[test]
+    fn test_bfs_include_edge_ids_rejects_graph_without_edge_ids() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_include_edge_ids_rejects_graph_without_edge_ids").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let allowed_edge_ids = DeviceArray::from_slice(&entered, &[0i32]).expect("allowed_edge_ids");
+        let sources_view = sources.view().expect("sources_view");
+        let allowed_edge_ids_view = allowed_edge_ids.view().expect("allowed_edge_ids_view");
+        let predicates =
+            BfsPredicateParams { include_edge_ids: Some(&allowed_edge_ids_view), ..BfsPredicateParams::default() };
+
+        let err = graph
+            .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
+            .expect_err("edge-id predicates require graph edge ids");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.operation(), "Graph::bfs_with_predicates");
+        assert!(err.message().contains("include_edge_ids requires a graph with edge IDs"));
+    }
+
+    #[test]
+    fn test_bfs_include_edge_ids_rejects_mismatched_dtype() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_include_edge_ids_rejects_mismatched_dtype").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2]).expect("dst");
+        let edge_ids = DeviceArray::from_slice(&entered, &[10i32, 11]).expect("edge_ids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+        let mut graph =
+            GraphBuilder::new(&src_view, &dst_view).edge_ids(&edge_ids_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let allowed_edge_ids = DeviceArray::from_slice(&entered, &[10i64]).expect("allowed_edge_ids");
+        let sources_view = sources.view().expect("sources_view");
+        let allowed_edge_ids_view = allowed_edge_ids.view().expect("allowed_edge_ids_view");
+        let predicates =
+            BfsPredicateParams { include_edge_ids: Some(&allowed_edge_ids_view), ..BfsPredicateParams::default() };
+
+        let err = graph
+            .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
+            .expect_err("include_edge_ids dtype should match graph edge-id dtype");
+        assert_eq!(err.kind(), crate::error::ErrorKind::UnsupportedType);
+        assert_eq!(err.operation(), "Graph::bfs_with_predicates");
+        assert!(err.message().contains("include_edge_ids dtype Int64 does not match graph edge-id dtype Int32"));
+    }
+
+    #[test]
+    fn test_bfs_target_vertices_return_metadata() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_target_vertices_return_metadata").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+
+        let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let targets = DeviceArray::from_slice(&entered, &[2i32]).expect("targets");
+        let sources_view = sources.view().expect("sources_view");
+        let targets_view = targets.view().expect("targets_view");
+        let predicates: BfsPredicateParams<'_, i32> = BfsPredicateParams {
+            target_vertices: Some(&targets_view),
+            stop_when_any_target_found: true,
+            ..BfsPredicateParams::default()
+        };
+
+        let result =
+            graph.bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates).expect("bfs");
+        let target_info = result.target_info().expect("target metadata should be returned");
+
+        assert!(target_info.target_found);
+        assert_eq!(target_info.target_distance, Some(2));
+        let dist_map = bfs_distance_map(&entered, &result);
+        assert_eq!(dist_map[&3], i32::MAX, "early stop should avoid depth after target discovery");
     }
 }

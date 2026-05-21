@@ -6,24 +6,26 @@ rust-version.workspace = true
 description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 documentation = "https://docs.rs/cugraph"
 categories = ["algorithms", "api-bindings", "science"]
 keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
 
 [dependencies]
-cugraph-sys = { path = "../cugraph-sys" }
-cudf = { path = "../../cudf-rs/cudf-rs" }
-cudf-sys = { path = "../../cudf-rs/cudf-sys" }
-rapids-interop = { path = "../../cudf-rs/rapids-interop" }
+cudf.workspace = true
+cudf-sys.workspace = true
+cugraph-sys.workspace = true
+rapids-interop.workspace = true
 
 [dev-dependencies]
-anyhow = "1"
-static_assertions = "1"
+anyhow.workspace = true
+static_assertions.workspace = true
 
 [build-dependencies]
-cc = "1"
+cc.workspace = true
 
 [[bin]]
-name = "phase7_allocator_probe"
-path = "tests/bin/phase7_allocator_probe.rs"
+name = "allocator_routing_probe"
+path = "tests/bin/allocator_routing_probe.rs"

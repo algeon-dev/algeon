@@ -119,6 +119,7 @@ pub struct Graph<T = Forward> {
     weight_dtype: DataType,
     has_weights: bool,
     has_edge_ids: bool,
+    edge_id_dtype: Option<DataType>,
     pending_input_completion: Option<DeferredInputCompletion>,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
@@ -261,7 +262,7 @@ where
                 Error::new(ErrorKind::InvalidState, operation)
                     .with_message("logical edge count overflow while accumulating undirected self-loops")
             })?;
-        } else if run_len % 2 != 0 {
+        } else if !run_len.is_multiple_of(2) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message(
                     "undirected multigraph decompressed edgelist contained an odd count for a non-self-loop edge",
@@ -307,6 +308,10 @@ impl<T> Graph<T> {
 
     pub(crate) fn has_edge_ids(&self) -> bool {
         self.has_edge_ids
+    }
+
+    pub(crate) fn edge_id_dtype(&self) -> Option<DataType> {
+        self.edge_id_dtype
     }
 
     pub(crate) fn has_weights(&self) -> bool {
@@ -714,6 +719,7 @@ impl<'a> GraphBuilder<'a> {
                 None => DataType::Float32,
             },
         };
+        let edge_id_dtype = self.edge_ids.map(|(ptr, _)| Self::view_dtype(ptr)).transpose()?;
 
         let c_props = self.properties.into();
         let vertices_ptr = self.vertices.map(|(p, _)| p as *const _).unwrap_or(ptr::null());
@@ -763,6 +769,7 @@ impl<'a> GraphBuilder<'a> {
             weight_dtype,
             has_weights: self.weights.is_some(),
             has_edge_ids: self.edge_ids.is_some(),
+            edge_id_dtype,
             pending_input_completion: None,
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
@@ -897,6 +904,14 @@ impl<'a> GraphBuilder<'a> {
             if !dtype.is_supported_index_type() {
                 return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                     .with_message(format!("edge_ids dtype must be Int32 or Int64, got {dtype}")));
+            }
+            if dtype != src_dtype {
+                return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
+                    .with_message(
+                        "edge_ids must have the same dtype as src/dst to prevent silent truncation by the C API",
+                    )
+                    .with_context("edge_ids_dtype", dtype.to_string())
+                    .with_context("src_dst_dtype", src_dtype.to_string()));
             }
         }
 
@@ -1304,6 +1319,29 @@ impl Graph<Forward> {
         let resolved = sources.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::bfs", "sources")?;
         crate::traversal::bfs::bfs(handle, self, &view, params)
+    }
+
+    /// Perform breadth-first search with optional edge, vertex, and target predicates.
+    ///
+    /// Predicate inputs must already be concrete device arrays. Higher layers
+    /// are responsible for SQL planning, relation-backed edge alignment, and
+    /// logical-to-physical vertex-id mapping before calling this API.
+    pub fn bfs_with_predicates<'a, V, E>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        sources: impl Into<VertexSelection<'a, V>>,
+        params: &crate::traversal::BfsParams,
+        predicates: &crate::traversal::BfsPredicateParams<'a, V, E>,
+    ) -> Result<crate::traversal::BfsResult>
+    where
+        V: CugraphElement + 'a,
+        E: CugraphElement + 'a,
+    {
+        let sources = sources.into();
+        self.validate_vertex_selection(&sources, "Graph::bfs_with_predicates", "sources", false)?;
+        let resolved = sources.resolve(handle)?;
+        let view = self.resolved_vertex_view(&resolved, "Graph::bfs_with_predicates", "sources")?;
+        crate::traversal::bfs::bfs_with_predicates(handle, self, &view, params, predicates)
     }
 
     /// Perform single-source shortest path from one source vertex.
@@ -2120,6 +2158,26 @@ mod tests {
             .expect_err("should reject mismatched edge_ids length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("edge_ids"));
+    }
+
+    #[test]
+    fn test_graph_creation_rejects_mismatched_edge_ids_dtype() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_graph_creation_rejects_mismatched_edge_ids_dtype").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+        let edge_ids = DeviceArray::from_slice(&entered, &[10i64, 20, 30]).expect("edge_ids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_ids(&edge_ids_view)
+            .build::<Forward>(&entered)
+            .expect_err("should reject edge_ids dtype mismatch");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.message().contains("edge_ids must have the same dtype as src/dst"));
     }
 
     #[test]
