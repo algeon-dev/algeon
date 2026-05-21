@@ -38,3 +38,6 @@ __pycache__/
 # Shared local Python environment for RAPIDS/cuGraph oracle tests.
 .venv
 .venv/
+
+# Docker staging directory (populated by docker/build.sh, not checked in).
+/docker/dist/

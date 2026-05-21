@@ -13,6 +13,12 @@ pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
 pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 
+// Backend-neutral Iceberg env vars (preferred for new deployments).
+pub const DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_CATALOG_NAME";
+pub const DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_NAMESPACE";
+pub const DATAFUSION_CUDF_ICEBERG_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBERG_TABLES";
+
+// Glue-specific env vars (retained for backward compatibility).
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME";
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE";
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_WAREHOUSE";
@@ -38,8 +44,17 @@ pub struct ServerConfig {
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IcebergServerConfig {
+    /// DataFusion catalog name (e.g. "iceberg" or "glue").  Exposed as the
+    /// first part of `catalog.namespace.table` three-part addressing.
     pub catalog_name: String,
-    pub database: String,
+    /// Internal catalog handle passed to the iceberg-rust Glue catalog builder.
+    /// Independent of `catalog_name` so users can set `DATAFUSION_CUDF_ICEBERG_CATALOG_NAME=iceberg`
+    /// for Trino-style addressing without changing the Glue catalog identifier.
+    /// Defaults to "glue"; controlled only by `DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME`.
+    pub glue_catalog_handle: String,
+    /// Iceberg namespace / Glue database name (e.g. "demo_db").  Exposed as
+    /// the second part of three-part addressing.
+    pub namespace: String,
     pub warehouse: String,
     pub catalog_id: Option<String>,
     pub region: String,
@@ -126,6 +141,9 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
 #[cfg(feature = "iceberg")]
 fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConfig>> {
     let requested = values.any_present([
+        DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
@@ -136,19 +154,61 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         return Ok(None);
     }
 
-    let database = values.required_string(DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV)?;
+    // Backend-neutral DATAFUSION_CUDF_ICEBERG_NAMESPACE takes precedence; fall
+    // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE alias.
+    let namespace = values
+        .string(DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV)
+        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV))
+        .ok_or_else(|| {
+            ServerError::invalid_config(
+                DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+                "is required (also accepted as DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE)",
+            )
+        })?;
+
     let warehouse = values.required_string(DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV)?;
     let region = values
         .string(crate::iceberg::AWS_REGION_ENV)
         .or_else(|| values.string(crate::iceberg::AWS_DEFAULT_REGION_ENV))
         .ok_or_else(|| ServerError::invalid_config(crate::iceberg::AWS_REGION_ENV, "is required for Glue Iceberg"))?;
-    let tables = parse_iceberg_tables(&values.required_string(DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV)?)?;
+
+    // Backend-neutral DATAFUSION_CUDF_ICEBERG_TABLES takes precedence; fall
+    // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_TABLES alias.
+    let raw_tables = values
+        .string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV)
+        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV))
+        .ok_or_else(|| {
+            ServerError::invalid_config(
+                DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
+                "is required (also accepted as DATAFUSION_CUDF_ICEBERG_GLUE_TABLES)",
+            )
+        })?;
+    // Determine which env var was actually used for error reporting.
+    let tables_env_name = if values.string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV).is_some() {
+        DATAFUSION_CUDF_ICEBERG_TABLES_ENV
+    } else {
+        DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV
+    };
+    let tables = parse_iceberg_tables(tables_env_name, &raw_tables)?;
+
+    // Backend-neutral DATAFUSION_CUDF_ICEBERG_CATALOG_NAME takes precedence;
+    // fall back to the Glue-specific alias, then to the compiled-in default.
+    let catalog_name = values
+        .string(DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV)
+        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV))
+        .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
+
+    // glue_catalog_handle is the internal handle passed to iceberg-rust's
+    // GlueCatalogBuilder; it is independent of the DataFusion catalog_name so
+    // users can choose a different connector name without changing the Glue
+    // catalog identifier.  Controlled only by the Glue-specific env var.
+    let glue_catalog_handle =
+        values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV).unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
 
     Ok(Some(IcebergServerConfig {
-        catalog_name: values
-            .string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV)
-            .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string()),
-        database,
+        catalog_name,
+        glue_catalog_handle,
+        namespace,
         warehouse,
         catalog_id: values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV),
         region,
@@ -158,7 +218,7 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
 }
 
 #[cfg(feature = "iceberg")]
-fn parse_iceberg_tables(raw: &str) -> Result<Vec<IcebergTableRegistrationConfig>> {
+fn parse_iceberg_tables(env_name: &'static str, raw: &str) -> Result<Vec<IcebergTableRegistrationConfig>> {
     let mut tables = Vec::new();
     for entry in raw.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
         let (alias, table) = match entry.split_once('=') {
@@ -166,18 +226,12 @@ fn parse_iceberg_tables(raw: &str) -> Result<Vec<IcebergTableRegistrationConfig>
             None => (entry, entry),
         };
         if alias.is_empty() || table.is_empty() {
-            return Err(ServerError::invalid_config(
-                DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
-                "entries must be table or alias=table",
-            ));
+            return Err(ServerError::invalid_config(env_name, "entries must be table or alias=table"));
         }
         tables.push(IcebergTableRegistrationConfig { table: table.to_string(), alias: alias.to_string() });
     }
     if tables.is_empty() {
-        return Err(ServerError::invalid_config(
-            DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
-            "must contain at least one table",
-        ));
+        return Err(ServerError::invalid_config(env_name, "must contain at least one table"));
     }
     Ok(tables)
 }
@@ -185,6 +239,9 @@ fn parse_iceberg_tables(raw: &str) -> Result<Vec<IcebergTableRegistrationConfig>
 #[cfg(not(feature = "iceberg"))]
 fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
     if values.any_present([
+        DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
@@ -192,7 +249,7 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
     ]) {
         return Err(ServerError::invalid_config(
-            DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
+            DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
             "Iceberg server registration requires building with --features server,iceberg",
         ));
     }

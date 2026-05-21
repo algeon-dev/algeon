@@ -138,6 +138,7 @@ struct CugraphExecutionSession {
 }
 
 #[cfg(feature = "cugraph")]
+#[allow(dead_code)]
 impl CugraphExecutionSession {
     fn new(context: &ExecutionContext) -> Result<Self> {
         let runtime = context.shared_runtime();
@@ -159,6 +160,98 @@ impl CugraphExecutionSession {
     fn runtime(&self) -> &cudf::Runtime {
         &self.runtime
     }
+
+    /// Asserts that `egress` is the same runtime used to bind the handle.
+    ///
+    /// Call before passing a runtime into any `to_dataframe` conversion. If the
+    /// runtimes ever diverge, device-side `cudaEventRecord` +
+    /// `cudaStreamWaitEvent` ordering is required — not a host synchronize —
+    /// before copying cuGraph-produced memory into the egress stream.
+    fn assert_egress_runtime(&self, egress: &cudf::Runtime) {
+        debug_assert!(
+            std::ptr::eq(self.runtime.as_ref(), egress),
+            "cuGraph result egress runtime must be the same Arc<cudf::Runtime> used to \
+             bind the resource handle; cross-runtime result handoff requires device-side \
+             stream ordering via cudaEventRecord + cudaStreamWaitEvent"
+        );
+    }
+}
+
+/// Transposition layout as a value type, used in [`GraphCacheKey`].
+#[cfg(feature = "cugraph")]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GraphOrientation {
+    Forward,
+    Transposed,
+}
+
+/// Stable key over all dimensions that determine a materialised cuGraph graph.
+///
+/// Two plan nodes that produce the same key from the same edge source could
+/// share a single `cugraph::Graph` object. The type makes every reuse
+/// dimension explicit and is the intended key for a future thread-affine
+/// graph cache.
+///
+/// **Current executors do not cache on this key** — they rebuild the graph per
+/// node, which is conservative and correct until edge-buffer identity and
+/// GPU-resident graph lifetime management are implemented.
+///
+/// Graph reuse additionally requires:
+/// - Stable edge-buffer identity (a pointer/generation pair that survives
+///   column projection, or a content-addressable hash of device memory).
+/// - A GPU-resident lifetime model: drop the cached graph when the source
+///   `DataFrame` is released, or scope the cache to the executor task.
+/// - Verification that no algorithm mutates the graph in place (check cuGraph
+///   C API ownership semantics per algorithm).
+#[cfg(feature = "cugraph")]
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GraphCacheKey {
+    /// `Arc<cudf::Runtime>` data-pointer cast to `usize`, identifying the CUDA
+    /// device and stream pair used to build the graph. Stored as `usize` so
+    /// the key does not retain the runtime.
+    ///
+    /// **ABA risk**: this pointer is *not* a stable identifier across runtime
+    /// drops. If the captured runtime is dropped and a new `Arc<cudf::Runtime>`
+    /// is allocated at the same heap address, a stale key could falsely match
+    /// the new runtime. A future cache must therefore scope its lifetime to the
+    /// owning `ExecutionContext`'s `Arc<cudf::Runtime>` (e.g. cache lives in a
+    /// thread-local on the executor task) so the captured pointer cannot be
+    /// recycled while the cache is alive.
+    runtime_ptr: usize,
+    source_column: String,
+    destination_column: String,
+    weight_column: Option<String>,
+    construction_policy: &'static str,
+    directed: bool,
+    renumber: bool,
+    orientation: GraphOrientation,
+}
+
+#[cfg(feature = "cugraph")]
+#[allow(dead_code)]
+impl GraphCacheKey {
+    fn forward(context: &ExecutionContext, spec: &crate::plan::GraphAlgorithmSpec) -> Self {
+        Self::new(context, spec, GraphOrientation::Forward)
+    }
+
+    fn transposed(context: &ExecutionContext, spec: &crate::plan::GraphAlgorithmSpec) -> Self {
+        Self::new(context, spec, GraphOrientation::Transposed)
+    }
+
+    fn new(context: &ExecutionContext, spec: &crate::plan::GraphAlgorithmSpec, orientation: GraphOrientation) -> Self {
+        Self {
+            runtime_ptr: context.runtime() as *const cudf::Runtime as usize,
+            source_column: spec.edge_columns.source.clone(),
+            destination_column: spec.edge_columns.destination.clone(),
+            weight_column: spec.edge_columns.weight.clone(),
+            construction_policy: spec.graph_options.policy.as_str(),
+            directed: spec.graph_options.directed,
+            renumber: spec.graph_options.renumber,
+            orientation,
+        }
+    }
 }
 
 /// Prepares edges, creates a runtime-bound cuGraph handle, enters it, builds
@@ -168,6 +261,10 @@ impl CugraphExecutionSession {
 /// `context.runtime()` as the authoritative execution domain for ingress,
 /// cuGraph execution, and egress, and prevents the pattern from diverging as
 /// more algorithms are added.
+///
+/// If a future path routes graph results into a different `cudf::Runtime`
+/// stream, insert a device-side `cudaEventRecord` + `cudaStreamWaitEvent`
+/// dependency before copying — not a host synchronize.
 #[cfg(feature = "cugraph")]
 fn run_with_cugraph_graph<T, F, R>(
     context: &ExecutionContext,
@@ -196,13 +293,12 @@ where
         "cudf_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
     ))?;
-    let mut graph =
-        cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(
-            map_cugraph_error(
-                "cudf_query_engine.graph_algorithm.build_graph",
-                "failed to build cuGraph graph from edge-list table",
-            ),
-        )?;
+    let mut graph = cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(
+        map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.build_graph",
+            "failed to build cuGraph graph from edge-list table",
+        ),
+    )?;
     f(context.runtime(), &entered, &mut graph)
 }
 
@@ -286,11 +382,10 @@ fn execute_bfs(
                         .with_fact("source_vertex", params.source_vertex)
                         .with_fact("vertex_dtype", "Int32")
                     })?;
-                    let sources =
-                        cugraph::DeviceArray::from_slice(entered, &[source]).map_err(map_cugraph_error(
-                            "cudf_query_engine.graph_algorithm.bfs_source",
-                            "failed to copy BFS source vertex to device memory",
-                        ))?;
+                    let sources = cugraph::DeviceArray::from_slice(entered, &[source]).map_err(map_cugraph_error(
+                        "cudf_query_engine.graph_algorithm.bfs_source",
+                        "failed to copy BFS source vertex to device memory",
+                    ))?;
                     let sources_view = sources.view().map_err(map_cugraph_error(
                         "cudf_query_engine.graph_algorithm.bfs_source",
                         "failed to create BFS source vertex view",
@@ -304,13 +399,12 @@ fn execute_bfs(
                     ))?
                 },
                 cudf::TypeId::Int64 => {
-                    let sources =
-                        cugraph::DeviceArray::from_slice(entered, &[params.source_vertex]).map_err(
-                            map_cugraph_error(
-                                "cudf_query_engine.graph_algorithm.bfs_source",
-                                "failed to copy BFS source vertex to device memory",
-                            ),
-                        )?;
+                    let sources = cugraph::DeviceArray::from_slice(entered, &[params.source_vertex]).map_err(
+                        map_cugraph_error(
+                            "cudf_query_engine.graph_algorithm.bfs_source",
+                            "failed to copy BFS source vertex to device memory",
+                        ),
+                    )?;
                     let sources_view = sources.view().map_err(map_cugraph_error(
                         "cudf_query_engine.graph_algorithm.bfs_source",
                         "failed to create BFS source vertex view",
@@ -1170,13 +1264,12 @@ fn execute_spectral_modularity_maximization(
                 "cudf_query_engine.graph_algorithm.spectral_modularity_maximization_rng",
                 "failed to create cuGraph RNG state for SpectralModularityMaximization",
             ))?;
-            let result =
-                graph.spectral_modularity_maximization(entered, &mut rng_state, &spectral_p).map_err(
-                    map_cugraph_error(
-                        "cudf_query_engine.graph_algorithm.spectral_modularity_maximization",
-                        "cuGraph spectral_modularity_maximization failed",
-                    ),
-                )?;
+            let result = graph.spectral_modularity_maximization(entered, &mut rng_state, &spectral_p).map_err(
+                map_cugraph_error(
+                    "cudf_query_engine.graph_algorithm.spectral_modularity_maximization",
+                    "cuGraph spectral_modularity_maximization failed",
+                ),
+            )?;
             let algorithm_metadata = format!("n_clusters={},seed={}", n_clusters, seed);
             let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
                 "cudf_query_engine.graph_algorithm.spectral_modularity_maximization_result",
@@ -1222,12 +1315,11 @@ fn execute_balanced_cut_clustering(
                 "cudf_query_engine.graph_algorithm.balanced_cut_clustering_rng",
                 "failed to create cuGraph RNG state for BalancedCutClustering",
             ))?;
-            let result = graph.balanced_cut_clustering(entered, &mut rng_state, &spectral_p).map_err(
-                map_cugraph_error(
+            let result =
+                graph.balanced_cut_clustering(entered, &mut rng_state, &spectral_p).map_err(map_cugraph_error(
                     "cudf_query_engine.graph_algorithm.balanced_cut_clustering",
                     "cuGraph balanced_cut_clustering failed",
-                ),
-            )?;
+                ))?;
             let algorithm_metadata = format!("n_clusters={},seed={}", n_clusters, seed);
             let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
                 "cudf_query_engine.graph_algorithm.balanced_cut_clustering_result",
@@ -1585,12 +1677,13 @@ fn bfs_params(params: &crate::plan::GraphBfsParams) -> Result<cugraph::traversal
 
 #[cfg(feature = "cugraph")]
 fn louvain_params(params: &crate::plan::GraphLouvainParams) -> Result<cugraph::community::LouvainParams> {
-    let mut cugraph_params = cugraph::community::LouvainParams::default();
-    cugraph_params.resolution = cugraph::params::PositiveF64::new(params.resolution).map_err(map_cugraph_error(
-        "cudf_query_engine.graph_algorithm.louvain_params",
-        "invalid cuGraph Louvain resolution",
-    ))?;
-    Ok(cugraph_params)
+    Ok(cugraph::community::LouvainParams {
+        resolution: cugraph::params::PositiveF64::new(params.resolution).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.louvain_params",
+            "invalid cuGraph Louvain resolution",
+        ))?,
+        ..cugraph::community::LouvainParams::default()
+    })
 }
 
 #[cfg(feature = "cugraph")]
