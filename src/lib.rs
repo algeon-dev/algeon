@@ -61,6 +61,11 @@ pub use graph_sql::{
     cugraph_table_functions, parse_cugraph_algorithm_spec, register_cugraph_udtfs, stable_result_schema,
 };
 #[cfg(feature = "iceberg")]
+pub use iceberg::catalog::{
+    CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, GlueIcebergCatalogBackend, GlueIcebergCatalogConfig,
+    IcebergCatalogBackend, build_catalog_provider_from_backend,
+};
+#[cfg(feature = "iceberg")]
 pub use iceberg::{
     CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
     GlueIcebergTableRegistration, IcebergTableFormatPlanner, LoadedGlueIcebergTable,

@@ -9,12 +9,16 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int32Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use datafusion::catalog::{MemoryCatalogProvider, MemorySchemaProvider};
-use datafusion::common::TableReference;
-use datafusion::datasource::{MemTable, TableProvider};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use arrow::{
+    array::{Int32Array, RecordBatch, StringArray},
+    datatypes::{DataType, Field, Schema},
+};
+use datafusion::{
+    catalog::{MemoryCatalogProvider, MemorySchemaProvider},
+    common::TableReference,
+    datasource::{MemTable, TableProvider},
+    prelude::{SessionConfig, SessionContext},
+};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -52,8 +56,7 @@ fn register_test_table(
 ) {
     let schema = nation_schema();
     let batch = nation_batch();
-    let provider: Arc<dyn TableProvider> =
-        Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    let provider: Arc<dyn TableProvider> = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
 
     // Ensure catalog exists.
     if ctx.catalog(catalog_name).is_none() {
@@ -63,22 +66,16 @@ fn register_test_table(
 
     // Ensure schema/namespace exists.
     if catalog.schema(namespace).is_none() {
-        catalog
-            .register_schema(namespace, Arc::new(MemorySchemaProvider::new()))
-            .unwrap();
+        catalog.register_schema(namespace, Arc::new(MemorySchemaProvider::new())).unwrap();
     }
 
     // Three-part: catalog.namespace.real_table_name
-    ctx.register_table(TableReference::full(catalog_name, namespace, real_table_name), Arc::clone(&provider))
-        .unwrap();
+    ctx.register_table(TableReference::full(catalog_name, namespace, real_table_name), Arc::clone(&provider)).unwrap();
 
     // Three-part alias when it differs from the real table name.
     if matches!(alias, Some(a) if a != real_table_name) {
-        ctx.register_table(
-            TableReference::full(catalog_name, namespace, alias.unwrap()),
-            Arc::clone(&provider),
-        )
-        .unwrap();
+        ctx.register_table(TableReference::full(catalog_name, namespace, alias.unwrap()), Arc::clone(&provider))
+            .unwrap();
     }
 
     // Bare alias for backward compatibility.
@@ -234,13 +231,7 @@ async fn select_from_three_part_alias_returns_rows() {
     let ctx = SessionContext::new();
     register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
 
-    let batches = ctx
-        .sql("SELECT n_nationkey FROM glue.demo_db.nation")
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
+    let batches = ctx.sql("SELECT n_nationkey FROM glue.demo_db.nation").await.unwrap().collect().await.unwrap();
 
     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(row_count, 3, "three-part alias SELECT must return 3 rows");
@@ -262,13 +253,7 @@ async fn bare_alias_resolves_when_alias_equals_real_table_name() {
     // When no alias is provided (alias == real_table_name), bare path must still work.
     register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("tpch_sf1_nation"));
 
-    let batches = ctx
-        .sql("SELECT n_nationkey FROM tpch_sf1_nation")
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
+    let batches = ctx.sql("SELECT n_nationkey FROM tpch_sf1_nation").await.unwrap().collect().await.unwrap();
     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(row_count, 3, "bare path should return rows when alias == real table name");
 }
@@ -300,5 +285,9 @@ async fn select_with_where_clause_via_three_part_name() {
         })
         .collect();
 
-    assert_eq!(names, vec!["ARGENTINA", "BRAZIL"], "WHERE filter on three-part SELECT should return n_regionkey=1 rows");
+    assert_eq!(
+        names,
+        vec!["ARGENTINA", "BRAZIL"],
+        "WHERE filter on three-part SELECT should return n_regionkey=1 rows"
+    );
 }
