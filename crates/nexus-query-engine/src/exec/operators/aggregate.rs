@@ -49,16 +49,18 @@ pub(in crate::exec) use host_exact::{
 };
 use partial_execute::{
     execute_encoded_key_partial_aggregate_with_budget, execute_prepared_sort_groupby_partial_aggregate_with_budget,
-    execute_prepared_sort_groupby_single_aggregate_with_budget,
+    execute_prepared_sort_groupby_single_aggregate_with_budget, prepare_prepared_sort_groupby_with_budget,
 };
 use partial_strategy::{
     add_exact_grouped_key_cardinality_probe_facts, add_exact_single_key_cardinality_probe_facts,
-    exact_cardinality_probe_should_select_prepared_sort_groupby_with_options, exact_grouped_key_cardinality_probe,
-    exact_grouped_key_cardinality_probe_candidate_with_options,
+    add_prepared_sort_groupby_facts, exact_cardinality_probe_should_select_prepared_sort_groupby_with_options,
+    exact_grouped_key_cardinality_probe, exact_grouped_key_cardinality_probe_candidate_with_options,
     exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options,
     exact_single_key_cardinality_probe, exact_single_key_cardinality_probe_candidate_with_options,
-    reject_prepared_sort_groupby_for_exact_cardinality, select_partial_aggregate_strategy_decision_with_options,
-    select_prepared_sort_groupby_for_exact_cardinality, source_chunk_structural_part, stable_fnv1a64,
+    prepared_sort_groupby_should_select_for_runtime_facts, reject_prepared_sort_groupby_for_exact_cardinality,
+    reject_prepared_sort_groupby_for_runtime_facts, select_partial_aggregate_strategy_decision_with_options,
+    select_prepared_sort_groupby_for_exact_cardinality, select_prepared_sort_groupby_for_runtime_facts,
+    source_adjacent_prepared_sort_groupby_runtime_candidate, source_chunk_structural_part, stable_fnv1a64,
 };
 pub(in crate::exec) use partial_strategy::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
@@ -987,6 +989,55 @@ fn execute_partial_aggregate_with_budget_single_pass(
             decision = reject_prepared_sort_groupby_for_exact_cardinality(decision);
         }
     }
+    let mut prepared_partial_input = None;
+    let mut prepared_preflight_elapsed = Duration::ZERO;
+    if source_adjacent_prepared_sort_groupby_runtime_candidate(
+        &decision,
+        input_rows,
+        input_evidence,
+        aggregate_strategy_options,
+    ) {
+        let preflight_timer = Instant::now();
+        match prepare_prepared_sort_groupby_with_budget(
+            context,
+            &frame,
+            &aggregate,
+            token,
+            metrics,
+            "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby_runtime_preflight",
+        ) {
+            Ok((prepared, preflight_elapsed)) => {
+                let facts = prepared.prepared_facts();
+                add_prepared_sort_groupby_facts(
+                    &mut decision,
+                    facts.num_groups,
+                    facts.grouped_key_output_bytes,
+                    facts.max_group_size,
+                );
+                if prepared_sort_groupby_should_select_for_runtime_facts(
+                    &decision,
+                    input_rows,
+                    facts.num_groups,
+                    aggregate_strategy_options,
+                ) {
+                    decision = select_prepared_sort_groupby_for_runtime_facts(decision);
+                    prepared_partial_input = Some((prepared, preflight_elapsed));
+                } else {
+                    decision = reject_prepared_sort_groupby_for_runtime_facts(decision);
+                    prepared_preflight_elapsed = preflight_elapsed;
+                }
+            },
+            Err(error) => {
+                let Some(declined) =
+                    decline_prepared_sort_groupby_runtime_preflight_for_resource_error(decision, &error)
+                else {
+                    return Err(error);
+                };
+                decision = declined;
+                prepared_preflight_elapsed = preflight_timer.elapsed();
+            },
+        }
+    }
     if decision.selected_strategy == AggregateExecutionStrategy::EncodedKeyPartial {
         return execute_encoded_key_partial_aggregate_with_budget(
             context,
@@ -1013,10 +1064,10 @@ fn execute_partial_aggregate_with_budget_single_pass(
             prepared_input_schema,
             aggregate_output_schema,
             aggregate,
-            expected_output_names,
             decision,
             selection_elapsed,
             input_evidence,
+            prepared_partial_input,
             token,
             metrics,
         );
@@ -1024,6 +1075,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
+    let groupby_timer = Instant::now();
     let mut output = match execute_groupby_aggregate_with_budget_observed(
         Some(context),
         &overrides,
@@ -1036,6 +1088,8 @@ fn execute_partial_aggregate_with_budget_single_pass(
     ) {
         Ok(output) => output,
         Err(error) => {
+            let elapsed = timer.elapsed().saturating_add(prepared_preflight_elapsed);
+            let groupby_elapsed = groupby_timer.elapsed().saturating_add(prepared_preflight_elapsed);
             record_grouped_aggregate_strategy_decision(
                 metrics,
                 node_id.map(|id| id.to_string()),
@@ -1049,9 +1103,9 @@ fn execute_partial_aggregate_with_budget_single_pass(
                 decision.clone(),
                 selection_elapsed,
                 Duration::ZERO,
-                timer.elapsed(),
+                groupby_elapsed,
                 Duration::ZERO,
-                timer.elapsed(),
+                elapsed,
                 input_evidence,
             );
             return Err(error);
@@ -1065,7 +1119,8 @@ fn execute_partial_aggregate_with_budget_single_pass(
             error,
         )
     })?;
-    let elapsed = timer.elapsed();
+    let elapsed = timer.elapsed().saturating_add(prepared_preflight_elapsed);
+    let groupby_elapsed = groupby_timer.elapsed().saturating_add(prepared_preflight_elapsed);
     let output_rows = output.num_rows() as u64;
     metrics.operator_time += elapsed;
     record_grouped_aggregate_strategy_decision(
@@ -1081,10 +1136,22 @@ fn execute_partial_aggregate_with_budget_single_pass(
         decision,
         selection_elapsed,
         Duration::ZERO,
-        elapsed,
+        groupby_elapsed,
         Duration::ZERO,
         elapsed,
         input_evidence,
     );
     Ok(GpuDataFrame::new(output))
+}
+
+fn decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
+    mut decision: AggregateStrategyCapabilityDecision,
+    error: &QueryError,
+) -> Option<AggregateStrategyCapabilityDecision> {
+    if !crate::exec::retry::is_retryable_resource_error(error) {
+        return None;
+    }
+    decision.facts.insert("prepared_sort_groupby_runtime_preflight_status", "declined_resource_error".to_string());
+    decision.facts.insert("prepared_sort_groupby_runtime_preflight_error_code", error.code().as_str().to_string());
+    Some(decision)
 }

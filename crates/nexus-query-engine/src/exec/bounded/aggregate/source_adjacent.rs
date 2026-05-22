@@ -57,17 +57,15 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
+    let partitioner = source_adjacent_aggregate_partitioner(bounded);
     let estimated_input_bytes = chunks
         .iter()
         .filter_map(|chunk| chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes))
         .sum::<u64>()
         .max(1);
-    let partition_count = partitioned_aggregate_partition_count(context, estimated_input_bytes)
-        .max(source_adjacent_partitioned_aggregate_min_partition_count(chunks.len()));
-    let partitioner = source_adjacent_aggregate_partitioner(context, bounded, estimated_input_bytes, chunks.len());
-    let mut partition_inputs =
-        (0..partition_count).map(|_| Vec::new()).collect::<Vec<Vec<SourceAdjacentPartitionInput>>>();
-    let mut aggregate_outputs = Vec::with_capacity(partition_count);
+    let mut partition_count = None;
+    let mut partition_inputs: Option<Vec<Vec<SourceAdjacentPartitionInput>>> = None;
+    let mut aggregate_outputs = Vec::new();
 
     let source_batches = source_adjacent_raw_source_batches(context, bounded, chunks);
     let mut committed_source_batches = Vec::with_capacity(source_batches.len());
@@ -76,30 +74,47 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         {
             Ok(raw_inputs) => raw_inputs,
             Err(error) => {
-                release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
+                release_nested_partition_inputs_reverse(
+                    reservations,
+                    partition_inputs.take().unwrap_or_default(),
+                    metrics,
+                );
                 release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                 return Err(error);
             },
         };
         for (batch_chunks, raw) in raw_inputs {
             let chunk_index = batch_chunks.first().expect("raw source batch has at least one chunk").chunk_index;
+            let current_partition_count = *partition_count.get_or_insert_with(|| {
+                let count = partitioned_aggregate_partition_count(context, estimated_input_bytes)
+                    .max(source_adjacent_partitioned_aggregate_min_partition_count(chunks.len()));
+                partition_inputs =
+                    Some((0..count).map(|_| Vec::new()).collect::<Vec<Vec<SourceAdjacentPartitionInput>>>());
+                aggregate_outputs.reserve(count);
+                count
+            });
             let partitions = match partition_source_adjacent_raw_chunk(
                 context,
                 bounded.aggregate_id,
                 chunk_index,
                 raw.partial,
-                partition_count,
+                current_partition_count,
                 &partitioner,
                 reservations,
                 metrics,
             ) {
                 Ok(partitions) => partitions,
                 Err(error) => {
-                    release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
+                    release_nested_partition_inputs_reverse(
+                        reservations,
+                        partition_inputs.take().unwrap_or_default(),
+                        metrics,
+                    );
                     release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                     return Err(error);
                 },
             };
+            let partition_inputs = partition_inputs.as_mut().expect("partition count initializes partition inputs");
             for (partition_index, partition) in partitions.into_iter().enumerate() {
                 if let Some(partition) = partition {
                     // Observe partition skew as live row counts; oversized patches still
@@ -115,30 +130,41 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             }
             committed_source_batches.push((batch_chunks.len() as u64, raw.source_row_group_count));
         }
-        for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
-            if source_adjacent_partition_batch_ready(context, inputs) {
+        let current_partition_count = partition_count.expect("raw source input initializes partition count");
+        let mut partition_error = None;
+        {
+            let partition_inputs = partition_inputs.as_mut().expect("partition count initializes partition inputs");
+            for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
+                if !source_adjacent_partition_batch_ready(context, inputs) {
+                    continue;
+                }
                 match execute_source_adjacent_partition_aggregate_batch(
                     context,
                     bounded,
                     partition_index,
-                    partition_count,
+                    current_partition_count,
                     &partitioner,
                     inputs,
                     reservations,
                     metrics,
                 ) {
-                    Ok(mut outputs) => aggregate_outputs.append(&mut outputs),
+                    Ok(outputs) => aggregate_outputs.extend(outputs),
                     Err(error) => {
-                        release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
-                        release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
-                        return Err(error);
+                        partition_error = Some(error);
+                        break;
                     },
                 }
             }
         }
+        if let Some(error) = partition_error {
+            release_nested_partition_inputs_reverse(reservations, partition_inputs.take().unwrap_or_default(), metrics);
+            release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
+            return Err(error);
+        }
     }
 
-    for (partition_index, mut inputs) in partition_inputs.into_iter().enumerate() {
+    let partition_count = partition_count.unwrap_or(1);
+    for (partition_index, mut inputs) in partition_inputs.take().unwrap_or_default().into_iter().enumerate() {
         if inputs.is_empty() {
             continue;
         }
@@ -385,12 +411,7 @@ fn execute_source_adjacent_partition_aggregate_batch(
         .collect())
 }
 
-fn source_adjacent_aggregate_partitioner(
-    _context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    _estimated_input_bytes: u64,
-    _chunk_count: usize,
-) -> SourceAdjacentAggregatePartitioner {
+fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdjacentAggregatePartitioner {
     let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     };

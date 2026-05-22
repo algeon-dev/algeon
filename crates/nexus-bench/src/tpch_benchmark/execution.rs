@@ -89,10 +89,9 @@ async fn plan_native_query_with_resources(
 ) -> DataFusionResult<PlannedNativeQuery> {
     let optimizer_config = native_optimizer_config(config, resources);
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(native_session_config(config))
-        .with_nexus_native_rule(Arc::clone(&native_rule))
-        .build();
+    let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
+    let builder = resources.install_on(builder)?;
+    let state = builder.with_nexus_native_rule(Arc::clone(&native_rule)).build();
     let ctx = SessionContext::new_with_state(state);
     dataset::register_tpch_tables(&ctx, metadata).await?;
     let df = ctx.sql(query.sql).await?;
@@ -107,13 +106,11 @@ pub(super) fn native_optimizer_config(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
 ) -> NexusNativeOptimizerConfig {
-    config
-        .native_execution
-        .configure_native_optimizer(
-            NexusNativeOptimizerConfig::default()
-                .with_native_execution_config(config.native_execution_config_with_resources(resources)),
-        )
-        .expect("native TPC-H benchmark installs the native rule")
+    let base = resources.optimizer_config().unwrap_or_else(|| {
+        NexusNativeOptimizerConfig::default()
+            .with_native_execution_config(config.native_execution_config_with_resources(resources))
+    });
+    config.native_execution.configure_native_optimizer(base).expect("native TPC-H benchmark installs the native rule")
 }
 
 fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {

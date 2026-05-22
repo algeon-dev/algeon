@@ -1,4 +1,5 @@
 use super::*;
+use crate::report_workload::tpcds::{build_tpcds_gpu_backend, close_tpcds_gpu_backend};
 
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
@@ -27,9 +28,13 @@ impl BenchConfig {
         if iterations == 0 {
             return Err("NEXUS_TPCDS_BENCH_ITERATIONS must be >= 1".into());
         }
-        let native_profile = match engine {
-            Engine::CpuDataFusion => tpcds_native_profile_settings_with_env(|_| None),
-            Engine::NativeGpu | Engine::CostDeclinedDataFusion => tpcds_native_profile_settings_from_env(),
+        let (native_profile, native_device_memory_limit) = match engine {
+            Engine::CpuDataFusion => {
+                (tpcds_native_profile_settings_with_env(|_| None), GpuDeviceMemoryLimit::default())
+            },
+            Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
+                tpcds_native_profile_settings_and_device_memory_limit_from_env()
+            },
         };
         Ok(Self {
             engine,
@@ -38,6 +43,7 @@ impl BenchConfig {
             warmups,
             iterations,
             native_profile,
+            native_device_memory_limit,
             relational_execution: match engine {
                 Engine::CpuDataFusion => RelationalExecutionSelection::CpuBaseline,
                 Engine::NativeGpu => RelationalExecutionSelection::strict_native(),
@@ -73,7 +79,13 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             let session_config = tuned_cpu_session_config();
             let ctx = SessionContext::new_with_config(session_config);
             register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
-            Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cost_declined: false })
+            Ok(BenchRuntime {
+                execution_ctx: ctx,
+                optimizer: None,
+                native_planning: None,
+                skip_cost_declined: false,
+                backend: None,
+            })
         },
         Engine::NativeGpu => {
             let optimizer_config = cfg
@@ -82,18 +94,31 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
                     &cfg.native_profile,
                 ))
                 .expect("native GPU benchmark installs the native rule");
-            let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
-            let state = SessionStateBuilder::new_with_default_features()
-                .with_config(tpcds_native_report_session_config())
-                .with_nexus_native_rule(Arc::clone(&rule))
-                .build();
-            let ctx = SessionContext::new_with_state(state);
-            register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
+            let backend = build_tpcds_gpu_backend(optimizer_config, cfg.native_device_memory_limit)?;
+            let native = async {
+                let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
+                let builder =
+                    SessionStateBuilder::new_with_default_features().with_config(tpcds_native_report_session_config());
+                let builder = backend.install_on(builder)?;
+                let state = builder.with_nexus_native_rule(Arc::clone(&rule)).build();
+                let ctx = SessionContext::new_with_state(state);
+                register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
+                Ok((ctx, rule))
+            }
+            .await;
+            let (ctx, rule) = match native {
+                Ok(native) => native,
+                Err(error) => {
+                    let _ = close_tpcds_gpu_backend(backend);
+                    return Err(error);
+                },
+            };
             Ok(BenchRuntime {
                 execution_ctx: ctx,
                 optimizer: Some(rule),
                 native_planning: None,
                 skip_cost_declined: true,
+                backend: Some(backend),
             })
         },
         Engine::CostDeclinedDataFusion => {
@@ -106,6 +131,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
                 optimizer: None,
                 native_planning: Some(NativePlanningRuntime { ctx: native_ctx, optimizer }),
                 skip_cost_declined: false,
+                backend: None,
             })
         },
     }

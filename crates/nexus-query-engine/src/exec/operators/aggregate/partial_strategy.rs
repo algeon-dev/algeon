@@ -140,6 +140,74 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     }
 }
 
+pub(super) fn source_adjacent_prepared_sort_groupby_runtime_candidate(
+    decision: &AggregateStrategyCapabilityDecision,
+    input_rows: u64,
+    input_evidence: Option<PartialAggregateInputEvidence>,
+    options: AggregateStrategyExecutionOptions,
+) -> bool {
+    if decision.selected_strategy != AggregateExecutionStrategy::LibcudfGroupby
+        || !prepared_sort_groupby_contract_available(decision)
+        || input_rows < options.encoded_key_partial_min_input_rows()
+    {
+        return false;
+    }
+    let Some(evidence) = input_evidence else {
+        return false;
+    };
+    evidence.source_adjacent_partial
+        && evidence.source_adjacent_partition_strategy == "group_key"
+        && evidence.source_adjacent_partition_key_count.is_some_and(|key_count| key_count > 0)
+        && evidence
+            .source_adjacent_max_partition_fan_in
+            .is_some_and(|fan_in| fan_in <= options.source_adjacent_prepared_sort_groupby_max_fan_in())
+}
+
+pub(super) fn add_prepared_sort_groupby_facts(
+    decision: &mut AggregateStrategyCapabilityDecision,
+    num_groups: usize,
+    grouped_key_output_bytes: usize,
+    max_group_size: usize,
+) {
+    decision.facts.insert("prepared_sort_groupby_num_groups", num_groups.to_string());
+    decision.facts.insert("prepared_sort_groupby_grouped_key_output_bytes", grouped_key_output_bytes.to_string());
+    decision.facts.insert("prepared_sort_groupby_max_group_size", max_group_size.to_string());
+}
+
+pub(super) fn prepared_sort_groupby_should_select_for_runtime_facts(
+    decision: &AggregateStrategyCapabilityDecision,
+    input_rows: u64,
+    num_groups: usize,
+    options: AggregateStrategyExecutionOptions,
+) -> bool {
+    exact_cardinality_probe_values_should_select_prepared_sort_groupby(
+        decision,
+        num_groups as u64,
+        reduction_ratio_ppm(input_rows, num_groups as u64),
+        options,
+    )
+}
+
+pub(super) fn select_prepared_sort_groupby_for_runtime_facts(
+    decision: AggregateStrategyCapabilityDecision,
+) -> AggregateStrategyCapabilityDecision {
+    select_prepared_sort_groupby_with_cost_model(
+        decision,
+        "selected_runtime_prepared_groupby",
+        "runtime_preflight_exact_grouped_key_facts",
+    )
+}
+
+pub(super) fn reject_prepared_sort_groupby_for_runtime_facts(
+    decision: AggregateStrategyCapabilityDecision,
+) -> AggregateStrategyCapabilityDecision {
+    reject_prepared_sort_groupby_with_cost_model(
+        decision,
+        "prepared_sort_groupby_runtime_preflight_high_cardinality",
+        "runtime_preflight_exact_grouped_key_facts_above_threshold",
+    )
+}
+
 pub(in crate::exec::operators::aggregate) fn add_aggregate_strategy_execution_option_facts(
     facts: &mut BTreeMap<&'static str, String>,
     options: AggregateStrategyExecutionOptions,
@@ -777,51 +845,35 @@ fn large_variable_width_partial_envelope(
 }
 
 fn select_prepared_sort_groupby_for_prior_cardinality(
-    mut decision: AggregateStrategyCapabilityDecision,
+    decision: AggregateStrategyCapabilityDecision,
 ) -> AggregateStrategyCapabilityDecision {
-    decision.selected_strategy = AggregateExecutionStrategy::PreparedSortGroupby;
-    decision.facts.insert("selected_strategy", AggregateExecutionStrategy::PreparedSortGroupby.as_str().to_string());
-    decision.facts.insert("prepared_sort_groupby_rejected_reason", "none".to_string());
-    decision.facts.insert("prepared_sort_groupby_cost_model_status", "selected_prior_low_cardinality".to_string());
-    decision
-        .facts
-        .insert("prepared_sort_groupby_selection_reason", "prior_reduction_ratio_at_or_below_threshold".to_string());
-    decision.rejected_candidates.retain(|rejection| {
-        rejection.strategy != AggregateExecutionStrategy::PreparedSortGroupby
-            && rejection.strategy != AggregateExecutionStrategy::EncodedKeyPartial
-    });
-    if decision.facts.get("encoded_key_partial_contract_status").map(String::as_str) == Some("available") {
-        decision.facts.insert(
-            "encoded_key_partial_rejected_reason",
-            "encoded_key_partial_superseded_by_prepared_sort_groupby".to_string(),
-        );
-        decision.facts.insert("encoded_key_partial_cost_model_status", "not_selected".to_string());
-        decision.facts.insert("encoded_key_partial_selection_reason", "prepared_sort_groupby_selected".to_string());
-        decision.rejected_candidates.insert(
-            0,
-            AggregateStrategyCandidateRejection {
-                strategy: AggregateExecutionStrategy::EncodedKeyPartial,
-                reason: "encoded_key_partial_superseded_by_prepared_sort_groupby",
-            },
-        );
-    }
-    update_rejected_candidate_summary(&mut decision);
-    decision
+    select_prepared_sort_groupby_with_cost_model(
+        decision,
+        "selected_prior_low_cardinality",
+        "prior_reduction_ratio_at_or_below_threshold",
+    )
 }
 
 pub(super) fn select_prepared_sort_groupby_for_exact_cardinality(
+    decision: AggregateStrategyCapabilityDecision,
+) -> AggregateStrategyCapabilityDecision {
+    select_prepared_sort_groupby_with_cost_model(
+        decision,
+        "selected_exact_cardinality_low_cardinality",
+        "exact_cardinality_reduction_ratio_at_or_below_threshold",
+    )
+}
+
+fn select_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
+    cost_model_status: &'static str,
+    selection_reason: &'static str,
 ) -> AggregateStrategyCapabilityDecision {
     decision.selected_strategy = AggregateExecutionStrategy::PreparedSortGroupby;
     decision.facts.insert("selected_strategy", AggregateExecutionStrategy::PreparedSortGroupby.as_str().to_string());
     decision.facts.insert("prepared_sort_groupby_rejected_reason", "none".to_string());
-    decision
-        .facts
-        .insert("prepared_sort_groupby_cost_model_status", "selected_exact_cardinality_low_cardinality".to_string());
-    decision.facts.insert(
-        "prepared_sort_groupby_selection_reason",
-        "exact_cardinality_reduction_ratio_at_or_below_threshold".to_string(),
-    );
+    decision.facts.insert("prepared_sort_groupby_cost_model_status", cost_model_status.to_string());
+    decision.facts.insert("prepared_sort_groupby_selection_reason", selection_reason.to_string());
     decision.rejected_candidates.retain(|rejection| {
         rejection.strategy != AggregateExecutionStrategy::PreparedSortGroupby
             && rejection.strategy != AggregateExecutionStrategy::EncodedKeyPartial
@@ -846,32 +898,38 @@ pub(super) fn select_prepared_sort_groupby_for_exact_cardinality(
 }
 
 pub(super) fn reject_prepared_sort_groupby_for_exact_cardinality(
+    decision: AggregateStrategyCapabilityDecision,
+) -> AggregateStrategyCapabilityDecision {
+    reject_prepared_sort_groupby_with_cost_model(
+        decision,
+        "prepared_sort_groupby_exact_cardinality_high_cardinality",
+        "exact_cardinality_reduction_ratio_above_threshold",
+    )
+}
+
+fn reject_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
+    rejection_reason: &'static str,
+    selection_reason: &'static str,
 ) -> AggregateStrategyCapabilityDecision {
     if !prepared_sort_groupby_contract_available(&decision) {
         return decision;
     }
     decision.selected_strategy = AggregateExecutionStrategy::LibcudfGroupby;
     decision.facts.insert("selected_strategy", AggregateExecutionStrategy::LibcudfGroupby.as_str().to_string());
-    decision.facts.insert(
-        "prepared_sort_groupby_rejected_reason",
-        "prepared_sort_groupby_exact_cardinality_high_cardinality".to_string(),
-    );
+    decision.facts.insert("prepared_sort_groupby_rejected_reason", rejection_reason.to_string());
     decision.facts.insert("prepared_sort_groupby_cost_model_status", "rejected_by_cost_model".to_string());
-    decision.facts.insert(
-        "prepared_sort_groupby_selection_reason",
-        "exact_cardinality_reduction_ratio_above_threshold".to_string(),
-    );
+    decision.facts.insert("prepared_sort_groupby_selection_reason", selection_reason.to_string());
     if let Some(rejection) = decision
         .rejected_candidates
         .iter_mut()
         .find(|rejection| rejection.strategy == AggregateExecutionStrategy::PreparedSortGroupby)
     {
-        rejection.reason = "prepared_sort_groupby_exact_cardinality_high_cardinality";
+        rejection.reason = rejection_reason;
     } else {
         decision.rejected_candidates.push(AggregateStrategyCandidateRejection {
             strategy: AggregateExecutionStrategy::PreparedSortGroupby,
-            reason: "prepared_sort_groupby_exact_cardinality_high_cardinality",
+            reason: rejection_reason,
         });
     }
     update_rejected_candidate_summary(&mut decision);

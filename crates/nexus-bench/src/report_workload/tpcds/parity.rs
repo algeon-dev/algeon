@@ -13,6 +13,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::NexusGpuBackend,
     native_report::{
         NativePlanningFailure, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
         NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow,
@@ -26,8 +27,8 @@ use nexus_workloads::tpcds::TpcdsQuery;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{
-    TPCDS_QUERIES, TPCDS_TABLES, WorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
-    register_tpcds_tables_with_native_metadata,
+    TPCDS_QUERIES, TPCDS_TABLES, WorkloadResult, build_tpcds_gpu_backend, close_tpcds_gpu_backend,
+    discover_tpcds_table_layout, native_tpcds_session_config, register_tpcds_tables_with_native_metadata,
 };
 
 /// External oracle configuration for TPC-DS parity runs.
@@ -81,7 +82,16 @@ pub async fn tpcds_parity_workload_items(
     optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
 ) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
-    tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
+    tpcds_parity_workload_items_with_session_configs_and_external_oracles(
+        root,
+        session_config.clone(),
+        session_config,
+        optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        query_filter,
+        None,
+    )
+    .await
 }
 
 /// Build parity workload items using distinct CPU and native session configs.
@@ -100,6 +110,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
         cpu_session_config,
         native_session_config,
         optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
         query_filter,
         None,
     )
@@ -124,6 +135,7 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
         session_config.clone(),
         session_config,
         optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
         query_filter,
         external_oracles,
     )
@@ -144,11 +156,35 @@ pub async fn tpcds_parity_report_rows_with_external_oracles(
     float_tolerance: ParityFloatTolerance,
     progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
 ) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
+    tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
+        root,
+        session_config,
+        optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        query_filter,
+        external_oracles,
+        float_tolerance,
+        progress,
+    )
+    .await
+}
+
+pub async fn tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
+    float_tolerance: ParityFloatTolerance,
+    progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
+) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
     tpcds_parity_report_rows_with_session_configs_and_external_oracles(
         root,
         session_config.clone(),
         session_config,
         optimizer_config,
+        device_memory_limit,
         query_filter,
         external_oracles,
         float_tolerance,
@@ -162,10 +198,13 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
-    let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
+    let runner =
+        TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config, device_memory_limit)
+            .await?;
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
         if !is_query_selected(query.id, query_filter) {
@@ -174,6 +213,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
 
         items.push(runner.run_query(root, query, external_oracles.as_ref()).await);
     }
+    runner.close()?;
     Ok(items)
 }
 
@@ -182,12 +222,15 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
     mut progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
 ) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
-    let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
+    let runner =
+        TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config, device_memory_limit)
+            .await?;
     let selected: Vec<_> = TPCDS_QUERIES.iter().filter(|query| is_query_selected(query.id, query_filter)).collect();
     let total = selected.len();
     let mut rows = Vec::with_capacity(total);
@@ -204,6 +247,7 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
         }
         rows.push(row);
     }
+    runner.close()?;
     Ok(rows)
 }
 
@@ -212,6 +256,7 @@ struct TpcdsParityRunner {
     cpu_stats_fallback_ctx: Option<SessionContext>,
     native_ctx: SessionContext,
     native_rule: Arc<NexusNativePhysicalOptimizerRule>,
+    backend: NexusGpuBackend,
 }
 
 impl TpcdsParityRunner {
@@ -220,6 +265,7 @@ impl TpcdsParityRunner {
         cpu_session_config: SessionConfig,
         native_session_config: SessionConfig,
         optimizer_config: NexusNativeOptimizerConfig,
+        device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
     ) -> WorkloadResult<Self> {
         let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
             let mut fallback_config = cpu_session_config.clone();
@@ -232,16 +278,34 @@ impl TpcdsParityRunner {
         };
         let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
         register_tpcds_tables_with_native_metadata(&cpu_ctx, root).await?;
+        let cpu_contexts = (cpu_ctx, cpu_stats_fallback_ctx);
 
-        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
-        let native_state = SessionStateBuilder::new_with_default_features()
-            .with_config(native_tpcds_session_config(native_session_config))
-            .with_nexus_native_rule(Arc::clone(&native_rule))
-            .build();
-        let native_ctx = SessionContext::new_with_state(native_state);
-        register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;
+        let backend = build_tpcds_gpu_backend(optimizer_config, device_memory_limit)?;
+        let native = async {
+            let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
+            let builder = SessionStateBuilder::new_with_default_features()
+                .with_config(native_tpcds_session_config(native_session_config));
+            let builder = backend
+                .install_on(builder)
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let native_state = builder.with_nexus_native_rule(Arc::clone(&native_rule)).build();
+            let native_ctx = SessionContext::new_with_state(native_state);
+            register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;
+            Ok((native_ctx, native_rule))
+        }
+        .await;
+        let (native_ctx, native_rule) = match native {
+            Ok(native) => native,
+            Err(error) => {
+                // Release setup contexts before closing their backend owner.
+                drop(cpu_contexts);
+                let _ = close_tpcds_gpu_backend(backend);
+                return Err(error);
+            },
+        };
+        let (cpu_ctx, cpu_stats_fallback_ctx) = cpu_contexts;
 
-        Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule })
+        Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule, backend })
     }
 
     async fn run_query(
@@ -265,6 +329,15 @@ impl TpcdsParityRunner {
             native_runtime,
             duckdb_output,
         }
+    }
+
+    fn close(self) -> WorkloadResult<()> {
+        let Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule, backend } = self;
+        let backend = {
+            let _contexts = (cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule);
+            backend
+        };
+        close_tpcds_gpu_backend(backend)
     }
 }
 

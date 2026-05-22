@@ -26,6 +26,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::NexusGpuBackend,
     native_exec::{
         NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec,
     },
@@ -34,7 +35,7 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
+use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::GpuDeviceMemoryLimit};
 use nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 
 use crate::report_workload::{
@@ -43,8 +44,9 @@ use crate::report_workload::{
         NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, TpcdsNativeProfileSettings,
         register_tpcds_tables_with_native_metadata,
         tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
-        tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
-        tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+        tpcds_native_analytics_optimizer_config_with_profile_settings,
+        tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_native_profile_settings_with_env,
+        tpcds_native_report_session_config,
     },
 };
 
@@ -88,6 +90,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             print_progress(&cfg, query, iteration, false, outcome.outcome);
         }
     }
+    runtime.close()?;
     Ok(())
 }
 
@@ -113,6 +116,21 @@ struct BenchRuntime {
     optimizer: Option<Arc<NexusNativePhysicalOptimizerRule>>,
     native_planning: Option<NativePlanningRuntime>,
     skip_cost_declined: bool,
+    backend: Option<NexusGpuBackend>,
+}
+
+impl BenchRuntime {
+    fn close(self) -> Result<(), Box<dyn Error>> {
+        let Self { execution_ctx, optimizer, native_planning, skip_cost_declined, backend } = self;
+        let backend = {
+            let _contexts = (execution_ctx, optimizer, native_planning, skip_cost_declined);
+            backend
+        };
+        if let Some(backend) = backend {
+            backend.close_and_wait(Duration::from_secs(30)).map_err(|error| Box::new(error) as Box<dyn Error>)?;
+        }
+        Ok(())
+    }
 }
 
 struct NativePlanningRuntime {
@@ -127,6 +145,7 @@ struct BenchConfig {
     warmups: usize,
     iterations: usize,
     native_profile: TpcdsNativeProfileSettings,
+    native_device_memory_limit: GpuDeviceMemoryLimit,
     relational_execution: RelationalExecutionSelection,
 }
 

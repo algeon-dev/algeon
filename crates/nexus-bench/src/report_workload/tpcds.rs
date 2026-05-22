@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use arrow::record_batch::RecordBatch;
 use datafusion::{
@@ -8,6 +8,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::NexusGpuBackend,
     native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
@@ -25,7 +26,8 @@ use nexus_workloads::tpcds::{
 mod parity;
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
-    tpcds_parity_report_rows_with_external_oracles, tpcds_parity_workload_items,
+    tpcds_parity_report_rows_with_external_oracles,
+    tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit, tpcds_parity_workload_items,
     tpcds_parity_workload_items_with_external_oracles, tpcds_parity_workload_items_with_session_configs,
 };
 
@@ -139,6 +141,7 @@ struct NativeProfileBase {
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
     source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
+    device_budget_explicit: bool,
 }
 
 /// Session config used by TPC-DS native report surfaces.
@@ -180,6 +183,29 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
     config.options_mut().execution.collect_statistics = false;
     config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config
+}
+
+pub(crate) fn build_tpcds_gpu_backend(
+    optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
+) -> WorkloadResult<NexusGpuBackend> {
+    let source_work_per_attempt =
+        optimizer_config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight();
+    crate::gpu_backend::build_installed_gpu_backend(
+        optimizer_config,
+        device_memory_limit,
+        source_work_per_attempt,
+        1,
+        None,
+    )
+    .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)).into())
+}
+
+pub(crate) fn close_tpcds_gpu_backend(backend: NexusGpuBackend) -> WorkloadResult<()> {
+    backend
+        .close_and_wait(Duration::from_secs(30))
+        .map(|_| ())
+        .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)).into())
 }
 
 /// Native optimizer config used by TPC-DS report surfaces.
@@ -325,14 +351,26 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 /// those final values exactly match a named profile, the resolved
 /// `profile_name` is that profile; otherwise it is `custom`.
 pub fn tpcds_native_profile_settings_from_env() -> TpcdsNativeProfileSettings {
-    tpcds_native_profile_settings_with_env(|name| std::env::var(name).ok())
+    tpcds_native_profile_settings_and_device_memory_limit_from_env().0
 }
 
 pub fn tpcds_native_profile_settings_with_env(
-    mut get: impl FnMut(&'static str) -> Option<String>,
+    get: impl FnMut(&'static str) -> Option<String>,
 ) -> TpcdsNativeProfileSettings {
+    tpcds_native_profile_settings_and_device_memory_limit_with_env(get).0
+}
+
+pub fn tpcds_native_profile_settings_and_device_memory_limit_from_env()
+-> (TpcdsNativeProfileSettings, nexus_query_engine::runtime::GpuDeviceMemoryLimit) {
+    tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| std::env::var(name).ok())
+}
+
+fn tpcds_native_profile_settings_and_device_memory_limit_with_env(
+    mut get: impl FnMut(&'static str) -> Option<String>,
+) -> (TpcdsNativeProfileSettings, nexus_query_engine::runtime::GpuDeviceMemoryLimit) {
     let requested_profile = get(NEXUS_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_profile_base(requested_profile.as_deref());
+    let device_memory_limit_explicit = base.device_budget_explicit;
     let mut resolved = TpcdsNativeProfileSettings::from_base(base);
     let device_budget_bytes = get(NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV);
     let max_source_chunk_bytes = get(NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
@@ -340,7 +378,8 @@ pub fn tpcds_native_profile_settings_with_env(
     let max_retry_attempts = get(NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
     let min_retry_chunk_row_groups = get(NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
     let source_chunk_planning_mode = get(NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
-    let had_override = device_budget_bytes.is_some()
+    let device_budget_overridden = device_budget_bytes.is_some();
+    let had_override = device_budget_overridden
         || max_source_chunk_bytes.is_some()
         || max_row_groups_per_chunk.is_some()
         || max_retry_attempts.is_some()
@@ -392,7 +431,12 @@ pub fn tpcds_native_profile_settings_with_env(
         resolved.profile_name = TPCDS_NATIVE_PROFILE_CUSTOM;
         resolved.profile_source = "custom_overrides";
     }
-    resolved
+    let device_memory_limit = if device_memory_limit_explicit || device_budget_overridden {
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: resolved.device_budget_bytes }
+    } else {
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default()
+    };
+    (resolved, device_memory_limit)
 }
 
 fn validate_tpcds_native_profile_settings(profile: &TpcdsNativeProfileSettings) {
@@ -420,6 +464,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            device_budget_explicit: false,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
@@ -430,6 +475,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            device_budget_explicit: true,
         },
         other => panic!(
             "unsupported {NEXUS_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -598,10 +644,14 @@ pub async fn tpcds_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    tpcds_datafusion_execution_workload_items_with_optimizer_config(
+    let (profile, device_memory_limit) = tpcds_native_profile_settings_and_device_memory_limit_from_env();
+    tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(
         root,
         session_config,
-        tpcds_native_optimizer_config(),
+        tpcds_native_optimizer_config_with_profile_settings(&profile),
+        device_memory_limit,
+        None,
+        None,
     )
     .await
 }
@@ -614,7 +664,15 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    tpcds_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
+    tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(
+        root,
+        session_config,
+        optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        None,
+        None,
+    )
+    .await
 }
 
 /// Per-query lifecycle events emitted by the filtered TPC-DS execution loop.
@@ -654,81 +712,118 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
     query_ids: Option<&[&str]>,
+    progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+    tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(
+        root,
+        session_config,
+        optimizer_config,
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        query_ids,
+        progress,
+    )
+    .await
+}
+
+pub async fn tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: nexus_query_engine::runtime::GpuDeviceMemoryLimit,
+    query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(native_tpcds_session_config(session_config))
-        .with_nexus_native_rule(Arc::clone(&native_rule))
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
+    let backend = build_tpcds_gpu_backend(optimizer_config, device_memory_limit)?;
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
+    let items = async {
+        let builder =
+            SessionStateBuilder::new_with_default_features().with_config(native_tpcds_session_config(session_config));
+        let builder = backend
+            .install_on(builder)
+            .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+        let state = builder.with_nexus_native_rule(Arc::clone(&native_rule)).build();
+        let ctx = SessionContext::new_with_state(state);
+        register_tpcds_tables_with_native_metadata(&ctx, root).await?;
 
-    let selected: Vec<&TpcdsQuery> = match query_ids {
-        Some(ids) => TPCDS_QUERIES.iter().filter(|q| ids.iter().any(|id| id == &q.id)).collect(),
-        None => TPCDS_QUERIES.iter().collect(),
-    };
-    let total = selected.len();
-    let mut items = Vec::with_capacity(total);
-    for (index, query) in selected.into_iter().enumerate() {
-        let query_index = index + 1;
-        if let Some(cb) = progress.as_deref_mut() {
-            cb(TpcdsExecutionProgressEvent::QueryStarted { query_index, total, query_id: query.id });
-        }
-        let started = std::time::Instant::now();
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => match native_rule.last_planning_diagnostics() {
-                    Some(diagnostics) => {
-                        let runtime = if diagnostics.report.selected_count() > 0 {
-                            execute_tpcds_native_plan(Arc::clone(&plan)).await
-                        } else {
-                            NativeDataFusionRuntime::NotStarted
-                        };
-                        NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
+        let selected: Vec<&TpcdsQuery> = match query_ids {
+            Some(ids) => TPCDS_QUERIES.iter().filter(|q| ids.iter().any(|id| id == &q.id)).collect(),
+            None => TPCDS_QUERIES.iter().collect(),
+        };
+        let total = selected.len();
+        let mut items = Vec::with_capacity(total);
+        for (index, query) in selected.into_iter().enumerate() {
+            let query_index = index + 1;
+            if let Some(cb) = progress.as_deref_mut() {
+                cb(TpcdsExecutionProgressEvent::QueryStarted { query_index, total, query_id: query.id });
+            }
+            let started = std::time::Instant::now();
+            let item = match ctx.sql(query.sql).await {
+                Ok(df) => match df.create_physical_plan().await {
+                    Ok(plan) => match native_rule.last_planning_diagnostics() {
+                        Some(diagnostics) => {
+                            let runtime = if diagnostics.report.selected_count() > 0 {
+                                execute_tpcds_native_plan(Arc::clone(&plan)).await
+                            } else {
+                                NativeDataFusionRuntime::NotStarted
+                            };
+                            NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
+                        },
+                        None => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                            query.id,
+                            "native_diagnostics",
+                            "missing_native_diagnostics",
+                            format!("missing retained native planning diagnostics for {}", query.id),
+                        ),
                     },
-                    None => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                    Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
                         query.id,
-                        "native_diagnostics",
-                        "missing_native_diagnostics",
-                        format!("missing retained native planning diagnostics for {}", query.id),
+                        "physical_planning",
+                        "physical_planning_failed",
+                        error.to_string(),
                     ),
                 },
                 Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
                     query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
+                    "sql_to_logical_plan",
+                    "sql_planning_failed",
                     error.to_string(),
                 ),
-            },
-            Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        if let Some(cb) = progress.as_deref_mut() {
-            let runtime_outcome = match &item.input {
-                NativeDataFusionExecutionWorkloadInput::PlanningFailure(_) => "planning_failure",
-                NativeDataFusionExecutionWorkloadInput::Planned { runtime, .. } => match runtime {
-                    NativeDataFusionRuntime::NotStarted => "not_started",
-                    NativeDataFusionRuntime::Succeeded { .. } => "succeeded",
-                    NativeDataFusionRuntime::Failed { .. } => "failed",
-                    NativeDataFusionRuntime::Interrupted { outcome, .. } => outcome.as_str(),
-                },
             };
-            cb(TpcdsExecutionProgressEvent::QueryFinished {
-                query_index,
-                total,
-                query_id: query.id,
-                elapsed_ms: started.elapsed().as_millis(),
-                runtime_outcome,
-            });
+            if let Some(cb) = progress.as_deref_mut() {
+                let runtime_outcome = match &item.input {
+                    NativeDataFusionExecutionWorkloadInput::PlanningFailure(_) => "planning_failure",
+                    NativeDataFusionExecutionWorkloadInput::Planned { runtime, .. } => match runtime {
+                        NativeDataFusionRuntime::NotStarted => "not_started",
+                        NativeDataFusionRuntime::Succeeded { .. } => "succeeded",
+                        NativeDataFusionRuntime::Failed { .. } => "failed",
+                        NativeDataFusionRuntime::Interrupted { outcome, .. } => outcome.as_str(),
+                    },
+                };
+                cb(TpcdsExecutionProgressEvent::QueryFinished {
+                    query_index,
+                    total,
+                    query_id: query.id,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    runtime_outcome,
+                });
+            }
+            items.push(item);
         }
-        items.push(item);
+        Ok(items)
     }
-    Ok(items)
+    .await;
+    match items {
+        Ok(items) => {
+            close_tpcds_gpu_backend(backend)?;
+            Ok(items)
+        },
+        Err(error) => {
+            // The rule retains backend configuration until its contexts are released.
+            drop(native_rule);
+            let _ = close_tpcds_gpu_backend(backend);
+            Err(error)
+        },
+    }
 }
 
 async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFusionRuntime {
@@ -777,5 +872,40 @@ pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static 
         "web_page" => Some(&["wp_web_page_sk"]),
         "web_site" => Some(&["web_site_sk"]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tpcds_profile_memory_limit_tracks_device_budget_provenance() {
+        let (_, default_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|_| None);
+        assert_eq!(default_limit, nexus_query_engine::runtime::GpuDeviceMemoryLimit::default());
+
+        let (_, source_only_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
+            (name == NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV).then(|| (1024_u64 * 1024 * 1024).to_string())
+        });
+        assert_eq!(source_only_limit, nexus_query_engine::runtime::GpuDeviceMemoryLimit::default());
+
+        let (_, throughput_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
+            (name == NEXUS_TPCDS_NATIVE_PROFILE_ENV).then(|| TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT.to_string())
+        });
+        assert_eq!(
+            throughput_limit,
+            nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit {
+                limit_bytes: TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+            }
+        );
+
+        let explicit_budget = 17 * 1024 * 1024 * 1024;
+        let (_, overridden_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
+            (name == NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).then(|| explicit_budget.to_string())
+        });
+        assert_eq!(
+            overridden_limit,
+            nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: explicit_budget }
+        );
     }
 }

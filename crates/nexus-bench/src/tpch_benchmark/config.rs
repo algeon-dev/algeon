@@ -1,3 +1,8 @@
+use datafusion_nexus::{
+    backend::NexusGpuBackend,
+    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},
+};
+
 use super::*;
 
 pub(super) const NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_PROFILE";
@@ -44,21 +49,30 @@ pub(super) struct NativeTpchBenchmarkConfig {
 
 #[derive(Debug)]
 pub(super) struct NativeTpchRuntimeResources {
-    owner: Option<GpuBackendOwner>,
-    pub(super) query_handle: Option<Arc<nexus_query_engine::runtime::QueryHandle>>,
+    backend: Option<NexusGpuBackend>,
 }
 
 impl NativeTpchRuntimeResources {
     pub(super) fn unavailable() -> Self {
-        Self { owner: None, query_handle: None }
+        Self { backend: None }
     }
 
     pub(super) fn shutdown(mut self) -> DataFusionResult<()> {
-        self.query_handle.take();
-        if let Some(owner) = self.owner.take() {
-            owner.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
+        if let Some(backend) = self.backend.take() {
+            backend.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
         }
         Ok(())
+    }
+
+    pub(super) fn optimizer_config(&self) -> Option<NexusNativeOptimizerConfig> {
+        self.backend.as_ref().map(|backend| backend.optimizer_config().clone())
+    }
+
+    pub(super) fn install_on(&self, builder: SessionStateBuilder) -> DataFusionResult<SessionStateBuilder> {
+        match self.backend.as_ref() {
+            Some(backend) => backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error))),
+            None => Ok(builder),
+        }
     }
 }
 
@@ -106,10 +120,10 @@ impl NativeTpchBenchmarkConfig {
 
     pub(super) fn native_execution_config_with_resources(
         &self,
-        resources: &NativeTpchRuntimeResources,
+        _resources: &NativeTpchRuntimeResources,
     ) -> NexusNativeExecutionConfig {
         let policy = self.native_memory_policy;
-        let config = NexusNativeExecutionConfig::bounded(
+        NexusNativeExecutionConfig::bounded(
             policy.device_budget_bytes,
             policy.max_source_chunk_bytes,
             policy.max_row_groups_per_chunk,
@@ -119,34 +133,23 @@ impl NativeTpchBenchmarkConfig {
         .with_source_scheduler_policy(nexus_query_engine::runtime::SourceSchedulerPolicy::new(
             self.max_source_reads_in_flight,
         ))
-        .with_source_chunk_planning_mode(policy.source_chunk_planning_mode);
-        match resources.query_handle.as_ref() {
-            Some(handle) => config.with_query_service_handle(Arc::clone(handle)),
-            None => config,
-        }
+        .with_source_chunk_planning_mode(policy.source_chunk_planning_mode)
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
-        let policy = self.native_memory_policy;
-        let service_config = QueryExecutionConfig {
-            source_scheduler_policy: nexus_query_engine::runtime::SourceSchedulerPolicy::new(
-                self.max_source_reads_in_flight,
-            ),
-            source_chunk_planning_mode: policy.source_chunk_planning_mode,
-            max_source_chunk_bytes: policy.max_source_chunk_bytes,
-            max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
-            max_retry_attempts: policy.max_retry_attempts,
-            min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
-            ..QueryExecutionConfig::default()
-        };
-        let owner = GpuBackendOwner::build(
-            service_config,
-            nexus_query_engine::runtime::QueueBounds::default(),
-            vec![GpuBackendOwner::device_config(0, policy.device_budget_bytes, 1, 1)],
+        let execution_config = self.native_execution_config_with_resources(&NativeTpchRuntimeResources::unavailable());
+        let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
+        let backend = crate::gpu_backend::build_installed_gpu_backend(
+            optimizer_config,
+            nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit {
+                limit_bytes: self.native_memory_policy.device_budget_bytes,
+            },
+            self.max_source_reads_in_flight,
+            1,
+            Some(FinalPlanRequirement::NoDataFusionCpu),
         )
-        .map_err(native_error)?;
-        let query_handle = Arc::new(owner.session().admit_query().map_err(native_error)?);
-        Ok(NativeTpchRuntimeResources { owner: Some(owner), query_handle: Some(query_handle) })
+        .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        Ok(NativeTpchRuntimeResources { backend: Some(backend) })
     }
 }
 

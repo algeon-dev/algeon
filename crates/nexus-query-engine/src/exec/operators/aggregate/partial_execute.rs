@@ -1,8 +1,51 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::PreparedDataFrameGroupBy;
 
 use super::{groupby::rename_groupby_key_columns, *};
+
+pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_budget(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    aggregate: &LoweredAggregate,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<(PreparedDataFrameGroupBy, Duration)> {
+    let input_rows = frame.num_rows() as u64;
+    let prepare_timer = Instant::now();
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let prepare_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyPrepare,
+        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+    );
+    let prepared = match frame
+        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        .options(GroupByOptions::builder().include_null_keys(true).build())
+        .prepare_sort_groupby_with_budget(token)
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                operation,
+                "failed to prepare bounded nexus native sort groupby",
+                error,
+            )
+        }) {
+        Ok(outcome) => {
+            let prepared = budgeted_value(outcome, metrics, operation);
+            prepare_guard.finish(Some(prepared.prepared_facts().num_groups as u64), None);
+            prepared
+        },
+        Err(error) => {
+            prepare_guard.fail(&error);
+            return Err(error);
+        },
+    };
+    Ok((prepared, prepare_timer.elapsed()))
+}
 
 pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_single_aggregate_with_budget(
     context: &ExecutionContext,
@@ -20,44 +63,21 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
     let total_timer = Instant::now();
-    let prepare_timer = Instant::now();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let prepare_guard = crate::observability::RuntimeOperatorStageGuard::start(
-        observation.clone(),
-        plan_execution_id.clone(),
-        parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyPrepare,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
-    );
-    let prepared = match frame
-        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-        .options(GroupByOptions::builder().include_null_keys(true).build())
-        .prepare_sort_groupby_with_budget(token)
-        .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby",
-                "failed to prepare bounded nexus native sort groupby",
-                error,
-            )
-        }) {
-        Ok(outcome) => {
-            let prepared =
-                budgeted_value(outcome, metrics, "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby");
-            prepare_guard.finish(Some(prepared.prepared_facts().num_groups as u64), None);
-            prepared
-        },
-        Err(error) => {
-            prepare_guard.fail(&error);
-            return Err(error);
-        },
-    };
-    let prepare_elapsed = prepare_timer.elapsed();
+    let (prepared, prepare_elapsed) = prepare_prepared_sort_groupby_with_budget(
+        context,
+        &frame,
+        &aggregate,
+        token,
+        metrics,
+        "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby",
+    )?;
     let facts = prepared.prepared_facts();
     decision.facts.insert("prepared_sort_groupby_num_groups", facts.num_groups.to_string());
     decision.facts.insert("prepared_sort_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string());
     decision.facts.insert("prepared_sort_groupby_max_group_size", facts.max_group_size.to_string());
 
     let aggregate_timer = Instant::now();
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
     let aggregate_guard = crate::observability::RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
@@ -128,53 +148,34 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     prepared_input_schema: ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     aggregate: LoweredAggregate,
-    expected_output_names: Vec<String>,
     mut decision: crate::capability::AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     input_evidence: Option<PartialAggregateInputEvidence>,
+    prepared_input: Option<(PreparedDataFrameGroupBy, Duration)>,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
+    let preprepared_input = prepared_input.is_some();
     let total_timer = Instant::now();
-    let prepare_timer = Instant::now();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let prepare_guard = crate::observability::RuntimeOperatorStageGuard::start(
-        observation.clone(),
-        plan_execution_id.clone(),
-        parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyPrepare,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
-    );
-    let prepared = match frame
-        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-        .options(GroupByOptions::builder().include_null_keys(true).build())
-        .prepare_sort_groupby_with_budget(token)
-        .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby",
-                "failed to prepare bounded nexus native sort groupby",
-                error,
-            )
-        }) {
-        Ok(outcome) => {
-            let prepared =
-                budgeted_value(outcome, metrics, "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby");
-            prepare_guard.finish(Some(prepared.prepared_facts().num_groups as u64), None);
-            prepared
-        },
-        Err(error) => {
-            prepare_guard.fail(&error);
-            return Err(error);
-        },
+    let (prepared, prepare_elapsed) = match prepared_input {
+        Some(prepared) => prepared,
+        None => prepare_prepared_sort_groupby_with_budget(
+            context,
+            &frame,
+            &aggregate,
+            token,
+            metrics,
+            "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby",
+        )?,
     };
-    let prepare_elapsed = prepare_timer.elapsed();
     let facts = prepared.prepared_facts();
     decision.facts.insert("prepared_sort_groupby_num_groups", facts.num_groups.to_string());
     decision.facts.insert("prepared_sort_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string());
     decision.facts.insert("prepared_sort_groupby_max_group_size", facts.max_group_size.to_string());
 
     let aggregate_timer = Instant::now();
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
     let aggregate_guard = crate::observability::RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
@@ -207,14 +208,15 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
         "nexus_query_engine.aggregate.prepared_sort_groupby.rename_keys",
     )?;
     output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
-    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+    output = output.select(aggregate.output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.aggregate.prepared_sort_groupby.select_partial",
             "failed to select native prepared sort groupby partial aggregate output columns",
             error,
         )
     })?;
-    let elapsed = total_timer.elapsed();
+    let elapsed =
+        total_timer.elapsed().saturating_add(if preprepared_input { prepare_elapsed } else { Duration::ZERO });
     let output_rows = output.num_rows() as u64;
     metrics.operator_time += elapsed;
     record_grouped_aggregate_strategy_decision(

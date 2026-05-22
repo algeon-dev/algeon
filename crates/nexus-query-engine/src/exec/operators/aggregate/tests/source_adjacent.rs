@@ -326,3 +326,145 @@ fn source_adjacent_row_balanced_prior_stays_off_prepared_sort_groupby() {
         Some("selected_prior_low_cardinality")
     );
 }
+
+#[test]
+fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fan_in() {
+    let (schema, spec) = multi_key_sum_spec();
+    let capability = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let evidence = source_adjacent_group_key_evidence(482, 1);
+    let decision = select_partial_aggregate_strategy_decision(
+        capability.clone(),
+        None,
+        &spec,
+        &schema,
+        14_804_077,
+        Some(evidence),
+        &QueryMetrics::default(),
+    );
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert!(source_adjacent_prepared_sort_groupby_runtime_candidate(
+        &decision,
+        14_804_077,
+        Some(evidence),
+        AggregateStrategyExecutionOptions::default(),
+    ));
+
+    let mut high_fan_in = evidence;
+    high_fan_in.source_adjacent_max_partition_fan_in = Some(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN + 1,
+    );
+    let high_fan_in_decision = select_partial_aggregate_strategy_decision(
+        capability.clone(),
+        None,
+        &spec,
+        &schema,
+        14_804_077,
+        Some(high_fan_in),
+        &QueryMetrics::default(),
+    );
+    assert!(!source_adjacent_prepared_sort_groupby_runtime_candidate(
+        &high_fan_in_decision,
+        14_804_077,
+        Some(high_fan_in),
+        AggregateStrategyExecutionOptions::default(),
+    ));
+
+    let unpartitioned = source_adjacent_unpartitioned_evidence(482);
+    let unpartitioned_decision = select_partial_aggregate_strategy_decision(
+        capability,
+        None,
+        &spec,
+        &schema,
+        14_804_077,
+        Some(unpartitioned),
+        &QueryMetrics::default(),
+    );
+    assert!(!source_adjacent_prepared_sort_groupby_runtime_candidate(
+        &unpartitioned_decision,
+        14_804_077,
+        Some(unpartitioned),
+        AggregateStrategyExecutionOptions::default(),
+    ));
+}
+
+#[test]
+fn source_adjacent_runtime_preflight_uses_exact_facts_for_prepared_or_libcudf() {
+    let (schema, spec) = multi_key_sum_spec();
+    let evidence = source_adjacent_group_key_evidence(482, 1);
+    let decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial),
+        None,
+        &spec,
+        &schema,
+        14_804_077,
+        Some(evidence),
+        &QueryMetrics::default(),
+    );
+
+    assert!(prepared_sort_groupby_should_select_for_runtime_facts(
+        &decision,
+        14_804_077,
+        1,
+        AggregateStrategyExecutionOptions::default(),
+    ));
+    assert!(!prepared_sort_groupby_should_select_for_runtime_facts(
+        &decision,
+        14_804_077,
+        14_804_077,
+        AggregateStrategyExecutionOptions::default(),
+    ));
+
+    let selected = select_prepared_sort_groupby_for_runtime_facts(decision.clone());
+    assert_eq!(selected.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(
+        selected.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_runtime_prepared_groupby")
+    );
+    assert_eq!(
+        selected.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
+        Some("runtime_preflight_exact_grouped_key_facts")
+    );
+
+    let rejected = reject_prepared_sort_groupby_for_runtime_facts(decision);
+    assert_eq!(rejected.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        rejected.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_runtime_preflight_high_cardinality")
+    );
+}
+
+#[test]
+fn source_adjacent_runtime_preflight_declines_only_retryable_resource_errors() {
+    let decision = partial_strategy_for_multi_key_sum(5_000_000);
+    for code in [QueryErrorCode::MemoryReservationFailed, QueryErrorCode::CudfResourceExhausted] {
+        let declined = decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
+            decision.clone(),
+            &QueryError::new(code, "nexus_query_engine.test", "resource pressure"),
+        )
+        .expect("retryable resource preflight is declined");
+        assert_eq!(declined.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+        assert_eq!(
+            declined.facts.get("prepared_sort_groupby_runtime_preflight_status").map(String::as_str),
+            Some("declined_resource_error")
+        );
+        assert_eq!(
+            declined.facts.get("prepared_sort_groupby_runtime_preflight_error_code").map(String::as_str),
+            Some(code.as_str())
+        );
+    }
+}
+
+#[test]
+fn source_adjacent_runtime_preflight_propagates_cancellation_and_other_errors() {
+    let decision = partial_strategy_for_multi_key_sum(5_000_000);
+    for code in [QueryErrorCode::Cancelled, QueryErrorCode::InvalidPlan] {
+        assert!(
+            decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
+                decision.clone(),
+                &QueryError::new(code, "nexus_query_engine.test", "fatal preflight failure"),
+            )
+            .is_none(),
+            "{code:?} must remain fatal"
+        );
+    }
+}
