@@ -6,10 +6,11 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    Expr as NativeExpr, LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    LocalParquetSource as NativeLocalParquetSource, MissingColumn as NativeMissingColumn,
-    PartitionColumn as NativePartitionColumn, QueryPlanBuilder as NativeQueryPlanBuilder,
-    SourceColumnRef as NativeSourceColumnRef, SourceNode as NativeSourceNode,
+    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
+    LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
+    QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
+    SourceNode as NativeSourceNode,
 };
 use datafusion::{
     datasource::physical_plan::{FileSource, ParquetSource},
@@ -236,6 +237,7 @@ fn lower_table_format_source_input(
     let source_output_schema = table_format_source_output_schema(&requirements, &table_format_file_schema(scan_plan));
     validate_schema(Arc::clone(&source_output_schema))?;
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
+    let source_scan_limit = if filter.is_none() { scan_plan.scan_limit } else { None };
     let native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&source_output_schema),
@@ -248,7 +250,8 @@ fn lower_table_format_source_input(
         requirements.pure_filter_column_source_refs.clone(),
     )
     .with_partition_columns(requirements.partition_columns.clone())
-    .with_missing_columns(requirements.missing_columns.clone());
+    .with_missing_columns(requirements.missing_columns.clone())
+    .with_scan_limit(source_scan_limit);
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
     let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
@@ -263,7 +266,7 @@ fn lower_table_format_source_input(
             )?,
             Arc::clone(&scan_output.schema),
         );
-        if let Some(projection) = filter.projection() {
+        let filtered = if let Some(projection) = filter.projection() {
             add_source_filter_projection(
                 builder,
                 filtered_node,
@@ -274,6 +277,13 @@ fn lower_table_format_source_input(
             )
         } else {
             Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
+        }?;
+        if let Some(scan_limit) = scan_plan.scan_limit {
+            let limited_node =
+                builder.add_limit(filtered.node, NativeLimitSpec::fetch(scan_limit), Arc::clone(&filtered.schema));
+            Ok(LoweredNativeInput::with_bindings(limited_node, filtered.schema, filtered.bindings))
+        } else {
+            Ok(filtered)
         }
     } else {
         Ok(scan_output)
@@ -299,8 +309,8 @@ pub(super) fn lower_table_format_zero_column_count_source(
         scan_output_columns: Vec::new(),
     };
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
-    let source_node =
-        builder.add_source(NativeSourceNode::LocalParquet(NativeLocalParquetSource::zero_column_count(native_files)));
+    let source = NativeLocalParquetSource::zero_column_count(native_files).with_scan_limit(scan_plan.scan_limit);
+    let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
     Ok(LoweredNativeInput::with_bindings(source_node, scan_exec.schema(), Vec::new()))
 }
 
@@ -362,18 +372,36 @@ fn table_format_column_requirements(
                 .ok_or(FallbackReason::UnsupportedExpression)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut filter_columns = BTreeSet::new();
+    let mut filter_columns: BTreeSet<String> = BTreeSet::new();
     if let Some(filter) = filter {
         collect_required_columns(filter.predicate(), &filter.input().schema(), &mut filter_columns)?;
     }
 
-    let output_column_set = output_columns.iter().cloned().collect::<BTreeSet<_>>();
-    let required_columns = filter_columns.union(&output_column_set).cloned().collect::<BTreeSet<_>>();
+    let output_column_set: BTreeSet<String> = output_columns.iter().cloned().collect();
+
+    // Iterate required columns in scan-projection order so the read/partition/
+    // missing lists below preserve that order. The `BTreeSet`-driven order used
+    // previously produced an alphabetical source schema, which then failed
+    // DataFusion's optimizer-rule schema check against `scan_schema`. Output
+    // columns lead (in scan-projection order); filter-only columns follow
+    // (in `BTreeSet` iteration order — they never appear in `scan_schema` and
+    // their relative order does not affect any schema check).
+    let mut ordered_required_columns: Vec<String> = Vec::with_capacity(output_columns.len() + filter_columns.len());
+    let mut required_seen: BTreeSet<String> = BTreeSet::new();
+    for column in output_columns.iter().chain(filter_columns.iter()) {
+        if required_seen.insert(column.clone()) {
+            ordered_required_columns.push(column.clone());
+        }
+    }
+
     let mappings = table_format_column_mapping_by_name(scan_plan);
-    let mut read_columns = BTreeSet::new();
-    let mut partition_columns = Vec::new();
-    let mut missing_columns = Vec::new();
-    for column in &required_columns {
+    let mut read_columns: Vec<String> = Vec::new();
+    let mut read_columns_seen: BTreeSet<String> = BTreeSet::new();
+    let mut partition_columns: Vec<NativePartitionColumn> = Vec::new();
+    let mut partition_columns_seen: BTreeSet<String> = BTreeSet::new();
+    let mut missing_columns: Vec<NativeMissingColumn> = Vec::new();
+    let mut missing_columns_seen: BTreeSet<String> = BTreeSet::new();
+    for column in &ordered_required_columns {
         let mapping = mappings.get(column.as_str()).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
         match mapping.source {
             TableFormatColumnSource::DirectTopLevelFileColumn => {
@@ -381,17 +409,21 @@ fn table_format_column_requirements(
                 if file_schema.index_of(source_name).is_err() {
                     return Err(FallbackReason::NativeSourceSchemaMapping);
                 }
-                read_columns.insert(source_name.clone());
+                if read_columns_seen.insert(source_name.clone()) {
+                    read_columns.push(source_name.clone());
+                }
             },
             TableFormatColumnSource::IdentityPartitionValue => {
                 if !is_supported_native_type(&mapping.data_type) {
                     return Err(FallbackReason::UnsupportedType);
                 }
-                partition_columns.push(NativePartitionColumn::new(
-                    mapping.logical_name.as_str(),
-                    mapping.data_type.clone(),
-                    mapping.nullable,
-                ));
+                if partition_columns_seen.insert(mapping.logical_name.clone()) {
+                    partition_columns.push(NativePartitionColumn::new(
+                        mapping.logical_name.as_str(),
+                        mapping.data_type.clone(),
+                        mapping.nullable,
+                    ));
+                }
             },
             TableFormatColumnSource::MissingNullableColumn => {
                 if !mapping.nullable {
@@ -400,23 +432,20 @@ fn table_format_column_requirements(
                 if !is_supported_native_type(&mapping.data_type) {
                     return Err(FallbackReason::UnsupportedType);
                 }
-                missing_columns.push(NativeMissingColumn::new(
-                    mapping.logical_name.as_str(),
-                    mapping.data_type.clone(),
-                    mapping.nullable,
-                ));
+                if missing_columns_seen.insert(mapping.logical_name.clone()) {
+                    missing_columns.push(NativeMissingColumn::new(
+                        mapping.logical_name.as_str(),
+                        mapping.data_type.clone(),
+                        mapping.nullable,
+                    ));
+                }
             },
             TableFormatColumnSource::UnsupportedNestedProjection => {
                 return Err(FallbackReason::IcebergNestedProjectionUnsupported);
             },
         }
     }
-    partition_columns.sort_by(|left, right| left.name.cmp(&right.name));
-    partition_columns.dedup_by(|left, right| left.name == right.name);
-    missing_columns.sort_by(|left, right| left.name.cmp(&right.name));
-    missing_columns.dedup_by(|left, right| left.name == right.name);
 
-    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
     let pure_filter_columns = filter_columns.difference(&output_column_set).cloned().collect::<Vec<_>>();
     let projected_output_columns = output_columns;
     let read_column_file_indices = read_columns
@@ -427,7 +456,7 @@ fn table_format_column_requirements(
         table_format_column_source_refs(&file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
     let pure_filter_column_source_refs =
         table_format_column_source_refs(&file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
-    let scan_output_columns = required_columns.iter().cloned().collect::<Vec<_>>();
+    let scan_output_columns = ordered_required_columns;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,
@@ -542,8 +571,7 @@ fn table_format_local_parquet_file(
     if let Some(row_groups) = file.row_groups.clone() {
         native_file = native_file.with_row_groups(row_groups);
     }
-    if requirements.read_columns.is_empty()
-        && requirements.missing_columns.is_empty()
+    if file.row_groups.is_none()
         && let Some(row_count) = file.row_count
     {
         native_file = native_file.with_row_group_rows(vec![row_count]);

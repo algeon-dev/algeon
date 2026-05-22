@@ -85,7 +85,7 @@ pub use graph_sql::{
 #[cfg(feature = "iceberg")]
 pub use iceberg::catalog::{
     CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, GlueIcebergCatalogBackend, GlueIcebergCatalogConfig,
-    IcebergCatalogBackend, build_catalog_provider_from_backend,
+    IcebergCatalogBackend, build_catalog_provider_from_backend, build_scoped_catalog_provider_from_backend,
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::{

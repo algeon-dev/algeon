@@ -1,3 +1,12 @@
+//! Stable fact maps emitted by [`BoundedJoinReservationContract`].
+//!
+//! Fact keys here are part of the public report/test contract: changing or
+//! removing one is a downstream-visible break. Most values document the
+//! lower-level `cudf-rs` / `libcudf` reservation and observability hooks
+//! that strict bounded join admission depends on.
+
+#![deny(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use super::*;

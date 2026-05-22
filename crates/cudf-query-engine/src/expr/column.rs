@@ -1,3 +1,9 @@
+//! Column reference IR shared across native expressions.
+//!
+//! See [`ColumnRef`] for the lookup/display-name split and qualifier rules.
+
+#![deny(missing_docs)]
+
 use std::fmt;
 
 /// Column identity in the native expression IR.

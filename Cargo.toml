@@ -27,7 +27,7 @@ parquet = "58.3.0"
 
 [features]
 default = []
-cugraph = ["dep:cugraph", "dep:cugraph-sys", "dep:sha2", "cudf-query-engine/cugraph"]
+cugraph = ["dep:cugraph", "dep:cugraph-sys", "cudf-query-engine/cugraph"]
 iceberg = [
     "dep:aws-config",
     "dep:aws-credential-types",
@@ -74,96 +74,82 @@ object_store = { version = "0.13", default-features = false, features = ["aws"],
 parquet = { workspace = true }
 prost = { version = "0.14.1", optional = true }
 serde_json = "1"
-sha2 = { version = "0.10", optional = true }
 tempfile = { version = "3", optional = true }
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", optional = true }
 tonic = { version = "0.14", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 
+[dev-dependencies]
+hex = "0.4"
+sha2 = "0.11"
+
 [[bin]]
 name = "datafusion_cudf_server"
-path = "src/bin/datafusion_cudf_server.rs"
 required-features = ["server"]
 
 [[bin]]
 name = "native_iceberg_smoke_report"
-path = "src/bin/native_iceberg_smoke_report.rs"
 required-features = ["iceberg"]
 
 [[bin]]
 name = "native_iceberg_tpch_benchmark"
-path = "src/bin/native_iceberg_tpch_benchmark.rs"
 required-features = ["iceberg"]
 
 [[bin]]
 name = "cugraph_sql_construction_report"
-path = "src/bin/cugraph_sql_construction_report.rs"
 required-features = ["cugraph"]
 
 [[bin]]
 name = "refresh_cugraph_oracle"
-path = "src/bin/refresh_cugraph_oracle.rs"
 required-features = ["cugraph"]
 
 [[test]]
 name = "table_format_iceberg_planner_tests"
-path = "tests/table_format_iceberg_planner_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "table_format_provider_tests"
-path = "tests/table_format_provider_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "native_iceberg_smoke_report_tests"
-path = "tests/native_iceberg_smoke_report_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "native_iceberg_tpch_benchmark_tests"
-path = "tests/native_iceberg_tpch_benchmark_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "iceberg_public_api_tests"
-path = "tests/iceberg_public_api_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "iceberg_catalog_provider_tests"
-path = "tests/iceberg_catalog_provider_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "cugraph_sql_tests"
-path = "tests/cugraph_sql_tests.rs"
 required-features = ["cugraph"]
 
 [[test]]
 name = "cugraph_parity"
-path = "tests/cugraph_parity.rs"
 required-features = ["cugraph"]
 
 [[test]]
 name = "cugraph_contract"
-path = "tests/cugraph_contract.rs"
 required-features = ["cugraph"]
 
 [[test]]
 name = "server_config_tests"
-path = "tests/server_config_tests.rs"
 required-features = ["server"]
 
 [[test]]
 name = "server_flight_sql_tests"
-path = "tests/server_flight_sql_tests.rs"
 required-features = ["server"]
 
 [[test]]
 name = "server_iceberg_smoke_tests"
-path = "tests/server_iceberg_smoke_tests.rs"
 required-features = ["server", "iceberg"]

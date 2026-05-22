@@ -1,3 +1,10 @@
+//! Planning report shape: per-candidate `Rewritten` / `Rejected` outcomes.
+//!
+//! Tests and downstream report rows assert on these structured outcomes
+//! rather than parsing printed physical plans.
+
+#![deny(missing_docs)]
+
 use crate::policy::FallbackReason;
 
 /// Physical-plan candidate considered for native GPU execution.

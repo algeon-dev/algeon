@@ -9,6 +9,12 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    /// SQL text could not be parsed.
+    SqlParse,
+    /// DataFusion rejected the query during logical or physical planning.
+    DataFusionPlanning,
+    /// A requested catalog, schema, table, column, or similar named object was not found.
+    ObjectNotFound,
     /// The optimizer intentionally rejected a native candidate.
     NativeCandidateRejected,
     /// A physical operator is unsupported by the GPU/native adapter path.
@@ -58,6 +64,9 @@ impl ErrorCode {
     /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SqlParse => "sql_parse",
+            Self::DataFusionPlanning => "datafusion_planning",
+            Self::ObjectNotFound => "object_not_found",
             Self::NativeCandidateRejected => "native_candidate_rejected",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
@@ -97,6 +106,8 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
+    /// Requested catalog, schema, table, column, or similar named object was not found.
+    NotFound,
     /// Planning, validation, or physical-plan construction failure.
     Planning,
     /// Caller-provided input is invalid for the requested operation.
@@ -119,6 +130,7 @@ impl ErrorKind {
     /// Stable snake-case category label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::NotFound => "not_found",
             Self::Planning => "planning",
             Self::InvalidInput => "invalid_input",
             Self::Unsupported => "unsupported",
@@ -176,7 +188,11 @@ impl fmt::Display for ErrorStatus {
 /// failures without depending on every code variant.
 pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     match code {
-        ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
+        ErrorCode::SqlParse => ErrorKind::InvalidInput,
+        ErrorCode::DataFusionPlanning | ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => {
+            ErrorKind::Planning
+        },
+        ErrorCode::ObjectNotFound => ErrorKind::NotFound,
         ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
             ErrorKind::Unsupported
         },
@@ -204,7 +220,10 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
             ErrorStatus::Temporary
         },
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
-        ErrorCode::NativeCandidateRejected
+        ErrorCode::SqlParse
+        | ErrorCode::DataFusionPlanning
+        | ErrorCode::ObjectNotFound
+        | ErrorCode::NativeCandidateRejected
         | ErrorCode::UnsupportedOperator
         | ErrorCode::UnsupportedExpression
         | ErrorCode::UnsupportedType

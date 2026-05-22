@@ -3,8 +3,12 @@ use std::sync::{Arc, Mutex};
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{ParquetSourceLocation, PlanNode, SourceNode};
 use datafusion::{
+    common::ScalarValue,
+    datasource::TableProvider,
     execution::context::TaskContext,
-    physical_plan::ExecutionPlan,
+    logical_expr::Operator,
+    physical_expr::expressions::{binary, col, lit},
+    physical_plan::{ExecutionPlan, coalesce_partitions::CoalescePartitionsExec, filter::FilterExec},
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
@@ -36,8 +40,9 @@ impl TableFormatPlanner for RecordingPlanner {
         &'a self,
         request: TableFormatScanRequest,
     ) -> BoxFuture<'a, datafusion_cudf::Result<TableFormatScanPlan>> {
+        let scan_limit = request.scan_limit;
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
-        let plan = self.plan.clone();
+        let plan = self.plan.clone().with_scan_limit(scan_limit);
         Box::pin(async move { Ok(plan) })
     }
 }
@@ -88,6 +93,72 @@ async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_so
     assert!(source.is_zero_column_count_source());
     assert!(source.read_columns.is_empty());
     assert_eq!(source.files[0].stable_id, "table-format:iceberg:data-0001");
+}
+
+#[tokio::test]
+async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new();
+    let projection = vec![1];
+    let physical_plan = provider.scan(&ctx.state(), Some(&projection), &[], Some(7)).await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(planner.requests().len(), 1);
+    assert_eq!(planner.requests()[0].scan_limit, Some(7));
+    assert_eq!(result.rewritten_count(), 1);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(7));
+    assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
+}
+
+#[tokio::test]
+async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select value from iceberg_t where id = 1").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(planner.requests().len(), 1);
+    assert_eq!(planner.requests()[0].scan_limit, None);
+    assert!(
+        planner.requests()[0]
+            .projected_column_names
+            .as_ref()
+            .is_some_and(|columns| { columns.contains(&"id".to_string()) && columns.contains(&"value".to_string()) })
+    );
+    assert_eq!(result.rewritten_count(), 1);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, None, "the source must not apply LIMIT before the inexact filter");
+    assert!(source.read_columns.contains(&"id".to_string()));
+    assert!(source.read_columns.contains(&"value".to_string()));
+}
+
+#[test]
+fn native_lowering_preserves_fetch_pushed_to_table_format_filter_and_coalesce() {
+    let schema = iceberg_test_schema();
+    let scan: Arc<dyn ExecutionPlan> =
+        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("id", &scan_schema).unwrap(), Operator::Eq, lit(ScalarValue::Int64(Some(1))), &scan_schema).unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+    let filter = filter.with_fetch(Some(5)).expect("FilterExec should accept fetch");
+    let coalesce: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(filter));
+    let coalesce = coalesce.with_fetch(Some(5)).expect("CoalescePartitionsExec should accept fetch");
+
+    let result = lower_physical_plan_to_native(coalesce);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert!(native_plan_limit_count(&result.plans[0]) >= 1);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, None, "fetch above an inexact filter must lower after the native filter");
 }
 
 #[test]
@@ -192,7 +263,8 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
                 TableFormatDataFileFormat::Parquet,
                 TableFormatReadCapability::local_file_system(),
             )
-            .with_size_bytes(4096),
+            .with_size_bytes(4096)
+            .with_row_count(11),
         )
         .with_projected_column(TableFormatColumnMapping::new(
             Some(1),
@@ -222,7 +294,8 @@ fn native_admissible_empty_scan_plan() -> TableFormatScanPlan {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::local_file_system(),
         )
-        .with_size_bytes(4096),
+        .with_size_bytes(4096)
+        .with_row_count(11),
     )
 }
 
@@ -244,4 +317,8 @@ fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_que
             _ => None,
         })
         .expect("native plan should contain a local parquet source")
+}
+
+fn native_plan_limit_count(plan: &cudf_query_engine::QueryPlan) -> usize {
+    plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Limit(_))).count()
 }

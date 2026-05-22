@@ -21,6 +21,7 @@ use datafusion::{
 };
 use datafusion_cudf::iceberg::catalog::{
     CudfIcebergCatalogProvider, IcebergCatalogBackend, build_catalog_provider_from_backend,
+    build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{NamespaceIdent, TableIdent};
 
@@ -174,6 +175,38 @@ async fn catalog_provider_multi_namespace() {
     assert_eq!(db_b, vec!["inventory", "products"]);
 }
 
+#[tokio::test]
+async fn scoped_catalog_provider_exposes_only_requested_namespace() {
+    let backend = Arc::new(MockIcebergCatalogBackend::new(
+        vec![NamespaceIdent::new("db_a".to_string()), NamespaceIdent::new("db_b".to_string())],
+        HashMap::from([
+            ("db_a".to_string(), vec!["orders".to_string()]),
+            ("db_b".to_string(), vec!["products".to_string(), "inventory".to_string()]),
+        ]),
+    ));
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "db_b").await.unwrap();
+
+    assert_eq!(provider.schema_names(), vec!["db_b"]);
+    assert!(provider.schema("db_a").is_none());
+
+    let mut db_b = provider.schema("db_b").unwrap().table_names();
+    db_b.sort();
+    assert_eq!(db_b, vec!["inventory", "products"]);
+}
+
+#[tokio::test]
+async fn scoped_catalog_provider_does_not_enumerate_global_namespace_list() {
+    let backend = Arc::new(MockIcebergCatalogBackend::new(
+        vec![NamespaceIdent::new("unrelated".to_string())],
+        HashMap::from([("demo_db".to_string(), vec!["tpch_sf1_nation".to_string()])]),
+    ));
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "demo_db").await.unwrap();
+
+    assert_eq!(provider.schema_names(), vec!["demo_db"]);
+    assert_eq!(provider.schema("demo_db").unwrap().table_names(), vec!["tpch_sf1_nation"]);
+    assert!(provider.schema("unrelated").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Alias seeding
 // ---------------------------------------------------------------------------
@@ -299,6 +332,16 @@ async fn multi_level_namespace_joined_as_schema_name() {
     assert_eq!(schema.table_names(), vec!["t1"]);
 }
 
+#[tokio::test]
+async fn scoped_catalog_provider_accepts_multi_level_namespace_scope() {
+    let backend =
+        Arc::new(MockIcebergCatalogBackend::new(vec![], HashMap::from([("a.b".to_string(), vec!["t1".to_string()])])));
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "a.b").await.unwrap();
+
+    assert_eq!(provider.schema_names(), vec!["a.b"]);
+    assert_eq!(provider.schema("a.b").unwrap().table_names(), vec!["t1"]);
+}
+
 // ---------------------------------------------------------------------------
 // Namespace with no tables
 // ---------------------------------------------------------------------------
@@ -377,8 +420,8 @@ async fn seed_prevents_backend_load_on_first_table_access() {
 // ---------------------------------------------------------------------------
 
 /// Full Phase 2 pipeline: backend → catalog provider → schema → table list.
-/// Verifies that `build_catalog_provider_from_backend` discovers the configured
-/// namespace and its TPC-H tables from a real Glue catalog.
+/// Verifies that `build_scoped_catalog_provider_from_backend` exposes only the
+/// configured namespace and its TPC-H tables from a real Glue catalog.
 #[tokio::test]
 #[ignore = "requires live AWS Glue/S3 credentials and network access"]
 async fn glue_dynamic_catalog_provider_discovers_tables_live() {
@@ -400,11 +443,11 @@ async fn glue_dynamic_catalog_provider_discovers_tables_live() {
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(GlueIcebergCatalogBackend::from_config_env(config).await.unwrap());
-    let provider = build_catalog_provider_from_backend(Arc::clone(&backend), "glue").await.unwrap();
+    let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "glue", &namespace).await.unwrap();
 
     let schema_names = provider.schema_names();
-    eprintln!("discovered namespaces: {schema_names:?}");
-    assert!(schema_names.contains(&namespace), "namespace '{namespace}' not found; discovered: {schema_names:?}");
+    eprintln!("discovered scoped namespaces: {schema_names:?}");
+    assert_eq!(schema_names, vec![namespace.clone()], "scoped catalog must expose only '{namespace}'");
 
     let schema = provider.schema(&namespace).unwrap();
     let table_names = schema.table_names();

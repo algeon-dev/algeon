@@ -1,3 +1,11 @@
+//! Per-node capability analysis.
+//!
+//! Produces a [`NodeCapability`] for each [`QueryNode`]: operator kind,
+//! executable decision, produced properties (ordering, partitioning, etc.),
+//! local requirements on inputs, and any local reservation requirements.
+
+#![deny(missing_docs)]
+
 use super::{expr::*, model::*, *};
 use crate::plan::UnionNode;
 

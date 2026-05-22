@@ -1,3 +1,11 @@
+//! Subgraph-invariant analysis (currently focused on join shape invariants).
+//!
+//! Inspects edge contracts plus producer/consumer node facts to verify
+//! invariants that span more than a single node — for example, "build side of
+//! this join must dominate the resident-resource reservation gate."
+
+#![deny(missing_docs)]
+
 use super::{edge::*, graph::*, model::*, node::*, shape::*, *};
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {

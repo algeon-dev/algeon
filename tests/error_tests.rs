@@ -3,6 +3,14 @@ use datafusion_cudf::{Error, ErrorCode, ErrorKind, ErrorStatus};
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
+    assert_eq!(ErrorCode::SqlParse.as_str(), "sql_parse");
+    assert_eq!(ErrorCode::SqlParse.kind(), ErrorKind::InvalidInput);
+    assert_eq!(ErrorCode::SqlParse.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::ObjectNotFound.as_str(), "object_not_found");
+    assert_eq!(ErrorCode::ObjectNotFound.kind(), ErrorKind::NotFound);
+    assert_eq!(ErrorCode::ObjectNotFound.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
     assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
     assert_eq!(ErrorCode::UnsupportedExpression.status(), ErrorStatus::Permanent);

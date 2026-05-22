@@ -175,6 +175,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     if plan.as_any().downcast_ref::<FilterExec>().is_some()
         || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+        || plan.as_any().downcast_ref::<CoalescePartitionsExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
         || plan.as_any().downcast_ref::<CudfTableFormatScanExec>().is_some()
     {
@@ -414,23 +415,40 @@ fn normalize_native_input<'a>(
     plan: &'a dyn ExecutionPlan,
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativeInput<'a>, NativePlanRejection> {
+    if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>()
+        && let Some(fetch) = coalesce.fetch()
+    {
+        let input = normalize_native_input(coalesce.input().as_ref(), candidate)?;
+        return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit {
+            spec: NativeLimitSpec::fetch(fetch),
+            input: Box::new(input),
+        }));
+    }
+
     let plan = peel_repartition(plan);
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
         let input = peel_repartition(filter.input().as_ref());
-        if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>() {
-            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+        let normalized = if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>() {
+            NormalizedNativeInput::Source(NormalizedNativeSource {
                 scan: NormalizedNativeScan::LocalParquet(source_exec),
                 filter: Some(filter),
-            }));
-        }
-        if let Some(scan_exec) = input.as_any().downcast_ref::<CudfTableFormatScanExec>() {
-            return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
+            })
+        } else if let Some(scan_exec) = input.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+            NormalizedNativeInput::Source(NormalizedNativeSource {
                 scan: NormalizedNativeScan::TableFormat(scan_exec),
                 filter: Some(filter),
+            })
+        } else {
+            let input = normalize_native_input(input, candidate)?;
+            NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) })
+        };
+        if let Some(fetch) = filter.fetch() {
+            return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit {
+                spec: NativeLimitSpec::fetch(fetch),
+                input: Box::new(normalized),
             }));
         }
-        let input = normalize_native_input(input, candidate)?;
-        return Ok(NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) }));
+        return Ok(normalized);
     }
     if let Some(source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
         return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
@@ -540,7 +558,7 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
     if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
         repartition.input().as_ref()
     } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-        coalesce.input().as_ref()
+        if coalesce.fetch().is_some() { plan } else { coalesce.input().as_ref() }
     } else if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
         cooperative.input().as_ref()
     } else {

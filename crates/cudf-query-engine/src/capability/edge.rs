@@ -1,3 +1,11 @@
+//! Per-edge capability analysis.
+//!
+//! Each producer→consumer edge in the plan carries a set of contract kinds
+//! (column carriage, key carriage, partition compatibility, etc.). Rejections
+//! here are local to the edge; whole-plan admission lives in [`super::admission`].
+
+#![deny(missing_docs)]
+
 use super::{graph::*, model::*, node::*, *};
 
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {

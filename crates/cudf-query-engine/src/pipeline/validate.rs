@@ -1,4 +1,12 @@
 //! CompiledPipeline invariant validation.
+//!
+//! Every check here is a hard invariant of the compiled pipeline model:
+//! `compile_pipeline` is expected to produce structures that already
+//! satisfy these checks. Violations surface as
+//! [`QueryErrorCode::Invalid`](crate::error::QueryErrorCode::Invalid) and
+//! are bugs in the producer, not user errors.
+
+#![deny(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,3 +1,10 @@
+//! Native execution metric rows projected from a DataFusion `MetricsSet`.
+//!
+//! See [`NativeDataFusionExecutionMetrics`] for the per-field unit and
+//! cumulative-versus-instantaneous semantics.
+
+#![deny(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use datafusion::physical_plan::metrics::MetricsSet;

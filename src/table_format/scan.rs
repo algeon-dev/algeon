@@ -21,10 +21,12 @@ pub enum TableFormat {
 /// Format-neutral request passed to table-format metadata planners.
 ///
 /// `None` projection means all logical columns. `None` snapshot/catalog values
-/// leave selection to the table-format implementation. The filtering flags
-/// describe planner intent only; unsupported row-group pruning or row
-/// selection must be reported as stable unsupported features instead of
-/// executing data reads.
+/// leave selection to the table-format implementation. `None` scan limit means
+/// no source-level row bound was supplied by DataFusion; `Some(n)` is an
+/// order-insensitive upper bound the native source may apply before any
+/// inexact parent filter. The filtering flags describe planner intent only;
+/// unsupported row-group pruning or row selection must be reported as stable
+/// unsupported features instead of executing data reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableFormatScanRequest {
     /// Logical projected column names. `None` means all columns; `Some([])` means zero columns.
@@ -33,6 +35,8 @@ pub struct TableFormatScanRequest {
     pub snapshot_id: Option<String>,
     /// Optional stable catalog label, such as `glue`.
     pub catalog_type: Option<String>,
+    /// Optional source-level row upper bound supplied by DataFusion.
+    pub scan_limit: Option<usize>,
     /// Whether column resolution should be case-sensitive.
     pub case_sensitive: bool,
     /// Planner intent for row-group filtering. Unsupported semantics become scan facts.
@@ -65,6 +69,12 @@ impl TableFormatScanRequest {
         self
     }
 
+    /// Sets an order-insensitive source-level scan limit.
+    pub fn with_scan_limit(mut self, scan_limit: Option<usize>) -> Self {
+        self.scan_limit = scan_limit;
+        self
+    }
+
     /// Sets case sensitivity for table-format column resolution.
     pub fn with_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.case_sensitive = case_sensitive;
@@ -90,6 +100,7 @@ impl Default for TableFormatScanRequest {
             projected_column_names: None,
             snapshot_id: None,
             catalog_type: None,
+            scan_limit: None,
             case_sensitive: true,
             row_group_filtering_enabled: true,
             row_selection_enabled: false,
@@ -727,7 +738,10 @@ impl fmt::Display for TableFormatScanDiagnostics {
 /// The plan is metadata-only: data files, delete files, projected columns, and
 /// pure-filter columns are facts for later source lowering. Unsupported
 /// features remain attached so the adapter can produce structured fallback
-/// reasons instead of silently dropping table-format semantics.
+/// reasons instead of silently dropping table-format semantics. `scan_limit`
+/// is an optional source-level upper bound, not a final SQL `LIMIT`; when a
+/// parent inexact filter remains, final row limiting is still represented by a
+/// separate native or DataFusion limit operator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableFormatScanPlan {
     /// Table format that produced these scan facts.
@@ -736,6 +750,8 @@ pub struct TableFormatScanPlan {
     pub snapshot_id: Option<String>,
     /// Stable catalog label, if known.
     pub catalog_type: Option<String>,
+    /// Optional source-level row upper bound supplied during table-format planning.
+    pub scan_limit: Option<usize>,
     /// Logical table schema after projection.
     pub logical_schema: SchemaRef,
     /// Schema expected by native source lowering.
@@ -760,6 +776,7 @@ impl TableFormatScanPlan {
             format,
             snapshot_id: None,
             catalog_type: None,
+            scan_limit: None,
             logical_schema: Arc::clone(&empty_schema),
             native_source_schema: empty_schema,
             data_files: Vec::new(),
@@ -779,6 +796,12 @@ impl TableFormatScanPlan {
     /// Records a stable catalog label such as `glue` for diagnostics.
     pub fn with_catalog_type(mut self, catalog_type: impl Into<String>) -> Self {
         self.catalog_type = Some(catalog_type.into());
+        self
+    }
+
+    /// Records an optional source-level row upper bound.
+    pub fn with_scan_limit(mut self, scan_limit: Option<usize>) -> Self {
+        self.scan_limit = scan_limit;
         self
     }
 

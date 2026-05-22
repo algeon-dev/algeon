@@ -1,3 +1,12 @@
+//! Conservative row and byte estimates derived from plan nodes.
+//!
+//! These are descriptive admission / optimizer signals only — they must not
+//! be treated as exact runtime cardinalities. Unknown estimates return
+//! `None` rather than zero so callers can distinguish "missing evidence"
+//! from "empty".
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Returns a conservative row-count estimate for a plan node when available.

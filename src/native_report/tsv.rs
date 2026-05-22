@@ -1,3 +1,12 @@
+//! TSV escaping and nested-row formatting helpers for native report rows.
+//!
+//! All formatters here are `pub(super)` and shape the canonical pipe-delimited
+//! key/value text emitted into TSV cells. Tabs, newlines, and carriage returns
+//! are replaced with spaces before serialization so they cannot break the
+//! outer TSV grid; empty nested rows serialize as `none`.
+
+#![deny(missing_docs)]
+
 use std::fmt::Write;
 
 use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};

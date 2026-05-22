@@ -1,3 +1,4 @@
+#[cfg(feature = "iceberg")]
 use std::sync::Arc;
 
 use datafusion::{
@@ -52,11 +53,14 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?,
     );
 
-    // Discover all namespaces and their table names at startup.  Individual
-    // tables are loaded lazily on first SQL access through the backend.
-    let catalog_provider = crate::iceberg::catalog::build_catalog_provider_from_backend(backend, "glue")
-        .await
-        .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from Glue backend", error))?;
+    // Discover only the configured namespace scope. Individual tables are
+    // loaded lazily on first SQL access through the backend.
+    let catalog_provider =
+        crate::iceberg::catalog::build_scoped_catalog_provider_from_backend(backend, "glue", &iceberg.namespace)
+            .await
+            .map_err(|error| {
+                ServerError::session("failed to build Iceberg catalog provider from Glue backend", error)
+            })?;
 
     // Seed pre-declared alias mappings before registering the catalog.
     // This makes catalog.namespace.alias resolve in addition to the real name.
@@ -105,7 +109,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                     namespace = iceberg.namespace,
                     table = table.table,
                     alias = table.alias,
-                    "pre-declared Iceberg table namespace was not returned by list_namespaces; \
+                    "pre-declared Iceberg table namespace was not available in the scoped catalog provider; \
                      three-part alias addressing will not resolve (bare alias still registered)"
                 );
             },

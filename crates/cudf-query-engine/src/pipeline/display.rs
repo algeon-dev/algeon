@@ -1,3 +1,10 @@
+//! `Display` formatting for compiled pipeline IR.
+//!
+//! Output is diagnostic text used by triage tools. The format is not part of
+//! the report contract — bump the report TSV schema instead of parsing this.
+
+#![deny(missing_docs)]
+
 use std::fmt;
 
 use crate::{
