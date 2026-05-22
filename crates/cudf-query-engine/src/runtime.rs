@@ -8,7 +8,10 @@
 
 #![deny(missing_docs)]
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -30,6 +33,53 @@ pub use bounded_join::{
 };
 pub use policy::{DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind};
 pub use reservation::{MemoryReservationRequest, RetryFacts};
+
+/// Shared cooperative cancellation flag for native query execution.
+///
+/// Cancellation is observed only at native-engine boundaries. It does not
+/// preempt a libcudf/CUDA call already in flight, but it prevents the next
+/// source chunk, pipeline task, operator, or materialization step from starting
+/// once the flag is set.
+#[derive(Debug, Clone)]
+pub struct ExecutionCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ExecutionCancellation {
+    /// Creates a non-cancelled execution flag.
+    pub fn new() -> Self {
+        Self { cancelled: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// Marks the execution as cancelled.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Returns whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Returns a structured native error if cancellation has been requested.
+    pub fn check(&self, operation: &'static str) -> Result<()> {
+        if self.is_cancelled() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::Cancelled,
+                operation,
+                "native query execution was cancelled",
+            )
+            .with_fact("cancellation_requested", true));
+        }
+        Ok(())
+    }
+}
+
+impl Default for ExecutionCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Native source scheduling controls.
 ///
@@ -116,6 +166,8 @@ pub struct ExecutionContext {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source scheduling policy for bounded local Parquet reads.
     source_scheduler_policy: SourceSchedulerPolicy,
+    /// Cooperative cancellation flag observed at native execution boundaries.
+    cancellation: ExecutionCancellation,
     /// Selected native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Optional adaptive-only memory history store.
@@ -159,6 +211,7 @@ impl ExecutionContext {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
@@ -187,6 +240,16 @@ impl ExecutionContext {
     /// copied configuration.
     pub fn shared_runtime(&self) -> Arc<cudf::Runtime> {
         Arc::clone(&self.runtime)
+    }
+
+    /// Returns the cooperative cancellation flag for this execution.
+    pub fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    /// Fails with a structured cancellation error if the execution was cancelled.
+    pub fn check_cancellation(&self, operation: &'static str) -> Result<()> {
+        self.cancellation.check(operation)
     }
 
     /// Reports the effective device placement derived from the runtime.
@@ -264,6 +327,8 @@ pub struct ExecutionContextBuilder {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
     source_scheduler_policy: SourceSchedulerPolicy,
+    /// Cooperative cancellation flag observed by native execution.
+    cancellation: ExecutionCancellation,
     /// Native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Optional adaptive-only memory history store.
@@ -337,6 +402,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Sets the cooperative cancellation flag for native execution.
+    pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     /// Selects the native bounded-pipeline execution mode.
     pub fn with_native_pipeline_execution_mode(mut self, mode: NativePipelineExecutionMode) -> Self {
         self.native_pipeline_execution_mode = mode;
@@ -379,6 +450,7 @@ impl ExecutionContextBuilder {
                 memory_control_policy: self.memory_control_policy,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
+                cancellation: self.cancellation,
                 native_pipeline_execution_mode: self.native_pipeline_execution_mode,
                 adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
@@ -415,6 +487,7 @@ impl ExecutionContextBuilder {
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
+            cancellation: self.cancellation,
             native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,

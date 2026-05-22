@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 use super::error::{Result, ServerError};
 use crate::{CudfOptimizerConfig, NativeCudfExecutionConfig};
@@ -6,6 +6,20 @@ use crate::{CudfOptimizerConfig, NativeCudfExecutionConfig};
 pub const DATAFUSION_CUDF_SERVER_BIND_ENV: &str = "DATAFUSION_CUDF_SERVER_BIND";
 pub const DATAFUSION_CUDF_SERVER_LOG_ENV: &str = "DATAFUSION_CUDF_SERVER_LOG";
 pub const DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV: &str = "DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT";
+pub const DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str =
+    "DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS";
+/// Selects the DataFusion physical-plan profile applied to the Flight SQL
+/// session. Valid values are `native` and `cpu_fallback`. When unset, the
+/// profile defaults to `native` if an Iceberg catalog is configured and to
+/// `cpu_fallback` otherwise. The native profile pins `target_partitions=1`,
+/// disables all DataFusion repartitioning, and disables dynamic filter
+/// pushdown so plans match the native-lowerable shapes the cudf optimizer rule
+/// expects. The CPU-fallback profile leaves DataFusion's standard
+/// `DATAFUSION_EXECUTION_*` settings in place (DataFusion's
+/// `SessionConfig::from_env()` maps option keys to env vars by upper-casing
+/// and replacing `.` with `_`, so single-underscore names like
+/// `DATAFUSION_EXECUTION_TARGET_PARTITIONS` are what actually take effect).
+pub const DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV: &str = "DATAFUSION_CUDF_SERVER_SESSION_PROFILE";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
@@ -28,6 +42,7 @@ pub const DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBE
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_MAX_IN_FLIGHT: usize = 1;
+const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 #[cfg(feature = "iceberg")]
 const DEFAULT_GLUE_CATALOG_NAME: &str = "glue";
 
@@ -36,9 +51,63 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub log_filter: String,
     pub max_in_flight: usize,
+    /// Wall-clock time a planned Flight SQL statement ticket may hold an
+    /// admission permit while waiting for `DoGet`. Expired tickets are dropped
+    /// and their permits are released; the default is 300 seconds.
+    pub statement_ticket_ttl: Duration,
     pub native_optimizer_config: CudfOptimizerConfig,
+    /// DataFusion physical-plan profile applied to the Flight SQL session.
+    /// See [`DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV`] and
+    /// [`ServerSessionProfile`].
+    pub session_profile: ServerSessionProfile,
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
+}
+
+/// DataFusion physical-plan profile applied to the Flight SQL session.
+///
+/// Decisions tracked here only affect DataFusion's logical/physical plan shape
+/// for queries served through Flight SQL. They are orthogonal to the native
+/// cudf-query-engine memory budget, which is controlled by the
+/// `NATIVE_*` environment variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerSessionProfile {
+    /// Native-friendly profile that matches the workload harness defaults:
+    /// `target_partitions=1`, repartitioning disabled for file scans /
+    /// aggregations / joins / sorts, and all dynamic-filter-pushdown variants
+    /// disabled. Required for tables backed by GPU-only planning leaves such
+    /// as `CudfTableFormatScanExec` because the CPU plan that DataFusion would
+    /// otherwise produce is not executable end-to-end.
+    Native,
+    /// Preserve DataFusion's CPU-style profile derived from
+    /// `DATAFUSION_EXECUTION_*` environment variables (single underscores,
+    /// matching DataFusion's `SessionConfig::from_env()` mapping). Suitable
+    /// when the session only serves CPU-readable sources and benefits from
+    /// DataFusion's parallel CPU exchanges.
+    CpuFallback,
+}
+
+impl ServerSessionProfile {
+    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "native" => Ok(Self::Native),
+            "cpu_fallback" | "cpu-fallback" => Ok(Self::CpuFallback),
+            other => Err(format!("must be `native` or `cpu_fallback`, got `{other}`")),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::CpuFallback => "cpu_fallback",
+        }
+    }
+}
+
+impl std::fmt::Display for ServerSessionProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -80,6 +149,11 @@ impl ServerConfig {
         let log_filter =
             values.string(DATAFUSION_CUDF_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
         let max_in_flight = values.positive_usize(DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV, DEFAULT_MAX_IN_FLIGHT)?;
+        let statement_ticket_ttl =
+            Duration::from_secs(values.positive_u64(
+                DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+                DEFAULT_STATEMENT_TICKET_TTL_SECS,
+            )?);
         let native_optimizer_config = native_optimizer_config(&mut values)?;
 
         #[cfg(feature = "iceberg")]
@@ -88,11 +162,21 @@ impl ServerConfig {
         #[cfg(not(feature = "iceberg"))]
         reject_iceberg_env_without_feature(&mut values)?;
 
+        let explicit_profile = values.optional_session_profile(DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV)?;
+        #[cfg(feature = "iceberg")]
+        let default_profile =
+            if iceberg.is_some() { ServerSessionProfile::Native } else { ServerSessionProfile::CpuFallback };
+        #[cfg(not(feature = "iceberg"))]
+        let default_profile = ServerSessionProfile::CpuFallback;
+        let session_profile = explicit_profile.unwrap_or(default_profile);
+
         Ok(Self {
             bind_addr,
             log_filter,
             max_in_flight,
+            statement_ticket_ttl,
             native_optimizer_config,
+            session_profile,
             #[cfg(feature = "iceberg")]
             iceberg,
         })
@@ -304,6 +388,17 @@ impl<'a> EnvValues<'a> {
         Ok(value)
     }
 
+    fn positive_u64(&mut self, name: &'static str, default: u64) -> Result<u64> {
+        let value = match self.optional_u64(name)? {
+            Some(value) => value,
+            None => default,
+        };
+        if value == 0 {
+            return Err(ServerError::invalid_config(name, "must be greater than zero"));
+        }
+        Ok(value)
+    }
+
     fn optional_usize(&mut self, name: &'static str) -> Result<Option<usize>> {
         self.string(name)
             .map(|raw| {
@@ -319,6 +414,12 @@ impl<'a> EnvValues<'a> {
                 raw.parse::<u64>()
                     .map_err(|error| ServerError::invalid_config(name, format!("must be an integer: {error}")))
             })
+            .transpose()
+    }
+
+    fn optional_session_profile(&mut self, name: &'static str) -> Result<Option<ServerSessionProfile>> {
+        self.string(name)
+            .map(|raw| ServerSessionProfile::parse(&raw).map_err(|reason| ServerError::invalid_config(name, reason)))
             .transpose()
     }
 }

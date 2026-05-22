@@ -91,6 +91,7 @@ fn read_local_parquet_source_uncached(
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for (file_index, file) in source.files.iter().enumerate() {
+        context.check_cancellation("cudf_query_engine.local_parquet_source.file")?;
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
@@ -183,6 +184,7 @@ pub(super) fn read_local_parquet_chunk(
     budget_boundary: &'static str,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    context.check_cancellation("cudf_query_engine.local_parquet_chunk.read")?;
     if chunk.zero_column_count {
         let row_count = chunk.known_row_count.ok_or_else(|| {
             QueryError::new(

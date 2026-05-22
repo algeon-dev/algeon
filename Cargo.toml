@@ -153,3 +153,7 @@ required-features = ["server"]
 [[test]]
 name = "server_iceberg_smoke_tests"
 required-features = ["server", "iceberg"]
+
+[[test]]
+name = "flight_sql_iceberg_native_planning_tests"
+required-features = ["server", "iceberg"]

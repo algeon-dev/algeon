@@ -57,6 +57,7 @@ pub fn datafusion_error_to_status(error: DataFusionError) -> Status {
 fn adapter_error_to_status(error: &Error) -> Status {
     let message = error.to_string();
     let status = match error.kind() {
+        ErrorKind::Cancelled => Status::cancelled(message),
         ErrorKind::NotFound => Status::not_found(message),
         ErrorKind::InvalidInput | ErrorKind::Planning => Status::invalid_argument(message),
         ErrorKind::Unsupported => Status::unimplemented(message),

@@ -16,7 +16,10 @@ use datafusion::{
 
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
-use crate::planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig};
+use crate::planner::{
+    CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
+    CudfTableFormatGpuOnlyLeafGuardRule,
+};
 
 /// Public name and deduplication key for the final native rewrite rule.
 pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
@@ -102,6 +105,7 @@ fn insert_cudf_native_rules_before_final_validation(
     rules.retain(|existing| {
         existing.name() != CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
     });
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
@@ -111,7 +115,9 @@ fn insert_cudf_native_rules_before_final_validation(
         .iter()
         .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
         .map(|position| rules.remove(position));
+    let leaf_guard = Arc::new(CudfTableFormatGpuOnlyLeafGuardRule::with_native_rule(Arc::clone(&native_rule)));
     rules.push(native_rule);
+    rules.push(leaf_guard);
     if let Some(final_validation) = final_validation {
         rules.push(final_validation);
     }

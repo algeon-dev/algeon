@@ -54,12 +54,14 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
     if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
         let mut partials = Vec::with_capacity(chunks.len());
         for chunk in chunks {
+            context.check_cancellation("cudf_query_engine.exec.bounded.chunk_scheduler")?;
             partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
         }
         return Ok(partials);
     }
 
     let mut partials = Vec::with_capacity(chunks.len());
+    context.check_cancellation("cudf_query_engine.exec.bounded.chunk_scheduler")?;
     let mut queue = OrderedSourceReadQueue::start(
         context,
         bounded.source,
@@ -71,6 +73,10 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
     )?;
 
     for (index, chunk) in chunks.iter().enumerate() {
+        if let Err(error) = context.check_cancellation("cudf_query_engine.exec.bounded.chunk_scheduler") {
+            queue.abandon_all(index, reservations, metrics);
+            return Err(error);
+        }
         let scheduled =
             queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
         let source = match finish_scheduled_source_read(
@@ -304,6 +310,10 @@ fn read_local_parquet_chunks_serial(
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut outputs = Vec::with_capacity(chunks.len());
     for chunk in chunks {
+        if let Err(error) = context.check_cancellation("cudf_query_engine.exec.bounded.serial_source_chunk") {
+            release_source_read_outputs_reverse(reservations, outputs, metrics);
+            return Err(error);
+        }
         metrics.record_source_chunk_attempt();
         if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
             metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
@@ -604,6 +614,7 @@ fn start_scheduled_source_read(
     strict_token_budget: bool,
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.source_scheduler_start")?;
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         return Ok(ScheduledLocalParquetRead::ready(output, budget_boundary, prefetch));
@@ -789,6 +800,7 @@ pub(super) fn execute_bounded_chunk_retry_attempt(
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<CommittedPartial>> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.chunk_retry")?;
     match execute_bounded_chunk_attempt(context, bounded, &chunk, reservations, metrics, attempt, max_attempts) {
         Ok(partial) => Ok(vec![partial]),
         Err(error) if is_retryable_chunk_error(&error) => retry_after_chunk_error(
@@ -863,6 +875,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.raw_source_chunk")?;
     let source = read_bounded_chunk_source(
         context,
         bounded.source,
@@ -887,6 +900,7 @@ pub(super) fn execute_bounded_chunk_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.chunk_attempt")?;
     let source = read_bounded_chunk_source(
         context,
         bounded.source,
@@ -919,6 +933,7 @@ fn read_bounded_chunk_source(
     max_attempts: usize,
     grow_source_to_observed: bool,
 ) -> Result<ScheduledLocalParquetReadOutput> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.source_chunk_read")?;
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         return Ok(output);
@@ -1025,6 +1040,11 @@ fn execute_bounded_chunk_operator_from_source(
     before_operator: impl FnOnce(&mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 ) -> Result<CommittedPartial> {
     let ScheduledLocalParquetReadOutput { chunk, frame, reservation: source_reservation, observed_bytes: _ } = source;
+    if let Err(error) = context.check_cancellation("cudf_query_engine.exec.bounded.chunk_operator") {
+        drop(frame);
+        reservations.release(source_reservation, metrics);
+        return Err(error);
+    }
     let mut input = CommittedPartial { frame, reservation: source_reservation };
     input = execute_source_adjacent_chunk_stages(
         context,
@@ -1512,6 +1532,7 @@ fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Option<GpuDataFrame>> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.source_chunk_budget_retry")?;
     if attempt >= max_attempts {
         return Ok(None);
     }

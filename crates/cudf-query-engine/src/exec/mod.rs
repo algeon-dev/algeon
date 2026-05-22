@@ -407,6 +407,7 @@ pub fn execute_query_plan_with_gpu_inputs(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ExecutionResult> {
+    context.check_cancellation("cudf_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
     let _order_tracking = DataFusionOrderTrackingGuard::new(plan_requires_datafusion_exact_stddev_order(plan));
     let mut metrics = QueryMetrics {
@@ -454,6 +455,7 @@ fn execute_node(
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
 ) -> Result<types::GpuDataFrame> {
+    context.check_cancellation("cudf_query_engine.exec.execute_node")?;
     if let Some(frame) = scratch.node_results.get(&id) {
         return Ok(frame.clone());
     }

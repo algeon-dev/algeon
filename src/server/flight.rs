@@ -1,7 +1,7 @@
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use arrow_flight::{
@@ -11,12 +11,15 @@ use arrow_flight::{
     flight_service_server::FlightService,
     sql::{
         ActionCancelQueryRequest, ActionCancelQueryResult, CommandGetSqlInfo, CommandPreparedStatementQuery,
-        CommandStatementQuery, ProstMessageExt, SqlInfo, TicketStatementQuery, metadata::SqlInfoDataBuilder,
-        server::FlightSqlService,
+        CommandStatementQuery, ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
+        SqlSupportedCaseSensitivity, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType,
+        SqlSupportedTransaction, SqlSupportedUnions, SqlTransactionIsolationLevel, SupportedSqlGrammar,
+        TicketStatementQuery, metadata::SqlInfoDataBuilder, server::FlightSqlService,
     },
 };
+use cudf_query_engine::ExecutionCancellation;
 use dashmap::DashMap;
-use datafusion::{error::DataFusionError, prelude::SessionContext};
+use datafusion::{error::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext};
 use futures::{Stream, StreamExt, TryStreamExt};
 use prost::Message;
 use tokio::sync::OwnedSemaphorePermit;
@@ -29,17 +32,22 @@ use super::{
     cancel::QueryCancellation,
     error::{ServerError, datafusion_error_to_status},
 };
+use crate::{CudfOptimizerConfig, CudfSessionStateBuilderExt};
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
+const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-cudf-query-id";
+const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub struct DatafusionCudfFlightSqlService {
     ctx: Arc<SessionContext>,
+    native_optimizer_config: CudfOptimizerConfig,
     admission: Arc<QueryAdmission>,
     cancellations: Arc<QueryCancellation>,
     tickets: Arc<DashMap<String, StatementTicket>>,
+    statement_ticket_ttl: Duration,
     /// Parent token that every per-statement token is derived from. Cancelled
     /// by [`crate::server::serve`] on SIGINT/SIGTERM so any statement that
     /// has been admitted but not yet registered (or any statement still to
@@ -47,19 +55,30 @@ pub struct DatafusionCudfFlightSqlService {
     shutdown_token: CancellationToken,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct StatementTicket {
     query_id: String,
     sql: String,
+    native_cancellation: ExecutionCancellation,
+    started_at: Instant,
+    issued_at: Instant,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl DatafusionCudfFlightSqlService {
-    pub fn new(ctx: Arc<SessionContext>, max_in_flight: usize) -> Self {
+    pub fn new(
+        ctx: Arc<SessionContext>,
+        native_optimizer_config: CudfOptimizerConfig,
+        max_in_flight: usize,
+        statement_ticket_ttl: Duration,
+    ) -> Self {
         Self {
             ctx,
+            native_optimizer_config,
             admission: Arc::new(QueryAdmission::new(max_in_flight).expect("validated server admission limit")),
             cancellations: Arc::default(),
             tickets: Arc::default(),
+            statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
         }
     }
@@ -76,19 +95,41 @@ impl DatafusionCudfFlightSqlService {
         &self.shutdown_token
     }
 
+    fn query_context(&self, cancellation: ExecutionCancellation) -> SessionContext {
+        let execution_config =
+            self.native_optimizer_config.native_execution_config().clone().with_cancellation(cancellation);
+        let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
+        let state = SessionStateBuilder::new_from_existing(self.ctx.state()).with_cudf_native(optimizer_config).build();
+        SessionContext::new_with_state(state)
+    }
+
     async fn statement_flight_info(
         &self,
         query_id: String,
         sql: String,
         descriptor: FlightDescriptor,
+        started_at: Instant,
+        permit: OwnedSemaphorePermit,
     ) -> Result<FlightInfo, Status> {
         // Observe the server-wide shutdown token so a slow planning call here
         // does not keep tonic's graceful drain waiting. There is no per-query
         // child token yet (the ticket has not been issued), so we watch the
         // parent directly.
+        //
+        // The native cancellation flag is constructed here so the optimizer-rule
+        // wiring in `query_context` shares it with planning. Until the ticket is
+        // inserted into `self.tickets`, the flag is not reachable via
+        // `do_action_cancel_query` — that's the documented pre-ticket window in
+        // the Bug 9 audit. Only the parent `shutdown_token` arm below or a
+        // failure path can flip the flag during this window, which is sufficient
+        // because no native execution has started yet (this method only runs
+        // logical/physical planning to derive the result schema).
+        let native_cancellation = ExecutionCancellation::new();
+        let query_ctx = self.query_context(native_cancellation.clone());
         let df = tokio::select! {
-            result = self.ctx.sql(&sql) => result.map_err(datafusion_error_to_status)?,
+            result = query_ctx.sql(&sql) => result.map_err(datafusion_error_to_status)?,
             _ = self.shutdown_token.cancelled() => {
+                native_cancellation.cancel();
                 return Err(server_shutdown_status(&query_id));
             }
         };
@@ -96,57 +137,117 @@ impl DatafusionCudfFlightSqlService {
 
         let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
         let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket.as_any().encode_to_vec().into() });
-        self.tickets.insert(query_id.clone(), StatementTicket { query_id, sql });
-
-        Ok(FlightInfo::new()
+        let info = FlightInfo::new()
             .try_with_schema(&schema)
             .map_err(arrow_error_to_status)?
             .with_descriptor(descriptor)
             .with_endpoint(endpoint)
-            .with_ordered(false))
+            .with_ordered(false);
+        self.tickets.insert(
+            query_id.clone(),
+            StatementTicket {
+                query_id,
+                sql,
+                native_cancellation,
+                started_at,
+                issued_at: Instant::now(),
+                _permit: permit,
+            },
+        );
+        Ok(info)
+    }
+
+    async fn acquire_statement_permit(&self, query_id: &str) -> Result<OwnedSemaphorePermit, Status> {
+        loop {
+            self.expire_stale_tickets(Instant::now());
+            match self.admission.try_acquire() {
+                Ok(Some(permit)) => return Ok(permit.into_inner()),
+                Ok(None) => {},
+                Err(error) => {
+                    let status = if self.shutdown_token.is_cancelled() {
+                        server_shutdown_status(query_id)
+                    } else {
+                        server_error_to_status(error)
+                    };
+                    return Err(status_with_query_id(status, query_id));
+                },
+            }
+
+            let sleep_for = self.next_ticket_expiration_delay(Instant::now()).unwrap_or(ADMISSION_SWEEP_POLL_INTERVAL);
+            let sleep_for = sleep_for.min(ADMISSION_SWEEP_POLL_INTERVAL);
+            let acquire = self.admission.acquire();
+            tokio::select! {
+                result = acquire => {
+                    return result
+                        .map(|permit| permit.into_inner())
+                        .map_err(|error| {
+                            let status = if self.shutdown_token.is_cancelled() {
+                                server_shutdown_status(query_id)
+                            } else {
+                                server_error_to_status(error)
+                            };
+                            status_with_query_id(status, query_id)
+                        });
+                },
+                _ = tokio::time::sleep(sleep_for) => {},
+                _ = self.shutdown_token.cancelled() => {
+                    return Err(server_shutdown_status(query_id));
+                },
+            }
+        }
+    }
+
+    fn expire_stale_tickets(&self, now: Instant) {
+        let ttl = self.statement_ticket_ttl;
+        self.tickets.retain(|query_id, ticket| {
+            let age = now.saturating_duration_since(ticket.issued_at);
+            if age < ttl {
+                return true;
+            }
+            self.cancellations.remove(query_id);
+            tracing::warn!(
+                query_id = query_id.as_str(),
+                ticket_age_ms = age.as_millis(),
+                statement_ticket_ttl_ms = ttl.as_millis(),
+                "expired abandoned Flight SQL statement ticket"
+            );
+            false
+        });
+    }
+
+    fn next_ticket_expiration_delay(&self, now: Instant) -> Option<Duration> {
+        self.tickets
+            .iter()
+            .map(|ticket| {
+                let age = now.saturating_duration_since(ticket.issued_at);
+                self.statement_ticket_ttl.saturating_sub(age)
+            })
+            .min()
     }
 
     async fn execute_ticket(&self, query_id: String) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.expire_stale_tickets(Instant::now());
         let (_, ticket) = self.tickets.remove(&query_id).ok_or_else(|| {
             let status = status_with_query_id(
-                Status::invalid_argument(format!("unknown or already consumed statement ticket: {query_id}")),
+                Status::invalid_argument(format!("unknown, expired, or already consumed statement ticket: {query_id}")),
                 &query_id,
             );
             log_statement_status(&query_id, "ticket", Instant::now(), &status);
             status
         })?;
 
-        let queued_at = Instant::now();
-        let permit = self.admission.acquire().await.map_err(|error| {
-            // If the semaphore closed because we are shutting down, surface
-            // the queued statement as CANCELLED rather than INTERNAL — the
-            // client did nothing wrong; the server is going away.
-            let status = if self.shutdown_token.is_cancelled() {
-                server_shutdown_status(&ticket.query_id)
-            } else {
-                server_error_to_status(error)
-            };
-            let status = status_with_query_id(status, &ticket.query_id);
-            log_statement_status(&ticket.query_id, "admission", queued_at, &status);
-            status
-        })?;
-        let admission_wait_ms = permit.wait_millis();
-        if admission_wait_ms > 0 || self.admission.max_in_flight() > 1 {
-            tracing::info!(
-                query_id = ticket.query_id,
-                admission_wait_ms,
-                total_queue_wait_ms = queued_at.elapsed().as_millis(),
-                max_in_flight = self.admission.max_in_flight(),
-                "admitted Flight SQL statement"
-            );
-        }
-
         // Derive from `shutdown_token` so cancellation cascades to statements
         // that race in between permit acquisition and registry insert.
         let token = self.shutdown_token.child_token();
-        let StatementTicket { query_id, sql } = ticket;
-        self.cancellations.insert(query_id.clone(), token.clone());
-        let lifecycle = Arc::new(QueryLifecycle::new(query_id.clone(), Instant::now()));
+        let StatementTicket { query_id, sql, native_cancellation, started_at, _permit: permit, .. } = ticket;
+        self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
+        let native_cancellation_for_bridge = native_cancellation.clone();
+        let token_for_bridge = token.clone();
+        let native_cancel_bridge = tokio::spawn(async move {
+            token_for_bridge.cancelled().await;
+            native_cancellation_for_bridge.cancel();
+        });
+        let lifecycle = Arc::new(QueryLifecycle::new(query_id.clone(), started_at));
         // Construct the guard before planning so an early return from the
         // tokio::select! shutdown branches still releases the permit and
         // removes the cancellation entry on drop (avoids leaks when planning
@@ -154,11 +255,13 @@ impl DatafusionCudfFlightSqlService {
         let guard = QueryExecutionGuard {
             query_id: query_id.clone(),
             cancellations: Arc::clone(&self.cancellations),
-            _permit: permit.into_inner(),
+            native_cancel_bridge,
+            _permit: permit,
             lifecycle: Arc::clone(&lifecycle),
         };
+        let query_ctx = self.query_context(native_cancellation.clone());
         let df = tokio::select! {
-            result = self.ctx.sql(&sql) => match result {
+            result = query_ctx.sql(&sql) => match result {
                 Ok(df) => df,
                 Err(error) => {
                     let status = status_with_query_id(datafusion_error_to_status(error), &query_id);
@@ -167,6 +270,7 @@ impl DatafusionCudfFlightSqlService {
                 },
             },
             _ = token.cancelled() => {
+                native_cancellation.cancel();
                 let status = cancellation_status(&self.shutdown_token, &query_id);
                 lifecycle.finish_status("planning", &status);
                 return Err(status);
@@ -183,6 +287,7 @@ impl DatafusionCudfFlightSqlService {
                 },
             },
             _ = token.cancelled() => {
+                native_cancellation.cancel();
                 let status = cancellation_status(&self.shutdown_token, &query_id);
                 lifecycle.finish_status("execute_stream", &status);
                 return Err(status);
@@ -250,6 +355,11 @@ impl DatafusionCudfFlightSqlService {
         };
         let query_id = std::str::from_utf8(&statement_ticket.statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if let Some((_, ticket)) = self.tickets.remove(query_id) {
+            ticket.native_cancellation.cancel();
+            tracing::info!(query_id, outcome = "cancelled", phase = "ticket", "cancelled Flight SQL statement ticket");
+            return Ok(true);
+        }
         Ok(self.cancellations.cancel(query_id))
     }
 }
@@ -281,7 +391,27 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             log_statement_status(&query_id, "planning", planning_started_at, &status);
             return Err(status);
         }
-        let info = match self.statement_flight_info(query_id.clone(), sql, request.into_inner()).await {
+        let queued_at = Instant::now();
+        let permit = match self.acquire_statement_permit(&query_id).await {
+            Ok(permit) => permit,
+            Err(status) => {
+                log_statement_status(&query_id, "admission", queued_at, &status);
+                return Err(status);
+            },
+        };
+        let admission_wait_ms = queued_at.elapsed().as_millis();
+        if admission_wait_ms > 0 || self.admission.max_in_flight() > 1 {
+            tracing::info!(
+                query_id,
+                admission_wait_ms,
+                max_in_flight = self.admission.max_in_flight(),
+                "admitted Flight SQL statement for planning"
+            );
+        }
+        let info = match self
+            .statement_flight_info(query_id.clone(), sql, request.into_inner(), planning_started_at, permit)
+            .await
+        {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id(status, &query_id);
@@ -371,12 +501,14 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
 struct QueryExecutionGuard {
     query_id: String,
     cancellations: Arc<QueryCancellation>,
+    native_cancel_bridge: tokio::task::JoinHandle<()>,
     _permit: OwnedSemaphorePermit,
     lifecycle: Arc<QueryLifecycle>,
 }
 
 impl Drop for QueryExecutionGuard {
     fn drop(&mut self) {
+        self.native_cancel_bridge.abort();
         self.cancellations.remove(&self.query_id);
         self.lifecycle.finish_dropped();
     }
@@ -491,5 +623,89 @@ fn sql_info_data() -> Result<arrow_flight::sql::metadata::SqlInfoData, Status> {
     let mut builder = SqlInfoDataBuilder::new();
     builder.append(SqlInfo::FlightSqlServerName, "datafusion-cudf");
     builder.append(SqlInfo::FlightSqlServerVersion, env!("CARGO_PKG_VERSION"));
+    builder.append(SqlInfo::FlightSqlServerArrowVersion, "1.3");
+    builder.append(SqlInfo::FlightSqlServerReadOnly, false);
+    builder.append(SqlInfo::FlightSqlServerSql, true);
+    builder.append(SqlInfo::FlightSqlServerSubstrait, false);
+    builder.append(SqlInfo::FlightSqlServerTransaction, SqlSupportedTransaction::None as i32);
+    builder.append(SqlInfo::FlightSqlServerCancel, true);
+    builder.append(SqlInfo::FlightSqlServerBulkIngestion, false);
+    builder.append(SqlInfo::FlightSqlServerIngestTransactionsSupported, false);
+
+    builder.append(SqlInfo::SqlDdlCatalog, false);
+    builder.append(SqlInfo::SqlDdlSchema, true);
+    builder.append(SqlInfo::SqlDdlTable, true);
+    builder.append(SqlInfo::SqlIdentifierCase, SqlSupportedCaseSensitivity::SqlCaseSensitivityLowercase as i32);
+    builder.append(SqlInfo::SqlIdentifierQuoteChar, r#"""#);
+    builder.append(SqlInfo::SqlQuotedIdentifierCase, SqlSupportedCaseSensitivity::SqlCaseSensitivityUnknown as i32);
+    builder.append(SqlInfo::SqlAllTablesAreSelectable, true);
+    builder.append(SqlInfo::SqlNullOrdering, SqlNullOrdering::SqlNullsSortedHigh as i32);
+    builder.append(SqlInfo::SqlSearchStringEscape, "\\");
+    builder.append(SqlInfo::SqlExtraNameCharacters, "_");
+    builder.append(SqlInfo::SqlSupportsColumnAliasing, true);
+    builder.append(SqlInfo::SqlNullPlusNullIsNull, true);
+    builder.append(SqlInfo::SqlSupportsTableCorrelationNames, true);
+    builder.append(SqlInfo::SqlSupportsDifferentTableCorrelationNames, true);
+    builder.append(SqlInfo::SqlSupportsExpressionsInOrderBy, true);
+    builder.append(SqlInfo::SqlSupportsOrderByUnrelated, true);
+    builder.append(
+        SqlInfo::SqlSupportedGroupBy,
+        sql_info_bitmask([
+            SqlSupportedGroupBy::SqlGroupByUnrelated as i32,
+            SqlSupportedGroupBy::SqlGroupByBeyondSelect as i32,
+        ]),
+    );
+    builder.append(SqlInfo::SqlSupportsLikeEscapeClause, true);
+    builder.append(SqlInfo::SqlSupportsNonNullableColumns, true);
+    builder.append(
+        SqlInfo::SqlSupportedGrammar,
+        sql_info_bitmask([SupportedSqlGrammar::SqlMinimumGrammar as i32, SupportedSqlGrammar::SqlCoreGrammar as i32]),
+    );
+    builder.append(SqlInfo::SqlAnsi92SupportedLevel, sql_info_bitmask([SQL_ANSI92_ENTRY_SQL_BIT_INDEX]));
+    builder.append(SqlInfo::SqlSupportsIntegrityEnhancementFacility, false);
+    builder.append(SqlInfo::SqlOuterJoinsSupportLevel, SqlOuterJoinsSupportLevel::SqlFullOuterJoins as i32);
+    builder.append(SqlInfo::SqlSchemaTerm, "schema");
+    builder.append(SqlInfo::SqlProcedureTerm, "");
+    builder.append(SqlInfo::SqlCatalogTerm, "catalog");
+    builder.append(SqlInfo::SqlCatalogAtStart, true);
+    builder.append(SqlInfo::SqlSchemasSupportedActions, 0);
+    builder.append(SqlInfo::SqlCatalogsSupportedActions, 0);
+    builder.append(SqlInfo::SqlSupportedPositionedCommands, 0);
+    builder.append(SqlInfo::SqlSelectForUpdateSupported, false);
+    builder.append(SqlInfo::SqlStoredProceduresSupported, false);
+    builder.append(SqlInfo::SqlSupportedSubqueries, 0);
+    builder.append(SqlInfo::SqlCorrelatedSubqueriesSupported, false);
+    builder.append(
+        SqlInfo::SqlSupportedUnions,
+        sql_info_bitmask([SqlSupportedUnions::SqlUnion as i32, SqlSupportedUnions::SqlUnionAll as i32]),
+    );
+    builder.append(SqlInfo::SqlDefaultTransactionIsolation, SqlTransactionIsolationLevel::SqlTransactionNone as i32);
+    builder.append(SqlInfo::SqlTransactionsSupported, false);
+    builder.append(SqlInfo::SqlSupportedTransactionsIsolationLevels, 0);
+    builder.append(SqlInfo::SqlDataDefinitionCausesTransactionCommit, false);
+    builder.append(SqlInfo::SqlDataDefinitionsInTransactionsIgnored, false);
+    builder.append(
+        SqlInfo::SqlSupportedResultSetTypes,
+        sql_info_bitmask([SqlSupportedResultSetType::SqlResultSetTypeForwardOnly as i32]),
+    );
+    builder.append(SqlInfo::SqlSupportedConcurrenciesForResultSetUnspecified, 0);
+    builder.append(
+        SqlInfo::SqlSupportedConcurrenciesForResultSetForwardOnly,
+        sql_info_bitmask([SqlSupportedResultSetConcurrency::SqlResultSetConcurrencyReadOnly as i32]),
+    );
+    builder.append(SqlInfo::SqlSupportedConcurrenciesForResultSetScrollSensitive, 0);
+    builder.append(SqlInfo::SqlSupportedConcurrenciesForResultSetScrollInsensitive, 0);
+    builder.append(SqlInfo::SqlBatchUpdatesSupported, false);
+    builder.append(SqlInfo::SqlSavepointsSupported, false);
+    builder.append(SqlInfo::SqlNamedParametersSupported, false);
+    builder.append(SqlInfo::SqlLocatorsUpdateCopy, false);
+    builder.append(SqlInfo::SqlStoredFunctionsUsingCallSyntaxSupported, false);
     builder.build().map_err(Status::from)
+}
+
+fn sql_info_bitmask(values: impl IntoIterator<Item = i32>) -> i32 {
+    values.into_iter().fold(0, |mask, value| {
+        let shift = u32::try_from(value).expect("Flight SQL SqlInfo bit index must be non-negative");
+        mask | 1_i32.checked_shl(shift).expect("Flight SQL SqlInfo bit index must fit in i32")
+    })
 }

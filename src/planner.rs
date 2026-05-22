@@ -35,8 +35,10 @@ use crate::{
     session::{CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
+mod leaf_guard;
 mod native;
 
+pub use leaf_guard::{CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfTableFormatGpuOnlyLeafGuardRule};
 pub use native::{
     CudfNativePhysicalOptimizerRule, NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics,
     NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,

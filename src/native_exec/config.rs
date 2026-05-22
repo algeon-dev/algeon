@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use cudf_query_engine::{
-    AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache,
+    AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode,
     SourceSchedulerPolicy,
 };
@@ -30,6 +30,7 @@ pub struct NativeCudfExecutionConfig {
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
+    cancellation: ExecutionCancellation,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
@@ -46,6 +47,7 @@ impl NativeCudfExecutionConfig {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
@@ -81,6 +83,7 @@ impl NativeCudfExecutionConfig {
             },
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
@@ -134,6 +137,12 @@ impl NativeCudfExecutionConfig {
     /// Set bounded source scheduling controls.
     pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
+    /// Attach a cooperative cancellation flag observed by native execution.
+    pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
+        self.cancellation = cancellation;
         self
     }
 
@@ -201,6 +210,7 @@ impl NativeCudfExecutionConfig {
             .with_memory_control_policy(self.memory_control_policy)
             .with_boundary_policy(self.boundary_policy)
             .with_source_scheduler_policy(self.source_scheduler_policy)
+            .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
         if let Some(runtime) = &self.runtime {
             builder = builder.with_shared_runtime(Arc::clone(runtime));

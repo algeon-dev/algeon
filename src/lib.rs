@@ -118,8 +118,9 @@ pub use native_report::{
     compare_record_batches, sql_has_top_level_order_by,
 };
 pub use planner::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
-    NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+    CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
+    CudfTableFormatGpuOnlyLeafGuardRule, NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics,
+    NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
     NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
     NativeStrictBoundedRejectedCandidateDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };

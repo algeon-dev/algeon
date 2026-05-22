@@ -6,13 +6,14 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 
-use super::{config::ServerConfig, error::ServerError};
+use super::{
+    config::{ServerConfig, ServerSessionProfile},
+    error::ServerError,
+};
 use crate::CudfSessionStateBuilderExt;
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
-    let session_config = SessionConfig::from_env()
-        .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))?
-        .with_information_schema(true);
+    let session_config = build_session_config(config)?;
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
         .with_cudf_native(config.native_optimizer_config.clone())
@@ -23,6 +24,70 @@ pub async fn build_session_context(config: &ServerConfig) -> super::error::Resul
     register_iceberg_catalog(&ctx, config).await?;
 
     Ok(ctx)
+}
+
+/// Build the `SessionConfig` for the Flight SQL server, honoring the
+/// configured [`ServerSessionProfile`].
+///
+/// The base config is loaded from `DATAFUSION_*` env vars (single-underscore
+/// names matching DataFusion's
+/// [`ConfigOptions::from_env`](datafusion::common::config::ConfigOptions::from_env)
+/// convention) so operators can still tune the CPU-fallback execution profile
+/// through e.g. `DATAFUSION_EXECUTION_BATCH_SIZE`. When the profile is
+/// [`ServerSessionProfile::Native`] the relevant DataFusion settings are
+/// overridden afterwards so the native cudf optimizer rule sees the same
+/// physical-plan shape the workload harnesses already validate. This avoids
+/// the audit scenario in `docs/issue/2026-05-22-flight-sql-server-audit.md`
+/// where DataFusion repartitioning injects a `SortPreservingMergeExec` over a
+/// GPU-only `CudfTableFormatScanExec` and the native rule rejects the root.
+pub fn build_session_config(config: &ServerConfig) -> super::error::Result<SessionConfig> {
+    let base = SessionConfig::from_env()
+        .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))?;
+    Ok(apply_session_profile(base, config.session_profile))
+}
+
+/// Apply [`ServerSessionProfile`] to a base `SessionConfig`. Always enables
+/// `information_schema` so Flight SQL clients can discover the catalog. The
+/// native profile additionally pins the native-friendly DataFusion settings;
+/// the CPU-fallback profile only enables `information_schema` and leaves the
+/// rest of `base` (e.g. values loaded from `DATAFUSION_*` env vars) untouched.
+///
+/// Embedders that build their own [`SessionConfig`] (and thus do not want to
+/// inherit `DATAFUSION_*` process env) can call this directly to opt into the
+/// same plan-shape contract the Flight SQL server enforces.
+pub fn apply_session_profile(base: SessionConfig, profile: ServerSessionProfile) -> SessionConfig {
+    let base = base.with_information_schema(true);
+    match profile {
+        ServerSessionProfile::Native => apply_native_friendly_profile(base),
+        ServerSessionProfile::CpuFallback => base,
+    }
+}
+
+/// Pin the DataFusion physical-plan profile to the native-friendly defaults
+/// the workload harnesses use:
+///
+/// - `target_partitions=1`
+/// - file-scan / aggregation / join / sort repartitioning all disabled
+/// - top-k, join, aggregate, and umbrella dynamic-filter pushdown all
+///   disabled (DataFusion checks each per-operator flag directly, so the
+///   umbrella alone does not suppress joins or top-k pushdown)
+///
+/// These overrides intentionally take precedence over `DATAFUSION_*` env
+/// vars; the env vars still apply to other settings (for example
+/// `batch_size`).
+fn apply_native_friendly_profile(config: SessionConfig) -> SessionConfig {
+    let mut config = config
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_joins(false)
+        .with_repartition_sorts(false);
+    let optimizer = &mut config.options_mut().optimizer;
+    optimizer.enable_topk_dynamic_filter_pushdown = false;
+    optimizer.enable_join_dynamic_filter_pushdown = false;
+    optimizer.enable_aggregate_dynamic_filter_pushdown = false;
+    optimizer.enable_dynamic_filter_pushdown = false;
+    config
 }
 
 #[cfg(feature = "iceberg")]

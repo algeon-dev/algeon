@@ -1,6 +1,4 @@
-use std::time::Instant;
-
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::error::{Result, ServerError};
 
@@ -30,27 +28,29 @@ impl QueryAdmission {
     }
 
     pub async fn acquire(&self) -> Result<QueryAdmissionPermit> {
-        let queued_at = Instant::now();
         let permit = self
             .permits
             .clone()
             .acquire_owned()
             .await
             .map_err(|error| ServerError::session("query admission queue closed", error))?;
-        Ok(QueryAdmissionPermit { permit, queued_at })
+        Ok(QueryAdmissionPermit { permit })
+    }
+
+    pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
+        match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => Ok(Some(QueryAdmissionPermit { permit })),
+            Err(TryAcquireError::NoPermits) => Ok(None),
+            Err(error @ TryAcquireError::Closed) => Err(ServerError::session("query admission queue closed", error)),
+        }
     }
 }
 
 pub struct QueryAdmissionPermit {
     permit: OwnedSemaphorePermit,
-    queued_at: Instant,
 }
 
 impl QueryAdmissionPermit {
-    pub fn wait_millis(&self) -> u128 {
-        self.queued_at.elapsed().as_millis()
-    }
-
     pub fn into_inner(self) -> OwnedSemaphorePermit {
         self.permit
     }
