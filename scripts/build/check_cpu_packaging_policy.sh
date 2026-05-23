@@ -64,15 +64,10 @@ assert policy["clean_environment"]["explicit_inputs"] == [
     "CUGRAPH_CMAKE_BUILD_DIR",
 ]
 portable = policy["profiles"]["portable"]
-tuned = policy["profiles"]["tuned-local-v3"]
 assert portable["declared_baseline"] == "x86-64-v2"
 assert portable["rustflags"] == ["-C", "target-cpu=x86-64-v2"]
-assert tuned["declared_baseline"] == "x86-64-v3"
-assert tuned["artifact_dir"] != portable["artifact_dir"]
-assert tuned["image_tag_suffix"] != portable["image_tag_suffix"]
-assert "x86-64-v3" in tuned["deployment_requirement"]
 PY
-echo "PASS: portable and tuned profiles are separate declarative contracts"
+echo "PASS: portable profile is a declarative contract"
 
 cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
@@ -279,7 +274,6 @@ for needle in \
   grep -Fq "${needle}" docker/Dockerfile || fail "Dockerfile missing provenance assertion: ${needle}"
 done
 grep -Fq 'verify-build' docker/build.sh || fail "SKIP_CARGO_BUILD path does not verify provenance"
-grep -Fq 'CPU_PACKAGE_PROFILE=tuned-local-v3' docker/build.sh || fail "tuned profile is not exposed separately"
 status=0
 env RUSTFLAGS='-C target-cpu=x86-64-v3' bash docker/build.sh \
   >"${tmp_dir}/build-script-dirty-env.output" 2>&1 || status=$?

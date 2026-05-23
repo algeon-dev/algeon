@@ -35,7 +35,6 @@
 #   FEATURES=iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse only verified canonical artifact
-#   CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh # separate v3 artifact/tag
 #
 # Then:
 #   Run the exact docker build command printed by this script. Its build args
@@ -57,7 +56,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_FILE="$REPO_ROOT/.config/policies/cpu-packaging.toml"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
-CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
+CPU_PACKAGE_PROFILE="portable"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
     --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
@@ -101,8 +100,8 @@ cd "$REPO_ROOT"
 # ── 0. Compile or verify canonical artifact ─────────────────────────────────
 # The helper rejects every ambient codegen/config override, starts Cargo from
 # an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
-# command line. Profiles have separate target roots, so tuned artifacts cannot
-# masquerade as portable ones.
+# command line. The profile's target root, provenance, and image labels bind
+# the artifact to the declared portable baseline.
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
 BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
 BUILD_PROVENANCE="$BINARY.cpu-provenance.json"

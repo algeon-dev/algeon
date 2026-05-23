@@ -144,18 +144,8 @@ The default packaging profile therefore pins a fixed **x86-64-v2** floor
 The v2 ISA is a **host precondition**. There is deliberately no in-process
 feature check: v2 instructions may execute before `main`, so a pre-v2 machine
 can terminate with `SIGILL` before a friendly diagnostic is possible.
-
-To trade portability for CPU speed, select the separate tuned profile:
-
-```bash
-CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh
-# Run the printed command; its tag is datafusion-nexus-server:x86-64-v3-tuned.
-```
-
-This uses a separate target directory, provenance profile, label, and image
-tag. Deploy it only to hosts implementing the full x86-64-v3 ISA; never retag
-it as the portable v2 image. CPU SIMD is normally off this GPU engine's hot
-path, so the portable profile remains the default.
+CPU SIMD is normally off this GPU engine's hot path, so the portable
+profile is the only packaged one.
 - **CUDA / driver**: built against the CUDA **13.0** toolkit. The harvested
   runtime libs are minor-version forward-compatible within CUDA 13.x. The host
   needs an NVIDIA driver new enough for CUDA 13 (**≥ 580**) and the
@@ -172,8 +162,8 @@ docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
 bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
-the portable `:x86-64-v2` tag; set `NEXUS_SERVER_IMAGE` explicitly to run a
-tuned tag. Highlights:
+the portable `:x86-64-v2` tag; set `NEXUS_SERVER_IMAGE` to override.
+Highlights:
 
 - `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
   `NEXUS_SERVER_GPU_DEVICES`.

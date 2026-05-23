@@ -35,7 +35,6 @@ class LaneEntry:
     lane: str
     reason: str
     resource_class: str | None
-    owner: str | None
 
     @property
     def package(self) -> str:
@@ -81,7 +80,7 @@ def load_catalog(path: Path) -> list[LaneEntry]:
         location = f"binary[{index}]"
         if not isinstance(raw, dict):
             raise LanePolicyError(f"{location} must be a table")
-        allowed = {"id", "lane", "reason", "resource_class", "owner"}
+        allowed = {"id", "lane", "reason", "resource_class"}
         unknown = set(raw) - allowed
         if unknown:
             raise LanePolicyError(f"{location} has unknown keys: {', '.join(sorted(unknown))}")
@@ -93,21 +92,18 @@ def load_catalog(path: Path) -> list[LaneEntry]:
         lane = raw["lane"]
         reason = raw["reason"].strip()
         resource_class = raw.get("resource_class")
-        owner = raw.get("owner")
         if not FULL_ID.fullmatch(binary_id):
             raise LanePolicyError(f"{location}.id is not a complete nextest binary id: {binary_id!r}")
         if binary_id in seen_ids:
             raise LanePolicyError(f"duplicate catalog binary id: {binary_id}")
         if lane not in {"cpu", "gpu"}:
             raise LanePolicyError(f"{location}.lane must be cpu or gpu")
-        if owner is not None and (not isinstance(owner, str) or not owner.strip()):
-            raise LanePolicyError(f"{location}.owner must be a non-empty string when present")
         if lane == "cpu" and resource_class is not None:
             raise LanePolicyError(f"CPU entry {binary_id} must not declare resource_class")
         if lane == "gpu" and resource_class not in {"shared", "exclusive"}:
             raise LanePolicyError(f"GPU entry {binary_id} requires resource_class=shared or exclusive")
 
-        entry = LaneEntry(binary_id, lane, reason, resource_class, owner.strip() if owner else None)
+        entry = LaneEntry(binary_id, lane, reason, resource_class)
         previous = seen_names.get(entry.binary_name)
         if previous is not None:
             raise LanePolicyError(
