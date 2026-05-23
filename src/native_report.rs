@@ -62,6 +62,7 @@ mod reports;
 mod rows;
 mod runtime_summary;
 mod schema;
+#[cfg(feature = "bench-support")]
 mod tpcds_parity;
 mod tsv;
 mod workload;
@@ -104,14 +105,21 @@ pub use schema::{
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
 };
-pub use tpcds_parity::{
-    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
-    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
-    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport,
-    NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
-    ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
-    sql_top_level_order_by_covers_output_columns,
-};
+/// TPC-DS parity comparison and reporting support for benchmark and E2E
+/// applications. Hidden from the normal report contract; enable the
+/// `bench-support` feature to use it.
+#[doc(hidden)]
+#[cfg(feature = "bench-support")]
+pub mod bench_support {
+    pub use super::tpcds_parity::{
+        NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
+        NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
+        NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport,
+        NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
+        ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
+        sql_top_level_order_by_covers_output_columns,
+    };
+}
 use tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata};
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,

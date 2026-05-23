@@ -1,7 +1,9 @@
 use datafusion_nexus::native_report::{
-    FinalPlanDisposition, NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionPlanningOutcome,
-    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode,
-    ParityFloatTolerance, ParityStatus,
+    FinalPlanDisposition, NativeDataFusionPlanningOutcome,
+    bench_support::{
+        NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport,
+        NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
+    },
 };
 
 #[test]
@@ -48,8 +50,8 @@ fn parity_tsv_header_pins_columns() {
 fn parity_report_to_tsv_emits_metadata_and_header() {
     let row = NativeTpcdsParityRow {
         query_id: "q01".to_string(),
-        cpu_planning_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
-        cpu_runtime_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
+        cpu_planning_status: ParityStageStatus::Succeeded,
+        cpu_runtime_status: ParityStageStatus::Succeeded,
         native_planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
         native_reason_code: Some("unsupported_operator".to_string()),
         native_unsupported_category: Some("operator_join".to_string()),

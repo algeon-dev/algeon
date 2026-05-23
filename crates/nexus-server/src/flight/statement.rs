@@ -53,7 +53,12 @@ impl DatafusionNexusFlightSqlService {
         )
         .expect("server query planning should install a session config derived from the same optimizer config");
         let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
-            builder.with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))
+            builder
+                .try_with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))
+                // The service cugraph config and the installed session state
+                // both derive from the same validated server config, so the
+                // descriptor projection is identical and reinstall is a no-op.
+                .expect("identical validated cuGraph config reinstall cannot conflict")
         } else {
             builder
         };

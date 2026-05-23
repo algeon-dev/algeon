@@ -470,11 +470,8 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     let backend = runtime_backend(1);
 
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
-    let state = ctx.state();
-    let optimizer_config =
-        crate::adapter_session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
 
-    assert!(optimizer_config.native_execution_config().query_admission_source_matches(backend.session_capability()));
+    assert!(backend.is_session_state_bound(&ctx.state()));
 }
 
 #[tokio::test]

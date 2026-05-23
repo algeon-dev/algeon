@@ -142,7 +142,6 @@ pub(super) fn unsupported_category(
             first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
         },
         CapabilityReason::NativeSourceNonLocalObjectStore
-        | CapabilityReason::NativeSourcePartitionColumns
         | CapabilityReason::NativeSourceExprAdapter
         | CapabilityReason::NativeSourceParquetFileReaderFactory
         | CapabilityReason::NativeSourcePreserveOrder
@@ -151,10 +150,8 @@ pub(super) fn unsupported_category(
         | CapabilityReason::NativeSourceEmpty
         | CapabilityReason::NativeSourcePartitionValues
         | CapabilityReason::NativeSourceByteRange
-        | CapabilityReason::NativeSourceFileOrdering
         | CapabilityReason::NativeSourceRowSelection
         | CapabilityReason::NativeSourceSchemaMapping => Some("source".to_string()),
-        CapabilityReason::NativeSourceScanLimit => Some("limit_contract".to_string()),
         CapabilityReason::TableFormatUnsupported
         | CapabilityReason::TableFormatPlanningFailed
         | CapabilityReason::IcebergNonParquetDataFile
@@ -167,7 +164,6 @@ pub(super) fn unsupported_category(
         | CapabilityReason::IcebergRowSelectionUnsupported
         | CapabilityReason::IcebergObjectStoreReadUnsupported
         | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergSnapshotUnsupported
         | CapabilityReason::IcebergEncryptedFileUnsupported
         | CapabilityReason::IcebergScalarValueUnsupported => Some("table_format".to_string()),
         CapabilityReason::NativeSortPreservingMergeUnsupported

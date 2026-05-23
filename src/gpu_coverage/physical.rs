@@ -88,17 +88,14 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
         CapabilityReason::UnsupportedExpression => QueryGpuCandidateReasonKind::Expression,
         CapabilityReason::UnsupportedType => QueryGpuCandidateReasonKind::ArrowType,
         CapabilityReason::NativeSourceNonLocalObjectStore
-        | CapabilityReason::NativeSourcePartitionColumns
         | CapabilityReason::NativeSourceExprAdapter
         | CapabilityReason::NativeSourceParquetFileReaderFactory
-        | CapabilityReason::NativeSourceScanLimit
         | CapabilityReason::NativeSourcePreserveOrder
         | CapabilityReason::NativeSourceOutputOrdering
         | CapabilityReason::NativeSourcePushedDownParquetPredicate
         | CapabilityReason::NativeSourceEmpty
         | CapabilityReason::NativeSourcePartitionValues
         | CapabilityReason::NativeSourceByteRange
-        | CapabilityReason::NativeSourceFileOrdering
         | CapabilityReason::NativeSourceRowSelection
         | CapabilityReason::NativeSourceSchemaMapping
         | CapabilityReason::TableFormatUnsupported
@@ -113,7 +110,6 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
         | CapabilityReason::IcebergRowSelectionUnsupported
         | CapabilityReason::IcebergObjectStoreReadUnsupported
         | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergSnapshotUnsupported
         | CapabilityReason::IcebergEncryptedFileUnsupported
         | CapabilityReason::IcebergScalarValueUnsupported => QueryGpuCandidateReasonKind::Source,
         CapabilityReason::NativeSortPreservingMergeUnsupported
@@ -196,7 +192,6 @@ fn capability_reason_is_table_format(reason: CapabilityReason) -> bool {
             | CapabilityReason::IcebergRowSelectionUnsupported
             | CapabilityReason::IcebergObjectStoreReadUnsupported
             | CapabilityReason::IcebergFileIoSourceAccessUnverified
-            | CapabilityReason::IcebergSnapshotUnsupported
             | CapabilityReason::IcebergEncryptedFileUnsupported
             | CapabilityReason::IcebergScalarValueUnsupported
     )

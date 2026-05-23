@@ -288,7 +288,6 @@ fn unsupported_feature_codes_map_to_stable_capability_reasons() {
             TableFormatUnsupportedFeatureCode::IcebergFileIoSourceAccessUnverified,
             CapabilityReason::IcebergFileIoSourceAccessUnverified,
         ),
-        (TableFormatUnsupportedFeatureCode::IcebergSnapshotUnsupported, CapabilityReason::IcebergSnapshotUnsupported),
     ];
 
     for (code, reason) in cases {

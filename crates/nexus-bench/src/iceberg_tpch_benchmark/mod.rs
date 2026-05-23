@@ -9,8 +9,8 @@ use std::{
 
 use datafusion_nexus::{
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome, ParityComparisonMode,
-        ParityStatus,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+        bench_support::{ParityComparisonMode, ParityStatus},
     },
     table_format::{TableFormat, TableFormatScanPlan},
 };

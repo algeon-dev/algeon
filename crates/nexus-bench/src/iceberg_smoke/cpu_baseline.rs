@@ -122,7 +122,7 @@ pub fn fingerprint_output_batches(
     schema: &arrow::datatypes::Schema,
     batches: &[RecordBatch],
     sql: &str,
-) -> datafusion_nexus::native_report::ParityComparisonResult {
+) -> datafusion_nexus::native_report::bench_support::ParityComparisonResult {
     compare_record_batches(
         schema,
         batches,

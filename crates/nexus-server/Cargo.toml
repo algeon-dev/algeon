@@ -37,7 +37,7 @@ dashmap = "6.2"
 datafusion = { workspace = true }
 datafusion-nexus = { workspace = true, default-features = false }
 futures = { workspace = true }
-nexus-iceberg = { path = "../nexus-iceberg", optional = true, default-features = false }
+nexus-iceberg = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 parquet = { workspace = true }
 prost = { workspace = true }
@@ -53,6 +53,7 @@ tracing-subscriber = { workspace = true }
 uuid = { version = "1.23", features = ["v4"] }
 
 [dev-dependencies]
+datafusion-nexus = { workspace = true, features = ["test-support"] }
 proptest = "1.7"
 tempfile = { workspace = true }
 

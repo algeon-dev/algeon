@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use datafusion_nexus::{
     backend::{NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
-    error::{Error as AdapterError, ErrorCode},
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},
 };
 use nexus_query_engine::{
@@ -34,19 +33,12 @@ pub(crate) fn build_installed_gpu_backend(
         .with_source_work_per_attempt(source_work_per_attempt)
         .with_max_active_attempts(max_active_attempts)
         .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts);
-    let backend = NexusGpuBackend::from_optimizer_config_for_admission(
+    NexusGpuBackend::from_optimizer_config_for_admission(
         native_optimizer_config,
         vec![device_profile],
         vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
         NexusGpuQueuePolicy::default(),
-    )?;
-    backend.ok_or_else(|| {
-        AdapterError::new(
-            ErrorCode::InvalidRequest,
-            OPERATION,
-            "GPU benchmark backend construction did not produce a backend",
-        )
-    })
+    )
 }
 
 /// Process-owned GPU resources for benchmark and stress applications.

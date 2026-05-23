@@ -75,7 +75,7 @@ pub use error::{
 pub use session::{build_session_config, build_session_context, build_session_context_with_backend};
 
 /// Build the server's bounded query-service backend from a validated config.
-pub fn backend_from_server_config(config: &ServerConfig) -> Result<Option<NexusGpuBackend>> {
+pub fn backend_from_server_config(config: &ServerConfig) -> Result<NexusGpuBackend> {
     config.validate_gpu_device_profiles()?;
     NexusGpuBackend::from_optimizer_config_for_admission(
         config.native_optimizer_config.clone(),
@@ -198,12 +198,7 @@ impl FlightSqlServerBuilder {
                 validate_injected_backend_matches_config(&backend, &config)?;
                 backend
             },
-            None => backend_from_server_config(&config)?.ok_or_else(|| {
-                ServerError::builder_validation(
-                    "server_bounded_backend_required",
-                    "bounded Flight SQL server configuration did not produce a NexusGpuBackend",
-                )
-            })?,
+            None => backend_from_server_config(&config)?,
         };
 
         let admission_init_start = Instant::now();
@@ -603,27 +598,27 @@ fn validate_injected_queue_policy(
     config: &ServerConfig,
 ) -> Result<()> {
     let queue_policy = admission::server_queue_policy(config);
-    if queue_policy.max_queued_attempts != queue_bounds.max_waiters {
+    if queue_policy.max_queued_attempts() != queue_bounds.max_waiters {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queued_attempts",
-            queue_policy.max_queued_attempts,
+            queue_policy.max_queued_attempts(),
             queue_bounds.max_waiters,
         ));
     }
-    if queue_policy.max_queue_wait != queue_bounds.max_wait {
+    if queue_policy.max_queue_wait() != queue_bounds.max_wait {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queue_wait_ms",
-            queue_policy.max_queue_wait.as_millis(),
+            queue_policy.max_queue_wait().as_millis(),
             queue_bounds.max_wait.as_millis(),
         ));
     }
-    if queue_policy.max_overtakes_per_waiter != queue_bounds.max_overtakes_per_waiter {
+    if queue_policy.max_overtakes_per_waiter() != queue_bounds.max_overtakes_per_waiter {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_overtakes_per_waiter",
-            queue_policy.max_overtakes_per_waiter,
+            queue_policy.max_overtakes_per_waiter(),
             queue_bounds.max_overtakes_per_waiter,
         ));
     }
@@ -933,17 +928,7 @@ fn validate_injected_session_matches_server_config(
     backend: &NexusGpuBackend,
     _config: &ServerConfig,
 ) -> Result<()> {
-    let state = ctx.state();
-    let Some(optimizer_config) = crate::adapter_session::installed_nexus_native_optimizer_config(&state) else {
-        return Err(ServerError::builder_validation(
-            "server_session_backend_mismatch",
-            "injected session_context does not have the datafusion-nexus native optimizer installed",
-        ));
-    };
-    let source_matches =
-        optimizer_config.native_execution_config().query_admission_source_matches(backend.session_capability());
-    validate_injected_session_backend_binding(source_matches)?;
-    Ok(())
+    validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))
 }
 
 fn validate_injected_session_backend_binding(source_matches: bool) -> Result<()> {

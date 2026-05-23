@@ -1,8 +1,11 @@
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    path::{Path, PathBuf},
-    sync::{OnceLock, RwLock},
-};
+//! Source cardinality proofs from Arrow schema metadata.
+//!
+//! The only trusted unique-key input is the Arrow schema/field metadata that
+//! travels with the scan being lowered. A unique-key predicate can bound a
+//! reader to `max_rows = 1`, so evidence that does not flow with the scan
+//! (such as a process-global path registry) risks silently truncating data.
+
+use std::collections::{BTreeSet, HashMap};
 
 use arrow::datatypes::Schema;
 use nexus_query_engine::expr::{BinaryOp, Expr, LiteralValue};
@@ -10,8 +13,6 @@ use nexus_query_engine::expr::{BinaryOp, Expr, LiteralValue};
 /// Arrow schema/field metadata key carrying comma-separated source unique-key
 /// column groups.
 pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "datafusion_nexus.source_unique_keys.v1";
-
-static SOURCE_UNIQUE_KEYS_BY_PATH: OnceLock<RwLock<BTreeMap<PathBuf, Vec<Vec<String>>>>> = OnceLock::new();
 
 pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) -> Schema {
     let encoded = encode_source_unique_keys(unique_keys);
@@ -42,28 +43,11 @@ pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) 
     Schema::new_with_metadata(fields, metadata)
 }
 
-pub fn register_source_unique_keys_for_path(path: impl AsRef<Path>, unique_keys: &[&[&str]]) {
-    let unique_keys = normalize_source_unique_keys(unique_keys);
-    if unique_keys.is_empty() {
-        return;
-    }
-    let registry = SOURCE_UNIQUE_KEYS_BY_PATH.get_or_init(|| RwLock::new(BTreeMap::new()));
-    registry
-        .write()
-        .expect("source unique-key path registry poisoned")
-        .insert(normalize_source_path(path.as_ref()), unique_keys);
-}
-
-pub(crate) fn reader_predicate_proves_source_at_most_one_row(
-    schemas: &[&Schema],
-    source_paths: &[&Path],
-    predicate: &Expr,
-) -> bool {
+pub(crate) fn reader_predicate_proves_source_at_most_one_row(schemas: &[&Schema], predicate: &Expr) -> bool {
     let mut unique_keys = BTreeSet::new();
     for schema in schemas {
         unique_keys.extend(source_unique_keys_from_schema(schema));
     }
-    unique_keys.extend(source_unique_keys_from_paths(source_paths));
     reader_predicate_proves_unique_keys_at_most_one_row(unique_keys.into_iter().collect(), predicate)
 }
 
@@ -73,13 +57,6 @@ fn reader_predicate_proves_unique_keys_at_most_one_row(unique_keys: Vec<Vec<Stri
     }
     let bound_columns = predicate_bound_columns(predicate);
     unique_keys.iter().any(|key| key.iter().all(|column| bound_columns.contains(column)))
-}
-
-fn normalize_source_unique_keys(unique_keys: &[&[&str]]) -> Vec<Vec<String>> {
-    source_unique_keys_from_metadata(&HashMap::from([(
-        SOURCE_UNIQUE_KEYS_METADATA_KEY.to_string(),
-        encode_source_unique_keys(unique_keys),
-    )]))
 }
 
 fn encode_source_unique_keys(unique_keys: &[&[&str]]) -> String {
@@ -118,44 +95,6 @@ fn source_unique_keys_from_schema(schema: &Schema) -> Vec<Vec<String>> {
         unique_keys.extend(source_unique_keys_from_metadata(field.metadata()));
     }
     unique_keys.into_iter().collect()
-}
-
-fn source_unique_keys_from_paths(source_paths: &[&Path]) -> Vec<Vec<String>> {
-    let Some((first_path, remaining_paths)) = source_paths.split_first() else {
-        return Vec::new();
-    };
-    let Some(registry) = SOURCE_UNIQUE_KEYS_BY_PATH.get() else {
-        return Vec::new();
-    };
-    let registry = registry.read().expect("source unique-key path registry poisoned");
-    let Some(keys) = registered_source_unique_keys_for_path(&registry, first_path) else {
-        return Vec::new();
-    };
-    let mut common_keys = keys.iter().cloned().collect::<BTreeSet<_>>();
-    for source_path in remaining_paths {
-        let Some(keys) = registered_source_unique_keys_for_path(&registry, source_path) else {
-            return Vec::new();
-        };
-        let keys = keys.iter().cloned().collect::<BTreeSet<_>>();
-        common_keys = common_keys.intersection(&keys).cloned().collect();
-    }
-    common_keys.into_iter().collect()
-}
-
-fn registered_source_unique_keys_for_path<'a>(
-    registry: &'a BTreeMap<PathBuf, Vec<Vec<String>>>,
-    source_path: &Path,
-) -> Option<&'a Vec<Vec<String>>> {
-    let source_path = normalize_source_path(source_path);
-    registry
-        .iter()
-        .filter(|(registered_path, _keys)| source_path == **registered_path || source_path.starts_with(registered_path))
-        .max_by_key(|(registered_path, _keys)| registered_path.components().count())
-        .map(|(_registered_path, keys)| keys)
-}
-
-fn normalize_source_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn predicate_bound_columns(predicate: &Expr) -> BTreeSet<String> {
@@ -201,8 +140,6 @@ fn literal_is_non_null(expr: &Expr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use arrow::datatypes::{DataType, Field};
 
     use super::*;
@@ -214,7 +151,7 @@ mod tests {
         let schema = schema_with_source_unique_keys(&schema, &[&["id"]]);
         let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
 
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &[], &predicate));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
     }
 
     #[test]
@@ -232,8 +169,8 @@ mod tests {
             Expr::binary(Expr::column("k2"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(9))),
         );
 
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &[], &partial));
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &[], &full));
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &partial));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &full));
     }
 
     #[test]
@@ -243,7 +180,7 @@ mod tests {
         let predicate =
             Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Null(DataType::Int32)));
 
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &[], &predicate));
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
     }
 
     #[test]
@@ -256,16 +193,6 @@ mod tests {
             Expr::literal(LiteralValue::Float64(7.0)),
         );
 
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &[], &predicate));
-    }
-
-    #[test]
-    fn source_unique_key_path_registry_proves_equality_bound_key() {
-        let schema = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
-        let path = Path::new("/tmp/datafusion-nexus-source-cardinality-registry-test.parquet");
-        register_source_unique_keys_for_path(path, &[&["id"]]);
-        let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &[path], &predicate));
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
     }
 }

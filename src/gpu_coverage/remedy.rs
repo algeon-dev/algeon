@@ -47,25 +47,18 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
             QueryGpuRemedyKind::ConfigAction,
             "Disable the unsupported Parquet predicate pushdown for diagnosis or rewrite the query.",
         ),
-        CapabilityReason::NativeSourceScanLimit => QueryGpuRemedy::new(
-            "avoid_scan_limit_pushdown",
-            QueryGpuRemedyKind::UserAction,
-            "Avoid query shapes that push LIMIT into the scan.",
-        ),
         CapabilityReason::IcebergDeleteFilesUnsupported => QueryGpuRemedy::new(
             "rewrite_table_without_delete_files",
             QueryGpuRemedyKind::UserAction,
             "Compact or rewrite the Iceberg table so the scanned snapshot has no delete files.",
         ),
-        CapabilityReason::NativeSourcePartitionColumns
-        | CapabilityReason::NativeSourceExprAdapter
+        CapabilityReason::NativeSourceExprAdapter
         | CapabilityReason::NativeSourceParquetFileReaderFactory
         | CapabilityReason::NativeSourcePreserveOrder
         | CapabilityReason::NativeSourceOutputOrdering
         | CapabilityReason::NativeSourceEmpty
         | CapabilityReason::NativeSourcePartitionValues
         | CapabilityReason::NativeSourceByteRange
-        | CapabilityReason::NativeSourceFileOrdering
         | CapabilityReason::NativeSourceRowSelection
         | CapabilityReason::NativeSourceSchemaMapping
         | CapabilityReason::TableFormatUnsupported
@@ -78,7 +71,6 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
         | CapabilityReason::IcebergResidualPredicateUnsupported
         | CapabilityReason::IcebergRowSelectionUnsupported
         | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergSnapshotUnsupported
         | CapabilityReason::IcebergEncryptedFileUnsupported
         | CapabilityReason::IcebergScalarValueUnsupported => QueryGpuRemedy::new(
             "engine_gap",
@@ -136,21 +128,16 @@ mod tests {
                 CapabilityReason::NativeSourcePushedDownParquetPredicate => {
                     ("disable_parquet_pushdown", QueryGpuRemedyKind::ConfigAction)
                 },
-                CapabilityReason::NativeSourceScanLimit => {
-                    ("avoid_scan_limit_pushdown", QueryGpuRemedyKind::UserAction)
-                },
                 CapabilityReason::IcebergDeleteFilesUnsupported => {
                     ("rewrite_table_without_delete_files", QueryGpuRemedyKind::UserAction)
                 },
-                CapabilityReason::NativeSourcePartitionColumns
-                | CapabilityReason::NativeSourceExprAdapter
+                CapabilityReason::NativeSourceExprAdapter
                 | CapabilityReason::NativeSourceParquetFileReaderFactory
                 | CapabilityReason::NativeSourcePreserveOrder
                 | CapabilityReason::NativeSourceOutputOrdering
                 | CapabilityReason::NativeSourceEmpty
                 | CapabilityReason::NativeSourcePartitionValues
                 | CapabilityReason::NativeSourceByteRange
-                | CapabilityReason::NativeSourceFileOrdering
                 | CapabilityReason::NativeSourceRowSelection
                 | CapabilityReason::NativeSourceSchemaMapping
                 | CapabilityReason::TableFormatUnsupported
@@ -163,7 +150,6 @@ mod tests {
                 | CapabilityReason::IcebergResidualPredicateUnsupported
                 | CapabilityReason::IcebergRowSelectionUnsupported
                 | CapabilityReason::IcebergFileIoSourceAccessUnverified
-                | CapabilityReason::IcebergSnapshotUnsupported
                 | CapabilityReason::IcebergEncryptedFileUnsupported
                 | CapabilityReason::IcebergScalarValueUnsupported => ("engine_gap", QueryGpuRemedyKind::EngineGap),
             };

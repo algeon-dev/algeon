@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use nexus_query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id;
 
 use super::*;

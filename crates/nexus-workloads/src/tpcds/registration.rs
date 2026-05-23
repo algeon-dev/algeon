@@ -18,7 +18,8 @@ pub async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> Workloa
     Ok(())
 }
 
-fn tpcds_table_schema(layout: &TpcdsTableLayout) -> WorkloadResult<Schema> {
+/// Infers the table Arrow schema from the first Parquet file in the layout.
+pub fn tpcds_table_schema(layout: &TpcdsTableLayout) -> WorkloadResult<Schema> {
     let first_file = layout.files.first().ok_or_else(|| {
         WorkloadError::InvalidDataset("expected at least one Parquet file for TPC-DS table".to_string())
     })?;

@@ -50,7 +50,8 @@ pub async fn run_numeric_include_edges_acceptance() {
         .with_config(config)
         .with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bfs_raw_edges", fixture.raw_edges.to_str().unwrap(), ParquetReadOptions::default())
@@ -132,7 +133,8 @@ pub async fn run_utf8_include_edges_acceptance() {
         .with_config(config)
         .with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bfs_utf8_raw_edges", fixture.raw_edges.to_str().unwrap(), ParquetReadOptions::default())
@@ -218,7 +220,8 @@ pub async fn run_utf8_path_acceptance() {
         .with_config(config)
         .with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bfs_utf8_raw_edges", fixture.raw_edges.to_str().unwrap(), ParquetReadOptions::default())
@@ -302,7 +305,8 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
         .with_config(config)
         .with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bfs_utf8_raw_edges", fixture.raw_edges.to_str().unwrap(), ParquetReadOptions::default())

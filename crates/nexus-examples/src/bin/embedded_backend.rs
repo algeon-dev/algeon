@@ -5,7 +5,7 @@
 
 use std::{env, net::SocketAddr, process::ExitCode};
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use axum::Router;
 use datafusion_nexus::backend::GpuMemoryOwnership;
 use nexus_examples::{AppState, BindAddrs, flight, rest};
@@ -39,13 +39,8 @@ async fn run() -> anyhow::Result<()> {
     init_tracing(&env::var(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|_| "info".to_string()));
 
     init_cuda_device(0).context("failed to initialize CUDA device 0")?;
-    let backend = backend_from_server_config(&config)
-        .context("failed to build shared GPU backend from server config")?
-        .ok_or_else(|| {
-            anyhow!(
-                "embedded backend example requires bounded native memory policy so REST and Flight share query-service admission"
-            )
-        })?;
+    let backend =
+        backend_from_server_config(&config).context("failed to build shared GPU backend from server config")?;
 
     let rest_addr = rest_bind_addr()?;
     let shutdown = CancellationToken::new();

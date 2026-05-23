@@ -89,7 +89,6 @@ pub(super) fn lower_local_parquet_source_input(
 
     let native_files =
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
-    let native_file_paths = native_files.iter().map(|file| file.path.clone()).collect::<Vec<_>>();
     let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
         let required_scan_projection =
             required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
@@ -134,7 +133,6 @@ pub(super) fn lower_local_parquet_source_input(
         let max_rows = if reader_predicate_proves_local_parquet_at_most_one_row(
             table_schema.as_ref(),
             file_scan.file_schema().as_ref(),
-            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
             &predicate.expr,
         ) {
             Some(1)

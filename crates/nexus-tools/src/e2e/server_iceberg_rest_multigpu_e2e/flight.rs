@@ -10,7 +10,7 @@ use arrow_flight::{
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::{
-    native_report::{ParityFloatTolerance, ParityStatus, compare_record_batches},
+    native_report::bench_support::{ParityFloatTolerance, ParityStatus, compare_record_batches},
     table_format::iceberg::catalog::{
         IcebergCatalogBackend, NexusIcebergCatalogSource, RestIcebergCatalogBackend,
         build_scoped_catalog_provider_from_backend,

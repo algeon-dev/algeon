@@ -20,7 +20,7 @@ use crate::{
     cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions},
     cuvs_sql::{CuvsGpuFunctionFamily, CuvsQueryPlanner, cuvs_gpu_function_availability, cuvs_relation_planner},
     gpu_coverage_sql::gpu_coverage_table_function,
-    gpu_functions::{GpuFunctionCatalog, gpu_metadata_table_functions, install_gpu_function_family},
+    gpu_functions::{GpuFunctionCatalog, install_gpu_function_family},
     planner::{
         NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
         NexusNativePhysicalOptimizerRule,
@@ -35,29 +35,17 @@ pub const NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusi
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
-pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
-
-/// Return DataFusion's default physical optimizer rules with the nexus native
-/// rewrite inserted before DataFusion's final plan validation rule.
-pub fn nexus_native_physical_optimizer_rules(config: NexusNativeOptimizerConfig) -> PhysicalOptimizerRules {
-    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
-    nexus_native_physical_optimizer_rules_with_rule(rule)
-}
-
-/// Return DataFusion's default physical optimizer rules with a caller-retained
-/// nexus native rule inserted before DataFusion's final plan validation rule.
-pub fn nexus_native_physical_optimizer_rules_with_rule(
-    rule: Arc<NexusNativePhysicalOptimizerRule>,
-) -> PhysicalOptimizerRules {
-    let mut rules = PhysicalOptimizer::new().rules;
-    insert_nexus_native_rules_before_final_validation(&mut rules, rule);
-    rules
-}
+type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
 /// Extension methods for adding native GPU planning to a DataFusion session.
 pub trait NexusSessionStateBuilderExt {
-    /// Register nexus native rewriting before DataFusion's final physical-plan
-    /// validation rule.
+    /// Planning and coverage path: register nexus native rewriting before
+    /// DataFusion's final physical-plan validation rule. This method does not
+    /// create or own a GPU admission source, although a config obtained from
+    /// [`NexusGpuBackend::optimizer_config`](crate::backend::NexusGpuBackend::optimizer_config)
+    /// can already be bound to its backend. For canonical production
+    /// installation, use
+    /// [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on).
     fn with_nexus_native(self, config: NexusNativeOptimizerConfig) -> Self;
 
     /// Install relation-aware cuVS SQL, metadata, and typed physical planning.
@@ -67,10 +55,20 @@ pub trait NexusSessionStateBuilderExt {
     fn try_with_cuvs_sql(self) -> DataFusionResult<Self>
     where Self: Sized;
 
-    fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
+    /// Install cuGraph SQL table functions and the family's immutable catalog
+    /// snapshot.
+    ///
+    /// Reinstalling the same configuration is idempotent; reinstalling the
+    /// `cugraph` family with a different descriptor projection, such as
+    /// changed graph defaults, is rejected with a structured setup error.
+    fn try_with_cugraph_sql(self, config: CugraphSqlConfig) -> DataFusionResult<Self>
+    where Self: Sized;
 
-    /// Register a caller-retained nexus native rule before DataFusion's final
-    /// physical-plan validation rule.
+    /// Advanced planning path: register a caller-retained nexus native rule
+    /// before DataFusion's final physical-plan validation rule. Use it when
+    /// the caller keeps the rule to read its structured planning reports
+    /// (`last_report`, `last_planning_diagnostics`) after planning; ordinary
+    /// installation uses [`Self::with_nexus_native`].
     fn with_nexus_native_rule(self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self;
 }
 
@@ -106,22 +104,19 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
         Ok(self.with_query_planner(Arc::new(CuvsQueryPlanner::default())))
     }
 
-    fn with_cugraph_sql(mut self, config: CugraphSqlConfig) -> Self {
+    fn try_with_cugraph_sql(mut self, config: CugraphSqlConfig) -> DataFusionResult<Self> {
         #[cfg(feature = "cugraph")]
         let config = cugraph_config_with_builder_native_admission(&mut self, config);
+        install_gpu_function_family(&mut self, Arc::new(CugraphGpuFunctionFamily::new(config.clone())))?;
         let functions = self.table_functions().get_or_insert_with(Default::default);
-        for function in cugraph_table_functions(config.clone()) {
+        for function in cugraph_table_functions(config) {
             functions.insert(function.name().to_string(), function);
         }
-        install_gpu_function_family(&mut self, Arc::new(CugraphGpuFunctionFamily::new(config)))
-            .expect("cuGraph GPU function catalog installation must be valid");
-        self
+        Ok(self)
     }
 
     fn with_nexus_native_rule(mut self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self {
         ensure_datafusion_nexus_session_config(&mut self, rule.config());
-        refresh_cuvs_gpu_function_family_availability(&mut self)
-            .expect("cuVS GPU function catalog refresh must be valid");
         install_gpu_coverage_table_function(&mut self);
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_nexus_native_rules_before_final_validation(&mut rules, rule);
@@ -129,6 +124,13 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 }
 
+/// Low-level installer for frontends that rebuild a session per request. It
+/// injects an explicit, possibly backend-admission-frozen,
+/// [`DataFusionNexusSessionConfig`] extension and registers the
+/// caller-retained rule. Backend installs and the nexus server use this
+/// path; embedded sessions should prefer
+/// [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) or
+/// [`NexusSessionStateBuilderExt::with_nexus_native`].
 pub fn install_nexus_native_rule_with_session_config(
     mut builder: SessionStateBuilder,
     rule: Arc<NexusNativePhysicalOptimizerRule>,
@@ -141,7 +143,6 @@ pub fn install_nexus_native_rule_with_session_config(
         existing.validate_matches_optimizer_config(rule.config())?;
     }
     session_config.options_mut().extensions.insert(session_extension);
-    refresh_cuvs_gpu_function_family_availability(&mut builder)?;
     install_gpu_coverage_table_function(&mut builder);
     let mut rules = take_physical_optimizer_rules(&mut builder);
     insert_nexus_native_rules_before_final_validation(&mut rules, rule);
@@ -185,7 +186,7 @@ fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRul
         .build()
 }
 
-pub fn installed_nexus_native_optimizer_config(session: &dyn Session) -> Option<NexusNativeOptimizerConfig> {
+pub(crate) fn installed_nexus_native_optimizer_config(session: &dyn Session) -> Option<NexusNativeOptimizerConfig> {
     installed_nexus_native_optimizer_config_from_rules(session.physical_optimizers())
 }
 
@@ -243,32 +244,6 @@ fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, con
     if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
         session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
     }
-}
-
-/// Rebuild only the cuVS family after native session options become known.
-///
-/// `try_with_cuvs_sql` may run before a backend or native optimizer attaches
-/// its session extension. The unified catalog snapshot must therefore be
-/// refreshed once the final memory-control mode is available; otherwise a
-/// bounded session could incorrectly advertise cuVS as plannable.
-fn refresh_cuvs_gpu_function_family_availability(builder: &mut SessionStateBuilder) -> DataFusionResult<()> {
-    let availability = cuvs_gpu_function_availability(builder.config().as_ref());
-    let Some(prior) = builder.config().as_ref().and_then(|config| config.get_extension::<GpuFunctionCatalog>()) else {
-        return Ok(());
-    };
-    let mut families = prior.families().to_vec();
-    let Some(position) = families.iter().position(|family| family.family_id() == "cuvs") else {
-        return Ok(());
-    };
-    families[position] = Arc::new(CuvsGpuFunctionFamily::new(availability));
-    let catalog = Arc::new(GpuFunctionCatalog::try_new(families)?);
-    let config = builder.config().get_or_insert_with(Default::default);
-    config.set_extension(Arc::clone(&catalog));
-    let functions = builder.table_functions().get_or_insert_with(Default::default);
-    for function in gpu_metadata_table_functions(catalog) {
-        functions.insert(function.name().to_string(), function);
-    }
-    Ok(())
 }
 
 fn install_gpu_coverage_table_function(builder: &mut SessionStateBuilder) {

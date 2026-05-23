@@ -12,7 +12,10 @@ use super::{support::*, *};
 
 #[tokio::test]
 async fn cugraph_sql_planning_preserves_structured_logical_edge_id_capability_errors() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges_with_edge_id(&ctx, "string_edges");
     register_string_vertex_memtable(&ctx, "edge_ids", "edge_id", &["e0"]);
@@ -178,7 +181,10 @@ fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
 
 #[tokio::test]
 async fn cugraph_sql_planning_exposes_stable_output_schemas() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_pagerank('graph_edges')", CugraphAlgorithm::PageRank).await;
@@ -244,7 +250,10 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
 
 #[tokio::test]
 async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second_input() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "similarity_edges", DataType::Int32, DataType::Int32, DataType::Float64);
     register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
@@ -302,7 +311,10 @@ async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second
 
 #[tokio::test]
 async fn cugraph_strongly_connected_components_rejects_undirected_graph_option() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     let error = ctx
@@ -320,7 +332,10 @@ async fn cugraph_strongly_connected_components_rejects_undirected_graph_option()
 
 #[tokio::test]
 async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     for (sql, expected) in [
@@ -344,7 +359,8 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
 async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorithms() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges_i64", DataType::Int64, DataType::Int64, DataType::Float64);
@@ -391,7 +407,10 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
 
 #[tokio::test]
 async fn cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     let df = ctx
@@ -415,7 +434,10 @@ async fn cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function() 
 
 #[tokio::test]
 async fn cugraph_bfs_path_mode_requires_target_relation() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     let error = ctx
@@ -428,7 +450,10 @@ async fn cugraph_bfs_path_mode_requires_target_relation() {
 
 #[tokio::test]
 async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     let error = ctx
@@ -462,7 +487,10 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
 
 #[tokio::test]
 async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_bfs('graph_edges', 0)", CugraphAlgorithm::Bfs).await;
@@ -490,7 +518,8 @@ async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
 async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "numeric_edges", DataType::Int64, DataType::Int64, DataType::Float64);
@@ -511,7 +540,10 @@ async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() 
 
 #[tokio::test]
 async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_vertex_memtable(&ctx, "bfs_sources", "vertex_id", &["a"]);
@@ -540,7 +572,8 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 async fn cugraph_bfs_string_subplans_remain_host_physical_plans() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges(&ctx, "raw_edges");
@@ -571,7 +604,8 @@ async fn cugraph_bfs_string_subplans_remain_host_physical_plans() {
 async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);

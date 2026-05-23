@@ -24,7 +24,7 @@ fn nexus_session_builder_registers_datafusion_nexus_config_extension() {
         .get::<DataFusionNexusSessionConfig>()
         .expect("with_nexus_native must register datafusion_nexus config options");
 
-    assert!(extension.native_max_source_chunk_bytes > 0);
+    assert!(extension.native_max_source_chunk_bytes() > 0);
 }
 
 #[test]
@@ -45,9 +45,9 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     let native = effective.native_execution_config();
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&effective);
 
-    assert_eq!(projection.native_max_source_chunk_bytes, 1024);
-    assert_eq!(projection.native_max_row_groups_per_chunk, 8);
-    assert_eq!(projection.native_max_retry_attempts, 5);
+    assert_eq!(projection.native_max_source_chunk_bytes(), 1024);
+    assert_eq!(projection.native_max_row_groups_per_chunk(), 8);
+    assert_eq!(projection.native_max_retry_attempts(), 5);
     assert_eq!(
         native.memory_control_policy(),
         MemoryControlPolicy::Bounded {
@@ -148,7 +148,7 @@ async fn datafusion_nexus_session_config_can_be_set_through_sql() {
         .extensions
         .get::<DataFusionNexusSessionConfig>()
         .expect("extension remains registered after SQL SET");
-    assert_eq!(extension.native_max_source_chunk_bytes, 2048);
+    assert_eq!(extension.native_max_source_chunk_bytes(), 2048);
 }
 
 #[tokio::test]

@@ -26,9 +26,9 @@ fn server_config_accepts_queue_admission_environment() {
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.queue_policy.max_queued_attempts, 8);
-    assert_eq!(config.queue_policy.max_queue_wait, Duration::from_millis(5000));
-    assert_eq!(config.queue_policy.max_overtakes_per_waiter, 7);
+    assert_eq!(config.queue_policy.max_queued_attempts(), 8);
+    assert_eq!(config.queue_policy.max_queue_wait(), Duration::from_millis(5000));
+    assert_eq!(config.queue_policy.max_overtakes_per_waiter(), 7);
 }
 
 #[test]
@@ -46,9 +46,9 @@ max_overtakes_per_waiter = 2
     env.insert(NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, "7".to_string());
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    assert_eq!(config.queue_policy.max_queued_attempts, 8);
-    assert_eq!(config.queue_policy.max_queue_wait, Duration::from_millis(5000));
-    assert_eq!(config.queue_policy.max_overtakes_per_waiter, 7);
+    assert_eq!(config.queue_policy.max_queued_attempts(), 8);
+    assert_eq!(config.queue_policy.max_queue_wait(), Duration::from_millis(5000));
+    assert_eq!(config.queue_policy.max_overtakes_per_waiter(), 7);
 }
 
 #[test]

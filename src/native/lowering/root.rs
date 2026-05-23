@@ -110,7 +110,6 @@ pub(super) fn lower_slice1_plan(
 
     let native_files =
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
-    let native_file_paths = native_files.iter().map(|file| file.path.clone()).collect::<Vec<_>>();
     let mut source = if zero_column_count_safe && column_requirements.read_columns.is_empty() {
         NativeLocalParquetSource::zero_column_count(native_files)
     } else {
@@ -148,7 +147,6 @@ pub(super) fn lower_slice1_plan(
         let max_rows = if reader_predicate_proves_local_parquet_at_most_one_row(
             table_schema.as_ref(),
             file_scan.file_schema().as_ref(),
-            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
             &predicate.expr,
         ) {
             Some(1)

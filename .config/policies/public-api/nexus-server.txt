@@ -214,7 +214,7 @@ pub const nexus_server::REQUIRED_OPTION_METADATA_KEY: &str
 pub const nexus_server::UNSUPPORTED_COLUMN_METADATA_KEY: &str
 pub const nexus_server::UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str
 pub const nexus_server::UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str
-pub fn nexus_server::backend_from_server_config(&nexus_server::ServerConfig) -> nexus_server::Result<core::option::Option<datafusion_nexus::backend::NexusGpuBackend>>
+pub fn nexus_server::backend_from_server_config(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion_nexus::backend::NexusGpuBackend>
 pub fn nexus_server::build_session_config(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion_execution::config::SessionConfig>
 pub async fn nexus_server::build_session_context(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion::execution::context::SessionContext>
 pub async fn nexus_server::build_session_context_with_backend(&nexus_server::ServerConfig, &datafusion_nexus::backend::NexusGpuBackend) -> nexus_server::Result<datafusion::execution::context::SessionContext>

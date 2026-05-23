@@ -36,8 +36,7 @@ async fn flight_sql_client_can_run_select_one() {
         .expect("aborted server cleanup waiter must not panic")
         .expect("aborted server must reach query-service quiescence");
     let replacement = nexus_server::backend_from_server_config(&replacement_config)
-        .expect("quiescent aborted server must release its closed QueryService governor claim")
-        .expect("default server config is bounded");
+        .expect("quiescent aborted server must release its closed QueryService governor claim");
     drop(replacement);
 
     assert_eq!(batches.len(), 1);
@@ -70,8 +69,7 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let replacement = loop {
         match nexus_server::backend_from_server_config(&replacement_config) {
-            Ok(Some(backend)) => break backend,
-            Ok(None) => panic!("default server config is bounded"),
+            Ok(backend) => break backend,
             Err(error)
                 if error.fact_value("native_operation") == Some("nexus_query_engine.gpu.owner.claim")
                     && std::time::Instant::now() < deadline =>
@@ -275,7 +273,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         .clone()
         .with_max_queued_attempts(2)
         .with_max_queue_wait(Duration::from_secs(60));
-    let backend = nexus_server::backend_from_server_config(&config).unwrap().expect("default server config is bounded");
+    let backend = nexus_server::backend_from_server_config(&config).unwrap();
     let first_backend = backend.clone();
     let second_backend = backend.clone();
     let first_session = Arc::new(

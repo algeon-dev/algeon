@@ -5,7 +5,7 @@ use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
-    prelude::{SessionConfig, SessionContext},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     backend::NexusGpuBackend,
@@ -16,11 +16,11 @@ use datafusion_nexus::{
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
-    source_cardinality::register_source_unique_keys_for_path,
+    source_cardinality::schema_with_source_unique_keys,
 };
 use nexus_workloads::tpcds::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadResult, discover_tpcds_table_layout,
-    register_tpcds_tables as register_neutral_tpcds_tables,
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadError, WorkloadResult, discover_tpcds_table_layout,
+    registration::tpcds_table_schema,
 };
 
 mod parity;
@@ -839,17 +839,20 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
     }
 }
 
+/// Registers TPC-DS tables with unique-key evidence carried in each provider
+/// schema's metadata, so native lowering proves single-row scans from the
+/// scan's own schema instead of external process state.
 pub async fn register_tpcds_tables_with_native_metadata(ctx: &SessionContext, root: &Path) -> WorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;
+        let path = layout.anchor.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(layout.anchor.clone()))?;
+        let mut schema = tpcds_table_schema(&layout)?;
         if let Some(key) = tpcds_source_unique_key(table) {
-            register_source_unique_keys_for_path(&layout.anchor, &[key]);
-            for file in &layout.files {
-                register_source_unique_keys_for_path(file, &[key]);
-            }
+            schema = schema_with_source_unique_keys(&schema, &[key]);
         }
+        ctx.register_parquet(table, path, ParquetReadOptions::default().schema(&schema)).await?;
     }
-    register_neutral_tpcds_tables(ctx, root).await
+    Ok(())
 }
 
 pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static str]> {
@@ -877,6 +880,8 @@ pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static 
 
 #[cfg(test)]
 mod tests {
+    use datafusion_nexus::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY;
+
     use super::*;
 
     #[test]
@@ -907,5 +912,19 @@ mod tests {
             overridden_limit,
             nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: explicit_budget }
         );
+    }
+
+    #[tokio::test]
+    async fn tpcds_registration_carries_unique_key_metadata_in_provider_schema() {
+        let root =
+            std::env::temp_dir().join(format!("datafusion-nexus-tpcds-native-metadata-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        nexus_workloads::tpcds::write_tiny_tpcds_parquet_dataset(&root).unwrap();
+        let ctx = SessionContext::new();
+        register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
+
+        let provider = ctx.table_provider("reason").await.unwrap();
+        assert_eq!(provider.schema().metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), Some(&"r_reason_sk".to_string()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

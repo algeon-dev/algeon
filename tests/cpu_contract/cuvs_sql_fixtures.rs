@@ -52,7 +52,8 @@ pub fn cuvs_cugraph_context() -> SessionContext {
     use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 
     let state = SessionStateBuilder::new_with_default_features()
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL contracts")
         .try_with_cuvs_sql()
         .expect("install cuGraph and cuVS SQL contracts")
         .build();
@@ -79,7 +80,8 @@ pub fn cuvs_cugraph_native_context() -> SessionContext {
         .with_nexus_native(
             NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone()),
         )
-        .with_cugraph_sql(CugraphSqlConfig::default().with_native_execution_config(native_execution_config))
+        .try_with_cugraph_sql(CugraphSqlConfig::default().with_native_execution_config(native_execution_config))
+        .expect("install cuGraph SQL contracts")
         .try_with_cuvs_sql()
         .expect("install native, cuGraph, and cuVS SQL contracts")
         .build();

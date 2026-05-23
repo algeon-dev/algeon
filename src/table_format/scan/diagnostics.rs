@@ -30,8 +30,6 @@ pub enum TableFormatUnsupportedFeatureCode {
     /// Remote Iceberg S3 FileIO cannot be proven to match the frozen
     /// CPU/native source-access policy.
     IcebergFileIoSourceAccessUnverified,
-    /// Iceberg snapshot selection is unsupported or invalid.
-    IcebergSnapshotUnsupported,
     /// Iceberg file encryption metadata cannot be materialized natively.
     IcebergEncryptedFileUnsupported,
     /// An Iceberg metadata scalar cannot be materialized natively.
@@ -55,7 +53,6 @@ impl TableFormatUnsupportedFeatureCode {
             Self::IcebergFileRangeUnsupported => CapabilityReason::NativeSourceByteRange,
             Self::IcebergObjectStoreReadUnsupported => CapabilityReason::IcebergObjectStoreReadUnsupported,
             Self::IcebergFileIoSourceAccessUnverified => CapabilityReason::IcebergFileIoSourceAccessUnverified,
-            Self::IcebergSnapshotUnsupported => CapabilityReason::IcebergSnapshotUnsupported,
             Self::IcebergEncryptedFileUnsupported => CapabilityReason::IcebergEncryptedFileUnsupported,
             Self::IcebergScalarValueUnsupported => CapabilityReason::IcebergScalarValueUnsupported,
         }
