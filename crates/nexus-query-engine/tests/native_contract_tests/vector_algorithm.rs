@@ -22,12 +22,6 @@ use nexus_query_engine::{
     },
     source::{GpuResidentSource, SourceNode},
 };
-#[cfg(not(feature = "cuvs"))]
-use nexus_query_engine::{
-    error::QueryErrorCode,
-    exec::execute_query_plan_with_gpu_inputs,
-    runtime::{ExecutionContext, resident::GpuResidentInputMap},
-};
 
 #[test]
 fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {

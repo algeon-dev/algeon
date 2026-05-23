@@ -1,30 +1,33 @@
 # ---------------------------------------------------------------------------
 # CPU portability floor for normal GNU x86-64 workspace builds.
 #
-# Normal GNU x86-64 workspace builds require an x86-64-v2 host. Pinning the
+# Normal GNU x86-64 workspace builds require an x86-64-v4 host. Pinning the
 # floor here makes it intentional and uniform across the dependency graph,
 # including `ahash` (a cudf-nexus dependency).
 #
 # Why this matters: `ahash` and all Rust/LLVM codegen choose their instruction
-# set at COMPILE time from `target_feature`, not at runtime. x86-64-v2 does NOT
+# set at COMPILE time from `target_feature`, not at runtime. x86-64-v4 does NOT
 # include the `aes` feature, so ahash compiles its portable fallback hasher and
-# the binary stays runnable on any v2+ CPU.
+# the binary stays runnable on any v4+ CPU.
 #
 # This is a host precondition, not a friendly runtime check: code can execute
-# before `main`, and the compiler may use v2 instructions in any function. A
-# pre-v2 host can therefore fail with SIGILL before the server can print a
+# before `main`, and the compiler may use v4 instructions in any function. A
+# pre-v4 host can therefore fail with SIGILL before the server can print a
 # diagnostic.
 #
 # Redistributable builds do not trust ambient Cargo flags or this developer
-# config alone. docker/build.sh uses .config/policies/cpu-packaging.toml and an
+# config alone. docker/stage-docker-payload.sh uses .config/policies/cpu-packaging.toml and an
 # isolated Cargo invocation with the policy's exact target and codegen flags.
+#
+# Tuned packaging uses the separate `tuned-local-v3` policy profile, artifact
+# directory, provenance identity, image tag, and v3 deployment requirement.
 #
 # Workspace builds also require the mold linker. Install `mold` (Ubuntu:
 # `sudo apt-get install -y mold`) and keep `clang` available so Cargo can pass
 # `-fuse-ld=mold`. Redistributable packaging intentionally ignores this file:
-# `docker/build.sh` launches Cargo from an isolated cwd and clean CARGO_HOME
+# `docker/stage-docker-payload.sh` launches Cargo from an isolated cwd and clean CARGO_HOME
 # with only the policy's target and rustflags.
 # ---------------------------------------------------------------------------
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "target-cpu=x86-64-v4", "-C", "link-arg=-fuse-ld=mold"]

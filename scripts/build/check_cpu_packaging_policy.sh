@@ -64,10 +64,15 @@ assert policy["clean_environment"]["explicit_inputs"] == [
     "CUGRAPH_CMAKE_BUILD_DIR",
 ]
 portable = policy["profiles"]["portable"]
-assert portable["declared_baseline"] == "x86-64-v2"
-assert portable["rustflags"] == ["-C", "target-cpu=x86-64-v2"]
+tuned = policy["profiles"]["tuned-local-v3"]
+assert portable["declared_baseline"] == "x86-64-v4"
+assert portable["rustflags"] == ["-C", "target-cpu=x86-64-v4"]
+assert tuned["declared_baseline"] == "x86-64-v3"
+assert tuned["artifact_dir"] != portable["artifact_dir"]
+assert tuned["image_tag_suffix"] != portable["image_tag_suffix"]
+assert "x86-64-v3" in tuned["deployment_requirement"]
 PY
-echo "PASS: portable profile is a declarative contract"
+echo "PASS: portable and tuned profiles are separate declarative contracts"
 
 cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
@@ -143,7 +148,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
     >"${tmp_dir}/build.output"
 
-binary="${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
+binary="${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
 build_provenance="${binary}.cpu-provenance.json"
 [[ -f "${binary}" && -f "${build_provenance}" ]] || fail "fake canonical build did not create artifact/provenance"
 
@@ -157,9 +162,9 @@ profile = provenance["cpu_profile"]
 command = provenance["cargo_command"]
 assert provenance["provenance_kind"] == "canonical-build-artifact"
 assert provenance["features"] == ["iceberg", "nvml"]
-assert profile["declared_baseline"] == "x86-64-v2"
+assert profile["declared_baseline"] == "x86-64-v4"
 assert profile["target_triple"] == "x86_64-unknown-linux-gnu"
-assert profile["effective_rustflags"] == ["-C", "target-cpu=x86-64-v2"]
+assert profile["effective_rustflags"] == ["-C", "target-cpu=x86-64-v4"]
 assert provenance["rustc_version"].startswith("rustc 1.95.0")
 assert "LLVM version: 22.0.0" in provenance["rustc_vv"]
 assert provenance["cargo_version"].startswith("cargo 1.95.0")
@@ -174,7 +179,7 @@ assert provenance["fixed_build_environment"] == {
 assert set(provenance["fixed_tool_versions"]) == {"ar", "cc", "cmake", "cxx", "ninja"}
 assert all(provenance["fixed_tool_versions"].values())
 assert "--target" in command and "x86_64-unknown-linux-gnu" in command
-assert "target.x86_64-unknown-linux-gnu.rustflags=[\"-C\",\"target-cpu=x86-64-v2\"]" in command
+assert "target.x86_64-unknown-linux-gnu.rustflags=[\"-C\",\"target-cpu=x86-64-v4\"]" in command
 assert "--no-default-features" in command and "--locked" in command
 PY
 echo "PASS: ambient compiler selectors are replaced and provenance records fixed tool inputs"
@@ -234,7 +239,7 @@ binary_sha=$(awk -F= '$1 == "binary_sha256" { print $2 }' "${stage_labels}")
 provenance_sha=$(sha256sum "${stage_provenance}" | awk '{print $1}')
 python3 "${HELPER}" verify-image-inputs \
   --provenance "${stage_provenance}" --labels "${stage_labels}" \
-  --baseline x86-64-v2 --arch amd64 --profile portable --profile-kind redistributable \
+  --baseline x86-64-v4 --arch amd64 --profile portable --profile-kind redistributable \
   --target x86_64-unknown-linux-gnu \
   --binary-sha256 "${binary_sha}" --provenance-sha256 "${provenance_sha}" \
   >"${tmp_dir}/image-inputs.output"
@@ -254,7 +259,7 @@ echo "PASS: mismatched Docker label/build input fails"
 status=0
 python3 "${HELPER}" verify-image-inputs \
   --provenance "${stage_provenance}" --labels "${stage_labels}" \
-  --baseline x86-64-v2 --arch amd64 --profile portable --profile-kind tuned-local \
+  --baseline x86-64-v4 --arch amd64 --profile portable --profile-kind tuned-local \
   --target x86_64-unknown-linux-gnu --binary-sha256 "${binary_sha}" \
   --provenance-sha256 "${provenance_sha}" \
   >"${tmp_dir}/tampered-kind-input.output" 2>&1 || status=$?
@@ -273,30 +278,36 @@ for needle in \
   'sha256sum -c -'; do
   grep -Fq "${needle}" docker/Dockerfile || fail "Dockerfile missing provenance assertion: ${needle}"
 done
-grep -Fq 'verify-build' docker/build.sh || fail "SKIP_CARGO_BUILD path does not verify provenance"
+grep -Fq 'verify-build' docker/stage-docker-payload.sh || fail "SKIP_CARGO_BUILD path does not verify provenance"
+grep -Fq 'CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"' docker/stage-docker-payload.sh \
+  || fail "staging script does not select a packaging profile"
+grep -Fq 'CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh' website/docs/build/docker.md \
+  || fail "tuned profile is not exposed in the Docker build guide"
 status=0
-env RUSTFLAGS='-C target-cpu=x86-64-v3' bash docker/build.sh \
+env RUSTFLAGS='-C target-cpu=x86-64-v3' bash docker/stage-docker-payload.sh \
   >"${tmp_dir}/build-script-dirty-env.output" 2>&1 || status=$?
-[[ "${status}" -eq 2 ]] || fail "canonical docker/build.sh did not reject ambient RUSTFLAGS"
+[[ "${status}" -eq 2 ]] || fail "canonical stage-docker-payload.sh did not reject ambient RUSTFLAGS"
 grep -Fq 'ambient codegen/config override variables are forbidden' "${tmp_dir}/build-script-dirty-env.output" \
   || fail "canonical build path omitted the clean-environment diagnostic"
 
 status=0
 CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=iceberg SKIP_CARGO_BUILD=1 \
-  bash docker/build.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "SKIP_CARGO_BUILD reused an artifact without canonical provenance"
 grep -Fq 'cannot load provenance' "${tmp_dir}/skip-without-provenance.output" \
   || fail "missing provenance reuse diagnostic"
 
-# Exercise the complete SKIP/stage/print path with the fake canonical artifact,
+# Exercise the complete SKIP/stage/image-entry path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
 mkdir -p "${tmp_dir}/cudf/lib" \
-  "${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
+  "${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
 printf 'fake cudf bridge\n' \
-  >"${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
+  >"${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
+printf 'fake cudf RMM interop bridge\n' \
+  >"${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
 cat >"${tmp_dir}/bin/patchelf" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -341,6 +352,12 @@ fi
 [[ "${FAKE_LDD_NOT_FOUND:-0}" != 1 ]] || echo 'libmissing.so => not found'
 SH
 chmod +x "${tmp_dir}/bin/patchelf" "${tmp_dir}/bin/readelf" "${tmp_dir}/bin/ldd"
+cat >"${tmp_dir}/bin/docker" <<'SH'
+#!/usr/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" >"${FAKE_DOCKER_ARGS}"
+SH
+chmod +x "${tmp_dir}/bin/docker"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
@@ -351,22 +368,45 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/full-skip-stage.output"
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/full-skip-stage.output"
 [[ -f "${tmp_dir}/docker-dist/cpu-provenance.json" ]] \
   || fail "full fake staging path omitted provenance"
 [[ ! -e "${tmp_dir}/docker-dist/lib/librapids_logger.so" ]] \
   || fail "static/absorbed logger package staged an unneeded shared logger"
+grep -Fq '==> SUCCESS: staging and validation passed.' "${tmp_dir}/full-skip-stage.output" \
+  || fail "staging did not report success"
+grep -Fq '==> NEXT: bash docker/build-image.sh' "${tmp_dir}/full-skip-stage.output" \
+  || fail "staging did not point to the image build entry point"
+if grep -Fq 'Canonical Docker command' "${tmp_dir}/full-skip-stage.output" || \
+   grep -Fq -- '--build-arg' "${tmp_dir}/full-skip-stage.output"; then
+  fail "staging still exposes the internal Docker build command"
+fi
+echo "PASS: staging reports a concise image-build next step"
+
+FAKE_DOCKER_ARGS="${tmp_dir}/docker.args" \
+CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
+IMAGE_REPOSITORY=datafusion-nexus-test \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build-image.sh >"${tmp_dir}/build-image.output"
+grep -Fq '==> Building image: datafusion-nexus-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+  || fail "image builder omitted its build status"
+grep -Fq '==> SUCCESS: Docker image built: datafusion-nexus-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+  || fail "image builder omitted its success status"
+binary_sha=$(awk -F= '$1 == "binary_sha256" { print $2 }' "${tmp_dir}/docker-dist/cpu-provenance.labels")
+provenance_sha=$(sha256sum "${tmp_dir}/docker-dist/cpu-provenance.json" | awk '{print $1}')
 for needle in \
-  '--build-arg CPU_BASELINE=x86-64-v2' \
-  '--build-arg CPU_ARCH=amd64' \
-  '--build-arg CPU_PROFILE=portable' \
-  '--build-arg CPU_PROFILE_KIND=redistributable' \
-  '--build-arg CPU_TARGET=x86_64-unknown-linux-gnu' \
-  '-t datafusion-nexus-server:x86-64-v2 docker/'; do
-  grep -Fq -- "${needle}" "${tmp_dir}/full-skip-stage.output" \
-    || fail "printed Docker command missing: ${needle}"
+  'build' \
+  '--build-arg' \
+  'CPU_BASELINE=x86-64-v4' \
+  'CPU_PROFILE=portable' \
+  "CPU_BINARY_SHA256=${binary_sha}" \
+  "CPU_PROVENANCE_SHA256=${provenance_sha}" \
+  '-t' \
+  'datafusion-nexus-test:x86-64-v4'; do
+  grep -Fxq -- "${needle}" "${tmp_dir}/docker.args" \
+    || fail "image builder omitted Docker input: ${needle}"
 done
-echo "PASS: fake canonical staging prints policy/provenance-bound Docker command"
+echo "PASS: image builder verifies provenance and hides Docker build inputs"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
@@ -378,7 +418,7 @@ CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_LOGGER_NEEDED=1 \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/shared-logger-stage.output"
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/shared-logger-stage.output"
 [[ -f "${tmp_dir}/docker-dist-shared-logger/lib/librapids_logger.so" ]] \
   || fail "shared logger DT_NEEDED edge did not stage the canonical logger"
 
@@ -393,7 +433,7 @@ CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_LOGGER_REALPATH="${tmp_dir}/cudf/lib/librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/static-external-logger.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/static-external-logger.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "static/absorbed logger package accepted an external shared logger"
 grep -Fq 'without one canonical staged identity' "${tmp_dir}/static-external-logger.output" \
   || fail "external shared logger diagnostic missing"
@@ -427,7 +467,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
 FEATURES=cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/cuvs-stage.output"
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/cuvs-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs_c.so" ]] || fail "cuVS-only package omitted libcuvs_c.so"
 
@@ -439,7 +479,7 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/cugraph-stage.output"
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/cugraph-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cugraph/lib/libcuvs.so" ]] || fail "cuGraph-only package omitted canonical libcuvs.so"
 [[ ! -e "${tmp_dir}/docker-dist-cugraph/lib/libcuvs_c.so" ]] || fail "cuGraph-only package unexpectedly staged libcuvs_c.so"
 
@@ -451,7 +491,7 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/combined-stage.output"
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/combined-stage.output"
 [[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs.so" ]] || fail "combined package omitted canonical libcuvs.so"
 [[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs_c.so" ]] || fail "combined package omitted libcuvs_c.so"
 echo "PASS: cuVS-only, cuGraph-only, and combined packages stage the declared canonical cuVS libraries"
@@ -466,7 +506,7 @@ FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=
 FAKE_LOGGER_NEEDED=1 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_SECOND_LOGGER_REALPATH="${tmp_dir}/divergent-librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/divergent-logger.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-logger.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "combined package accepted divergent librapids_logger.so identities"
 grep -Fq 'multiple librapids_logger.so identities' "${tmp_dir}/divergent-logger.output" \
   || fail "divergent librapids_logger.so diagnostic missing"
@@ -479,7 +519,7 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "combined package accepted divergent libcuvs.so identity"
 grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
   || fail "divergent libcuvs.so diagnostic missing"
@@ -491,7 +531,7 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "loader closure accepted a not-found dependency"
 grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
   || fail "loader not-found diagnostic missing"
@@ -503,16 +543,16 @@ CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_READELF_NEEDED=libraft.so PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
+  bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "loader closure accepted a shared libraft.so"
 grep -Fq 'unexpected shared RAFT dependency' "${tmp_dir}/loader-raft.output" \
   || fail "shared RAFT diagnostic missing"
 echo "PASS: packaging rejects divergent cuVS/logger identities and incomplete/unexpected loader closure entries"
 
 status=0
-bash docker/build.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \
+bash docker/stage-docker-payload.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \
   >"${tmp_dir}/cli-override.output" 2>&1 || status=$?
-[[ "${status}" -eq 2 ]] || fail "docker/build.sh accepted an undeclared Cargo CLI override"
+[[ "${status}" -eq 2 ]] || fail "stage-docker-payload.sh accepted an undeclared Cargo CLI override"
 grep -Fq 'accepts no positional or Cargo arguments' "${tmp_dir}/cli-override.output" \
   || fail "missing CLI override diagnostic"
 echo "PASS: Dockerfile/build script bind image labels to provenance"

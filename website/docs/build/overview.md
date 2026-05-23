@@ -1,6 +1,7 @@
 ---
 sidebar_position: 1
 slug: /build
+title: Build & Test
 description: What you are building, how the repositories fit together, and the upstream-defined requirements the guide targets.
 ---
 
@@ -73,9 +74,9 @@ The full-feature build order follows those dependencies:
 8. **datafusion-nexus** — `cargo build --all-features` for a compile check; bare
    `bash scripts/check_all.sh` for the canonical full pre-merge surface.
 9. **Docker image** — optional packaging for the standalone Flight SQL server.
-   `docker/build.sh` stages the release binary and the locally built forked
-   RAPIDS libraries; `docker build` then harvests the CUDA runtime libraries
-   into a runnable image ([Building with Docker](./docker.md)).
+   `docker/stage-docker-payload.sh` stages the release binary and the locally built forked
+   RAPIDS libraries; `docker/build-image.sh` then harvests the CUDA runtime
+   libraries into a runnable image ([Building with Docker](./docker.md)).
 
 ## Requirements
 

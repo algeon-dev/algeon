@@ -17,9 +17,9 @@ The split:
 
 | Layer | Source | How it gets in |
 |---|---|---|
-| Forked cuDF/cuGraph/RMM `.so` | local `../cudf-nexus`, `../cugraph-nexus` builds | **bundled** by `build.sh` → `dist/lib/` |
-| Canonical cuVS `.so` | local `../cuvs-nexus/cuvs-install` | **bundled** by `build.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
-| `libcudf_rust.so` FFI bridge | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `build.sh` |
+| Forked cuDF/cuGraph/RMM `.so` | local `../cudf-nexus`, `../cugraph-nexus` builds | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
+| Canonical cuVS `.so` | local `../cuvs-nexus/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
+| `libcudf_rust*.so` FFI bridges | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
 | `libgomp1`, `libbrotli1`, `ca-certificates`, `tini` | Ubuntu apt | installed in final stage |
 
@@ -28,15 +28,14 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/build.sh                        # full: iceberg,cugraph,cuvs,nvml
-FEATURES=iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
-FEATURES=cuvs bash docker/build.sh          # cuVS without cuGraph
-SKIP_CARGO_BUILD=1 bash docker/build.sh            # reuse only hash-verified canonical artifact
+bash docker/stage-docker-payload.sh                         # full: iceberg,cugraph,cuvs,nvml
+FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh    # lean: cuDF only, ~3x smaller image
+FEATURES=cuvs bash docker/stage-docker-payload.sh             # cuVS without cuGraph
+SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh       # reuse only hash-verified canonical artifact
 
-# 2. Copy and run the exact docker build command printed by build.sh. It
-#    includes baseline/profile/target and artifact/provenance hashes, e.g.
-#    docker build --build-arg CPU_BASELINE=... ... \
-#      -t datafusion-nexus-server:x86-64-v2 docker/
+# 2. Build the image. This reads and verifies the staged provenance, then
+#    supplies the required Docker build inputs automatically.
+bash docker/build-image.sh
 ```
 
 The canonical build does not reuse ambient Cargo/C/C++ codegen configuration.
@@ -112,7 +111,7 @@ Other axes:
   requires rebuilding the forked libs and the binary on arm64; the Dockerfile
   itself is arch-neutral (change the `nvidia/cuda` base tags).
 
-### CPU instruction-set portability (x86-64-v2 floor)
+### CPU instruction-set portability (x86-64-v4 default)
 
 The binary must not contain CPU instructions the deploy host lacks, or it dies
 with an opaque `SIGILL`. The subtlety: `ahash` (a cuDF dependency) and *all*
@@ -121,12 +120,11 @@ Rust/LLVM codegen pick their instruction set at **compile time** from
 with `-C target-cpu=native` / `-march=native` on a modern build host (AVX-512 +
 AES-NI), which bakes those into unguarded code.
 
-The default packaging profile therefore pins a fixed **x86-64-v2** floor
-(~2008+, covering essentially every GPU server):
+The default packaging profile therefore pins a fixed **x86-64-v4** floor:
 
-- **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v2` and selects the
+- **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v4` and selects the
   mold linker via clang for normal source builds (install `mold` and `clang`
-  on the host first). v2 excludes `aes`, so ahash compiles its **portable
+  on the host first). v4 excludes `aes`, so ahash compiles its **portable
   fallback** hasher for those builds. Redistributable builds additionally use
   the clean, declarative `portable` profile in
   `.config/policies/cpu-packaging.toml` from an isolated cwd/CARGO_HOME, so
@@ -137,16 +135,26 @@ The default packaging profile therefore pins a fixed **x86-64-v2** floor
 - **C++ forked libs**: cuDF/cuGraph are built today with empty `CMAKE_CXX_FLAGS`
   (conservative — 0 AES-NI / 0 AVX-512 in `libcudf.so`), so they are already
   portable. Keep it that way: **never pass `-march=native`** to their builds;
-  pin `-march=x86-64-v2` if you want the floor to be explicit there too. The
+  pin `-march=x86-64-v4` if you want the floor to be explicit there too. The
   AES-NI / AVX you *do* see in the binary comes from ring/aws-lc/zstd, which are
   **runtime-dispatched** (CPU-checked before use) and safe on any x86-64.
 
-The v2 ISA is a **host precondition**. There is deliberately no in-process
-feature check: v2 instructions may execute before `main`, so a pre-v2 machine
+The v4 ISA is a **host precondition**. There is deliberately no in-process
+feature check: v4 instructions may execute before `main`, so a pre-v4 machine
 can terminate with `SIGILL` before a friendly diagnostic is possible.
-CPU SIMD is normally off this GPU engine's hot path, so the portable
-profile is the only packaged one.
-- **CUDA / driver**: built against the CUDA **13.0** toolkit. The harvested
+
+For a v3-compatible artifact, select the separate profile:
+
+```bash
+CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh
+bash docker/build-image.sh
+```
+
+This uses a separate target directory, provenance profile, label, and image
+tag. Deploy it only to hosts implementing the full x86-64-v3 ISA; never retag
+it as the default v4 image. CPU SIMD is normally off this GPU engine's hot
+path, so the default profile remains v4.
+- **CUDA / driver**: built against the CUDA **13.2** toolkit. The harvested
   runtime libs are minor-version forward-compatible within CUDA 13.x. The host
   needs an NVIDIA driver new enough for CUDA 13 (**≥ 580**) and the
   **nvidia-container-toolkit** installed (`--gpus all` / `--runtime=nvidia`).
@@ -156,14 +164,14 @@ profile is the only packaged one.
 ## Run
 
 ```bash
-docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
+docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v4
 ```
 
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
 bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
-the portable `:x86-64-v2` tag; set `NEXUS_SERVER_IMAGE` to override.
-Highlights:
+the default `:x86-64-v4` tag; set `NEXUS_SERVER_IMAGE` explicitly to run a
+tuned tag. Highlights:
 
 - `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
   `NEXUS_SERVER_GPU_DEVICES`.

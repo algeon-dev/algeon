@@ -13,14 +13,17 @@ source build**, not a replacement for building `cudf-nexus`, `cugraph-nexus`, an
 
 The image build has two phases:
 
-1. `docker/build.sh` runs on the host. It builds
+1. `docker/stage-docker-payload.sh` runs on the host. It builds
    `datafusion_nexus_server`, stages the binary, copies the locally built
    forked cuDF/RMM libraries, then adds cuVS and cuGraph libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
    It also bundles optional KvikIO/nvCOMP libraries when they are present.
-   It strips artifacts when `strip` is available and rewrites RUNPATHs when
-   `patchelf` is available.
-2. `docker build` runs the Dockerfile. It copies that staged payload into an
+   It strips staged artifacts with `strip --strip-unneeded` when `strip` is
+   available; the Docker copies can therefore be smaller than the source
+   install, while `NO_STRIP=1` preserves available symbols. It rewrites
+   RUNPATHs when `patchelf` is available.
+2. `docker/build-image.sh` runs `docker build` after verifying the staged
+   provenance. It copies that payload into an
    NVIDIA CUDA runtime image, harvests only the CUDA toolkit libraries the
    server actually links or dlopens, and emits the final runtime image.
 
@@ -37,6 +40,9 @@ want to package. The default full image expects these sibling artifacts:
 ├── cugraph-nexus/cugraph/cpp/build/libcugraph.so
 └── datafusion-nexus/
 ```
+
+The Cargo build also produces `libcudf_rust.so` and
+`libcudf_rust_rmm_interop.so`; `docker/stage-docker-payload.sh` stages both automatically.
 
 The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
 needs neither sibling artifact. Production examples keep `nvml` enabled so live
@@ -64,17 +70,16 @@ From the `datafusion-nexus` checkout:
 cd "$NEXUS_ROOT/datafusion-nexus"
 
 # Full image: Flight SQL server + Iceberg + cuVS/cuGraph SQL + NVML diagnostics.
-bash docker/build.sh
-# Run the exact docker build command printed above. It includes policy-derived
-# CPU label inputs and artifact/provenance hashes.
+bash docker/stage-docker-payload.sh
+bash docker/build-image.sh
 ```
 
 For a smaller cuDF-only server image, omit both `cugraph` and `cuvs` when
 staging the payload:
 
 ```bash
-FEATURES=iceberg,nvml bash docker/build.sh
-# Run the exact printed docker build command.
+FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh
+bash docker/build-image.sh
 ```
 
 For this lean image, set `NEXUS_SERVER_CUGRAPH_ENABLED=false` when using direct
@@ -86,8 +91,8 @@ If you already have a current release binary and only need to restage the
 runtime payload:
 
 ```bash
-SKIP_CARGO_BUILD=1 bash docker/build.sh
-# Run the exact printed docker build command.
+SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh
+bash docker/build-image.sh
 ```
 
 Skipping compilation does not trust an arbitrary `target/release` binary. It
@@ -98,15 +103,28 @@ Redistributable builds use the declarative `portable` profile in
 `.config/policies/cpu-packaging.toml`. The helper rejects ambient Rust/C/C++ codegen and
 Cargo target/profile overrides wholesale, then invokes Cargo from an isolated
 working directory and clean `CARGO_HOME` with the policy's exact target triple
-and `target-cpu=x86-64-v2`. The resulting `docker/dist/cpu-provenance.json`
+and `target-cpu=x86-64-v4`. The resulting `docker/dist/cpu-provenance.json`
 records the exact rustc/Cargo versions, target, effective codegen flags,
 declared baseline, features/profile, policy hash, and binary hash. Docker
 hard-fails if its baseline/profile/target labels or hashes disagree with that
-provenance.
+provenance. `CPU_BINARY_SHA256` is the checksum of the staged server binary;
+`docker/build-image.sh` supplies it automatically.
 
-x86-64-v2 is a runtime host precondition, not a friendly startup check. Code
-compiled for v2 can execute before `main`; on a pre-v2 host the process may
-terminate with `SIGILL` before it can print a diagnostic.
+:::warning[Build machine versus target host CPU]
+The default build targets x86-64-v4. Both the build machine and every target
+host must support that instruction set; otherwise the binary may terminate
+with `SIGILL` before `main`.
+:::
+
+For a v3-compatible artifact, use the separate profile:
+
+```bash
+CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh
+bash docker/build-image.sh
+```
+
+Deploy that image only to full x86-64-v3 hosts and never retag it as the
+default `datafusion-nexus-server:x86-64-v4` image.
 
 ## Run the server
 
@@ -114,7 +132,7 @@ For the minimal no-catalog server, run the image directly:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
+  docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v4
 ```
 
 Startup is eager: CUDA/RMM admission initializes before the Flight SQL port is
@@ -128,7 +146,7 @@ starting datafusion-nexus Flight SQL server
 The image has a TCP healthcheck for `NEXUS_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=datafusion-nexus-server:x86-64-v2
+docker ps --filter ancestor=datafusion-nexus-server:x86-64-v4
 ```
 
 ### Local fixture launcher
@@ -136,7 +154,8 @@ docker ps --filter ancestor=datafusion-nexus-server:x86-64-v2
 `docker/run.sh` is a convenience launcher for local fixture-style runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
 knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
-`datafusion-nexus-server:x86-64-v2`; set `NEXUS_SERVER_IMAGE` to override:
+`datafusion-nexus-server:x86-64-v4`; set `NEXUS_SERVER_IMAGE` explicitly for a
+tuned artifact:
 
 ```bash
 flock /tmp/cudf-gpu.lock bash docker/run.sh
@@ -189,7 +208,7 @@ algorithms
 
 ## Troubleshooting
 
-- `docker/build.sh` cannot find `libcudf.so`, `librmm.so`, or
+- `docker/stage-docker-payload.sh` cannot find `libcudf.so`, `librmm.so`, or
   `libcugraph.so`: finish the source build first, or set `CUDF_INSTALL_DIR` /
   `CUGRAPH_CMAKE_BUILD_DIR` to the correct artifact locations.
 - The container starts but the first GPU query fails with

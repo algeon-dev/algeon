@@ -173,6 +173,7 @@ impl RealIcebergProviderFixture {
         self.write_vector_rows_and_current_manifest_list(&[(100, 200, 300)]).await;
     }
 
+    #[cfg(feature = "cuvs")]
     async fn write_clusterable_vector_rows_and_current_manifest_list(&self) {
         self.write_vector_rows_and_current_manifest_list(&[(100, 0, 0), (100, 1, 0), (100, 10, 10), (100, 11, 10)])
             .await;

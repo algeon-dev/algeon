@@ -39,10 +39,12 @@ use datafusion::{
 };
 #[cfg(feature = "cuvs")]
 use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend};
+#[cfg(feature = "cuvs")]
+use datafusion_nexus::error::DataFusionErrorExt;
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, NexusGpuDeviceProfile},
     capability::CapabilityReason,
-    error::{DataFusionErrorExt, Error, ErrorCode, ErrorStatus},
+    error::{Error, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,

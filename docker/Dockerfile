@@ -11,11 +11,11 @@
 # The unmodified CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc,
 # ...) are harvested from an official `nvidia/cuda:*-runtime` image instead.
 #
-# BUILD FLOW (two host-side steps, then docker build):
-#   1. bash docker/build.sh
+# BUILD FLOW (two host-side steps):
+#   1. bash docker/stage-docker-payload.sh
 #        -> stages docker/dist/{bin/datafusion_nexus_server, lib/*.so}
 #           (forked libs only; stripped; RUNPATHs rehomed)
-#   2. docker build -t datafusion-nexus-server docker/
+#   2. bash docker/build-image.sh
 #
 # IMAGE STAGES:
 #   cuda-harvest : an nvidia/cuda:-runtime image. The staged binary + forked
@@ -60,14 +60,14 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Drop the staged payload in at its final runtime location so the binary's
-# RUNPATH (/app/lib, set by build.sh) resolves the forked libs during ldd.
+# RUNPATH (/app/lib, set by stage-docker-payload.sh) resolves the forked libs during ldd.
 COPY dist/bin/datafusion_nexus_server /app/datafusion_nexus_server
 COPY dist/lib/                        /app/lib/
 COPY dist/cpu-provenance.json         /app/cpu-provenance.json
 COPY dist/cpu-provenance.labels       /app/cpu-provenance.labels
 
 # Refuse an image whose payload, declared policy identity, or hashes do not
-# match the clean packaging output staged by docker/build.sh.
+# match the clean packaging output staged by docker/stage-docker-payload.sh.
 RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha256sum -c - && \
     printf '%s  %s\n' "${CPU_PROVENANCE_SHA256}" /app/cpu-provenance.json | sha256sum -c - && \
     grep -Fx "cpu_baseline=${CPU_BASELINE}" /app/cpu-provenance.labels && \
@@ -149,7 +149,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Policy and artifact identity are supplied only by the verified canonical
-# packaging command printed by docker/build.sh.
+# packaging inputs verified by docker/build-image.sh.
 LABEL org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}" \
       org.datafusion-nexus.cpu-arch="${CPU_ARCH}" \
       org.datafusion-nexus.cpu-profile="${CPU_PROFILE}" \

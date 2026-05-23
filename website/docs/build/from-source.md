@@ -77,8 +77,7 @@ without a CMake configure, so cudf + rmm is all it needs:
 ls "$CUDF_INSTALL_DIR"/lib/libcudf.so "$CUDF_INSTALL_DIR"/lib/librmm.so
 ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm}
 
-# Full kernel coverage for your GPU architecture (hundreds of entries,
-# not ~a dozen stubs):
+# Full kernel coverage for your GPU architecture
 cuobjdump --list-elf "$CUDF_INSTALL_DIR/lib/libcudf.so" \
   | grep -oE 'sm_[0-9]+' | sort | uniq -c
 ```
@@ -96,6 +95,10 @@ cargo build -p cudf-nexus-sys      # smoke-test shim compile + libcudf link firs
 cargo build
 flock /tmp/cudf-gpu.lock cargo test --all-features
 ```
+
+`cudf-nexus-sys` produces `libcudf_rust.so` and its private
+`libcudf_rust_rmm_interop.so` under Cargo's `OUT_DIR/lib`; keep both together
+for runtime and Docker packaging.
 
 Tests execute on the GPU, so they take the global GPU lock (see
 [Tests](./tests.md#gpu-serialization)).
