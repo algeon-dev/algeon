@@ -8,9 +8,9 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    common::{DataFusionError, Result},
+    common::{DataFusionError, Result, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
@@ -370,6 +370,13 @@ impl ExecutionPlan for CuvsAlgoExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

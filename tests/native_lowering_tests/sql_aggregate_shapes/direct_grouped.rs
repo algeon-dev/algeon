@@ -127,13 +127,15 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
-    let sort = plan.downcast_ref::<SortExec>().expect("direct SQL root should be SortExec");
-    let projection =
-        sort.input().downcast_ref::<ProjectionExec>().expect("direct SQL sort input should be ProjectionExec");
-    let aggregate = projection
-        .input()
-        .downcast_ref::<AggregateExec>()
-        .expect("direct SQL projection input should be AggregateExec");
+    let aggregate = if let Some(proj) = plan.downcast_ref::<ProjectionExec>() {
+        let sort = proj.input().downcast_ref::<SortExec>().expect("direct SQL projection input should be SortExec");
+        sort.input().downcast_ref::<AggregateExec>().expect("direct SQL sort input should be AggregateExec")
+    } else {
+        let sort = plan.downcast_ref::<SortExec>().expect("direct SQL root should be SortExec");
+        let proj =
+            sort.input().downcast_ref::<ProjectionExec>().expect("direct SQL sort input should be ProjectionExec");
+        proj.input().downcast_ref::<AggregateExec>().expect("direct SQL projection input should be AggregateExec")
+    };
     let m01_index = aggregate.input().schema().index_of("m01").expect("aggregate input should include m01");
     let distinct_count = aggregate_expr_on_column_with_alias(
         count_udaf(),

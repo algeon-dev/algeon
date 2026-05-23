@@ -17,12 +17,13 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
+    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
-    physical_expr::{Distribution, OrderingRequirements},
+    physical_expr::{OrderingRequirements, PhysicalExpr},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream, SendableRecordBatchStream,
-        metrics::MetricsSet,
+        ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, InputDistributionRequirements,
+        PlanProperties, RecordBatchStream, ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs,
+        StatisticsContext, metrics::MetricsSet,
     },
 };
 use futures::Stream;
@@ -1203,8 +1204,17 @@ impl ExecutionPlan for NativeAdmissionExec {
         self.input.properties()
     }
 
-    fn required_input_distribution(&self) -> Vec<Distribution> {
-        self.input.required_input_distribution()
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        // The input is a downcast delegate flattened out of `children()`, so
+        // its expressions are only reachable through this forward.
+        self.input.apply_expressions(f)
+    }
+
+    fn input_distribution_requirements(&self) -> InputDistributionRequirements {
+        self.input.input_distribution_requirements()
     }
 
     fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
@@ -1227,7 +1237,8 @@ impl ExecutionPlan for NativeAdmissionExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let input = Arc::clone(&self.input).with_new_children(children)?;
+        let input = Arc::clone(&self.input)
+            .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))?;
         Ok(Arc::new(Self::new(input, Arc::clone(&self.ticket))))
     }
 
@@ -1279,7 +1290,7 @@ impl ExecutionPlan for NativeAdmissionExec {
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
-        self.input.partition_statistics(partition)
+        StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 }
 

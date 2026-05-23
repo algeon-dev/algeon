@@ -14,11 +14,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, ScalarValue},
+    common::{DataFusionError, Result as DataFusionResult, ScalarValue, tree_node::TreeNodeRecursion},
     execution::{context::TaskContext, runtime_env::RuntimeEnvBuilder},
     logical_expr::Operator,
-    physical_expr::expressions::{binary, col, lit},
-    physical_plan::{collect, empty::EmptyExec, filter::FilterExec},
+    physical_expr::{
+        PhysicalExpr,
+        expressions::{binary, col, lit},
+    },
+    physical_plan::{StatisticsArgs, StatisticsContext, collect, empty::EmptyExec, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::future::BoxFuture;
@@ -137,8 +140,15 @@ impl ExecutionPlan for CountingGpuResidentProducer {
         self.inner.properties()
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
-        self.inner.partition_statistics(partition)
+        StatisticsContext::new().compute(&self.inner, &StatisticsArgs::new().with_partition(partition))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -232,8 +242,15 @@ impl ExecutionPlan for CountingExec {
         self.input.properties()
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
-        self.input.partition_statistics(partition)
+        StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

@@ -164,10 +164,18 @@ impl NativePlanCostFacts {
                 PlanNode::Sort(_) => facts.sort_count += 1,
                 PlanNode::Limit(limit) => {
                     facts.limit_count += 1;
-                    if let Some(fetch) = limit.spec.fetch
-                        && matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_)))
-                    {
-                        facts.min_topk_fetch = Some(facts.min_topk_fetch.map_or(fetch, |current| current.min(fetch)));
+                    if let Some(fetch) = limit.spec.fetch {
+                        let is_topk = match plan.node(limit.input).map(|node| &node.kind) {
+                            Some(PlanNode::Sort(_)) => true,
+                            Some(PlanNode::Projection(projection)) => {
+                                matches!(plan.node(projection.input).map(|node| &node.kind), Some(PlanNode::Sort(_)))
+                            },
+                            _ => false,
+                        };
+                        if is_topk {
+                            facts.min_topk_fetch =
+                                Some(facts.min_topk_fetch.map_or(fetch, |current| current.min(fetch)));
+                        }
                     }
                 },
                 PlanNode::Projection(_)

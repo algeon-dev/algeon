@@ -8,9 +8,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
+    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
@@ -494,6 +494,13 @@ impl ExecutionPlan for NexusNativeComposedExec {
         &self.cache
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.gpu_inputs.iter().collect()
     }
@@ -975,6 +982,13 @@ impl ExecutionPlan for NexusNativeComposedGpuProducerExec {
         &self.cache
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.gpu_inputs.iter().collect()
     }
@@ -1096,8 +1110,9 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::{
-        common::{DataFusionError, Result as DataFusionResult},
+        common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
         execution::context::TaskContext,
+        physical_expr::PhysicalExpr,
         physical_plan::{
             DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, empty::EmptyExec,
             metrics::ExecutionPlanMetricsSet,
@@ -1155,6 +1170,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.inner.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -1221,6 +1243,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.inner.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

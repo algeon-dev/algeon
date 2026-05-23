@@ -182,7 +182,7 @@ pub(super) fn preflight_single_query(state: &SessionState, sql: &str) -> Option<
     };
     let statements = match DFParserBuilder::new(sql)
         .with_dialect(dialect.as_ref())
-        .with_recursion_limit(options.sql_parser.recursion_limit)
+        .with_recursion_limit(options.sql_parser.recursion_limit.get())
         .build()
         .and_then(|mut parser| parser.parse_statements())
     {

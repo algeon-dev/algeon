@@ -54,6 +54,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
             plan.schema().fields().len(),
             sort,
             Some(NativeLimitSpec::fetch(fetch)),
+            None,
         );
     }
 
@@ -69,6 +70,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
             plan.schema().fields().len(),
             sort,
             sort.fetch().map(NativeLimitSpec::fetch),
+            None,
         );
     }
 
@@ -98,11 +100,23 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                         Some(projection),
                         limit.input().as_ref(),
                         candidate,
+                        PostAggregateProjectionOrder::BelowSort,
                     )?;
                     return Ok(with_global_limit(normalized, limit_spec));
                 },
                 Err(rejection) => return Err(rejection),
             }
+        }
+
+        if let Some(sort) = projection.input().downcast_ref::<SortExec>() {
+            let root = if sort.fetch().is_some() { NativeStackRoot::SortFetch } else { NativeStackRoot::Sort };
+            return normalize_sort_stack(
+                root,
+                plan.schema().fields().len(),
+                sort,
+                sort.fetch().map(NativeLimitSpec::fetch),
+                Some(projection),
+            );
         }
 
         let candidate = global_aggregate_candidate(plan.schema().fields().len(), true, false, false, false);
@@ -111,16 +125,15 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                 return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
             },
             Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
-                let sort_fetch =
-                    projection.input().downcast_ref::<SortExec>().and_then(SortExec::fetch).map(NativeLimitSpec::fetch);
                 return normalize_input_root(
                     plan.schema().fields().len(),
                     None,
                     None,
-                    sort_fetch,
+                    None,
                     Some(projection),
                     projection.input().as_ref(),
                     candidate,
+                    PostAggregateProjectionOrder::BelowSort,
                 );
             },
             Err(rejection) => return Err(rejection),
@@ -133,7 +146,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     if plan.downcast_ref::<WindowAggExec>().is_some() || plan.downcast_ref::<BoundedWindowAggExec>().is_some() {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
-        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
+        return normalize_input_root(
+            plan.schema().fields().len(),
+            None,
+            None,
+            None,
+            None,
+            plan,
+            candidate,
+            PostAggregateProjectionOrder::BelowSort,
+        );
     }
 
     if plan.downcast_ref::<FilterExec>().is_some()
@@ -146,7 +168,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         || plan.downcast_ref::<NexusIcebergScanExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
-        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
+        return normalize_input_root(
+            plan.schema().fields().len(),
+            None,
+            None,
+            None,
+            None,
+            plan,
+            candidate,
+            PostAggregateProjectionOrder::BelowSort,
+        );
     }
 
     if plan.downcast_ref::<HashJoinExec>().is_some()
@@ -155,7 +186,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         || plan.downcast_ref::<UnionExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
-        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
+        return normalize_input_root(
+            plan.schema().fields().len(),
+            None,
+            None,
+            None,
+            None,
+            plan,
+            candidate,
+            PostAggregateProjectionOrder::BelowSort,
+        );
     }
 
     Err(NativePlanRejection {
@@ -164,26 +204,36 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     })
 }
 
-fn normalize_sort_stack(
+fn normalize_sort_stack<'a>(
     root: NativeStackRoot,
     output_schema_fields: usize,
-    sort: &SortExec,
+    sort: &'a SortExec,
     limit: Option<NativeLimitSpec>,
-) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
-    let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true, false);
+    outer_projection: Option<&'a ProjectionExec>,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+    let initial_candidate =
+        native_stack_candidate(root, output_schema_fields, outer_projection.is_some(), true, true, false);
     if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate: initial_candidate,
             reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
         });
     }
-    let (post_aggregate_projection, aggregate) = match peel_post_aggregate_projection(sort, initial_candidate.clone()) {
-        Ok(stack) => stack,
-        Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
-            return normalize_sort_input_root(root, output_schema_fields, sort, limit, initial_candidate);
-        },
-        Err(rejection) => return Err(rejection),
-    };
+    let (post_aggregate_projection, aggregate, effective_sort) =
+        match peel_post_aggregate_projection(sort, initial_candidate.clone(), outer_projection) {
+            Ok(stack) => stack,
+            Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
+                return normalize_sort_input_root(
+                    root,
+                    output_schema_fields,
+                    sort,
+                    limit,
+                    initial_candidate,
+                    outer_projection,
+                );
+            },
+            Err(rejection) => return Err(rejection),
+        };
     let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
         peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, initial_candidate.clone())?;
@@ -196,6 +246,8 @@ fn normalize_sort_stack(
         aggregate_peel.has_distributed_aggregate,
     );
 
+    let effective_limit = limit.or_else(|| effective_sort.fetch().map(NativeLimitSpec::fetch));
+
     Ok(NormalizedNativePlan {
         candidate,
         root: NormalizedNativeRoot::Aggregate(NormalizedNativeAggregateRoot {
@@ -205,9 +257,14 @@ fn normalize_sort_stack(
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
+            projection_order: if outer_projection.is_some() {
+                PostAggregateProjectionOrder::AboveSort
+            } else {
+                PostAggregateProjectionOrder::BelowSort
+            },
         }),
-        sort: Some(NormalizedNativeSortExprs::from_sort_exec(sort)),
-        limit,
+        sort: Some(NormalizedNativeSortExprs::from_sort_exec(effective_sort)),
+        limit: effective_limit,
     })
 }
 
@@ -233,7 +290,8 @@ fn normalize_sort_preserving_merge_root(
         return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeSortPreservingMergeUnsupported });
     }
 
-    if let Some(sort) = merge.input().downcast_ref::<SortExec>() {
+    let (outer_projection, after_proj) = peel_root_projection(merge.input().as_ref());
+    if let Some(sort) = after_proj.downcast_ref::<SortExec>() {
         if merge.fetch().is_none() && sort.fetch().is_some() {
             return Err(NativePlanRejection {
                 candidate,
@@ -248,12 +306,13 @@ fn normalize_sort_preserving_merge_root(
                 reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
             });
         }
-        if sort_orderings_match(merge.expr(), sort.expr()) {
+        if sort_orderings_match(merge.expr(), sort.expr()) || outer_projection.is_some() {
             return normalize_sort_stack(
                 root_with_child_sort,
                 output_schema_fields,
                 sort,
                 merge.fetch().map(NativeLimitSpec::fetch),
+                outer_projection,
             );
         }
     }
@@ -269,17 +328,20 @@ fn normalize_sort_preserving_merge_root(
         projection,
         input,
         candidate,
+        PostAggregateProjectionOrder::BelowSort,
     )
 }
 
 fn sort_preserving_merge_candidate(merge: &SortPreservingMergeExec) -> GpuCandidate {
+    let has_child_sort = merge.input().downcast_ref::<SortExec>().is_some()
+        || peel_root_projection(merge.input().as_ref()).1.downcast_ref::<SortExec>().is_some();
     if merge.fetch().is_some() {
-        if merge.input().downcast_ref::<SortExec>().is_some() {
+        if has_child_sort {
             GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_SHAPE, merge.schema().fields().len(), 2)
         } else {
             GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_INPUT_SHAPE, merge.schema().fields().len(), 1)
         }
-    } else if merge.input().downcast_ref::<SortExec>().is_some() {
+    } else if has_child_sort {
         GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SORT_SHAPE, merge.schema().fields().len(), 2)
     } else {
         GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SHAPE, merge.schema().fields().len(), 1)
@@ -317,6 +379,7 @@ fn normalize_global_aggregate_stack<'a>(
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
+            projection_order: PostAggregateProjectionOrder::BelowSort,
         }),
         sort: None,
         limit: None,
@@ -344,6 +407,7 @@ fn normalize_global_limit_root(
                     Some(projection),
                     projection.input().as_ref(),
                     candidate,
+                    PostAggregateProjectionOrder::BelowSort,
                 )?;
                 return Ok(with_global_limit(normalized, limit));
             },
@@ -357,7 +421,16 @@ fn normalize_global_limit_root(
     }
 
     let candidate = input_root_candidate(None, output_schema_fields, input.name().to_string(), false, 1);
-    let normalized = normalize_input_root(output_schema_fields, None, None, None, None, input, candidate)?;
+    let normalized = normalize_input_root(
+        output_schema_fields,
+        None,
+        None,
+        None,
+        None,
+        input,
+        candidate,
+        PostAggregateProjectionOrder::BelowSort,
+    )?;
     Ok(with_global_limit(normalized, limit))
 }
 
@@ -389,28 +462,42 @@ fn global_limit_spec(
     Ok(NativeLimitSpec::new(limit.skip(), limit.fetch()))
 }
 
-fn normalize_sort_input_root(
+fn normalize_sort_input_root<'a>(
     root: NativeStackRoot,
     output_schema_fields: usize,
-    sort: &SortExec,
+    sort: &'a SortExec,
     limit: Option<NativeLimitSpec>,
     candidate: GpuCandidate,
-) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+    outer_projection: Option<&'a ProjectionExec>,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate,
             reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
         });
     }
+    if let Some(outer) = outer_projection {
+        return normalize_input_root(
+            output_schema_fields,
+            Some(root),
+            Some(NormalizedNativeSortExprs::from_sort_exec(sort)),
+            limit.or_else(|| sort.fetch().map(NativeLimitSpec::fetch)),
+            Some(outer),
+            sort.input().as_ref(),
+            candidate,
+            PostAggregateProjectionOrder::AboveSort,
+        );
+    }
     let (projection, input) = peel_root_projection(sort.input().as_ref());
     normalize_input_root(
         output_schema_fields,
         Some(root),
         Some(NormalizedNativeSortExprs::from_sort_exec(sort)),
-        limit,
+        limit.or_else(|| sort.fetch().map(NativeLimitSpec::fetch)),
         projection,
         input,
         candidate,
+        PostAggregateProjectionOrder::BelowSort,
     )
 }
 
@@ -422,6 +509,7 @@ fn normalize_input_root<'a>(
     projection: Option<&'a ProjectionExec>,
     input_plan: &'a dyn ExecutionPlan,
     candidate: GpuCandidate,
+    projection_order: PostAggregateProjectionOrder,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     let input = normalize_native_input(input_plan, candidate.clone(), sort.is_some())?;
     let candidate = input_root_candidate(
@@ -433,20 +521,32 @@ fn normalize_input_root<'a>(
     );
     Ok(NormalizedNativePlan {
         candidate,
-        root: NormalizedNativeRoot::Input(NormalizedNativeInputRoot { input, projection }),
+        root: NormalizedNativeRoot::Input(NormalizedNativeInputRoot { input, projection, projection_order }),
         sort,
         limit,
     })
 }
 
-fn peel_post_aggregate_projection(
-    sort: &SortExec,
+fn peel_post_aggregate_projection<'a>(
+    sort: &'a SortExec,
     candidate: GpuCandidate,
-) -> Result<(Option<&ProjectionExec>, &AggregateExec), NativePlanRejection> {
-    if let Some(projection) = sort.input().downcast_ref::<ProjectionExec>() {
-        return Ok((Some(projection), required_child::<AggregateExec>(projection.input().as_ref(), candidate)?));
+    outer_projection: Option<&'a ProjectionExec>,
+) -> Result<(Option<&'a ProjectionExec>, &'a AggregateExec, &'a SortExec), NativePlanRejection> {
+    if let Some(outer) = outer_projection {
+        if let Some(aggregate) = sort.input().downcast_ref::<AggregateExec>() {
+            return Ok((Some(outer), aggregate, sort));
+        }
+        return Err(NativePlanRejection { candidate, reason: CapabilityReason::UnsupportedOperator });
     }
-    Ok((None, required_child::<AggregateExec>(sort.input().as_ref(), candidate)?))
+
+    if let Some(projection) = sort.input().downcast_ref::<ProjectionExec>() {
+        if let Some(aggregate) = projection.input().downcast_ref::<AggregateExec>() {
+            return Ok((Some(projection), aggregate, sort));
+        }
+        return Err(NativePlanRejection { candidate, reason: CapabilityReason::UnsupportedOperator });
+    }
+
+    Ok((None, required_child::<AggregateExec>(sort.input().as_ref(), candidate)?, sort))
 }
 
 fn peel_root_projection(plan: &dyn ExecutionPlan) -> (Option<&ProjectionExec>, &dyn ExecutionPlan) {

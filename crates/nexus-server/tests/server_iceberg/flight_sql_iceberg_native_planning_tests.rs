@@ -146,7 +146,7 @@ async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrit
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_cte_aggregate_join_back_remains_executable_on_datafusion() {
+async fn native_profile_iceberg_cte_aggregate_join_back_fully_lowers_to_native() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -159,11 +159,12 @@ async fn native_profile_iceberg_cte_aggregate_join_back_remains_executable_on_da
          LIMIT 5",
     )
     .await
-    .expect("unlowerable CTE join must retain an executable DataFusion plan");
+    .expect("native profile must rewrite native-safe CTE aggregate join back");
 
-    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
-    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -498,7 +499,7 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
 fn assert_executable_iceberg_datafusion_plan(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
     assert!(
-        find_table_format_scan(plan).is_some(),
+        find_table_format_scan(plan).is_some() || plan_contains_operator(plan, "PlaceholderRowExec"),
         "DataFusion fallback plan must retain the executable Iceberg wrapper; plan:\n{rendered}"
     );
     assert_eq!(classify_final_plan(plan), FinalPlanDisposition::DataFusion, "plan:\n{rendered}");

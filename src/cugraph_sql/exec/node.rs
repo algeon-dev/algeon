@@ -1011,6 +1011,13 @@ impl ExecutionPlan for CugraphAlgoExec {
         &self.cache
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         let mut children = Vec::with_capacity(1 + self.predicate_sources.len());
         children.push(&self.edge_source);

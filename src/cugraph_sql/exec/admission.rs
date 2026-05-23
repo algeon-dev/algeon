@@ -310,9 +310,10 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result
 /// plan. Inexact optimizer estimates must never be used for strict bounded
 /// graph admission.
 pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
+    let statistics_context = StatisticsContext::new();
     let partition_count = plan.properties().output_partitioning().partition_count();
     if partition_count <= 1 {
-        let statistics = plan.partition_statistics(None)?;
+        let statistics = statistics_context.compute(plan, &StatisticsArgs::new())?;
         if let Precision::Exact(rows) = statistics.num_rows {
             return Ok(Some(rows as u64));
         }
@@ -324,7 +325,7 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
     // stronger native/footer evidence selected above.
     let mut total = 0_u64;
     for partition in 0..partition_count {
-        let statistics = plan.partition_statistics(Some(partition))?;
+        let statistics = statistics_context.compute(plan, &StatisticsArgs::new().with_partition(Some(partition)))?;
         let Precision::Exact(rows) = statistics.num_rows else {
             return Ok(native_query_plan_hard_row_upper_bound(plan));
         };

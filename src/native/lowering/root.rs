@@ -43,6 +43,7 @@ use crate::{
         expression_contract::validate_physical_expr,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
+            PostAggregateProjectionOrder,
         },
         pruning::scan_predicate_without_dynamic_filter_hints,
         source::{
@@ -272,7 +273,14 @@ pub(super) fn lower_slice1_plan(
             aggregate_output_bindings,
         )
     };
-    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
+    finish_with_post_projection_sort_limit(
+        builder,
+        aggregate_output,
+        post_aggregate_projection,
+        sort,
+        normalized.limit,
+        root.projection_order,
+    )
 }
 
 pub(super) fn lower_table_format_zero_column_count_plan(
@@ -331,6 +339,7 @@ pub(super) fn lower_table_format_zero_column_count_plan(
             post_aggregate_projection,
             sort,
             normalized.limit,
+            root.projection_order,
         );
     };
     let aggregate_output = LoweredNativeInput::with_bindings(
@@ -338,7 +347,14 @@ pub(super) fn lower_table_format_zero_column_count_plan(
         aggregate_output_schema,
         aggregate_output_bindings,
     );
-    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
+    finish_with_post_projection_sort_limit(
+        builder,
+        aggregate_output,
+        post_aggregate_projection,
+        sort,
+        normalized.limit,
+        root.projection_order,
+    )
 }
 
 pub(super) fn lower_joined_aggregate_plan(
@@ -400,7 +416,14 @@ pub(super) fn lower_joined_aggregate_plan(
             aggregate_output_bindings,
         )
     };
-    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
+    finish_with_post_projection_sort_limit(
+        builder,
+        aggregate_output,
+        post_aggregate_projection,
+        sort,
+        normalized.limit,
+        root.projection_order,
+    )
 }
 
 pub(super) fn lower_input_root_plan(
@@ -419,8 +442,11 @@ pub(super) fn lower_input_root_plan(
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
-    let required_input_fields =
-        root.projection.map(required_root_projection_input_fields).transpose()?.unwrap_or_else(RequiredFields::all);
+    let required_input_fields = if root.projection_order == PostAggregateProjectionOrder::AboveSort {
+        RequiredFields::all()
+    } else {
+        root.projection.map(required_root_projection_input_fields).transpose()?.unwrap_or_else(RequiredFields::all)
+    };
     let pushed_scan_limit =
         if normalized.sort.is_none() { source_scan_limit_from_limit_spec(normalized.limit) } else { None };
     let lowered_input =
@@ -431,6 +457,7 @@ pub(super) fn lower_input_root_plan(
         root.projection,
         normalized.sort.as_ref(),
         normalized.limit,
+        root.projection_order,
     )
 }
 
@@ -440,8 +467,9 @@ fn finish_with_post_projection_sort_limit(
     projection: Option<&ProjectionExec>,
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
+    projection_order: PostAggregateProjectionOrder,
 ) -> Result<NativeQueryPlan, CapabilityReason> {
-    let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit)?;
+    let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit, projection_order)?;
     Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
 }
 
@@ -451,29 +479,56 @@ fn apply_post_projection_sort_limit(
     projection: Option<&ProjectionExec>,
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
+    projection_order: PostAggregateProjectionOrder,
 ) -> Result<LoweredNativeInput, CapabilityReason> {
-    let projected = if let Some(projection) = projection {
-        add_projection_node_with_input(builder, input, projection)?
+    if projection_order == PostAggregateProjectionOrder::AboveSort {
+        let sorted = if let Some(sort) = sort {
+            lower_sort_ordering_with_input(
+                builder,
+                sort.ordering(),
+                sort.input_schema(),
+                sort.output_schema(),
+                input,
+                &RequiredFields::all(),
+            )?
+        } else {
+            input
+        };
+        let projected = if let Some(projection) = projection {
+            add_projection_node_with_input(builder, sorted, projection)?
+        } else {
+            sorted
+        };
+        if let Some(limit) = limit {
+            let node = builder.add_limit(projected.node, limit, Arc::clone(&projected.schema));
+            Ok(LoweredNativeInput::with_bindings(node, projected.schema, projected.bindings))
+        } else {
+            Ok(projected)
+        }
     } else {
-        input
-    };
-    let sorted_or_projected = if let Some(sort) = sort {
-        lower_sort_ordering_with_input(
-            builder,
-            sort.ordering(),
-            sort.input_schema(),
-            sort.output_schema(),
-            projected,
-            &RequiredFields::all(),
-        )?
-    } else {
-        projected
-    };
-    if let Some(limit) = limit {
-        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-        Ok(LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings))
-    } else {
-        Ok(sorted_or_projected)
+        let projected = if let Some(projection) = projection {
+            add_projection_node_with_input(builder, input, projection)?
+        } else {
+            input
+        };
+        let sorted_or_projected = if let Some(sort) = sort {
+            lower_sort_ordering_with_input(
+                builder,
+                sort.ordering(),
+                sort.input_schema(),
+                sort.output_schema(),
+                projected,
+                &RequiredFields::all(),
+            )?
+        } else {
+            projected
+        };
+        if let Some(limit) = limit {
+            let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
+            Ok(LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings))
+        } else {
+            Ok(sorted_or_projected)
+        }
     }
 }
 

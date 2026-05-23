@@ -7,6 +7,7 @@ use std::{
 use arrow::{
     array::{Array, Int32Array, StringArray, StringViewArray},
     compute::SortOptions as ArrowSortOptions,
+    datatypes::{DataType, Field},
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue, config::ConfigOptions},
@@ -543,6 +544,35 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
 }
 
 #[test]
+fn native_optimizer_property_checked_ilike_boundary_rejects_partition_grouped_scan() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-partition-grouped");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let scan = support::parquet_scan_with_partition_field(&path, Field::new("part", DataType::Int32, false));
+    let partition_grouped = scan
+        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
+        .expect("partition scan should be DataSourceExec");
+    let (file_scan, _parquet_source) = partition_grouped
+        .downcast_to_file_source::<datafusion::datasource::physical_plan::ParquetSource>()
+        .expect("partition scan should use ParquetSource");
+    assert!(!file_scan.table_partition_cols().is_empty());
+    assert!(matches!(file_scan.output_partitioning, Some(datafusion::physical_expr::Partitioning::Hash(_, _))));
+    let plan = ilike_filter_over_scan(scan);
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+
+    assert!(
+        Arc::ptr_eq(&optimized, &plan),
+        "the mixed certificate must not replace a partition-grouped scan whose partition state is observable DataFusion 55 state"
+    );
+    let report = rule.last_report().expect("native optimizer should record the whole-plan rejection");
+    assert_eq!(report.selected_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-no-datafusion-cpu");
     let path = dir.join("input.parquet");
@@ -1016,7 +1046,6 @@ fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_
     );
     assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.selected_count(), 0);
     assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],

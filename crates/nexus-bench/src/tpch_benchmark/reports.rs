@@ -338,11 +338,11 @@ impl NativeTpchBenchmarkRow {
     ) -> Self {
         let (cpu, cpu_failure, cpu_failure_details, cpu_runtime_started) = match cpu {
             Ok(run) => (Some(run), None, execution::FailureDetails::default(), true),
-            Err(error) => (None, Some(stable_tsv_field(&error.message)), error.details, error.runtime_started),
+            Err(error) => (None, Some(stable_tsv_field(&error.message)), *error.details, error.runtime_started),
         };
         let (native, native_failure, runtime_failure_details, native_runtime_started) = match native {
             Ok(run) => (Some(run), None, execution::FailureDetails::default(), true),
-            Err(error) => (None, Some(stable_tsv_field(&error.message)), error.details, error.runtime_started),
+            Err(error) => (None, Some(stable_tsv_field(&error.message)), *error.details, error.runtime_started),
         };
         let parity_status = validation::parity_status(
             cpu.as_ref().map(|run| &run.final_measurement),

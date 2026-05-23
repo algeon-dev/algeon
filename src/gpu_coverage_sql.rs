@@ -9,13 +9,14 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
-    common::{DataFusionError, Result, ScalarValue},
+    common::{DataFusionError, Result, ScalarValue, tree_node::TreeNodeRecursion},
     datasource::{MemTable, TableType},
     execution::{
         SessionState,
         context::{SessionContext, TaskContext},
     },
     logical_expr::Expr,
+    physical_expr::PhysicalExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
 };
 
@@ -119,6 +120,13 @@ impl ExecutionPlan for DataFusionCpuBoundaryExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

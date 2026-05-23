@@ -17,15 +17,19 @@ use arrow::{
 };
 use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
-    common::{DataFusionError, Result, stats::Precision, utils::memory::get_record_batch_memory_size},
+    common::{
+        DataFusionError, Result, stats::Precision, tree_node::TreeNodeRecursion,
+        utils::memory::get_record_batch_memory_size,
+    },
     datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
     execution::{
         context::TaskContext,
         memory_pool::{MemoryConsumer, MemoryReservation},
     },
-    physical_expr::{EquivalenceProperties, Partitioning, expressions::Column},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr, expressions::Column},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream, SendableRecordBatchStream,
+        ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
+        ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
         aggregates::{AggregateExec, AggregateMode},
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},

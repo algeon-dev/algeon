@@ -356,7 +356,8 @@ mod tests {
         datatypes::{DataType, Field, Schema},
     };
     use datafusion::{
-        physical_expr::{EquivalenceProperties, Partitioning},
+        common::tree_node::TreeNodeRecursion,
+        physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr},
         physical_plan::{
             DisplayAs, DisplayFormatType, PlanProperties, SendableRecordBatchStream,
             execution_plan::{Boundedness, EmissionType},
@@ -407,6 +408,13 @@ mod tests {
             &self.cache
         }
 
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
             Vec::new()
         }
@@ -447,6 +455,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.inner.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -513,6 +528,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.child.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

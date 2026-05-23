@@ -24,7 +24,7 @@ pub(in crate::capability) fn mixed_keyed_residual_join_resident_grouped_aggregat
     )?;
 
     let root_join = require_join_node(plan, root_join_id, "post_root_stage_order_requires_root_join_below_projection")?;
-    if root_join.spec.join_type != JoinType::Inner
+    if !matches!(root_join.spec.join_type, JoinType::Inner | JoinType::LeftSemi)
         || root_join.spec.keys.is_empty()
         || root_join.spec.residual_predicate.is_none()
         || root_join.spec.output_projection.is_empty()

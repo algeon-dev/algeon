@@ -9,7 +9,7 @@ fn accepted_row_preserves_native_not_started_failure_status() {
         Err(execution::NativeRunFailure {
             runtime_started: false,
             message: "native planning failed\nwith details".to_string(),
-            details: execution::FailureDetails::default(),
+            details: Box::default(),
         }),
     );
 
@@ -32,7 +32,7 @@ fn accepted_row_distinguishes_cpu_planning_failure_from_started_runtime() {
         Err(execution::CpuRunFailure {
             runtime_started: false,
             message: "cpu physical planning failed\tbefore execution".to_string(),
-            details: execution::FailureDetails::default(),
+            details: Box::default(),
         }),
         Ok(timed_native_run("output-fnv1a64:0000000000000001")),
     );
@@ -96,7 +96,11 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
         "q01",
         accepted_planning_row("q01"),
         Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
-        Err(execution::NativeRunFailure { runtime_started: true, message: datafusion_error.to_string(), details }),
+        Err(execution::NativeRunFailure {
+            runtime_started: true,
+            message: datafusion_error.to_string(),
+            details: Box::new(details),
+        }),
     );
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
@@ -165,7 +169,11 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
     let row = NativeTpchBenchmarkRow::accepted(
         "q01",
         accepted_planning_row("q01"),
-        Err(execution::CpuRunFailure { runtime_started: true, message: datafusion_error.to_string(), details }),
+        Err(execution::CpuRunFailure {
+            runtime_started: true,
+            message: datafusion_error.to_string(),
+            details: Box::new(details),
+        }),
         Ok(timed_native_run("output-fnv1a64:0000000000000001")),
     );
     let report = NativeTpchBenchmarkReport {

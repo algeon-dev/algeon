@@ -838,7 +838,7 @@ pub(in crate::capability) fn require_keyed_inner_hash_join_without_residual_with
     join: &JoinNode,
     reason: &'static str,
 ) -> Result<(), CapabilityDecision> {
-    if join.spec.join_type == JoinType::Inner
+    if (join.spec.join_type == JoinType::Inner || join.spec.join_type == JoinType::LeftSemi)
         && !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()

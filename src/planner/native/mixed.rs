@@ -163,7 +163,6 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
         && !file_scan.preserve_order
         && file_scan.output_ordering.is_empty()
         && file_scan.table_partition_cols().is_empty()
-        && !file_scan.partitioned_by_file_group
         && file_scan.expr_adapter_factory.is_none()
         && crate::native::native_parquet_file_reader_factory_is_supported(parquet_source)
         // DataFusion retains a source-level copy of filters it can use for

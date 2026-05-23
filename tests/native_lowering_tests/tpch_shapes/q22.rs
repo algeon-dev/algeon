@@ -32,16 +32,8 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
     assert!(plan.to_string().contains("SUBSTRING(c_phone FROM 1 FOR 2)"));
     assert!(!plan.to_string().contains("SUBSTRING(c_phone FROM c_custkey"));
 
-    let PlanNode::Sort(sort) = &plan.root_node().kind else {
-        panic!("q22 native root should be the final ORDER BY sort");
-    };
-    assert_eq!(sort.spec.expressions.len(), 1);
-    assert_eq!(sort.spec.expressions[0].expr.to_string(), "cntrycode");
-    assert!(!sort.spec.expressions[0].descending);
-
-    let final_projection_node = plan.node(sort.input).expect("q22 sort input should exist");
-    let PlanNode::Projection(final_projection) = &final_projection_node.kind else {
-        panic!("q22 sort input should be the final output projection");
+    let PlanNode::Projection(final_projection) = &plan.root_node().kind else {
+        panic!("q22 native root should be the final output projection: {plan}");
     };
     assert_eq!(final_projection.outputs.len(), 3);
     let final_projection_text = final_projection.expressions().map(ToString::to_string).collect::<Vec<_>>();
@@ -51,9 +43,18 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
             "q22 final projection should expose {expected_output}: {final_projection_text:?}"
         );
     }
-    let final_aggregate_node = plan.node(final_projection.input).expect("q22 final projection input should exist");
+
+    let sort_node = plan.node(final_projection.input).expect("q22 projection input should exist");
+    let PlanNode::Sort(sort) = &sort_node.kind else {
+        panic!("q22 projection input should be the final ORDER BY sort: {plan}");
+    };
+    assert_eq!(sort.spec.expressions.len(), 1);
+    assert_eq!(sort.spec.expressions[0].expr.to_string(), "cntrycode");
+    assert!(!sort.spec.expressions[0].descending);
+
+    let final_aggregate_node = plan.node(sort.input).expect("q22 sort input should exist");
     let PlanNode::Aggregate(final_aggregate) = &final_aggregate_node.kind else {
-        panic!("q22 final projection input should be the GROUP BY aggregate");
+        panic!("q22 sort input should be the GROUP BY aggregate: {plan}");
     };
     let mut aggregate_input_projection_chain = Vec::new();
     let mut current = final_aggregate.input;

@@ -297,14 +297,13 @@ async fn bounded_cuvs_rejection(
         .await
         .expect("bounded execution is rejected when Flight consumes the statement ticket");
     let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
-    let error = client
-        .do_get(ticket)
-        .await
-        .expect("open bounded Flight result stream")
-        .try_collect::<Vec<_>>()
-        .await
-        .expect_err("bounded cuVS execution must be rejected");
-    flight_status(error)
+    match client.do_get(ticket).await {
+        Ok(stream) => {
+            let error = stream.try_collect::<Vec<_>>().await.expect_err("bounded cuVS execution must be rejected");
+            flight_status(error)
+        },
+        Err(error) => flight_status(error),
+    }
 }
 
 fn assert_bounded_cuvs_status(status: &tonic::Status) {

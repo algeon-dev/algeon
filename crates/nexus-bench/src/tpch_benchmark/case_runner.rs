@@ -75,7 +75,7 @@ async fn run_query(
         Err(execution::CpuRunFailure {
             runtime_started: false,
             message: "cpu_skipped_by_CUDF_TPCH_BENCH_SKIP_CPU".to_string(),
-            details: execution::FailureDetails::default(),
+            details: Box::default(),
         })
     } else {
         execution::run_cpu_query_iterations(metadata, query, config).await

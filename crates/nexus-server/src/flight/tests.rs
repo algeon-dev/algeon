@@ -12,7 +12,7 @@ use datafusion::{
     datasource::{MemTable, TableProvider},
     prelude::SessionConfig,
 };
-use futures::{StreamExt as _, TryStreamExt as _, future::BoxFuture};
+use futures::future::BoxFuture;
 
 use super::*;
 use crate::{

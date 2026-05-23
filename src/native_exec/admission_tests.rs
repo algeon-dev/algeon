@@ -8,12 +8,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
+    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
+    datasource::memory::MemorySourceConfig,
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr, expressions::Column},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
+        filter::FilterExec,
         stream::RecordBatchStreamAdapter,
     },
 };
@@ -101,6 +103,13 @@ impl ExecutionPlan for LifecycleExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -541,6 +550,28 @@ fn dropping_task_context_before_stream_does_not_drop_the_admission_round() {
     assert!(owner.sealed_snapshot().is_none(), "stream owns the round after its task context is dropped");
     drop(stream);
     assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
+}
+
+#[test]
+fn admission_wrapper_forwards_delegate_expression_visitation() {
+    let owner = lifecycle_owner("expression-visitation");
+    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner);
+    let schema = Arc::new(Schema::new(vec![Field::new("flag", DataType::Boolean, false)]));
+    let memory = MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).expect("empty memory source");
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(Column::new("flag", 0));
+    let filter = FilterExec::try_new(Arc::clone(&predicate), memory).expect("filter over memory source");
+
+    // The wrapper flattens its delegate out of `children()`, so the predicate
+    // is reachable only if the wrapper forwards expression visitation.
+    let wrapper = NativeAdmissionExec::new(Arc::new(filter), ticket);
+    let mut visited = Vec::new();
+    wrapper
+        .apply_expressions(&mut |expression| {
+            visited.push(Arc::ptr_eq(expression, &predicate));
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .expect("delegate expression visitation");
+    assert_eq!(visited, vec![true], "the admission wrapper must visit the delegate's predicate");
 }
 
 #[test]
