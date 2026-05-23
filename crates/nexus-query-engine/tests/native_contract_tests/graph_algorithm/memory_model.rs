@@ -729,7 +729,7 @@ fn graph_runtime_statistics_probe_reserves_remaining_window_for_triangle_evidenc
 #[test]
 fn graph_memory_pricing_constants_match_pinned_cugraph_sources() {
     let triangle_intersection =
-        read_cugraph_source("cpp/include/cugraph/prims/transform_reduce_dst_nbr_intersection_of_e_endpoints_by_v.cuh");
+        read_cugraph_source("cpp/include/cugraph/prims/transform_reduce_src_dst_nbr_intersection_of_e_endpoints_by_v.cuh");
     let triangle_intersection_compact = without_ascii_whitespace(&triangle_intersection);
     assert!(
         triangle_intersection_compact

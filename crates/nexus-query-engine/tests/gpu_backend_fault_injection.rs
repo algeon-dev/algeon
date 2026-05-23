@@ -26,6 +26,7 @@ fn device(ordinal: usize) -> GpuBackendDeviceConfig {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback() {
     let available_devices =
         cudf::DeviceId::count().expect("CUDA device count is available for physical fault-injection validation");

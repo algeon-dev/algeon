@@ -124,7 +124,7 @@ pub(crate) struct DeviceRegistry {
 
 #[derive(Debug)]
 pub(crate) struct ResolvedDeviceInstallPlan {
-    pub(crate) device: cudf::DeviceId,
+    pub(crate) device_ordinal: usize,
     pub(crate) facts: super::DeviceFacts,
     pub(crate) profile: DeviceRegistryInstallProfile,
     pub(crate) resource_profile: DeviceResourceProfile,
@@ -151,11 +151,12 @@ impl ResolvedDeviceInstallPlans {
     }
 
     fn telemetry_device_ordinals(&self) -> Vec<usize> {
-        self.plans.iter().filter(|plan| plan.profile.install_telemetry).map(|plan| plan.device.ordinal()).collect()
+        self.plans.iter().filter(|plan| plan.profile.install_telemetry).map(|plan| plan.device_ordinal).collect()
     }
 }
 
 struct ManagedDevice {
+    device: cudf::DeviceId,
     discovered: ResolvedDeviceInstallPlan,
     memory_failure_tracker: DeviceMemoryFailureTracker,
     mr_manager: cudf::DeviceMemoryManager,
@@ -190,14 +191,6 @@ impl DeviceRegistry {
         let mut discovered = Vec::with_capacity(ordinals.len());
         for ordinal in &ordinals {
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceDiscovery { device_ordinal: *ordinal })?;
-            let device = cudf::DeviceId::new(*ordinal).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.gpu.device_registry.device",
-                    "failed to resolve CUDA device while installing registry",
-                    error,
-                )
-                .with_fact("device_ordinal", *ordinal)
-            })?;
             let facts = inventory.facts(*ordinal)?;
             if facts.device != *ordinal {
                 return Err(QueryError::new(
@@ -282,7 +275,12 @@ impl DeviceRegistry {
                 .with_fact("lane_count", profile.lane_count)
                 .with_fact("max_active_attempts", resource_profile.max_active_attempts));
             }
-            discovered.push(ResolvedDeviceInstallPlan { device, facts, profile: profile.clone(), resource_profile });
+            discovered.push(ResolvedDeviceInstallPlan {
+                device_ordinal: *ordinal,
+                facts,
+                profile: profile.clone(),
+                resource_profile,
+            });
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceDiscovery { device_ordinal: *ordinal })?;
         }
 
@@ -302,15 +300,30 @@ impl DeviceRegistry {
         let telemetry_device_ordinals = resolved.telemetry_device_ordinals();
         let ResolvedDeviceInstallPlans { plans: discovered, device_ordinals: ordinals, max_ordinal } = resolved;
 
+        let discovered = discovered
+            .into_iter()
+            .map(|plan| {
+                let device = cudf::DeviceId::new(plan.device_ordinal).map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.gpu.device_registry.device",
+                        "failed to resolve CUDA device while installing registry",
+                        error,
+                    )
+                    .with_fact("device_ordinal", plan.device_ordinal)
+                })?;
+                Ok((device, plan))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
         // Freeze discovery for the complete set before installing any
         // process-lifetime memory manager. A discovery failure therefore
         // cannot leave a prefix of devices installed.
         let mut managed = Vec::with_capacity(discovered.len());
-        for discovered in discovered {
-            let ordinal = discovered.device.ordinal();
+        for (device, discovered) in discovered {
+            let ordinal = discovered.device_ordinal;
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeMemoryManager { device_ordinal: ordinal })?;
-            let installation_before = cudf::DeviceMemoryManager::installation_state_for_device(discovered.device)
-                .map_err(|error| {
+            let installation_before =
+                cudf::DeviceMemoryManager::installation_state_for_device(device).map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.gpu.device_registry.memory_manager",
                         "failed to inspect the process device-manager installation before reuse",
@@ -322,16 +335,12 @@ impl DeviceRegistry {
             let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
             let requested_options = canonical_device_memory_manager_options(allocation_limit_bytes);
             if installation_before.effective_options.is_some_and(|existing| existing != requested_options) {
-                return Err(device_memory_manager_options_conflict(
-                    discovered.device,
-                    installation_before,
-                    requested_options,
-                ));
+                return Err(device_memory_manager_options_conflict(device, installation_before, requested_options));
             }
             let memory_failure_tracker =
                 DeviceMemoryFailureTracker::for_installation_state(ordinal, installation_before)?;
             let (mr_manager, memory_manager_installation) =
-                install_device_memory_manager(discovered.device, &memory_failure_tracker, requested_options)?;
+                install_device_memory_manager(device, &memory_failure_tracker, requested_options)?;
             if let Some(journal) = construction_journal {
                 journal.record_memory_manager(mr_manager.clone())?;
             }
@@ -346,8 +355,9 @@ impl DeviceRegistry {
             })?;
             memory_failure_tracker.commit_installation_generation(installation_generation)?;
             let engine_health_identity =
-                bind_engine_device_health(discovered.device, memory_manager_installation, owner.generation())?;
+                bind_engine_device_health(device, memory_manager_installation, owner.generation())?;
             managed.push(ManagedDevice {
+                device,
                 discovered,
                 memory_failure_tracker,
                 mr_manager,
@@ -361,11 +371,11 @@ impl DeviceRegistry {
             managed.iter().map(|managed| managed.discovered.resource_profile.clone()).collect::<Vec<_>>();
         let mut contexts = vec![None; max_ordinal.saturating_add(1)];
         for managed in managed {
-            let ordinal = managed.discovered.device.ordinal();
+            let ordinal = managed.device.ordinal();
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeStreamPool { device_ordinal: ordinal })?;
             let resource_profile = &managed.discovered.resource_profile;
             let stream_pool = ServiceStreamPool::new_with_classes(
-                managed.discovered.device,
+                managed.device,
                 managed.discovered.profile.stream_pool_size,
                 resource_profile.max_active_attempts,
                 resource_profile.aux_source_work_capacity,
@@ -383,7 +393,7 @@ impl DeviceRegistry {
                 }))?;
             }
             let context = DeviceContext::new(
-                managed.discovered.device,
+                managed.device,
                 stream_pool,
                 managed.mr_manager,
                 managed.memory_manager_installation,

@@ -32,31 +32,10 @@ resolver = "3"
 version = "0.1.0"
 rust-version = "1.94"
 
-# The `test` profile only covers test TARGET crates; every dependency
-# (workspace libs such as nexus-query-engine, and third-party crates such as
-# datafusion and tokio) is always compiled under `[profile.dev]`, `[profile.test]`
-# settings never reach them. Full debuginfo (`debug = 2`) on `dev` left every
-# rlib and integration-test binary near or above 1-2 GiB and dominated link
-# time on the local edit loop. Line-tables-only keeps `file:line` in panics
-# and backtraces while dropping the variable/type debug records that make up
-# most of the bytes; unpacked split-debuginfo keeps what remains out of the
-# rlib/binary itself. `[profile.test]` is intentionally absent so it inherits
-# these settings from `dev` rather than diverging again.
+# Preserve file/line diagnostics while reducing dev/test artifact size and link time.
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
-
-# [workspace.lints.clippy]
-# pedantic = { level = "warn", priority = -1 }
-# unwrap_used = "warn"
-# expect_used = "warn"
-# panic = "warn"
-# todo = "warn"
-# unimplemented = "warn"
-# dbg_macro = "warn"
-# print_stdout = "warn"
-# print_stderr = "warn"
-# std_instead_of_core = "warn"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
@@ -107,7 +86,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 tempfile = "3.27"
-tokio = { version = "1.52" }
+tokio = "1.52"
 tokio-util = "0.7"
 tonic = "0.14"
 tracing = "0.1"
@@ -134,19 +113,11 @@ arrow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 cudf = { workspace = true }
-# Direct (non-transitive) dep on cudf-sys so this crate's build.rs receives
-# DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"`
-# metadata. The build script uses it to bake a rpath into every binary so
-# the loader picks up the freshly built libcudf_rust.so without relying on
-# LD_LIBRARY_PATH ordering.
+# Direct sys edges expose authoritative native library paths to build.rs.
 cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
-# Direct (non-transitive) dep on cugraph-sys so this crate's build.rs receives
-# DEP_CUGRAPH_RUNTIME_LIB_DIRS from cugraph-sys's `links = "cugraph"` metadata.
 cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
-# Direct edge so build.rs receives the authoritative libcuvs/libcuvs_c paths
-# exported through cuvs-sys's `links = "cuvs_c"` metadata.
 cuvs-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }

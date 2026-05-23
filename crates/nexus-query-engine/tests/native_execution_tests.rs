@@ -52,9 +52,9 @@ use nexus_query_engine::{
     runtime::{
         AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
         ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy,
-        MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
-        ReservationKind, SourceSchedulerPolicy,
+        GpuBackendDeviceConfig, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy, MemorySpaceId,
+        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
+        SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
@@ -81,11 +81,8 @@ use nexus_query_engine::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-// Keep this integration fixture independent of the host inventory.  The
-// native-execution cases derive both success and failure envelopes from exact
-// plan proofs and requested grants (up to 16 GiB), so a host-sized automatic
-// profile would silently raise small grants through its derived attempt floor.
-const NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+// Keep small fixture grants exact while capacity remains bounded by the device
+// this integration suite actually owns.
 const NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +171,6 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
             QueueBounds::default(),
         );
         let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES })
             .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
             .with_max_active_attempts(1)
             .with_installation_bounds(4, 1, 1);
