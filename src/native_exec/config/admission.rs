@@ -42,6 +42,7 @@ impl NexusNativeExecutionConfig {
         self
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
         &self,
         graph_model_ask: Option<GraphAdmissionModelAsk>,

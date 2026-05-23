@@ -241,6 +241,7 @@ impl GpuDataFrame {
     ///
     /// This is intentionally distinct from the frame's physical allocation:
     /// callers use it only to avoid reserving an overlapping live input twice.
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn live_reservation_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
         match (self.live_reservation.as_ref(), grant) {
             (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
@@ -272,6 +273,7 @@ impl GpuDataFrame {
         self
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn retained_normalization_source_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
         match (self.retained_normalization_source.as_ref(), grant) {
             (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
@@ -279,6 +281,7 @@ impl GpuDataFrame {
         }
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn take_retained_normalization_source(&mut self) -> Option<MemoryGrantLiveReservation> {
         self.retained_normalization_source.take()
     }

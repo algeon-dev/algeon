@@ -213,6 +213,7 @@ impl NexusNativeComposedExec {
             .with_graph_claim_calibration_captures(producer_captures.flatten())
     }
 
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: Arc<TaskContext>) -> DataFusionResult<Self> {
         let mut prepared = self.clone();
         if self.execution_config.lakehouse_footer_pruning() {
@@ -824,6 +825,7 @@ impl NexusNativeComposedGpuProducerExec {
         &self.plan
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn execution_config(&self) -> &NexusNativeExecutionConfig {
         &self.execution_config
     }

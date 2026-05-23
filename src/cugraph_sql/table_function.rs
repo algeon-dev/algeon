@@ -32,7 +32,6 @@ use datafusion::{
     logical_expr::{LogicalPlanBuilder, col},
 };
 
-#[cfg(feature = "cugraph")]
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
     CugraphVertexIdDomain, CugraphVertexPairTable, bfs_result_schema_for_vertex_domain, datafusion_table_reference,

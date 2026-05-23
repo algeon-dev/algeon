@@ -382,7 +382,7 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
     let config = crate::native_exec::NexusNativeExecutionConfig::bounded(256, 512, 1, 1, 1)
         .with_query_admission_source(admission_source(&backend));
     let ticket = config
-        .new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(None, vec![unavailable.clone()])
+        .new_plan_query_admission_ticket_with_fragment_requirements(vec![unavailable.clone()])
         .expect("fragment requirements aggregate into a ticket")
         .expect("configured admission source creates a ticket");
 

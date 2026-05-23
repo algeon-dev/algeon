@@ -309,7 +309,7 @@ impl GpuLocalParquetSourceCache {
     }
 
     /// Stable allocation-domain identity used by this cache.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cugraph"))]
     pub(crate) fn allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
         self.inner.allocation_lease.domain_id()
     }

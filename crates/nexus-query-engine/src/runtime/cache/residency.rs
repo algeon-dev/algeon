@@ -89,7 +89,7 @@ impl CacheResidencyChargeTransaction {
     }
 
     /// Exact bytes reserved for the prospective resident entry.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cugraph"))]
     pub(crate) const fn bytes(&self) -> u64 {
         self.bytes
     }

@@ -610,6 +610,7 @@ mod tests {
         (backend, config)
     }
 
+    #[cfg(feature = "cugraph")]
     fn edge_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("src", DataType::Int64, false),
