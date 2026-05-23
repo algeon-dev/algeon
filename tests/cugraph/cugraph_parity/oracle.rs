@@ -32,7 +32,7 @@ pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
          --algorithm {algorithm} --dataset {dataset}\n      \
          (writes to {oracle})",
         label = spec.label,
-        algorithm = spec.algorithm.native_algorithm().as_str(),
+        algorithm = spec.algorithm.code(),
         dataset = spec.dataset,
         oracle = oracle.display(),
     )

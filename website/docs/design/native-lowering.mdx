@@ -76,7 +76,7 @@ candidate remains on DataFusion with `NativeOrderedOutputUnsupported`.
 `replace_lowered_root_or_keep_plan` in `src/planner/native/attempt.rs` accepts
 only one lowered plan with one selected candidate. It then:
 
-1. runs `nexus_query_engine::optimizer::optimize_query_plan`;
+1. runs the engine-owned native optimizer;
 2. rechecks declared output ordering;
 3. applies the engine-owned native cost decision; and
 4. builds capability diagnostics and rejects unsupported bounded execution

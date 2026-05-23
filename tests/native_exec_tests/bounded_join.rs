@@ -80,8 +80,9 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
     let native = optimized
         .downcast_ref::<NexusNativeExec>()
         .expect("single-join post-root pipeline should optimize to NexusNativeExec");
-    let pipeline = compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis())
-        .expect("lowered single-join post-root pipeline should compile");
+    let pipeline =
+        compile_pipeline(native.native_plan_for_test(), &native.native_plan_for_test().capability_analysis())
+            .expect("lowered single-join post-root pipeline should compile");
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
@@ -112,7 +113,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
     let plan = tpch_sql_plan(&dir, q11.sql);
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     let analysis = lowering.plans[0].capability_analysis();
     assert_eq!(
@@ -264,7 +265,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     write_join_right_parquet_file(&right);
     let native_plan = bounded_left_build_left_semi_join_host_sink_plan_with_paths(&left, &right);
     let config = admitted_native_config(&native_plan, bounded_config());
-    let exec = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let exec = Arc::new(NexusNativeExec::try_new_for_test(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let adapter_error = adapter_error(&error);
@@ -355,14 +356,14 @@ fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime
     let input_schema = parquet_file_schema();
 
     let left_producer = Arc::new(
-        NexusNativeGpuProducerExec::try_new(
+        NexusNativeGpuProducerExec::try_new_for_test(
             "left_input",
             local_parquet_gpu_resident_plan(&left, Arc::clone(&input_schema)),
         )
         .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
     let right_producer = Arc::new(
-        NexusNativeGpuProducerExec::try_new(
+        NexusNativeGpuProducerExec::try_new_for_test(
             "right_input",
             local_parquet_gpu_resident_plan(&right, Arc::clone(&input_schema)),
         )
@@ -371,7 +372,8 @@ fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime
     let consumer_plan =
         bounded_gpu_resident_left_build_left_semi_join_host_sink_plan("left_input", "right_input", input_schema);
     let exec = Arc::new(
-        NexusNativeComposedExec::try_new(consumer_plan, vec![left_producer, right_producer], bounded_config()).unwrap(),
+        NexusNativeComposedExec::try_new_for_test(consumer_plan, vec![left_producer, right_producer], bounded_config())
+            .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
@@ -434,7 +436,7 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
     // --- Runtime path ---
     let native_plan = bounded_left_build_left_semi_join_host_sink_plan_with_paths(&left, &right);
     let config = admitted_native_config(&native_plan, bounded_config());
-    let exec = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let exec = Arc::new(NexusNativeExec::try_new_for_test(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let runtime_error = adapter_error(&error);
 

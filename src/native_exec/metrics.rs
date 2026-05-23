@@ -9,9 +9,9 @@ mod contract;
 mod record;
 mod registry;
 
-pub use capture::{
-    NativeExecutionMetricsCapture, NativeMetricsCapture, NativeObservationActivityFactory, NativeRuntimeObservation,
-};
+#[cfg(feature = "server-internal")]
+pub use capture::NativeObservationActivityFactory as ServerNativeObservationActivityFactory;
+pub use capture::{NativeExecutionMetricsCapture, NativeMetricsCapture, NativeRuntimeObservation};
 pub use contract::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
 pub(crate) use record::{GraphClaimCalibrationCapture, NexusNativeMetrics, SealedAttemptMetricsTarget};
 pub use record::{

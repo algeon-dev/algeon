@@ -1,8 +1,8 @@
-use nexus_examples::otlp_metrics::{histogram_data_point, histogram_export_request, histogram_metric};
-use nexus_query_engine::{
-    metrics::{BackendMetricKind, backend_metric_descriptors},
-    runtime::{BackendHistogramProjection, BackendMetricAttribute, BackendMetricAttributeValue},
+use datafusion_nexus::observability::{
+    BackendHistogramProjection, BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricKind,
+    backend_metric_descriptors,
 };
+use nexus_examples::otlp_metrics::{histogram_data_point, histogram_export_request, histogram_metric};
 use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, KeyValue, any_value},
     metrics::v1::{AggregationTemporality, metric},

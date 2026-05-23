@@ -214,7 +214,7 @@ impl FlightSqlServerBuilder {
         let native_execution_config = native_optimizer_config
             .native_execution_config()
             .clone()
-            .with_io_lifecycle(io_lifecycle.handle())
+            .with_io_lifecycle_for_internal_consumer(io_lifecycle.handle())
             .with_host_output_memory_pool_accounting(true);
         native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
 
@@ -574,10 +574,7 @@ fn after_closing_admission<T>(admission: &admission::QueryAdmission, action: imp
 }
 
 fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &ServerConfig) -> Result<()> {
-    let queue_bounds = backend
-        .controller_queue_bounds()
-        .map_err(|error| ServerError::session("failed to inspect injected backend queue policy", error))?;
-    validate_injected_queue_policy(&queue_bounds, config)?;
+    validate_injected_queue_policy(backend.queue_policy(), config)?;
     validate_injected_startup_profiles(backend.device_startup_records(), config)
 }
 
@@ -586,40 +583,34 @@ fn validate_test_validation_projection_matches_config(
     backend: &crate::backend::TestBackendValidationProjection,
     config: &ServerConfig,
 ) -> Result<()> {
-    let queue_bounds = backend
-        .queue_bounds()
-        .map_err(|error| ServerError::session("failed to inspect test backend queue policy", error))?;
-    validate_injected_queue_policy(&queue_bounds, config)?;
+    validate_injected_queue_policy(backend.queue_policy(), config)?;
     validate_test_profile_projection(backend.device_profiles(), backend.device_memory_ownership(), config)
 }
 
-fn validate_injected_queue_policy(
-    queue_bounds: &nexus_query_engine::runtime::QueueBounds,
-    config: &ServerConfig,
-) -> Result<()> {
+fn validate_injected_queue_policy(injected: &crate::backend::NexusGpuQueuePolicy, config: &ServerConfig) -> Result<()> {
     let queue_policy = admission::server_queue_policy(config);
-    if queue_policy.max_queued_attempts() != queue_bounds.max_waiters {
+    if queue_policy.max_queued_attempts() != injected.max_queued_attempts() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queued_attempts",
             queue_policy.max_queued_attempts(),
-            queue_bounds.max_waiters,
+            injected.max_queued_attempts(),
         ));
     }
-    if queue_policy.max_queue_wait() != queue_bounds.max_wait {
+    if queue_policy.max_queue_wait() != injected.max_queue_wait() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queue_wait_ms",
             queue_policy.max_queue_wait().as_millis(),
-            queue_bounds.max_wait.as_millis(),
+            injected.max_queue_wait().as_millis(),
         ));
     }
-    if queue_policy.max_overtakes_per_waiter() != queue_bounds.max_overtakes_per_waiter {
+    if queue_policy.max_overtakes_per_waiter() != injected.max_overtakes_per_waiter() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_overtakes_per_waiter",
             queue_policy.max_overtakes_per_waiter(),
-            queue_bounds.max_overtakes_per_waiter,
+            injected.max_overtakes_per_waiter(),
         ));
     }
     Ok(())

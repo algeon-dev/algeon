@@ -8,6 +8,19 @@
 use std::sync::Arc;
 
 use datafusion::physical_plan::ExecutionPlan;
+pub use nexus_query_engine::{
+    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    chunk::SourceChunkPlanningOptions,
+    dynamic_filter::DynamicFilterExecutionOptions,
+    graph_memory::GraphMemoryCalibrationOverride,
+    metrics::{QueryId, TraceId},
+    mode::StatisticalAggregateExecutionMode,
+    observability::{RuntimeObservationConfig, RuntimeObservationLimits},
+    runtime::{
+        ExecutionBoundaryPolicy, LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode,
+        SourceSchedulerPolicy, SourceStorageProfile,
+    },
+};
 
 pub(crate) mod admission;
 pub(crate) mod child_inputs;
@@ -28,9 +41,17 @@ pub(crate) use self::admission::query_admission_ticket_from_task_context;
 pub(crate) use self::composed::composed_admission_capability_proof;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::metrics::GraphClaimCalibrationCapture;
+#[cfg(feature = "server-internal")]
+#[doc(hidden)]
+pub use self::metrics::{
+    NativeMetricsCapture as ServerInternalNativeMetricsCapture,
+    ServerNativeObservationActivityFactory as ServerInternalNativeObservationActivityFactory,
+};
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
-    metrics::{NexusNativeMetrics, SealedAttemptMetricsTarget},
+    metrics::{
+        NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
+    },
 };
 pub use self::{
     composed::{NexusNativeComposedExec, NexusNativeComposedGpuProducerExec},
@@ -39,8 +60,7 @@ pub use self::{
     host::NexusNativeExec,
     metrics::{
         GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
-        NativeExecutionMetricsCapture, NativeMetricsCapture, NativeObservationActivityFactory,
-        NativeRuntimeObservation, SERVER_CAPTURE_LOSS_METRIC_NAME, SealedAttemptGraphClaimCalibrationSnapshot,
+        SERVER_CAPTURE_LOSS_METRIC_NAME, SealedAttemptGraphClaimCalibrationSnapshot,
     },
     producer::NexusNativeGpuProducerExec,
 };

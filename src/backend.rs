@@ -12,18 +12,27 @@ use datafusion::{
     common::DataFusionError,
     execution::{SessionState, SessionStateBuilder},
 };
+#[cfg(any(test, feature = "test-support"))]
+use nexus_query_engine::runtime::QueryAdmissionRequest;
 use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
     GpuBackendDeviceConfig, GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
-    QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,
+    QueryExecutionConfig, QueueBounds,
 };
-pub use nexus_query_engine::runtime::{
-    DeviceCapabilities, DeviceQuarantineInjection, GpuBackendFaultInjector, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-};
+pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[doc(hidden)]
+pub use nexus_query_engine::runtime::{DeviceQuarantineInjection, GpuBackendFaultInjector};
 
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
+    observability::{
+        BackendMetricsSnapshot, CacheSourceEventSnapshot, DeviceCacheReport, DeviceLedgerReport,
+        DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot, GpuBackendDeviceStartupRecord,
+        GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
+        QueryServiceDeviceAdmissionSnapshot,
+    },
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
     session_config::DataFusionNexusSessionConfig,
@@ -38,6 +47,7 @@ pub struct NexusGpuBackend {
     device_ordinals: Vec<usize>,
     device_profiles: Vec<NexusGpuDeviceProfile>,
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    queue_policy: NexusGpuQueuePolicy,
 }
 
 /// Explicit immutable resource envelope for one CUDA device.
@@ -188,7 +198,7 @@ impl NexusGpuDeviceProfile {
         self.install_telemetry
     }
 
-    pub fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
+    pub(crate) fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
         let mut device = GpuBackendDeviceConfig::new(self.device_ordinal, memory_ownership)
             .with_memory_limit(self.memory_limit)
             .with_device_capabilities(self.device_capabilities.clone())
@@ -206,6 +216,12 @@ impl NexusGpuDeviceProfile {
         device
     }
 
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn engine_config_for_test(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
+        self.engine_config(memory_ownership)
+    }
+
     pub fn cache_cap_bytes(&self) -> u64 {
         self.cache_cap_bytes
     }
@@ -217,9 +233,8 @@ impl NexusGpuDeviceProfile {
 /// exclusively to [`NexusGpuDeviceProfile`].  Keeping this policy queue-only
 /// prevents a scalar from being implicitly broadcast to heterogeneous devices.
 ///
-/// Values are constructed from [`Default`] or [`QueueBounds`] and adjusted
-/// only through the `with_*` builders; zero bounds are rejected when the
-/// backend is built.
+/// Values are constructed from [`Default`] and adjusted through the `with_*`
+/// builders; zero bounds are rejected when the backend is built.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NexusGpuQueuePolicy {
@@ -260,29 +275,14 @@ impl NexusGpuQueuePolicy {
     }
 }
 
-impl From<QueueBounds> for NexusGpuQueuePolicy {
-    fn from(bounds: QueueBounds) -> Self {
+impl Default for NexusGpuQueuePolicy {
+    fn default() -> Self {
+        let bounds = QueueBounds::default();
         Self {
             max_queued_attempts: bounds.max_waiters,
             max_queue_wait: bounds.max_wait,
             max_overtakes_per_waiter: bounds.max_overtakes_per_waiter,
         }
-    }
-}
-
-impl From<NexusGpuQueuePolicy> for QueueBounds {
-    fn from(policy: NexusGpuQueuePolicy) -> Self {
-        Self {
-            max_waiters: policy.max_queued_attempts,
-            max_wait: policy.max_queue_wait,
-            max_overtakes_per_waiter: policy.max_overtakes_per_waiter,
-        }
-    }
-}
-
-impl Default for NexusGpuQueuePolicy {
-    fn default() -> Self {
-        QueueBounds::default().into()
     }
 }
 
@@ -336,6 +336,8 @@ impl NexusGpuBackend {
     }
 
     /// Opaque identity shared by every clone and installed session.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[doc(hidden)]
     pub fn identity(&self) -> nexus_query_engine::runtime::GpuBackendCoreIdentity {
         self.core.identity()
     }
@@ -343,13 +345,15 @@ impl NexusGpuBackend {
     /// Returns an explicit capability for controlled device-quarantine
     /// validation. It is not a production backend mode and does not fabricate
     /// a CUDA fault.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[doc(hidden)]
     pub fn fault_injector(&self) -> GpuBackendFaultInjector {
         self.core.fault_injector()
     }
 
     /// Immutable per-device construction records shared by every clone and
     /// session installed from this backend.
-    pub fn device_startup_records(&self) -> &[nexus_query_engine::runtime::GpuBackendDeviceStartupRecord] {
+    pub fn device_startup_records(&self) -> &[GpuBackendDeviceStartupRecord] {
         self.core.device_startup_records()
     }
 
@@ -361,22 +365,20 @@ impl NexusGpuBackend {
     /// Returns the current two-scope backend close state without initiating a
     /// close. Callers that own shutdown evidence can therefore distinguish a
     /// completed close from a timeout or cleanup failure.
-    pub fn close_snapshot(&self) -> nexus_query_engine::runtime::GpuBackendCloseSnapshot {
+    pub fn close_snapshot(&self) -> GpuBackendCloseSnapshot {
         self.core.close_snapshot()
     }
 
-    pub fn close_and_wait(
-        &self,
-        timeout: Duration,
-    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuBackendCloseSnapshot> {
-        self.core.close_and_wait(timeout)
+    pub fn close_and_wait(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
+        self.core.close_and_wait(timeout).map_err(|error| {
+            Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before timeout", error)
+        })
     }
 
-    pub fn close_and_wait_until(
-        &self,
-        deadline: std::time::Instant,
-    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuBackendCloseSnapshot> {
-        self.core.close_and_wait_until(deadline)
+    pub fn close_and_wait_until(&self, deadline: std::time::Instant) -> Result<GpuBackendCloseSnapshot> {
+        self.core.close_and_wait_until(deadline).map_err(|error| {
+            Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before deadline", error)
+        })
     }
 
     /// Returns one coherent, fixed-cardinality backend metrics snapshot.
@@ -384,85 +386,121 @@ impl NexusGpuBackend {
     /// Applications own any exporter or retention policy.  This facade only
     /// exposes the backend generation snapshot produced by the engine; it
     /// does not install an exporter or create an HTTP metrics endpoint.
-    pub fn backend_metrics_snapshot(&self) -> nexus_query_engine::runtime::BackendMetricsSnapshot {
+    pub fn backend_metrics_snapshot(&self) -> BackendMetricsSnapshot {
         self.session.backend_metrics_snapshot()
     }
 
-    pub fn admission_snapshot(
-        &self,
-    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryServiceAdmissionSnapshot> {
-        self.session.admission_snapshot()
+    pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
+        self.session.admission_snapshot().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.admission_snapshot",
+                "failed to read backend admission snapshot",
+                error,
+            )
+        })
     }
 
-    pub fn controller_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
-        self.session.config()
+    pub fn queue_policy(&self) -> &NexusGpuQueuePolicy {
+        &self.queue_policy
     }
 
-    pub fn controller_queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
-        self.session.queue_bounds()
-    }
-
-    pub fn device_admission_snapshots(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::QueryServiceDeviceAdmissionSnapshot>> {
-        self.session.device_admission_snapshots()
+    pub fn device_admission_snapshots(&self) -> Result<Vec<QueryServiceDeviceAdmissionSnapshot>> {
+        self.session.device_admission_snapshots().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_admission_snapshots",
+                "failed to read per-device admission snapshots",
+                error,
+            )
+        })
     }
 
     /// Returns the admission source of truth; telemetry is diagnostic only.
-    pub fn device_ledger_reports(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceLedgerReport>> {
-        self.session.device_ledger_reports()
+    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
+        self.session.device_ledger_reports().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_ledger_reports",
+                "failed to read device ledger reports",
+                error,
+            )
+        })
     }
 
     /// Returns the physical resident-cache allocation-domain observations.
     /// They are diagnostic cross-checks; admission stays owned by the ledger.
-    pub fn device_cache_reports(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceCacheReport>> {
-        self.session.device_cache_reports()
+    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
+        self.session.device_cache_reports().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_cache_reports",
+                "failed to read device cache reports",
+                error,
+            )
+        })
     }
 
     /// Returns bounded source-cache events from the cache owners themselves.
     /// These observations support correlation diagnostics; the ledger remains
     /// the sole admission and residency authority.
-    pub fn device_cache_source_event_snapshots(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::CacheSourceEventSnapshot>> {
-        self.session.device_cache_source_event_snapshots()
+    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
+        self.session.device_cache_source_event_snapshots().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_cache_source_event_snapshots",
+                "failed to read device cache source events",
+                error,
+            )
+        })
     }
 
-    pub fn device_memory_failure_reports(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceMemoryFailureReport>> {
-        self.session.device_memory_failure_reports()
+    pub fn device_memory_failure_reports(&self) -> Result<Vec<DeviceMemoryFailureReport>> {
+        self.session.device_memory_failure_reports().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_memory_failure_reports",
+                "failed to read device memory failure reports",
+                error,
+            )
+        })
     }
 
     /// Returns diagnostic CUDA/NVML samples, never admission state.
-    pub fn device_telemetry_snapshots(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceTelemetrySnapshot>> {
-        self.session.device_telemetry_snapshots()
+    pub fn device_telemetry_snapshots(&self) -> Result<Vec<DeviceTelemetrySnapshot>> {
+        self.session.device_telemetry_snapshots().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_telemetry_snapshots",
+                "failed to read device telemetry snapshots",
+                error,
+            )
+        })
     }
 
-    pub fn gpu_execution_pool_reports(
-        &self,
-    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::GpuExecutionPoolSnapshot>> {
-        self.session.gpu_execution_pool_reports()
+    pub fn gpu_execution_pool_reports(&self) -> Result<Vec<GpuExecutionPoolSnapshot>> {
+        self.session.gpu_execution_pool_reports().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.gpu_execution_pool_reports",
+                "failed to read GPU execution pool reports",
+                error,
+            )
+        })
     }
 
-    pub fn gpu_execution_query_report(
-        &self,
-    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuExecutionQuerySnapshot> {
-        self.session.gpu_execution_query_report()
+    pub fn gpu_execution_query_report(&self) -> Result<GpuExecutionQuerySnapshot> {
+        self.session.gpu_execution_query_report().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.gpu_execution_query_report",
+                "failed to read GPU execution query report",
+                error,
+            )
+        })
     }
 
     /// Blocks the caller until admission succeeds or fails.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
         self.session.admit_query()
     }
 
     /// Blocks until the backend admits a query with the exact engine-issued plan proof.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn admit_query_with_plan_capability_proof(
         &self,
         proof: nexus_query_engine::admission::QueryPlanCapabilityProof,
@@ -470,6 +508,8 @@ impl NexusGpuBackend {
         self.session.admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn try_admit_query(
         &self,
     ) -> nexus_query_engine::error::Result<Option<nexus_query_engine::runtime::QueryHandle>> {
@@ -477,12 +517,14 @@ impl NexusGpuBackend {
     }
 
     /// Awaits admission without blocking a thread; dropping the future removes its request.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub async fn admit_async(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
         self.session.admit_async_with_request(QueryAdmissionRequest::new()).await
     }
 
     pub fn same_backend(&self, other: &Self) -> bool {
-        self.identity() == other.identity()
+        self.core.identity() == other.core.identity()
     }
 
     pub(crate) fn session_capability(&self) -> &GpuBackendSession {
@@ -601,6 +643,7 @@ impl NexusGpuBackend {
             device_ordinals,
             device_profiles,
             device_memory_ownership,
+            queue_policy,
         })
     }
 }
@@ -648,7 +691,7 @@ fn install_backend_optimizer_config(
 #[derive(Debug, Clone)]
 pub struct TestBackendValidationProjection {
     query_execution_config: QueryExecutionConfig,
-    queue_bounds: QueueBounds,
+    queue_policy: NexusGpuQueuePolicy,
     optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
     device_profiles: Vec<NexusGpuDeviceProfile>,
@@ -661,8 +704,8 @@ impl TestBackendValidationProjection {
         Ok(self.query_execution_config.clone())
     }
 
-    pub fn queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
-        Ok(self.queue_bounds.clone())
+    pub fn queue_policy(&self) -> &NexusGpuQueuePolicy {
+        &self.queue_policy
     }
 
     pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
@@ -968,7 +1011,7 @@ fn build_test_validation_projection(
 
     Ok(TestBackendValidationProjection {
         query_execution_config,
-        queue_bounds,
+        queue_policy,
         optimizer_config,
         device_ordinals,
         device_profiles,
@@ -1025,7 +1068,11 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
 }
 
 fn backend_queue_bounds(queue_policy: &NexusGpuQueuePolicy) -> QueueBounds {
-    queue_policy.clone().into()
+    QueueBounds {
+        max_waiters: queue_policy.max_queued_attempts,
+        max_wait: queue_policy.max_queue_wait,
+        max_overtakes_per_waiter: queue_policy.max_overtakes_per_waiter,
+    }
 }
 
 fn validate_queue_policy(policy: &NexusGpuQueuePolicy) -> Result<()> {

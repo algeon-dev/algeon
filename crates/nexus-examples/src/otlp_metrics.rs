@@ -9,12 +9,9 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use nexus_query_engine::{
-    metrics::{BackendMetricDescriptor, BackendMetricKind, backend_metric_descriptors},
-    runtime::{
-        BackendHistogramProjection, BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricSampleValue,
-        BackendMetricsSnapshot,
-    },
+use datafusion_nexus::observability::{
+    BackendHistogramProjection, BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricDescriptor,
+    BackendMetricKind, BackendMetricSampleValue, BackendMetricsSnapshot, backend_metric_descriptors,
 };
 use opentelemetry::{
     KeyValue,

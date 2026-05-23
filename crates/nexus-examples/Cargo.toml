@@ -33,7 +33,6 @@ datafusion = { workspace = true }
 futures = { workspace = true }
 datafusion-nexus = { workspace = true }
 nexus-server = { workspace = true, features = ["cugraph", "iceberg"] }
-nexus-query-engine = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 parquet = { workspace = true }

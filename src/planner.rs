@@ -11,6 +11,13 @@ use datafusion::{
     common::{Result as DataFusionResult, config::ConfigOptions},
     physical_plan::ExecutionPlan,
 };
+pub use nexus_query_engine::{
+    contract_report::{CapabilityContractGateRow, CapabilityContractReport},
+    mode::StatisticalAggregateExecutionMode,
+    optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions},
+    plan::NativePlanCostOptions,
+    source::SourceDiagnostics,
+};
 
 use crate::{native_exec::NexusNativeExecutionConfig, session_config::optimizer_config_with_datafusion_options};
 
@@ -103,8 +110,8 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 #[derive(Debug, Clone)]
 pub struct NexusNativeOptimizerConfig {
     native_execution_config: NexusNativeExecutionConfig,
-    native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_cost_options: nexus_query_engine::plan::NativePlanCostOptions,
+    native_optimizer_options: NativeOptimizerOptions,
+    native_plan_cost_options: NativePlanCostOptions,
     final_plan_requirements: Vec<FinalPlanRequirement>,
 }
 
@@ -112,8 +119,8 @@ impl Default for NexusNativeOptimizerConfig {
     fn default() -> Self {
         Self {
             native_execution_config: NexusNativeExecutionConfig::bounded_default(),
-            native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
-            native_plan_cost_options: nexus_query_engine::plan::NativePlanCostOptions::disabled(),
+            native_optimizer_options: NativeOptimizerOptions::default(),
+            native_plan_cost_options: NativePlanCostOptions::disabled(),
             final_plan_requirements: Vec::new(),
         }
     }
@@ -126,7 +133,7 @@ impl NexusNativeOptimizerConfig {
     }
 
     /// Query-engine optimizer options applied after lowering.
-    pub fn native_optimizer_options(&self) -> &nexus_query_engine::optimizer::NativeOptimizerOptions {
+    pub fn native_optimizer_options(&self) -> &NativeOptimizerOptions {
         &self.native_optimizer_options
     }
 
@@ -135,7 +142,7 @@ impl NexusNativeOptimizerConfig {
     /// The adapter default is disabled to preserve generic optimizer rewrite
     /// behavior; workload configs can opt in when their benchmark evidence
     /// shows native fixed overhead dominates small selective shapes.
-    pub fn native_plan_cost_options(&self) -> &nexus_query_engine::plan::NativePlanCostOptions {
+    pub fn native_plan_cost_options(&self) -> &NativePlanCostOptions {
         &self.native_plan_cost_options
     }
 
@@ -159,7 +166,7 @@ impl NexusNativeOptimizerConfig {
     }
 
     /// Floating statistical aggregate execution contract used by native execution.
-    pub fn statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode {
+    pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
         self.native_execution_config.statistical_aggregate_execution_mode()
     }
 
@@ -176,26 +183,20 @@ impl NexusNativeOptimizerConfig {
     }
 
     /// Replace DataFusion-free native optimizer options.
-    pub fn with_native_optimizer_options(
-        mut self,
-        options: nexus_query_engine::optimizer::NativeOptimizerOptions,
-    ) -> Self {
+    pub fn with_native_optimizer_options(mut self, options: NativeOptimizerOptions) -> Self {
         self.native_optimizer_options = options;
         self
     }
 
     /// Replace native plan cost-selection options.
-    pub fn with_native_plan_cost_options(mut self, options: nexus_query_engine::plan::NativePlanCostOptions) -> Self {
+    pub fn with_native_plan_cost_options(mut self, options: NativePlanCostOptions) -> Self {
         self.native_plan_cost_options = options;
         self
     }
 
     /// Set the floating statistical aggregate contract without rebuilding the
     /// rest of the config.
-    pub fn with_statistical_aggregate_execution_mode(
-        mut self,
-        mode: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
-    ) -> Self {
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.native_execution_config =
             self.native_execution_config.clone().with_statistical_aggregate_execution_mode(mode);
         self

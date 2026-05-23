@@ -84,12 +84,12 @@ async fn cugraph_sql_phase0_pagerank_forceatlas2_join_lowers_to_one_composed_con
                 edge_input.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>(),
                 vec!["src".to_string(), "dst".to_string(), "weight".to_string()]
             );
-            edge_input.native_plan()
+            edge_input.native_plan_for_test()
         })
         .collect::<Vec<_>>();
     assert_eq!(graph_edge_inputs[0], graph_edge_inputs[1], "both graph producers must use the same edge-source plan");
 
-    let native_consumer = composed.native_plan();
+    let native_consumer = composed.native_plan_for_test();
     assert!(native_consumer.sink().materializes_host_boundary());
     assert_eq!(
         native_consumer
@@ -126,7 +126,7 @@ fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         .into_iter()
         .map(|name| {
             Arc::new(
-                NexusNativeGpuProducerExec::try_new(name, producer_plan())
+                NexusNativeGpuProducerExec::try_new_for_test(name, producer_plan())
                     .expect("synthetic GPU producer must satisfy the production constructor contract"),
             ) as Arc<dyn ExecutionPlan>
         })
@@ -144,8 +144,9 @@ fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         .collect::<Vec<_>>();
     let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema));
     let consumer = consumer_builder.finish_with_host_sink(union);
-    let composed = NexusNativeComposedExec::try_new(consumer, producers, NexusNativeExecutionConfig::bounded_default())
-        .expect("synthetic N=3 topology must reach the composed production boundary");
+    let composed =
+        NexusNativeComposedExec::try_new_for_test(consumer, producers, NexusNativeExecutionConfig::bounded_default())
+            .expect("synthetic N=3 topology must reach the composed production boundary");
 
     let children = composed.children();
     assert_eq!(children.len(), 3, "equal native producer shapes must not be structurally deduplicated");
@@ -161,12 +162,12 @@ fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
     );
     let native_producer_plans = children
         .iter()
-        .map(|child| child.downcast_ref::<NexusNativeGpuProducerExec>().unwrap().native_plan())
+        .map(|child| child.downcast_ref::<NexusNativeGpuProducerExec>().unwrap().native_plan_for_test())
         .collect::<Vec<_>>();
     assert_eq!(native_producer_plans[0], native_producer_plans[1]);
     assert_eq!(native_producer_plans[1], native_producer_plans[2]);
 
-    let native_consumer = composed.native_plan();
+    let native_consumer = composed.native_plan_for_test();
     assert_eq!(
         native_consumer
             .nodes()

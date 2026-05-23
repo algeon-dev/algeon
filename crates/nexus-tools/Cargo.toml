@@ -20,6 +20,7 @@ datafusion-baseline-contract-validate = [
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
   "datafusion-nexus/iceberg",
+  "datafusion-nexus/bench-support",
 ]
 clickbench-stage-probe = [
   "dep:cudf",
@@ -28,6 +29,7 @@ clickbench-stage-probe = [
   "dep:nexus-bench",
   "dep:nexus-workloads",
   "dep:nexus-query-engine",
+  "datafusion-nexus/bench-support",
 ]
 cugraph-oracle = ["dep:cudf", "dep:datafusion", "dep:datafusion-nexus", "dep:nexus-query-engine", "datafusion-nexus/cugraph"]
 cugraph-similarity-calibrate = ["dep:cudf", "dep:nexus-query-engine", "nexus-query-engine/cugraph"]

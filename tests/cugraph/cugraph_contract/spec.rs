@@ -159,7 +159,7 @@ fn registry_native_and_sql_inventories_have_matching_lengths() {
 fn registry_algorithm_sql_output_schemas_agree_with_native_engine() {
     for entry in CUGRAPH_OPERATION_REGISTRY {
         let sql_schema = stable_result_schema(entry.algorithm);
-        let native_schema = stable_graph_result_schema(entry.native_algorithm);
+        let native_schema = stable_graph_result_schema(entry.algorithm.native_algorithm_for_test());
         assert_eq!(
             sql_schema.as_ref(),
             native_schema.as_ref(),

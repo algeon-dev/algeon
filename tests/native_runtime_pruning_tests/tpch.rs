@@ -76,7 +76,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_q7_nation_identity_rows(&cpu_batches);
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
@@ -112,7 +112,7 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q2.sql).await;
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
@@ -168,7 +168,7 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q4 CPU output should be non-empty");
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q4.sql).await;
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
@@ -236,7 +236,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     let cpu_batches = cpu_tpch_sql_output(&dir, q18.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q18.sql).await;
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
@@ -297,7 +297,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     let cpu_batches = cpu_tpch_sql_output(&dir, q20.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q20.sql).await;
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(

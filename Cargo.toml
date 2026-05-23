@@ -24,6 +24,7 @@ members = [
   "crates/nexus-bench",
   "crates/nexus-tools",
   "crates/nexus-examples",
+  "scripts/ci/fixtures/datafusion-facade-consumer",
 ]
 default-members = [
   ".",
@@ -100,6 +101,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 [features]
 default = []
 test-support = []
+# Workspace-internal bridge for the companion Flight SQL frontend.
+server-internal = []
 # Application/test support surface; not part of the normal embedded/server report contract.
 bench-support = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]

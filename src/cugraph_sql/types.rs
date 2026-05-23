@@ -162,6 +162,10 @@ impl CugraphAlgorithm {
         self.definition().sql_function_name
     }
 
+    pub fn code(self) -> &'static str {
+        self.native_algorithm().as_str()
+    }
+
     /// Look up the SQL-side registry definition for this algorithm.
     pub fn definition(self) -> &'static CugraphOperationDefinition {
         CUGRAPH_OPERATION_REGISTRY
@@ -170,8 +174,14 @@ impl CugraphAlgorithm {
             .expect("cuGraph SQL operation registry is missing an algorithm variant")
     }
 
-    pub fn native_algorithm(self) -> NativeGraphAlgorithm {
+    pub(crate) fn native_algorithm(self) -> NativeGraphAlgorithm {
         self.definition().native_algorithm
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn native_algorithm_for_test(self) -> NativeGraphAlgorithm {
+        self.native_algorithm()
     }
 
     /// SQL argument counts accepted by this algorithm's table function.
@@ -212,7 +222,7 @@ impl CugraphAlgorithm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CugraphOperationDefinition {
     pub algorithm: CugraphAlgorithm,
-    pub native_algorithm: NativeGraphAlgorithm,
+    native_algorithm: NativeGraphAlgorithm,
     pub sql_function_name: &'static str,
 }
 

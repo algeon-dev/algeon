@@ -13,7 +13,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q2.input else {
         panic!("q02 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    let result = lower_physical_plan_to_native_for_test(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let analysis = native_plan.capability_analysis();
@@ -50,7 +50,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q15.input else {
         panic!("q15 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    let result = lower_physical_plan_to_native_for_test(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert_eq!(
@@ -84,7 +84,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q18.input else {
         panic!("q18 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    let result = lower_physical_plan_to_native_for_test(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
@@ -104,7 +104,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q20.input else {
         panic!("q20 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    let result = lower_physical_plan_to_native_for_test(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
@@ -131,7 +131,7 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
         panic!("q18 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -180,7 +180,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
         panic!("q18 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
 
@@ -221,7 +221,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         panic!("q21 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -352,7 +352,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
         panic!("q7 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -406,7 +406,7 @@ async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
         panic!("DataFusion should declare q8 mkt_share as Decimal128: {datafusion_mkt_share_field:?}");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -442,7 +442,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         panic!("q11 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -635,7 +635,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
         panic!("q13 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -761,7 +761,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         panic!("q16 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

@@ -92,7 +92,7 @@ pub struct TableFormatParquetReadStrategyConfig {
     pub storage_endpoint: Option<String>,
     /// Execution-time native source storage profile id.
     ///
-    /// This id references a `nexus-query-engine` profile registered on the native
+    /// This id references a source storage profile registered on the native
     /// execution config. It is not a credential and is safe for diagnostics.
     pub storage_profile_id: Option<String>,
     /// Credential mode used for remote object-store reads.

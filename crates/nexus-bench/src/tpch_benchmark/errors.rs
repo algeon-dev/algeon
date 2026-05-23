@@ -7,7 +7,3 @@ pub(super) fn plan_error(message: impl Into<String>) -> DataFusionError {
 pub(super) fn tpch_error(error: WorkloadError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
 }
-
-pub(super) fn native_error(error: nexus_query_engine::error::QueryError) -> DataFusionError {
-    DataFusionError::External(Box::new(error))
-}

@@ -33,7 +33,7 @@ use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
-    native::lower_physical_plan_to_native,
+    native::lower_physical_plan_to_native_for_test,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     native_report::{NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport},
     planner::{
@@ -127,7 +127,7 @@ fn installed_physical_optimizer_rules(
 fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     let native_plan = host_sink_plan();
     let schema = Arc::clone(native_plan.output_schema());
-    let exec = NexusNativeExec::try_new(native_plan, bounded_config()).unwrap();
+    let exec = NexusNativeExec::try_new_for_test(native_plan, bounded_config()).unwrap();
 
     assert_eq!(exec.name(), "NexusNativeExec");
     assert!(exec.children().is_empty());
@@ -156,7 +156,7 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
 
 #[test]
 fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
-    let error = NexusNativeExec::try_new(gpu_resident_plan(), bounded_config()).unwrap_err();
+    let error = NexusNativeExec::try_new_for_test(gpu_resident_plan(), bounded_config()).unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(error.fact_value("result_sink"), Some("gpu_resident"));
@@ -164,7 +164,8 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 
 #[test]
 fn native_exec_uses_bounded_memory_control_policy() {
-    let exec = NexusNativeExec::try_new(host_sink_plan(), NexusNativeExecutionConfig::bounded_default()).unwrap();
+    let exec =
+        NexusNativeExec::try_new_for_test(host_sink_plan(), NexusNativeExecutionConfig::bounded_default()).unwrap();
 
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("NexusNativeExec"));
@@ -242,9 +243,10 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let config = admitted_composed_config(&consumer_plan, "fragment_input", &producer_plan, config);
-    let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer = Arc::new(NexusNativeGpuProducerExec::try_new_for_test("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
+    let composed =
+        Arc::new(NexusNativeComposedExec::try_new_for_test(consumer_plan, vec![producer_child], config).unwrap());
 
     assert_eq!(composed.name(), "NexusNativeComposedExec");
     assert_eq!(composed.children().len(), 1);
@@ -286,9 +288,10 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let config = admitted_composed_config(&consumer_plan, "fragment_input", &producer_plan, config);
-    let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer = Arc::new(NexusNativeGpuProducerExec::try_new_for_test("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
+    let composed =
+        Arc::new(NexusNativeComposedExec::try_new_for_test(consumer_plan, vec![producer_child], config).unwrap());
     // The four source columns contain only 72 logical cuDF payload bytes, but
     // their four Arrow destination buffers retain 4 * 64 = 256 bytes. A
     // 128-byte pool therefore proves admission uses the destination estimate:
@@ -327,7 +330,8 @@ fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
 
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let config = admitted_native_config(&native_plan, bounded_config().with_host_output_memory_pool_accounting(true));
-    let native_child = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_child =
+        Arc::new(NexusNativeExec::try_new_for_test(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
     let native_schema = native_child.schema();
     let hybrid_plan = Arc::new(
         ProjectionExec::try_new(
@@ -369,7 +373,7 @@ fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
 
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let config = admitted_native_config(&native_plan, bounded_config().with_host_output_memory_pool_accounting(true));
-    let native_exec = NexusNativeExec::try_new(native_plan, config).unwrap();
+    let native_exec = NexusNativeExec::try_new_for_test(native_plan, config).unwrap();
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let mut stream = native_exec.execute(0, task_context).unwrap();
@@ -387,7 +391,8 @@ fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
 
 #[test]
 fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
-    let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer =
+        Arc::new(NexusNativeGpuProducerExec::try_new_for_test("fragment_input", gpu_resident_plan()).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
     let child_schema = producer_child.schema();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(
@@ -406,14 +411,15 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
         .expect("GPU-resident producer children should lower through composed native execution");
     assert_eq!(composed.children().len(), 1);
     assert!(composed.children()[0].downcast_ref::<NexusNativeGpuProducerExec>().is_some());
-    assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
+    assert!(composed.native_plan_for_test().to_string().contains("GpuResidentSource input_name=fragment_input"));
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.selected_count(), 1);
 }
 
 #[test]
 fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
-    let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer =
+        Arc::new(NexusNativeGpuProducerExec::try_new_for_test("fragment_input", gpu_resident_plan()).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
     let child_schema = producer_child.schema();
     let ordering = LexOrdering::new([PhysicalSortExpr::new(
@@ -671,7 +677,7 @@ fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancell
     let cancellation = ExecutionCancellation::new();
     cancellation.cancel();
     let config = NexusNativeOptimizerConfig::default()
-        .with_native_execution_config(bounded_config().with_cancellation(cancellation));
+        .with_native_execution_config(bounded_config().with_cancellation_for_test(cancellation));
     let rule = NexusNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
 
@@ -831,7 +837,7 @@ fn assert_mixed_boundary_properties(filter: &FilterExec, native: &NexusNativeExe
     assert!(native.properties().equivalence_properties().eq_group().is_empty());
     assert!(native.properties().equivalence_properties().oeq_class().is_empty());
     assert!(native.properties().equivalence_properties().constraints().is_empty());
-    assert_eq!(native.native_plan().nodes().len(), 1);
+    assert_eq!(native.native_plan_for_test().nodes().len(), 1);
 }
 
 fn ilike_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(i32, Option<String>)> {
@@ -890,7 +896,7 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     let native = optimized
         .downcast_ref::<NexusNativeExec>()
         .expect("ordered aggregate should lower with an explicit final native sort");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan_for_test().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
@@ -904,7 +910,7 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     );
     assert_eq!(
         candidate.plan_node_id.as_ref().map(ToString::to_string),
-        Some(native.native_plan().root_id().to_string())
+        Some(native.native_plan_for_test().root_id().to_string())
     );
     assert!(!report.outcomes().iter().any(|outcome| {
         matches!(
@@ -930,7 +936,7 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
     let native = optimized
         .downcast_ref::<NexusNativeExec>()
         .expect("ordered aggregate should lower with an explicit final native sort");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan_for_test().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     let batches =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
@@ -960,7 +966,7 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized.downcast_ref::<NexusNativeExec>().expect("SPM over sorted input should lower to native");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan_for_test().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     let actual =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(actual.len(), expected.len());

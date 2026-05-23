@@ -181,4 +181,14 @@ for crate in "${CRATES[@]}"; do
   fi
 done
 
+if [[ "${PUBLIC_API_SKIP_FACADE_POLICY:-0}" != "1" ]]; then
+  ledger="${SNAPSHOT_DIR}/datafusion-nexus-engine-types.tsv"
+  if ! python3 scripts/ci/check_public_api_facade.py "${SNAPSHOT_DIR}/datafusion-nexus.txt" "${ledger}"; then
+    status=1
+  fi
+  if ! bash scripts/ci/check_public_api_facade_consumer.sh; then
+    status=1
+  fi
+fi
+
 exit "${status}"

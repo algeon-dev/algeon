@@ -26,11 +26,13 @@ use nexus_query_engine::{
 
 use super::{
     admission::QueryAdmissionTicket,
-    common::{
-        comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
-        native_query_runtime_error, write_native_plan_tree,
-    },
-    metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeMetrics},
+    common::{native_plan_one_line, native_query_runtime_error, write_native_plan_tree},
+    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
+};
+#[cfg(any(test, feature = "test-support"))]
+use super::{
+    common::{comma_separated, conservative_properties, gpu_resident_source_names},
+    metrics::NativeMetricsCapture,
 };
 use crate::error::{Error, ErrorCode};
 
@@ -104,10 +106,18 @@ impl NexusNativeGpuProducerExec {
     /// Create a native producer fragment for composed execution.
     ///
     /// Requires a GPU-resident sink and no external GPU-resident inputs.
-    pub fn try_new(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn try_new(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
         Self::try_new_with_metrics_capture(input_name, plan, None)
     }
 
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn try_new_for_test(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
+        Self::try_new(input_name, plan)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn try_new_with_metrics_capture(
         input_name: impl Into<String>,
         plan: QueryPlan,
@@ -116,6 +126,7 @@ impl NexusNativeGpuProducerExec {
         Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None, false, Vec::new())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn try_new_with_metrics_capture_and_shape(
         input_name: impl Into<String>,
         plan: QueryPlan,
@@ -168,8 +179,14 @@ impl NexusNativeGpuProducerExec {
         &self.input_name
     }
 
-    pub fn native_plan(&self) -> &QueryPlan {
+    pub(crate) fn native_plan(&self) -> &QueryPlan {
         &self.plan
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn native_plan_for_test(&self) -> &QueryPlan {
+        self.native_plan()
     }
 
     pub(crate) fn with_metrics_capture(mut self, metrics_capture: Option<NativeExecutionMetricsCapture>) -> Self {

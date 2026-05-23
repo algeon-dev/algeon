@@ -36,10 +36,13 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
-use nexus_query_engine::{
-    contract_report::CapabilityContractGateRow, datatypes::is_supported_arrow_type,
-    source::SourceDiagnostics as NativeSourceDiagnostics,
+pub use nexus_query_engine::{
+    contract_report::CapabilityContractGateRow,
+    metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit},
+    mode::StatisticalAggregateExecutionMode,
+    optimizer::NativeOptimizerDiagnostics,
 };
+use nexus_query_engine::{datatypes::is_supported_arrow_type, source::SourceDiagnostics as NativeSourceDiagnostics};
 
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::CugraphAlgoExec;

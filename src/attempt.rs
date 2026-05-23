@@ -23,11 +23,15 @@ use datafusion::{
 use futures::{FutureExt, Stream};
 use nexus_query_engine::{
     attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
-    observability::{AttemptDisposition, AttemptFailureSummary, RuntimeObservationHandle, RuntimeTerminalOutcome},
+    observability::{AttemptFailureSummary, RuntimeTerminalOutcome},
 };
 pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
-    observability::{AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport, RuntimeObservationConfig},
+    graph_memory::GraphClaimCalibrationRow,
+    observability::{
+        AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport,
+        RuntimeObservationConfig, SealedRuntimeObservationSnapshot,
+    },
 };
 
 pub use crate::native_exec::{
@@ -77,7 +81,6 @@ struct AttemptExecutionState {
     admission_rejection: AttemptAdmissionRejection,
     admission_binding: AttemptAdmissionBinding,
     query_id: Option<AttemptQueryId>,
-    observation_handle: RuntimeObservationHandle,
     cancellation: AttemptCancellation,
     ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
     /// The one elected native root that may receive the fixed-cardinality
@@ -248,7 +251,6 @@ impl NexusGpuBackend {
             admission_rejection: begin.owner.admission_rejection(),
             admission_binding: begin.owner.admission_binding(),
             query_id: state_query_id,
-            observation_handle: begin.owner.admission_binding().observation_handle(),
             cancellation: begin.owner.cancellation(),
             ticket: Mutex::new(None),
             sealed_metrics_target: Mutex::new(None),
@@ -299,15 +301,6 @@ impl NexusAttempt {
     }
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()
-    }
-
-    /// Stable recording handle for this attempt's runtime observation.
-    ///
-    /// Flight's coordinator uses this only to route native metrics while it
-    /// retains ticket and activity accounting. The attempt owner remains the
-    /// only capability that can seal the corresponding observation.
-    pub fn observation_handle(&self) -> nexus_query_engine::observability::RuntimeObservationHandle {
-        self.state.observation_handle.clone()
     }
 
     /// Registers a read-only handoff for the immutable report produced at the

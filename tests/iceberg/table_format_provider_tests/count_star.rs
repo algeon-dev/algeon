@@ -8,7 +8,7 @@ async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_so
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.plans.len(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -51,7 +51,7 @@ async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metada
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -81,7 +81,7 @@ async fn iceberg_provider_count_star_reads_deleted_files_even_with_row_count_met
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -112,7 +112,7 @@ async fn iceberg_provider_count_star_probe_rejects_unproven_remote_carrier_colum
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -142,7 +142,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(native_plan_union_count(&result.plans[0]), 1);
@@ -195,7 +195,7 @@ async fn iceberg_provider_count_star_ignores_unused_non_identity_partition_trans
 
     let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

@@ -2112,6 +2112,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-facade-consumer"
+version = "0.0.0"
+dependencies = [
+ "datafusion-nexus",
+]
+
+[[package]]
 name = "datafusion-functions"
 version = "55.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3940,7 +3947,6 @@ dependencies = [
  "datafusion",
  "datafusion-nexus",
  "futures",
- "nexus-query-engine",
  "nexus-server",
  "opentelemetry",
  "opentelemetry-proto",

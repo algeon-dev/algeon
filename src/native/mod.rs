@@ -51,19 +51,30 @@ use crate::report::{GpuCandidate, PlanningReport};
 
 const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
-/// Result of attempting to lower one DataFusion physical plan.
-#[derive(Debug, Clone)]
-pub struct NativeLoweringResult {
-    /// Native query plans produced for rewritten candidates.
-    pub plans: Vec<NativeQueryPlan>,
-    /// Structured candidate outcomes used by planning/report surfaces.
-    pub report: PlanningReport,
-    /// Source diagnostics gathered from normalized or lowered source nodes.
-    pub source_diagnostics: Vec<NativeSourceDiagnostics>,
+macro_rules! define_native_lowering_result {
+    ($(#[$meta:meta])* $visibility:vis) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        $visibility struct NativeLoweringResult {
+            /// Native query plans produced for rewritten candidates.
+            $visibility plans: Vec<NativeQueryPlan>,
+            /// Structured candidate outcomes used by planning/report surfaces.
+            $visibility report: PlanningReport,
+            /// Source diagnostics gathered from normalized or lowered source nodes.
+            $visibility source_diagnostics: Vec<NativeSourceDiagnostics>,
+        }
+    };
 }
+
+#[cfg(feature = "test-support")]
+define_native_lowering_result!(#[doc(hidden)] pub);
+
+#[cfg(not(feature = "test-support"))]
+define_native_lowering_result!(pub(crate));
 
 impl NativeLoweringResult {
     /// Returns the number of candidates recorded in the planning report.
+    #[cfg(feature = "test-support")]
     pub fn candidate_count(&self) -> usize {
         self.report.outcomes().len()
     }
@@ -74,14 +85,21 @@ impl NativeLoweringResult {
     }
 
     /// Returns the number of rejected candidates.
+    #[cfg(feature = "test-support")]
     pub fn not_selected_count(&self) -> usize {
         self.report.not_selected_count()
     }
 }
 
 /// Lowers a physical plan using the final native rewrite rules.
-pub fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+pub(crate) fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
     lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn lower_physical_plan_to_native_for_test(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+    lower_physical_plan_to_native(plan)
 }
 
 pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {

@@ -75,7 +75,10 @@ use crate::{
     cugraph_sql::CugraphSqlConfig,
     gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
     gpu_coverage_sql::{coverage_batch, coverage_schema},
-    native_exec::{NativeMetricsCapture, NativeObservationActivityFactory},
+    native_exec::{
+        ServerInternalNativeMetricsCapture as NativeMetricsCapture,
+        ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory,
+    },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session_config::DataFusionNexusSessionConfig,
 };

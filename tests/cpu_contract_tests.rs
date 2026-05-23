@@ -7,6 +7,8 @@ mod cugraph_sql_feature_off_tests;
 mod cuvs_sql_tests;
 #[path = "cpu_contract/error_tests.rs"]
 mod error_tests;
+#[path = "cpu_contract/observability_facade_tests.rs"]
+mod observability_facade_tests;
 #[path = "cpu_contract/policy_report_tests.rs"]
 mod policy_report_tests;
 #[path = "cpu_contract/table_format_scan_tests.rs"]

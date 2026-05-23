@@ -56,8 +56,18 @@ impl NexusNativeExec {
     ///
     /// GPU-resident sinks are rejected here because regular `ExecutionPlan::execute` must stream
     /// host Arrow `RecordBatch` output to DataFusion.
-    pub fn try_new(plan: QueryPlan, execution_config: NexusNativeExecutionConfig) -> crate::error::Result<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn try_new(plan: QueryPlan, execution_config: NexusNativeExecutionConfig) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, execution_config, None)
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn try_new_for_test(
+        plan: QueryPlan,
+        execution_config: NexusNativeExecutionConfig,
+    ) -> crate::error::Result<Self> {
+        Self::try_new(plan, execution_config)
     }
 
     pub(crate) fn try_new_with_equivalence_properties(
@@ -97,8 +107,20 @@ impl NexusNativeExec {
         })
     }
 
-    pub fn native_plan(&self) -> &QueryPlan {
+    pub(crate) fn native_plan(&self) -> &QueryPlan {
         &self.plan
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn native_plan_for_test(&self) -> &QueryPlan {
+        self.native_plan()
+    }
+
+    #[cfg(feature = "bench-support")]
+    #[doc(hidden)]
+    pub fn native_plan_for_internal_consumer(&self) -> &QueryPlan {
+        self.native_plan()
     }
 
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]

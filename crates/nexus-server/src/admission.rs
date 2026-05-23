@@ -175,9 +175,7 @@ impl QueryAdmission {
         let _ = writeln!(output, "# datafusion_nexus_admission_stats=1");
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
-                let queue_bounds = backend
-                    .controller_queue_bounds()
-                    .map_err(|error| ServerError::session("failed to read backend queue policy", error))?;
+                let queue_policy = backend.queue_policy();
                 let _ = writeln!(output, "# backend=query_service");
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
                 let _ = writeln!(output, "# device_profile_count={}", backend.device_profiles().len());
@@ -191,8 +189,8 @@ impl QueryAdmission {
                         profile.attempt_floor_bytes().map_or_else(|| "none".to_string(), |value| value.to_string())
                     );
                 }
-                let _ = writeln!(output, "# max_queued_attempts={}", queue_bounds.max_waiters);
-                let _ = writeln!(output, "# max_queue_wait_ms={}", queue_bounds.max_wait.as_millis());
+                let _ = writeln!(output, "# max_queued_attempts={}", queue_policy.max_queued_attempts());
+                let _ = writeln!(output, "# max_queue_wait_ms={}", queue_policy.max_queue_wait().as_millis());
                 // This is the one dynamic observation for the whole payload.
                 // It cannot contain grant ids, query ids, CUDA/NVML payloads,
                 // or execution-pool state, because none of those are part of
@@ -368,7 +366,7 @@ mod tests {
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
         assert_eq!(
-            profile.engine_config(crate::backend::GpuMemoryOwnership::WholeDeviceExclusive),
+            profile.engine_config_for_test(crate::backend::GpuMemoryOwnership::WholeDeviceExclusive),
             nexus_query_engine::runtime::GpuBackendDeviceConfig::new(
                 0,
                 crate::backend::GpuMemoryOwnership::WholeDeviceExclusive,
@@ -377,7 +375,7 @@ mod tests {
             "server profile defaults must be an engine construction projection"
         );
         assert_eq!(controller.source_scheduler_policy.max_source_reads_in_flight(), 2);
-        assert_eq!(backend.queue_bounds().unwrap(), nexus_query_engine::runtime::QueueBounds::default());
+        assert_eq!(backend.queue_policy(), &NexusGpuQueuePolicy::default());
         // The validation projection intentionally stops before runtime floor
         // resolution or grant allocation.
         assert_eq!(profile.attempt_floor_bytes(), None);
@@ -410,7 +408,7 @@ mod tests {
 
         let backend = server_test_validation_projection_from_config(&config).unwrap();
 
-        assert_eq!(backend.queue_bounds().unwrap().max_wait, std::time::Duration::from_millis(250));
+        assert_eq!(backend.queue_policy().max_queue_wait(), std::time::Duration::from_millis(250));
     }
 
     #[test]

@@ -8,7 +8,7 @@ async fn iceberg_provider_reads_non_identity_partition_source_column_from_parque
 
     let df = ctx.sql("select \"customerId\", event_ts from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -43,7 +43,7 @@ async fn iceberg_provider_materializes_identity_partition_only_projection() {
 
     let df = ctx.sql("select \"customerId\" from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -66,7 +66,7 @@ async fn iceberg_provider_materializes_timestamp_and_decimal_identity_partitions
 
     let df = ctx.sql("select event_ts, amount from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -103,7 +103,7 @@ async fn iceberg_provider_rejects_mixed_file_and_partition_source_mapping_for_on
 
     let df = ctx.sql("select \"customerId\" from iceberg_t").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(

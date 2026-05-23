@@ -391,12 +391,14 @@ impl QueryAdmissionTicket {
         source: QueryAdmissionSource,
         attempt_capability_proof: Option<QueryPlanCapabilityProof>,
         binding: AttemptTicketBinding,
-        observation_capture: Option<NativeExecutionMetricsCapture>,
+        _observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
+        let observation = binding.admission_binding.observation_handle();
+        let observation_capture = Some(NativeExecutionMetricsCapture::coordinated(observation.clone()));
         let mut ticket = Self::new_with_capability_proof_and_observation(
             source,
             attempt_capability_proof,
-            NativeRuntimeObservation::Coordinated(binding.admission_binding.observation_handle()),
+            NativeRuntimeObservation::Coordinated(observation),
             observation_capture,
         );
         Arc::get_mut(&mut ticket).expect("new admission ticket is uniquely owned").attempt = Some(binding);
@@ -751,8 +753,11 @@ impl QueryAdmissionTicket {
                 request.with_runtime_observation_handle(handle.clone())
             },
         };
-        let observation_activity =
-            self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity);
+        let observation_activity = if self.attempt.is_none() {
+            self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity)
+        } else {
+            None
+        };
         let request = match observation_activity {
             Some(activity) => request.with_runtime_observation_activity_result(activity),
             None => request,

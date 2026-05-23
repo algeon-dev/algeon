@@ -227,7 +227,7 @@ fn spec_matches(opts: &CliOptions, spec: &ParitySpec) -> bool {
     if opts.select_all {
         return true;
     }
-    let algorithm_ok = opts.algorithm.as_deref().is_none_or(|name| spec.algorithm.native_algorithm().as_str() == name);
+    let algorithm_ok = opts.algorithm.as_deref().is_none_or(|name| spec.algorithm.code() == name);
     let dataset_ok = opts.dataset.as_deref().is_none_or(|name| spec.dataset == name);
     algorithm_ok && dataset_ok
 }
@@ -253,7 +253,7 @@ fn refresh_one(
         .arg("--data-root")
         .arg(data_root)
         .arg("--algorithm")
-        .arg(spec.algorithm.native_algorithm().as_str())
+        .arg(spec.algorithm.code())
         .arg("--dataset")
         .arg(spec.dataset)
         .arg("--params")

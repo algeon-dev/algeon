@@ -213,9 +213,22 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Attach a cooperative cancellation flag observed by native execution.
-    pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
+    #[cfg(any(feature = "server-internal", feature = "test-support"))]
+    pub(crate) fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
         self
+    }
+
+    #[cfg(feature = "server-internal")]
+    #[doc(hidden)]
+    pub fn with_cancellation_for_internal_consumer(self, cancellation: ExecutionCancellation) -> Self {
+        self.with_cancellation(cancellation)
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_cancellation_for_test(self, cancellation: ExecutionCancellation) -> Self {
+        self.with_cancellation(cancellation)
     }
 
     /// Cooperative cancellation observed while an adapter-owned host boundary
@@ -225,16 +238,33 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Attaches the server-generation gate used by file-backed native I/O.
-    pub fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
+    #[cfg(feature = "server-internal")]
+    pub(crate) fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
         self.io_lifecycle = Some(lifecycle);
         self
     }
 
+    #[cfg(feature = "server-internal")]
+    #[doc(hidden)]
+    pub fn with_io_lifecycle_for_internal_consumer(self, lifecycle: IoLifecycle) -> Self {
+        self.with_io_lifecycle(lifecycle)
+    }
+
     /// Attach a server-side query metrics capture sink.
-    pub fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
+    #[cfg(feature = "server-internal")]
+    pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
         self.query_id = capture.query_id().map(QueryId::new);
         self.metrics_capture = Some(capture);
         self
+    }
+
+    #[cfg(feature = "server-internal")]
+    #[doc(hidden)]
+    pub fn with_metrics_capture_for_internal_consumer(
+        self,
+        capture: crate::native_exec::ServerInternalNativeMetricsCapture,
+    ) -> Self {
+        self.with_metrics_capture(capture)
     }
 
     /// Attach a diagnostic query id to native execution metrics.
@@ -278,7 +308,7 @@ impl NexusNativeExecutionConfig {
         self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
-    pub fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
+    pub(crate) fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.query_admission_ticket
             .as_ref()
             .and_then(|ticket| ticket.metrics_capture())

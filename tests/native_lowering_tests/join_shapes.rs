@@ -17,7 +17,7 @@ async fn physical_cross_join_exec_lowers_to_native_cross_join() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -46,7 +46,7 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
     write_join_right_parquet_file(&right_path);
     let plan = hash_join_filter_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -115,7 +115,7 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(join);
+    let result = lower_physical_plan_to_native_for_test(join);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -173,7 +173,7 @@ fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(join);
+    let result = lower_physical_plan_to_native_for_test(join);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -210,7 +210,7 @@ fn hash_join_fetch_lowers_to_native_limit_above_join() {
     .unwrap();
     let plan = join.with_fetch(Some(1)).expect("HashJoinExec should accept fetch");
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -274,7 +274,7 @@ fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(join);
+    let result = lower_physical_plan_to_native_for_test(join);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -338,7 +338,7 @@ fn predicate_free_left_nested_loop_join_with_skipped_scalar_right_stays_left_joi
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(join);
+    let result = lower_physical_plan_to_native_for_test(join);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -403,7 +403,7 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
     .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, projection).with_fetch(Some(10)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}, join_schema={join_schema:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -486,7 +486,7 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
     .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, join).with_fetch(Some(10)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -515,7 +515,7 @@ fn recursive_hash_join_input_filters_lower_to_native_filters() {
     let right = filtered_payload_scan(parquet_scan(&right_path), "r_payload", 20);
     let plan = hash_join_aggregate_sort_limit_plan_with_type(left, right, JoinType::Inner);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -567,7 +567,7 @@ fn post_join_filter_lowers_to_native_filter_input() {
     write_join_right_parquet_file(&right_path);
     let plan = post_join_filter_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -662,7 +662,7 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
     .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, join).with_fetch(Some(10)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Left);
@@ -701,7 +701,7 @@ fn hash_join_aggregate_inputs_lower_to_native_aggregate_inputs() {
     let right = grouped_sum_join_input(parquet_scan(&right_path), "key", "r_m01", "r_m01");
     let plan = hash_join_aggregate_sort_limit_plan_with_type(left, right, JoinType::Inner);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

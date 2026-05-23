@@ -5,7 +5,7 @@
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 
-use nexus_query_engine::triage::TriageCode;
+pub use nexus_query_engine::triage::TriageCode;
 
 /// Stable reason codes explaining why a candidate cannot execute on the native
 /// GPU path.

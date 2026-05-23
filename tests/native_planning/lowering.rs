@@ -56,7 +56,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     capability::CapabilityReason,
-    native::{NativeLoweringResult, lower_physical_plan_to_native},
+    native::{NativeLoweringResult, lower_physical_plan_to_native_for_test},
     native_report::{
         NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
         NativeFallbackPressureWorkloadItem,
