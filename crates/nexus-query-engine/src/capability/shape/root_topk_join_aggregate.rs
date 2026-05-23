@@ -195,6 +195,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             direct_sort_fetch_aggregate_candidate,
         )?;
     }
+    require_root_topk_keyless_grouped_aggregate_source_reduction(plan, &keyless_or_cross_join_ids)?;
     if !left_output_bounded_join_ids.is_empty() {
         require_root_topk_all_joined_grouped_aggregates_source_reduction(
             plan,
@@ -985,10 +986,17 @@ fn aggregate_projection_in_reachable_fragment(
             .iter()
             .filter(|input_id| matches!(plan.node(**input_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
             .count();
+        let direct_source_grouped_aggregate =
+            !is_scalar_aggregate && aggregate_input_has_local_parquet_source(&aggregate_input_reachable, plan);
         if aggregate_input_join_count > 0
-            || (allow_direct_source_aggregate
-                && !is_scalar_aggregate
-                && aggregate_input_has_local_parquet_source(&aggregate_input_reachable, plan))
+            || (allow_direct_source_aggregate && direct_source_grouped_aggregate)
+            || (direct_source_grouped_aggregate
+                && root_topk_grouped_aggregate_feeds_keyless_conditional_join(
+                    plan,
+                    projection.input,
+                    *node_id,
+                    keyless_or_cross_join_ids,
+                )?)
         {
             candidates.push((projection.input, *node_id));
         }
@@ -1008,9 +1016,17 @@ fn aggregate_projection_in_reachable_fragment(
             .iter()
             .filter(|input_id| matches!(plan.node(**input_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
             .count();
+        let direct_source_grouped_aggregate =
+            aggregate_input_has_local_parquet_source(&aggregate_input_reachable, plan);
         if aggregate_input_join_count > 0
-            || (allow_direct_source_aggregate
-                && aggregate_input_has_local_parquet_source(&aggregate_input_reachable, plan))
+            || (allow_direct_source_aggregate && direct_source_grouped_aggregate)
+            || (direct_source_grouped_aggregate
+                && root_topk_grouped_aggregate_feeds_keyless_conditional_join(
+                    plan,
+                    *node_id,
+                    *node_id,
+                    keyless_or_cross_join_ids,
+                )?)
         {
             candidates.push((*node_id, *node_id));
         }
@@ -1083,6 +1099,84 @@ fn root_topk_scalar_aggregate_feeds_keyless_or_cross_join(
         }
     }
     Ok(false)
+}
+
+fn root_topk_grouped_aggregate_feeds_keyless_conditional_join(
+    plan: &QueryPlan,
+    aggregate_id: NodeId,
+    aggregate_projection_id: NodeId,
+    keyless_or_cross_join_ids: &[NodeId],
+) -> Result<bool, CapabilityDecision> {
+    for join_id in keyless_or_cross_join_ids {
+        let Some(PlanNode::Join(join)) = plan.node(*join_id).map(|node| &node.kind) else {
+            return Err(CapabilityDecision::rejected(
+                "root_topk_join_aggregate_missing_node",
+                [("node_id", join_id.to_string()), ("role", "keyless_or_cross_join".to_string())],
+            ));
+        };
+        if !matches!(join_node_execution_capability(join), Some(JoinExecutionCapability::KeylessConditional(_))) {
+            continue;
+        }
+        for input in join.inputs {
+            if input == aggregate_id || input == aggregate_projection_id {
+                return Ok(true);
+            }
+            let Some((producer_id, chain_ids)) = peel_resident_unary_chain_for_capability(plan, input) else {
+                return Err(CapabilityDecision::rejected(
+                    "root_topk_join_aggregate_missing_node",
+                    [
+                        ("node_id", input.to_string()),
+                        ("role", "keyless_conditional_grouped_aggregate_input".to_string()),
+                    ],
+                ));
+            };
+            if producer_id == aggregate_id && chain_ids.contains(&aggregate_projection_id) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn require_root_topk_keyless_grouped_aggregate_source_reduction(
+    plan: &QueryPlan,
+    keyless_or_cross_join_ids: &[NodeId],
+) -> Result<(), CapabilityDecision> {
+    let mut aggregate_ids = BTreeSet::new();
+    for join_id in keyless_or_cross_join_ids {
+        let Some(PlanNode::Join(join)) = plan.node(*join_id).map(|node| &node.kind) else {
+            return Err(CapabilityDecision::rejected(
+                "root_topk_join_aggregate_missing_node",
+                [("node_id", join_id.to_string()), ("role", "keyless_or_cross_join".to_string())],
+            ));
+        };
+        if !matches!(join_node_execution_capability(join), Some(JoinExecutionCapability::KeylessConditional(_))) {
+            continue;
+        }
+        for input in join.inputs {
+            let Some((producer_id, _chain_ids)) = peel_resident_unary_chain_for_capability(plan, input) else {
+                return Err(CapabilityDecision::rejected(
+                    "root_topk_join_aggregate_missing_node",
+                    [
+                        ("node_id", input.to_string()),
+                        ("role", "keyless_conditional_grouped_aggregate_input".to_string()),
+                    ],
+                ));
+            };
+            if matches!(
+                plan.node(producer_id).map(|node| &node.kind),
+                Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
+            ) {
+                aggregate_ids.insert(producer_id);
+            }
+        }
+    }
+
+    for aggregate_id in aggregate_ids {
+        let aggregate_input_reachable = aggregate_input_reachable_nodes(plan, aggregate_id)?;
+        require_root_topk_source_reduction_proof(plan, &aggregate_input_reachable, aggregate_id, false)?;
+    }
+    Ok(())
 }
 
 fn aggregate_input_reachable_nodes(

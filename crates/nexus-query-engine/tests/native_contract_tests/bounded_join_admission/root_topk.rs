@@ -195,6 +195,38 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts_wit
 }
 
 #[test]
+fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals() {
+    let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(false);
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_root_topk_join_aggregate_pipeline());
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
+        .expect("direct grouped source root TopK capability report should be valid");
+    assert_strict_report_has_modeled_subcontract(
+        &report,
+        "root_topk_keyless_or_cross_join_subcontract",
+        "direct grouped source root TopK",
+    );
+    assert!(nexus_query_engine::admission::bounded_join_modeled_facts(
+        &plan,
+        ExecutionBoundaryPolicy::default(),
+    )
+    .is_some());
+}
+
+#[test]
+fn bounded_root_topk_join_aggregate_checks_each_direct_grouped_keyless_branch() {
+    let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(true);
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
+    let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
+        panic!("a direct grouped keyless branch without source reduction should reject");
+    };
+    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_proof");
+}
+
+#[test]
 fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontract_with_report_rows() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchHashJoinInput,

@@ -267,6 +267,56 @@ pub(crate) fn root_topk_join_aggregate_plan() -> nexus_query_engine::plan::Query
     root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::Admitted)
 }
 
+pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
+    missing_right_grouped_source_reduction: bool,
+) -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left_grouped_source = source_with_reduction(&mut builder, "root-topk-direct-grouped-left", true);
+    let left_scalar_source = source_with_reduction(&mut builder, "root-topk-direct-scalar-left", true);
+    let right_grouped_source =
+        source_with_reduction(&mut builder, "root-topk-direct-grouped-right", !missing_right_grouped_source_reduction);
+    let right_scalar_source = source_with_reduction(&mut builder, "root-topk-direct-scalar-right", true);
+
+    let left = root_topk_keyless_conditional_aggregate_branch(&mut builder, left_grouped_source, left_scalar_source);
+    let right = root_topk_keyless_conditional_aggregate_branch(&mut builder, right_grouped_source, right_scalar_source);
+    let root = join(&mut builder, left, right, "direct_source_root");
+    let projection = project_key_value(&mut builder, root);
+    let sort = builder.add_sort(
+        projection,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        key_value_schema(),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
+    builder.finish_with_host_sink(limit)
+}
+
+fn root_topk_keyless_conditional_aggregate_branch(
+    builder: &mut QueryPlanBuilder,
+    grouped_source: nexus_query_engine::plan::NodeId,
+    scalar_source: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
+    let grouped_aggregate = grouped_aggregate(builder, grouped_source);
+    let grouped = project_key_value(builder, grouped_aggregate);
+    let scalar_aggregate = scalar_key_value_aggregate(builder, scalar_source);
+    let scalar = project_key_value(builder, scalar_aggregate);
+    builder.add_join(
+        grouped,
+        scalar,
+        JoinSpec::new(JoinType::Inner, Vec::new())
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "v", "grouped_v"),
+                BinaryOp::Gt,
+                Expr::input_column(1, "v", "scalar_v"),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+        key_value_schema(),
+    )
+}
+
 pub(crate) fn root_topk_join_aggregate_variant_plan(
     variant: RootTopKJoinAggregateVariant,
 ) -> nexus_query_engine::plan::QueryPlan {
