@@ -2,12 +2,15 @@
 
 #include "execution_context_internal.hpp"
 #include "handle_provenance.hpp"
+#include "scalar_handle.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/scalar/scalar.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
+#include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
@@ -166,6 +169,47 @@ cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
     {
       auto result = cudf::copy_if_else(*lhs_view, *rhs_view, *mask_view, exec.stream, exec.mr);
       *out        = cudf_release_column_handle(std::move(result));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_shift(cudf_column_view_handle input,
+                         int32_t offset,
+                         cudf_scalar_handle fill_value,
+                         cudf_column_handle* out)
+{
+  return cudf_shift_ex(input, offset, fill_value, out, nullptr);
+}
+
+cudf_status_t cudf_shift_ex(cudf_column_view_handle input,
+                            int32_t offset,
+                            cudf_scalar_handle fill_value,
+                            cudf_column_handle* out,
+                            cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_NULL_CHECK(fill_value, "fill_value is null");
+
+  CUDF_RUST_TRY
+  {
+    auto* input_view                = static_cast<cudf::column_view*>(input);
+    auto const& fill_scalar         = cudf_scalar_from_handle_const(fill_value);
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::shift(*input_view,
+                                static_cast<cudf::size_type>(offset),
+                                fill_scalar,
+                                exec.stream,
+                                exec.mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }

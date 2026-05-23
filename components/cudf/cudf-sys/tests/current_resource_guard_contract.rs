@@ -152,6 +152,7 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         {
             Some("copying::scatter")
         },
+        "copying.cpp" if context.contains("cudf::shift(*input_view,") => Some("copying::shift"),
         "column.cpp" if context.contains("lists.get_sliced_child(exec.stream)") => Some("column::list_sliced_child"),
         "dictionary.cpp" if context.contains("cudf::dictionary::decode(dict_view, exec.stream, exec.mr)") => {
             Some("dictionary::decode")
@@ -179,6 +180,7 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
             Some("groupby::aggregate")
         },
         "groupby.cpp" if context.contains("cudf::groupby::scan_request") => Some("groupby::scan"),
+        "groupby.cpp" if context.contains("gb.shift(") => Some("groupby::shift"),
         "io_csv.cpp" if context.contains("cudf::io::write_csv(options, exec.stream)") => Some("io_csv::write_csv"),
         "io_json.cpp" if context.contains("cudf::io::write_json(options, exec.stream)") => Some("io_json::write_json"),
         "io_parquet.cpp" if context.contains("cudf::io::write_parquet(options, exec.stream)") => {

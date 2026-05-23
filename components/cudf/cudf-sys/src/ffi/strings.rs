@@ -1,8 +1,8 @@
 use std::os::raw::c_char;
 
 use crate::{
-    cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_scalar_handle, cudf_status_t,
-    cudf_strip_side_t,
+    cudf_column_handle, cudf_column_view_handle, cudf_data_type_handle, cudf_exec_options_t, cudf_scalar_handle,
+    cudf_status_t, cudf_strip_side_t,
 };
 
 extern "C" {
@@ -194,6 +194,24 @@ extern "C" {
     /// Byte count with explicit execution context.
     pub fn cudf_strings_count_bytes_ex(
         input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Convert string column to integers with SQL `TRY_CAST` semantics.
+    ///
+    /// Rows that do not parse as an integer that fits `output_type` (and rows
+    /// whose input was null) are mapped to null in the output column.
+    pub fn cudf_strings_try_to_integers(
+        input: cudf_column_view_handle,
+        output_type: cudf_data_type_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Try-cast strings to integers with explicit execution context.
+    pub fn cudf_strings_try_to_integers_ex(
+        input: cudf_column_view_handle,
+        output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;

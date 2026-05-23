@@ -2,7 +2,7 @@
 
 use super::{context::default_execution_context, owned::Series};
 use crate::{
-    core::error::Result,
+    core::{error::Result, types::DataType},
     ops::strings::{self, StringSliceOptions, StripSide},
     runtime::ExecutionOverrides,
 };
@@ -274,5 +274,24 @@ impl SeriesStringNamespace<'_> {
     /// Byte count per string using the explicit execution-context override.
     pub fn byte_count_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
         self.0.string_unary_with_context(strings::count_bytes_impl, ctx, "series::str::byte_count_in")
+    }
+
+    // -- Numeric conversion (TRY_CAST string -> integer) -------------------
+
+    /// Parse each string element as an integer of `output_type`, returning
+    /// null for rows that do not parse cleanly or overflow the target type.
+    /// Null input rows stay null. Mirrors SQL `TRY_CAST(s AS <int_type>)`.
+    ///
+    /// `output_type` must be an integral data type.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new column of `output_type`.
+    pub fn try_to_integers(&self, output_type: &DataType) -> Result<Series> {
+        self.0.try_to_integers_in_context(output_type, &default_execution_context(), "series::str::try_to_integers")
+    }
+
+    /// `try_to_integers` using the explicit execution-context override.
+    pub fn try_to_integers_in(&self, output_type: &DataType, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.try_to_integers_in_context(output_type, ctx, "series::str::try_to_integers_in")
     }
 }

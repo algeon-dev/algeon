@@ -35,7 +35,7 @@ use std::{cell::Cell, sync::Arc};
 use arrow::{
     array::*,
     datatypes::{DataType as ArrowDataType, Schema, TimeUnit},
-    record_batch::RecordBatch,
+    record_batch::{RecordBatch, RecordBatchOptions},
 };
 
 use crate::{
@@ -356,7 +356,16 @@ impl DataFrame {
             })
             .collect::<Result<_>>()?;
 
-        let batch = RecordBatch::try_from_iter_with_nullable(columns).map_err(map_record_batch_error)?;
+        let batch = if columns.is_empty() {
+            RecordBatch::try_new_with_options(
+                Arc::new(Schema::empty()),
+                Vec::new(),
+                &RecordBatchOptions::new().with_row_count(Some(rows)),
+            )
+        } else {
+            RecordBatch::try_from_iter_with_nullable(columns)
+        }
+        .map_err(map_record_batch_error)?;
         let observation = self
             .boundary_observation_for_query_stage(
                 BoundaryKind::DeviceToHost,

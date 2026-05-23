@@ -42,6 +42,8 @@ mod ffi_enum_contract_tests;
 mod filter_tests;
 #[path = "../ops/groupby/groupby_null_tests.rs"]
 mod groupby_null_tests;
+#[path = "../ops/groupby/shift_tests.rs"]
+mod groupby_shift_tests;
 #[path = "../ops/groupby/groupby_tests.rs"]
 mod groupby_tests;
 #[path = "../ops/misc/hashing_tests.rs"]
@@ -64,6 +66,8 @@ mod replace_tests;
 mod search_tests;
 #[path = "../ops/groupby/shared_group_key_validation_tests.rs"]
 mod shared_group_key_validation_tests;
+#[path = "../ops/copying/shift_tests.rs"]
+mod shift_tests;
 #[path = "../ops/sorting/sorting_tests.rs"]
 mod sorting_tests;
 #[path = "../ops/misc/stream_compaction_tests.rs"]

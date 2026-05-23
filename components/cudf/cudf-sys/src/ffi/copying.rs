@@ -1,6 +1,6 @@
 use crate::{
-    cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_out_of_bounds_policy_t, cudf_status_t,
-    cudf_table_handle, cudf_table_view_handle,
+    cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_out_of_bounds_policy_t, cudf_scalar_handle,
+    cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
 extern "C" {
@@ -67,6 +67,33 @@ extern "C" {
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
         boolean_mask: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    // -- Copying (shift) -----------------------------------------------------
+
+    /// Shift the rows of `input` by `offset` positions, filling indeterminate
+    /// outputs with `fill_value`.
+    ///
+    /// `output[i] = input[i - offset]` when `i - offset` is in
+    /// `[0, input.size())`, otherwise `output[i] = fill_value`. libcudf
+    /// requires `input` to be fixed-width or string and `fill_value` to share
+    /// `input`'s data type.
+    pub fn cudf_shift(
+        input: cudf_column_view_handle,
+        offset: i32,
+        fill_value: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Shift with explicit execution options.
+    ///
+    /// When `options->mr` is non-null, it must outlive the returned column.
+    pub fn cudf_shift_ex(
+        input: cudf_column_view_handle,
+        offset: i32,
+        fill_value: cudf_scalar_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;

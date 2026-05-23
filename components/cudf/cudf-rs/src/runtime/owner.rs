@@ -303,6 +303,20 @@ impl Runtime {
         Scalar::null_string_in_domain(self.execution_domain())
     }
 
+    /// Create a null scalar for an arbitrary supported [`DataType`].
+    ///
+    /// This is the dtype-erased counterpart to [`Self::null_scalar`] /
+    /// [`Self::null_string_scalar`] and dispatches on the [`TypeId`].
+    /// Use it when the target data type is only known at runtime — for
+    /// example when building a fill scalar from a column or schema. Fails
+    /// with [`ErrorCode::UnsupportedDtype`](crate::core::error::ErrorCode)
+    /// for types whose null encoding is not yet exposed by cudf-rs.
+    ///
+    /// [`DataType`]: crate::DataType
+    pub fn null_scalar_with_data_type(&self, dtype: impl Into<DataType>) -> Result<Scalar> {
+        Scalar::null_in_domain(dtype.into(), self.execution_domain())
+    }
+
     /// Create a Decimal32 scalar from its raw fixed-point representation.
     ///
     /// `raw` is the stored integer representation and `scale` is the cudf

@@ -1,4 +1,9 @@
-use arrow::{array::ArrayRef, compute::cast, datatypes::SchemaRef, record_batch::RecordBatch};
+use arrow::{
+    array::ArrayRef,
+    compute::cast,
+    datatypes::SchemaRef,
+    record_batch::{RecordBatch, RecordBatchOptions},
+};
 
 use super::DataFrame;
 use crate::{
@@ -184,7 +189,8 @@ fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> 
         })
         .collect::<Result<Vec<ArrayRef>>>()?;
 
-    RecordBatch::try_new(schema.clone(), columns).map_err(|error| {
+    let options = RecordBatchOptions::new().with_row_count((columns.is_empty()).then_some(batch.num_rows()));
+    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(|error| {
         map_arrow_schema_contract_error(operation, error)
             .with_detail("schema_contract_failure", "schema_record_batch_build_failed")
     })

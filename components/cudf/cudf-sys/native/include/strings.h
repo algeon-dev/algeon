@@ -5,6 +5,7 @@
 #include "error.h"
 #include "execution_context.h"
 #include "scalar.h"
+#include "types.h"
 
 #include <stdint.h>
 
@@ -201,6 +202,29 @@ cudf_status_t cudf_strings_count_bytes(cudf_column_view_handle input, cudf_colum
 cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
                                           cudf_column_handle* out,
                                           const cudf_exec_options_t* options);
+
+// ---------------------------------------------------------------------------
+// Numeric conversion (null-on-failure / TRY_CAST contract)
+// ---------------------------------------------------------------------------
+
+/// Convert a string column to integers with SQL `TRY_CAST` semantics: each
+/// element that does not parse as an integer that fits `output_type` produces
+/// a null row instead of an error. Null inputs propagate as null outputs.
+///
+/// `output_type` must be an integral data type. Builds on
+/// `cudf::strings::is_integer(input, output_type)` to detect rows that parse
+/// cleanly and fit the target type, `cudf::strings::to_integers(input,
+/// output_type)` for the converted values, and `cudf::copy_if_else` to mask
+/// rejected rows to null.
+cudf_status_t cudf_strings_try_to_integers(cudf_column_view_handle input,
+                                           cudf_data_type_handle output_type,
+                                           cudf_column_handle* out);
+
+/// Try-cast strings to integers with explicit execution context.
+cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
+                                              cudf_data_type_handle output_type,
+                                              cudf_column_handle* out,
+                                              const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

@@ -5,6 +5,7 @@
 #include "error.h"
 #include "execution_context.h"
 #include "reduction.h"
+#include "scalar.h"
 #include "table.h"
 
 #include <stdint.h>
@@ -144,6 +145,50 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
                                    cudf_column_handle** out_values,
                                    int32_t* out_total_columns,
                                    const cudf_exec_options_t* options);
+
+/// Perform a per-group row shift.
+///
+/// Each value column is shifted by the corresponding `offsets[i]` positions
+/// within each group, and indeterminate output positions take `fill_values[i]`.
+/// libcudf returns a keys table and a values table with identical row counts.
+/// Within each group the rows of the values table appear in the input row
+/// order; the order of groups themselves is libcudf-defined and may differ
+/// across calls.
+///
+/// `values`, `offsets`, and `fill_values` must all have length
+/// `num_value_columns`. Each `fill_values[i]` must have the same data type as
+/// the corresponding `values[i]` column. All value columns must have the same
+/// row count. libcudf rejects value columns whose data type is neither
+/// fixed-width nor string.
+///
+/// If `keys_are_sorted` is non-zero, the caller asserts that the key columns
+/// are ascending with nulls after, matching cuDF's pre-sorted key contract.
+cudf_status_t cudf_groupby_shift(cudf_table_view_handle keys,
+                                 const cudf_column_view_handle* values,
+                                 const int32_t* offsets,
+                                 const cudf_scalar_handle* fill_values,
+                                 int32_t num_value_columns,
+                                 cudf_null_policy_t keys_null_policy,
+                                 int32_t keys_are_sorted,
+                                 cudf_table_handle* out_keys,
+                                 cudf_table_handle* out_values);
+
+/// Grouped shift with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned keys and
+/// values tables.
+cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
+                                    const cudf_column_view_handle* values,
+                                    const int32_t* offsets,
+                                    const cudf_scalar_handle* fill_values,
+                                    int32_t num_value_columns,
+                                    cudf_null_policy_t keys_null_policy,
+                                    int32_t keys_are_sorted,
+                                    cudf_table_handle* out_keys,
+                                    cudf_table_handle* out_values,
+                                    const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

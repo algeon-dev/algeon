@@ -4,7 +4,10 @@
 #include "column.h"
 #include "error.h"
 #include "execution_context.h"
+#include "scalar.h"
 #include "table.h"
+
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,6 +87,33 @@ cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
                                       cudf_column_view_handle boolean_mask,
                                       cudf_column_handle* out,
                                       const cudf_exec_options_t* options);
+
+/// Shift the rows of `input` by `offset` positions, filling indeterminate
+/// outputs with `fill_value`.
+///
+/// `output[i] = input[i - offset]` when `i - offset` is in `[0, input.size())`,
+/// otherwise `output[i] = fill_value`. A positive `offset` shifts forward
+/// (rows move toward larger indices); a negative `offset` shifts backward.
+///
+/// libcudf requires `input` to be a fixed-width or string column. `fill_value`
+/// must have the same data type as `input`. A null fill value forces the
+/// output to be nullable. If `input` itself is nullable, the output is also
+/// nullable regardless of `fill_value`.
+cudf_status_t cudf_shift(cudf_column_view_handle input,
+                         int32_t offset,
+                         cudf_scalar_handle fill_value,
+                         cudf_column_handle* out);
+
+/// Shift with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_shift_ex(cudf_column_view_handle input,
+                            int32_t offset,
+                            cudf_scalar_handle fill_value,
+                            cudf_column_handle* out,
+                            const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

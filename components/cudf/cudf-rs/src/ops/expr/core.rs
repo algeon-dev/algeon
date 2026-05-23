@@ -25,6 +25,12 @@ pub enum Expr {
     Round { input: Box<Expr>, decimal_places: i32 },
     /// Cast to a target type.
     Cast { input: Box<Expr>, target: DataType },
+    /// SQL `TRY_CAST` to a target type: rows that cannot be represented in the
+    /// target type evaluate to null instead of raising an error.
+    ///
+    /// Runtime support is currently limited to `STRING → integer` targets;
+    /// other type pairs return an error at evaluation time.
+    TryCast { input: Box<Expr>, target: DataType },
     /// Null-check: produces BOOL8 where `true` = null.
     IsNull(Box<Expr>),
     /// Validity-check: produces BOOL8 where `true` = non-null.
@@ -75,6 +81,15 @@ impl Expr {
     /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
     pub fn cast(self, target: impl Into<DataType>) -> Expr {
         Expr::Cast { input: Box::new(self), target: target.into() }
+    }
+
+    /// Try-cast the result to the given type, evaluating to null for rows
+    /// the target type cannot represent rather than raising an error.
+    ///
+    /// Runtime support is currently limited to `STRING → integer`; other
+    /// pairs return an error at evaluation time.
+    pub fn try_cast(self, target: impl Into<DataType>) -> Expr {
+        Expr::TryCast { input: Box::new(self), target: target.into() }
     }
 
     /// Access aggregation expression methods for broadcast aggregate
@@ -279,6 +294,7 @@ impl Expr {
             Expr::Alias { name, .. } => Some(name),
             // Single-input nodes inherit from inner expression.
             Expr::Cast { input, .. }
+            | Expr::TryCast { input, .. }
             | Expr::IsNull(input)
             | Expr::IsNotNull(input)
             | Expr::UnaryOp { input, .. }
@@ -367,6 +383,29 @@ impl Expr {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
                 let col = unary::cast_impl(&cv, target, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
+            },
+
+            Expr::TryCast { input, target } => {
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let source_type = cv.data_type()?;
+                if source_type.id() != TypeId::String || !target.id().is_integral() {
+                    return Err(Error::new_with(
+                        ErrorCode::UnsupportedDtype,
+                        "expr::try_cast",
+                        "TRY_CAST currently only supports STRING -> integer targets",
+                    )
+                    .with_detail("source_type_id", format!("{:?}", source_type.id()).to_lowercase())
+                    .with_detail("target_type_id", format!("{:?}", target.id()).to_lowercase()));
+                }
+                let col = string_ops::try_to_integers_impl(
+                    &cv,
+                    target,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    "expr::try_cast",
+                )?;
                 ctx.wrap_column(col)
             },
 

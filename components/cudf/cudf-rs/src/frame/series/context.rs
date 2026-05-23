@@ -940,6 +940,19 @@ impl Series {
         Series::from_column(col)
     }
 
+    pub(super) fn try_to_integers_in_context(
+        &self,
+        output_type: &DataType,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let col = strings::try_to_integers_impl(&cv, output_type, &output_domain, exec_options.as_ref(), operation)?;
+        Series::from_column(col)
+    }
+
     // ── Cast (special: `impl Into<DataType>` needs local conversion) ───
 
     pub(super) fn cast_in_context(

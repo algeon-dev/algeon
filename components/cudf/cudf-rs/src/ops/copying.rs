@@ -9,6 +9,7 @@ use crate::{
             self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID,
             FACT_RIGHT_TYPE_ID, FACT_TABLE_ROW_COUNT, Result,
         },
+        scalar::Scalar,
         table::{Table, TableView},
         types::TypeId,
     },
@@ -473,4 +474,107 @@ pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &C
         Some(execution.exec_options()),
         "copying::copy_if_else",
     )
+}
+
+// ---------------------------------------------------------------------------
+// shift
+// ---------------------------------------------------------------------------
+
+/// Shift the rows of a column by `offset` positions and fill indeterminate
+/// outputs with `fill_value`.
+///
+/// `output[i] = input[i - offset]` when `i - offset` is in `[0, input.len())`,
+/// otherwise `output[i] = fill_value`. A positive `offset` moves rows toward
+/// larger indices (a "lag"); a negative `offset` moves rows toward smaller
+/// indices (a "lead").
+///
+/// libcudf restricts `input` to fixed-width or string types. `fill_value`
+/// must have the same data type as `input`; the check runs in Rust before
+/// libcudf is invoked, with structured facts attached on failure. If `input`
+/// is nullable or `fill_value` is null-valued, the output column is also
+/// nullable.
+///
+/// # Example
+/// ```no_run
+/// use cudf::Runtime;
+///
+/// let rt = Runtime::new().unwrap();
+/// let series = rt.series(&[10i32, 20, 30, 40]).unwrap();
+/// let fill = rt.null_scalar::<i32>().unwrap();
+/// let shifted = cudf::ops::copying::shift(
+///     &series.as_column().view().unwrap(),
+///     1,
+///     &fill,
+/// )
+/// .unwrap();
+/// // Output: [NULL, 10, 20, 30]
+/// # let _ = shifted;
+/// ```
+pub fn shift(input: &ColumnView<'_>, offset: i32, fill_value: &Scalar) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    shift_with_context(input, offset, fill_value, &ctx, "copying::shift")
+}
+
+/// Shift with a borrowed execution override.
+pub fn shift_in(
+    input: &ColumnView<'_>,
+    offset: i32,
+    fill_value: &Scalar,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<Column> {
+    shift_with_context(input, offset, fill_value, ctx, "copying::shift_in")
+}
+
+fn shift_with_context(
+    input: &ColumnView<'_>,
+    offset: i32,
+    fill_value: &Scalar,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<Column> {
+    validate_shift_fill_dtype(input, fill_value, operation)?;
+    let execution = ResolvedExecution::binary(input.execution_domain(), fill_value.execution_domain(), ctx, operation)?;
+    shift_impl(input, offset, fill_value, execution.output_domain(), Some(execution.exec_options()), operation)
+}
+
+fn validate_shift_fill_dtype(input: &ColumnView<'_>, fill_value: &Scalar, operation: &'static str) -> Result<()> {
+    let input_dtype = input.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+    let fill_dtype = fill_value.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+    if input_dtype != fill_dtype {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            format!("shift fill_value dtype ({:?}) must match input dtype ({:?})", fill_dtype.id(), input_dtype.id()),
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, input_dtype.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, fill_dtype.id())
+        .with_detail("resource", "shift_fill_value")
+        .with_detail("reason", "dtype_mismatch")
+        .with_detail("remedy", "construct fill_value with the same DataType as input"));
+    }
+    Ok(())
+}
+
+pub(crate) fn shift_impl(
+    input: &ColumnView<'_>,
+    offset: i32,
+    fill_value: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_shift_ex(input.raw_handle(), offset, fill_value.raw_handle(), &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_shift(input.raw_handle(), offset, fill_value.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [("offset", offset.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
