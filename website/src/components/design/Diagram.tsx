@@ -549,15 +549,6 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// ArchitectureDiagram — the single static overview on the site homepage.
-// The query path runs down the left column and results collect on the right,
-// looping back to the caller; local disk and the lakehouse sit in one storage
-// container and share a single KvikIO read path into the GPU, and the dashed
-// edge marks the DataFusion CPU fallback. No node is interactive and no edge
-// is animated.
-// ---------------------------------------------------------------------------
-
 const ARCH_KIND = {size: 11.5, lh: 18, track: 0.07};
 const ARCH_NAME = {size: 17, lh: 25};
 const ARCH_NOTE = {size: 13, lh: 19};

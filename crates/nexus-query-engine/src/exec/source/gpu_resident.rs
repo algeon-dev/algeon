@@ -63,11 +63,7 @@ pub fn read_gpu_resident_source(
 
     metrics.record_input_batch(handle.num_rows() as u64);
 
-    // Affinity only establishes that a device-to-device transfer is possible;
-    // it does not establish ownership of the producing allocation. The handle
-    // retains the stable exact binding of the context that created it; unlike
-    // diagnostic placement lineage, that binding survives query-lifetime
-    // wrappers without turning a same-attempt handoff into a copy.
+    // Device affinity permits transfer but does not establish allocation ownership.
     let same_context_binding = handle.runtime().binding_id() == context_runtime.binding_id();
     if same_context_binding {
         metrics.boundary.record_gpu_resident_input_handoff();

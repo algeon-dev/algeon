@@ -300,7 +300,6 @@ fn validate_mark_join_output_projection(
         .with_fact("output_schema_len", output_schema.fields().len())
         .with_fact("expected_output_count", expected_output_count));
     }
-    // Validate left-side projection columns.
     for (index, output) in join.spec.output_projection.iter().enumerate() {
         validate_join_column_ref(&output.column, output.side)?;
         let data_type = validate_column(output.column.name(), left_schema, left_available)?;
@@ -325,7 +324,6 @@ fn validate_mark_join_output_projection(
             .with_fact("output_type", format!("{:?}", schema_field.data_type())));
         }
     }
-    // Validate the mark column at the last position.
     let mark_field = output_schema.field(join.spec.output_projection.len());
     if mark_field.name() != mark_column_name {
         return Err(QueryError::new(

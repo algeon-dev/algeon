@@ -146,7 +146,6 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     let mut cases: Vec<CaseResult> = Vec::new();
 
-    // ---- Parquet relational-execution matrix ----
     cases.push(
         run_parquet_case(
             "parquet_native_default_control_supported",
@@ -301,7 +300,6 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     // until the ordinary process backend has closed completely.
     let runtime_failure_case_index = cases.len();
 
-    // ---- Iceberg dual-mode provider ----
     cases.push(run_iceberg_datafusion_baseline_executes(&backend).await);
     cases.push(run_iceberg_native_group_by_rewrites(&backend).await);
     cases.push(run_iceberg_unsupported_expression_retains_executable_datafusion_plan(&backend).await);
@@ -1166,8 +1164,6 @@ async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> Cas
         },
     }
 }
-
-// ----- helpers ---------------------------------------------------------------
 
 #[derive(Debug)]
 struct FixedPlanner {
