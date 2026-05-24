@@ -160,13 +160,13 @@ fn compatible_table_execution(tables: &[&TableView<'_>]) -> Result<ResolvedExecu
 /// All columns must have the same data type.
 pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
     let execution = compatible_column_execution(columns)?;
-    concatenate_columns_with_exec(columns, execution.output_domain(), Some(execution.exec_options()))
+    concatenate_columns_with_exec(columns, execution.output_domain(), execution.exec_options())
 }
 
 pub(crate) fn concatenate_columns_with_exec(
     columns: &[&ColumnView<'_>],
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<Column> {
     validate_column_types(columns, "concatenate::concatenate_columns")?;
     let handles: Vec<*mut std::os::raw::c_void> = columns.iter().map(|c| c.raw_handle()).collect();
@@ -182,12 +182,7 @@ pub(crate) fn concatenate_columns_with_exec(
     error::check_status_in_with_details(
         // SAFETY: All column view handles are valid (NonNull maintained by ColumnView).
         // handles slice is valid for handles.len() elements.
-        match exec_options {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_concatenate_columns_ex(handles.as_ptr(), num_columns, exec_options, &mut out)
-            },
-            None => unsafe { cudf_sys::cudf_concatenate_columns(handles.as_ptr(), num_columns, &mut out) },
-        },
+        unsafe { cudf_sys::cudf_concatenate_columns_ex(handles.as_ptr(), num_columns, exec_options, &mut out) },
         "concatenate::concatenate_columns",
         [("num_columns", handles.len().to_string())],
     )?;
@@ -200,13 +195,13 @@ pub(crate) fn concatenate_columns_with_exec(
 /// All tables must have the same number of columns with matching types.
 pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
     let execution = compatible_table_execution(tables)?;
-    concatenate_tables_with_exec(tables, execution.output_domain(), Some(execution.exec_options()))
+    concatenate_tables_with_exec(tables, execution.output_domain(), execution.exec_options())
 }
 
 pub(crate) fn concatenate_tables_with_exec(
     tables: &[&TableView<'_>],
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<Table> {
     validate_table_column_types(tables, "concatenate::concatenate_tables")?;
     let handles: Vec<*mut std::os::raw::c_void> = tables.iter().map(|t| t.raw_handle()).collect();
@@ -222,12 +217,7 @@ pub(crate) fn concatenate_tables_with_exec(
     error::check_status_in_with_details(
         // SAFETY: All table view handles are valid (NonNull maintained by TableView).
         // handles slice is valid for handles.len() elements.
-        match exec_options {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_concatenate_tables_ex(handles.as_ptr(), num_tables, exec_options, &mut out)
-            },
-            None => unsafe { cudf_sys::cudf_concatenate_tables(handles.as_ptr(), num_tables, &mut out) },
-        },
+        unsafe { cudf_sys::cudf_concatenate_tables_ex(handles.as_ptr(), num_tables, exec_options, &mut out) },
         "concatenate::concatenate_tables",
         [("num_tables", handles.len().to_string())],
     )?;

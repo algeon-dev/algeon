@@ -133,32 +133,27 @@ fn require_timestamp_offset_input(input: &ColumnView<'_>, operation: &'static st
 pub fn floor_datetimes(input: &ColumnView<'_>, frequency: DatetimeRoundingFrequency) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "datetime::floor")?;
-    floor_datetimes_impl(input, frequency, execution.output_domain(), Some(execution.exec_options()), "datetime::floor")
+    floor_datetimes_impl(input, frequency, execution.output_domain(), execution.exec_options(), "datetime::floor")
 }
 
 pub(crate) fn floor_datetimes_impl(
     input: &ColumnView<'_>,
     frequency: DatetimeRoundingFrequency,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let input_type_id = require_timestamp_offset_input(input, operation)?;
     let mut out = ptr::null_mut();
     let frequency_ffi = frequency.to_raw();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_datetime_floor_ex(input.raw_handle(), frequency_ffi, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_datetime_floor(input.raw_handle(), frequency_ffi, &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_datetime_floor_ex(input.raw_handle(), frequency_ffi, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
         [
             ("frequency", frequency.name().to_string()),
             ("input_type_id", input_type_id.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -176,7 +171,7 @@ pub fn extract_component(input: &ColumnView<'_>, component: DatetimeComponent) -
         input,
         component,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "datetime::extract_component",
     )
 }
@@ -185,17 +180,14 @@ pub(crate) fn extract_component_impl(
     input: &ColumnView<'_>,
     component: DatetimeComponent,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let input_type_id = require_timestamp_input(input, component, operation)?;
     let mut out = ptr::null_mut();
     let component_ffi = component.to_raw();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_datetime_extract_component_ex(input.raw_handle(), component_ffi, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_datetime_extract_component(input.raw_handle(), component_ffi, &mut out) },
+    let status = unsafe {
+        cudf_sys::cudf_datetime_extract_component_ex(input.raw_handle(), component_ffi, &mut out, exec_options)
     };
     error::check_status_in_with_details(
         status,
@@ -204,7 +196,7 @@ pub(crate) fn extract_component_impl(
             ("component", component.name().to_string()),
             ("input_type_id", input_type_id.to_string()),
             ("output_type_id", TypeId::Int16.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -222,7 +214,7 @@ pub fn add_calendrical_months(input: &ColumnView<'_>, months: i32) -> Result<Col
         input,
         months,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "datetime::add_calendrical_months",
     )
 }
@@ -231,16 +223,13 @@ pub(crate) fn add_calendrical_months_impl(
     input: &ColumnView<'_>,
     months: i32,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let input_type_id = require_timestamp_offset_input(input, operation)?;
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_datetime_add_calendrical_months_scalar_ex(input.raw_handle(), months, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_datetime_add_calendrical_months_scalar(input.raw_handle(), months, &mut out) },
+    let status = unsafe {
+        cudf_sys::cudf_datetime_add_calendrical_months_scalar_ex(input.raw_handle(), months, &mut out, exec_options)
     };
     error::check_status_in_with_details(
         status,
@@ -248,7 +237,7 @@ pub(crate) fn add_calendrical_months_impl(
         [
             ("months", months.to_string()),
             ("input_type_id", input_type_id.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }

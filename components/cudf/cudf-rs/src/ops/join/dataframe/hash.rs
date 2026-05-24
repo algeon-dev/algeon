@@ -105,13 +105,7 @@ impl DataFrame {
         ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
-        self.merge_impl(
-            right,
-            options,
-            output_domain.explicit_exec_options_raw(),
-            Some(output_domain),
-            "dataframe::with_execution::merge",
-        )
+        self.merge_impl(right, options, Some(output_domain), "dataframe::with_execution::merge")
     }
 
     /// Merge-split using a borrowed per-operation execution override.
@@ -131,14 +125,12 @@ impl DataFrame {
         }
 
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
-        let exec_options = output_domain.explicit_exec_options_raw();
         self.join_split_on_impl_with_null_eq_and_context(
             right,
             JoinSplitKeys { left_on: &left_on_refs, right_on: &right_on_refs },
             JoinSplitCall {
                 join_type: options.join_type(),
                 null_equality: options.null_eq(),
-                exec_options: exec_options.as_ref(),
                 forced_output_domain: Some(output_domain),
                 operation,
             },
@@ -296,14 +288,13 @@ impl DataFrame {
     /// - `left_on` and `right_on` have different lengths
     /// - A key column is not found in its respective DataFrame
     pub fn merge(&self, right: &DataFrame, options: join::MergeOptions) -> Result<Self> {
-        self.merge_impl(right, options, None, None, "dataframe::merge")
+        self.merge_impl(right, options, None, "dataframe::merge")
     }
 
     fn merge_impl(
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -326,13 +317,7 @@ impl DataFrame {
         let split = self.join_split_on_impl_with_null_eq_and_context(
             right,
             JoinSplitKeys { left_on: &left_on_refs, right_on: &right_on_refs },
-            JoinSplitCall {
-                join_type,
-                null_equality: options.null_eq(),
-                exec_options: exec_options.as_ref(),
-                forced_output_domain,
-                operation,
-            },
+            JoinSplitCall { join_type, null_equality: options.null_eq(), forced_output_domain, operation },
         )?;
 
         // Reassemble with high-level suffix logic.
@@ -374,7 +359,6 @@ impl DataFrame {
             JoinSplitCall {
                 join_type: options.join_type(),
                 null_equality: options.null_eq(),
-                exec_options: None,
                 forced_output_domain: None,
                 operation,
             },
@@ -689,12 +673,11 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         keys: JoinSplitKeys<'_, '_>,
-        call: JoinSplitCall<'_>,
+        call: JoinSplitCall,
     ) -> Result<DataFrameJoinSides> {
         let operation = call.operation;
         let join_type = call.join_type;
         let null_equality = call.null_equality;
-        let exec_options = call.exec_options;
         let output_domain = call.forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
@@ -702,7 +685,6 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.unwrap_or(execution.exec_options());
 
         if keys.left_on.len() != keys.right_on.len() {
             return Err(merge_key_count_mismatch_error(operation, keys.left_on.len(), keys.right_on.len()));
@@ -731,7 +713,7 @@ impl DataFrame {
             },
             null_equality,
             join_type,
-            join::JoinCallContext::new(&output_domain, Some(resolved_exec_options), operation),
+            join::JoinCallContext::new(&output_domain, execution.exec_options(), operation),
         )?;
 
         // Build schemas: left side uses left key names, right side uses right key names.

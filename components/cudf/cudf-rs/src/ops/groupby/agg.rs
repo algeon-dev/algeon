@@ -91,7 +91,7 @@ pub(crate) fn groupby_aggregate_impl(
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<GroupByAggregationOutput> {
     let request_count_usize = requests.len();
@@ -140,41 +140,23 @@ pub(crate) fn groupby_aggregate_impl(
     let mut out_total_columns: i32 = 0;
 
     let null_policy_ffi = null_policy.to_raw();
-    let status = if let Some(options) = exec_options {
-        unsafe {
-            cudf_sys::cudf_groupby_aggregate_ex(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                all_agg_handles.as_ptr(),
-                agg_counts.as_ptr(),
-                request_count,
-                i32::try_from(all_agg_handles.len()).map_err(|_| {
-                    groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
-                })?,
-                null_policy_ffi,
-                &mut out_keys,
-                &mut out_values,
-                &mut out_total_columns,
-                options,
-            )
-        }
-    } else {
-        unsafe {
-            cudf_sys::cudf_groupby_aggregate(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                all_agg_handles.as_ptr(),
-                agg_counts.as_ptr(),
-                request_count,
-                i32::try_from(all_agg_handles.len()).map_err(|_| {
-                    groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
-                })?,
-                null_policy_ffi,
-                &mut out_keys,
-                &mut out_values,
-                &mut out_total_columns,
-            )
-        }
+    let total_agg_handle_count = i32::try_from(all_agg_handles.len()).map_err(|_| {
+        groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
+    })?;
+    let status = unsafe {
+        cudf_sys::cudf_groupby_aggregate_ex(
+            keys.raw_handle(),
+            value_handles.as_ptr(),
+            all_agg_handles.as_ptr(),
+            agg_counts.as_ptr(),
+            request_count,
+            total_agg_handle_count,
+            null_policy_ffi,
+            &mut out_keys,
+            &mut out_values,
+            &mut out_total_columns,
+            exec_options,
+        )
     };
 
     for handle in &all_agg_handles {
@@ -189,7 +171,7 @@ pub(crate) fn groupby_aggregate_impl(
             ("request_count", request_count.to_string()),
             ("total_requested_aggs", total_requested_aggs.to_string()),
             ("null_policy", (null_policy as i32).to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 
@@ -229,7 +211,7 @@ pub(crate) fn groupby_scan_impl(
     null_policy: NullPolicy,
     keys_are_sorted: bool,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<GroupByScanOutput> {
     let request_count_usize = requests.len();
@@ -274,39 +256,21 @@ pub(crate) fn groupby_scan_impl(
     let total_agg_count = i32::try_from(all_agg_handles.len()).map_err(|_| {
         groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
     })?;
-    let status = if let Some(options) = exec_options {
-        unsafe {
-            cudf_sys::cudf_groupby_scan_ex(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                all_agg_handles.as_ptr(),
-                agg_counts.as_ptr(),
-                request_count,
-                total_agg_count,
-                null_policy_ffi,
-                keys_are_sorted_ffi,
-                &mut out_keys,
-                &mut out_values,
-                &mut out_total_columns,
-                options,
-            )
-        }
-    } else {
-        unsafe {
-            cudf_sys::cudf_groupby_scan(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                all_agg_handles.as_ptr(),
-                agg_counts.as_ptr(),
-                request_count,
-                total_agg_count,
-                null_policy_ffi,
-                keys_are_sorted_ffi,
-                &mut out_keys,
-                &mut out_values,
-                &mut out_total_columns,
-            )
-        }
+    let status = unsafe {
+        cudf_sys::cudf_groupby_scan_ex(
+            keys.raw_handle(),
+            value_handles.as_ptr(),
+            all_agg_handles.as_ptr(),
+            agg_counts.as_ptr(),
+            request_count,
+            total_agg_count,
+            null_policy_ffi,
+            keys_are_sorted_ffi,
+            &mut out_keys,
+            &mut out_values,
+            &mut out_total_columns,
+            exec_options,
+        )
     };
 
     for handle in &all_agg_handles {
@@ -322,7 +286,7 @@ pub(crate) fn groupby_scan_impl(
             ("total_requested_aggs", total_requested_aggs.to_string()),
             ("null_policy", (null_policy as i32).to_string()),
             ("keys_are_sorted", keys_are_sorted.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 
@@ -481,7 +445,7 @@ pub fn groupby_aggregate(
         requests,
         null_policy,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "groupby::groupby_aggregate",
     )
 }
@@ -503,7 +467,7 @@ pub fn groupby_scan_sorted(
         null_policy,
         true,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "groupby::groupby_scan_sorted",
     )
 }

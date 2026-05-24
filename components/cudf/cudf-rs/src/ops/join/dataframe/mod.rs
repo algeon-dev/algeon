@@ -43,7 +43,7 @@ fn hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
 fn hash_join_retained_preprocessing_fallback_supported(build: &TempTableView<'_>) -> Result<bool> {
     for index in 0..build.table().num_columns()? {
         match build.table().column(index)?.data_type()?.id() {
-            TypeId::List | TypeId::Struct => return Ok(false),
+            TypeId::String | TypeId::List | TypeId::Struct => return Ok(false),
             _ => {},
         }
     }
@@ -55,10 +55,9 @@ struct JoinSplitKeys<'a, 'key> {
     right_on: &'a [&'key str],
 }
 
-struct JoinSplitCall<'a> {
+struct JoinSplitCall {
     join_type: join::JoinType,
     null_equality: join::NullEquality,
-    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
     forced_output_domain: Option<Arc<ExecutionDomain>>,
     operation: &'static str,
 }
@@ -207,7 +206,7 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
         &lcv,
         &rcv,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }

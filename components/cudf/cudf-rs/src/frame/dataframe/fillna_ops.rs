@@ -107,13 +107,7 @@ impl DataFrame {
     /// External callers should use `drop_duplicates` with [`DropDuplicatesOptions`] instead.
     pub(crate) fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
         let output_domain = Arc::clone(&self.domain);
-        self.distinct_impl(
-            subset,
-            keep,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::distinct",
-        )
+        self.distinct_impl(subset, keep, output_domain, "dataframe::distinct")
     }
 
     /// Drop rows where the specified columns contain nulls.
@@ -127,13 +121,7 @@ impl DataFrame {
     /// Returns an error if any name in `subset` is not in the schema.
     pub(crate) fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
         let output_domain = Arc::clone(&self.domain);
-        self.drop_nulls_impl(
-            subset,
-            keep_threshold,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::drop_nulls",
-        )
+        self.drop_nulls_impl(subset, keep_threshold, output_domain, "dataframe::drop_nulls")
     }
 
     /// Drop rows containing null values.
@@ -185,13 +173,7 @@ impl DataFrame {
         };
 
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.drop_nulls_impl(
-            &subset_names,
-            threshold,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::dropna",
-        )
+        self.drop_nulls_impl(&subset_names, threshold, output_domain, "dataframe::with_execution::dropna")
     }
 
     /// Remove duplicate rows.
@@ -213,13 +195,7 @@ impl DataFrame {
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.distinct_impl(
-            &subset_names,
-            opts.keep,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::drop_duplicates",
-        )
+        self.distinct_impl(&subset_names, opts.keep, output_domain, "dataframe::with_execution::drop_duplicates")
     }
 
     /// Replace null values in a single column with a plain Rust value.
@@ -253,7 +229,7 @@ impl DataFrame {
             &cv,
             &fill_cv,
             execution.output_domain(),
-            Some(execution.exec_options()),
+            execution.exec_options(),
             operation,
         )?;
 
@@ -270,20 +246,18 @@ impl DataFrame {
         &self,
         subset: &[&str],
         keep: DuplicateKeepOption,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
         let result_table = stream_compaction::distinct_impl(
             &tv,
             stream_compaction::DistinctConfig::new(&key_indices, keep, NullEquality::Equal, NanEquality::AllEqual),
-            stream_compaction::StreamCompactionExecution::new(&output_domain, Some(resolved_exec_options), operation),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, execution.exec_options(), operation),
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -292,13 +266,11 @@ impl DataFrame {
         &self,
         subset: &[&str],
         keep_threshold: i32,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
@@ -307,7 +279,7 @@ impl DataFrame {
             &key_indices,
             keep_threshold,
             &output_domain,
-            Some(resolved_exec_options),
+            execution.exec_options(),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())

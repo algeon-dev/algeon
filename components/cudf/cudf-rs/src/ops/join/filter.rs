@@ -69,32 +69,18 @@ fn filter_join_indices_impl(
 
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    let status = match context.exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_filter_join_indices_ex(
-                inputs.left.raw_handle(),
-                inputs.right.raw_handle(),
-                inputs.left_indices.raw_handle(),
-                inputs.right_indices.raw_handle(),
-                inputs.predicate.raw_handle(),
-                filter_join_kind_raw(join_type),
-                &mut out_left,
-                &mut out_right,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_filter_join_indices(
-                inputs.left.raw_handle(),
-                inputs.right.raw_handle(),
-                inputs.left_indices.raw_handle(),
-                inputs.right_indices.raw_handle(),
-                inputs.predicate.raw_handle(),
-                filter_join_kind_raw(join_type),
-                &mut out_left,
-                &mut out_right,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_filter_join_indices_ex(
+            inputs.left.raw_handle(),
+            inputs.right.raw_handle(),
+            inputs.left_indices.raw_handle(),
+            inputs.right_indices.raw_handle(),
+            inputs.predicate.raw_handle(),
+            filter_join_kind_raw(join_type),
+            &mut out_left,
+            &mut out_right,
+            context.exec_options,
+        )
     };
 
     error::check_status_in_with_details(
@@ -102,7 +88,7 @@ fn filter_join_indices_impl(
         context.operation,
         [
             ("join_type", format!("{:?}", join_type).to_lowercase()),
-            ("execution_context_provided", context.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 
@@ -122,7 +108,7 @@ fn filter_join_indices_with_context(
     filter_join_indices_impl(
         inputs,
         join_type,
-        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
+        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
     )
 }
 
@@ -254,7 +240,7 @@ impl FilteredJoin {
             [
                 ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
                 ("load_factor", options.load_factor_value().to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "filtered_join_pre_build_reservation_size_bytes".to_string()),
             ],
         )?;
@@ -285,7 +271,7 @@ impl FilteredJoin {
                 [
                     ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
                     ("load_factor", options.load_factor_value().to_string()),
-                    ("execution_context_provided", true.to_string()),
+                    ("execution_authority", "resolved_domain".to_string()),
                 ],
             )?;
             FilteredJoinHandle {
@@ -521,7 +507,7 @@ impl FilteredJoin {
             [
                 ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
                 ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "filtered_join_exact_output_size".to_string()),
             ],
         )?;
@@ -567,7 +553,7 @@ impl FilteredJoin {
             [
                 ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
                 ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("output_size_provided", true.to_string()),
                 ("output_size", output_size.to_string()),
             ],
@@ -614,7 +600,7 @@ impl FilteredJoin {
             [
                 ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
                 ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "filtered_join_retained_probe_state".to_string()),
             ],
         )?;
@@ -675,19 +661,8 @@ impl FilteredJoinProbeState {
 
     /// Materialize selected probe indices from retained membership state.
     pub fn materialize_indices(self) -> Result<SingleSideJoinIndices> {
-        let mut out = ptr::null_mut();
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_filtered_join_probe_materialize_indices(self.handle.handle.as_ptr(), &mut out) },
-            "filtered_join_probe_state::materialize_indices",
-            [
-                ("join_type", if self.semi_join { "left_semi" } else { "left_anti" }.to_string()),
-                ("output_size", self.output_size.to_string()),
-                ("reservation_contract", "filtered_join_retained_probe_state_materialize_indices".to_string()),
-            ],
-        )?;
-        Ok(SingleSideJoinIndices {
-            indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(&self.output_domain)) }?,
-        })
+        let ctx = ExecutionOverrides::new();
+        self.materialize_indices_in(&ctx)
     }
 
     /// Materialize selected probe indices from retained membership state using
@@ -709,7 +684,7 @@ impl FilteredJoinProbeState {
             [
                 ("join_type", if self.semi_join { "left_semi" } else { "left_anti" }.to_string()),
                 ("output_size", self.output_size.to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "filtered_join_retained_probe_state_materialize_indices".to_string()),
             ],
         )?;

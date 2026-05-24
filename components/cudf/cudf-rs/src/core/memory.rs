@@ -4,8 +4,9 @@
 //!
 //! In `cudf-rs`, these handles participate in execution in two distinct ways:
 //!
-//! - [`crate::Runtime`] owns one default memory resource as part of its
-//!   retained-provenance bundle for a workflow.
+//! - [`crate::Runtime`] carries one default memory-resource handle as part of
+//!   its retained-provenance bundle. By default this is the process-local
+//!   [`DeviceMemoryManager`] resource for the runtime's CUDA device.
 //! - [`crate::ExecutionOverrides`] can borrow `&DeviceMemoryResource` to
 //!   override allocator selection for one supported operation without mutating
 //!   the runtime's default.
@@ -15,11 +16,19 @@
 //! constructors through the resolved allocator for the active runtime/override
 //! context.
 //!
-//! Prefer [`crate::RuntimeBuilder::with_pool_memory_resource`] when you want
-//! the runtime builder to create and own a pool after it has resolved the
-//! target CUDA device. Use [`DeviceMemoryResource::pool_on`] or
-//! [`DeviceMemoryResource::cuda_on`] when you need an explicit handle first so
-//! you can install it into one or more runtimes, or borrow it for a one-off
+//! Query-style bounded execution should use the device-level manager plus
+//! stream-bound reservations: allocate a [`crate::Runtime`], create an
+//! [`crate::ExecutionBudgetToken`] or [`StreamReservationLease`], and execute
+//! with the lease's stream and manager resource. This keeps one long-lived
+//! allocator adaptor per device while charging allocations to the stream-bound
+//! task.
+//!
+//! Explicit CUDA and pool resources remain available for advanced library use,
+//! diagnostics, tests, and non-query workflows. Use
+//! [`crate::RuntimeBuilder::with_pool_memory_resource`] when you specifically
+//! want one fresh pool owned by a runtime, or [`DeviceMemoryResource::pool_on`]
+//! / [`DeviceMemoryResource::cuda_on`] when you need an explicit handle first
+//! so you can install it into one or more runtimes, or borrow it for a one-off
 //! override. In all cases, the runtime, stream, and memory resource must be on
 //! the same CUDA device.
 //!
@@ -33,8 +42,17 @@
 //!
 //! let device = DeviceId::new(0).unwrap();
 //!
-//! // Recommended: let the builder create and own the default allocator for
-//! // this workflow after it has resolved the runtime's target device.
+//! // Default query-backend path: use the device-level manager resource.
+//! let runtime = Runtime::builder().with_device(device).build().unwrap();
+//! let manager = runtime.device_memory_manager().unwrap();
+//! let lease = runtime.stream_reservation(7, 64 * 1024 * 1024).unwrap();
+//!
+//! assert_eq!(runtime.memory_resource().device(), device);
+//! assert_eq!(manager.resource().device(), device);
+//! assert_eq!(lease.memory_resource().device(), device);
+//!
+//! // Advanced: create a runtime-owned pool when you specifically need
+//! // allocator isolation instead of stream-bound query reservations.
 //! let runtime = Runtime::builder()
 //!     .with_device(device)
 //!     .with_pool_memory_resource(256 * 1024 * 1024, None)
@@ -75,7 +93,7 @@ use std::{
 use crate::{
     DeviceId,
     core::error::{self, Result},
-    runtime::device_guard::DeviceGuard,
+    runtime::{device_guard::DeviceGuard, stream::CudaStream},
 };
 
 /// Usage counters reported by a production budget-tracking memory resource.
@@ -96,6 +114,67 @@ pub struct DeviceMemoryResourceUsage {
 
 impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage {
     fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
+        Self {
+            allocation_limit_bytes: value.allocation_limit_bytes,
+            current_bytes: value.current_bytes,
+            peak_bytes: value.peak_bytes,
+            total_bytes: value.total_bytes,
+            current_aligned_bytes: value.current_aligned_bytes,
+            peak_aligned_bytes: value.peak_aligned_bytes,
+            total_allocations: value.total_allocations,
+            current_allocations: value.current_allocations,
+            peak_allocations: value.peak_allocations,
+            failed_allocation_count: value.failed_allocation_count,
+            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
+        }
+    }
+}
+
+/// Usage counters for a stream-bound reservation.
+///
+/// These counters are recorded by the device-level reservation-aware memory
+/// manager. `current_*` counters include retained allocations that were
+/// created while the reservation was attached, even after the reservation has
+/// been detached from its stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservationUsage {
+    pub reservation_id: u64,
+    pub attached: bool,
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+}
+
+impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationUsage {
+    fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
+        Self {
+            reservation_id: value.reserved[0],
+            attached: value.reserved[1] != 0,
+            allocation_limit_bytes: value.allocation_limit_bytes,
+            current_bytes: value.current_bytes,
+            peak_bytes: value.peak_bytes,
+            total_bytes: value.total_bytes,
+            current_aligned_bytes: value.current_aligned_bytes,
+            peak_aligned_bytes: value.peak_aligned_bytes,
+            total_allocations: value.total_allocations,
+            current_allocations: value.current_allocations,
+            peak_allocations: value.peak_allocations,
+            failed_allocation_count: value.failed_allocation_count,
+            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
+        }
+    }
+}
+
+impl From<ReservationUsage> for DeviceMemoryResourceUsage {
+    fn from(value: ReservationUsage) -> Self {
         Self {
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
@@ -141,6 +220,177 @@ struct DeviceMemoryResourceHandle {
 unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
 
+/// Process-local reservation-aware memory manager for one CUDA device.
+///
+/// The native layer creates at most one manager per device. The manager owns a
+/// shared physical pool and one reservation-aware adaptor installed as that
+/// device's current RMM resource. Query reservations attach to streams; normal
+/// execution options keep using the same device-level adaptor as their memory
+/// resource.
+#[derive(Clone, Debug)]
+pub struct DeviceMemoryManager {
+    handle: Arc<DeviceMemoryManagerHandle>,
+    resource: DeviceMemoryResource,
+}
+
+#[derive(Debug)]
+struct DeviceMemoryManagerHandle {
+    raw: NonNull<std::ffi::c_void>,
+    device: DeviceId,
+}
+
+// SAFETY: the native manager is process-local, internally synchronized, and
+// intentionally shared across threads for one CUDA device.
+unsafe impl Send for DeviceMemoryManagerHandle {}
+unsafe impl Sync for DeviceMemoryManagerHandle {}
+
+/// A live reservation attached to a CUDA stream.
+///
+/// Dropping this value detaches the reservation from the stream. Allocations
+/// made while it was attached remain accounted to the reservation identity
+/// until those retained objects are destroyed.
+#[derive(Debug)]
+pub struct StreamReservationLease {
+    manager: DeviceMemoryManager,
+    stream: CudaStream,
+    reservation: ReservationHandle,
+}
+
+#[derive(Debug)]
+struct ReservationHandle {
+    raw: NonNull<std::ffi::c_void>,
+}
+
+// SAFETY: native detach/usage paths are synchronized by the manager.
+unsafe impl Send for ReservationHandle {}
+unsafe impl Sync for ReservationHandle {}
+
+impl DeviceMemoryManager {
+    /// Resolve the process-local manager for `device`, creating it if needed.
+    ///
+    /// On first creation the manager installs its reservation-aware adaptor as
+    /// the current RMM resource for `device`. Later calls return aliases to
+    /// the same manager and resource.
+    pub fn for_device(device: DeviceId) -> Result<Self> {
+        let _guard = DeviceGuard::new(device)?;
+        let mut manager = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_manager_for_device(device.ordinal_raw(), &mut manager) },
+            "memory::device_memory_manager::for_device",
+            [("device", device.ordinal().to_string())],
+        )?;
+        let manager = error::require_non_null(manager, "memory::device_memory_manager::for_device", "memory manager")?;
+
+        let mut resource = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_manager_resource(manager.as_ptr(), &mut resource) },
+            "memory::device_memory_manager::resource",
+        )?;
+        let resource =
+            DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")?;
+
+        Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
+    }
+
+    /// CUDA device owned by this manager.
+    pub fn device(&self) -> DeviceId {
+        self.handle.device
+    }
+
+    /// Device-level reservation-aware adaptor for explicit execution options.
+    pub fn resource(&self) -> &DeviceMemoryResource {
+        &self.resource
+    }
+
+    /// Attach a hard live-byte reservation to `stream`.
+    pub fn reserve_stream(
+        &self,
+        stream: &CudaStream,
+        reservation_id: u64,
+        limit_bytes: usize,
+    ) -> Result<StreamReservationLease> {
+        if stream.device() != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::reserve_stream",
+                "stream reservation requires stream and memory manager to be on the same CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(stream.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "stream_and_memory_manager")
+            .with_detail("reason", "cross_device_stream_reservation"));
+        }
+
+        let mut reservation = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_attach_reservation(
+                    self.handle.raw.as_ptr(),
+                    stream.as_raw(),
+                    reservation_id,
+                    limit_bytes,
+                    &mut reservation,
+                )
+            },
+            "memory::device_memory_manager::reserve_stream",
+            [
+                ("device", self.device().ordinal().to_string()),
+                ("reservation_id", reservation_id.to_string()),
+                ("limit_bytes", limit_bytes.to_string()),
+            ],
+        )?;
+        let reservation = ReservationHandle {
+            raw: error::require_non_null(
+                reservation,
+                "memory::device_memory_manager::reserve_stream",
+                "stream reservation",
+            )?,
+        };
+        Ok(StreamReservationLease { manager: self.clone(), stream: stream.clone(), reservation })
+    }
+}
+
+impl StreamReservationLease {
+    /// Manager that owns the reservation-aware device resource.
+    pub fn manager(&self) -> &DeviceMemoryManager {
+        &self.manager
+    }
+
+    /// CUDA stream this reservation is attached to.
+    pub fn stream(&self) -> &CudaStream {
+        &self.stream
+    }
+
+    /// Device-level memory resource to place in explicit execution options.
+    pub fn memory_resource(&self) -> &DeviceMemoryResource {
+        self.manager.resource()
+    }
+
+    /// Snapshot usage counters for this reservation.
+    pub fn usage(&self) -> Result<ReservationUsage> {
+        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_reservation_usage(self.reservation.raw.as_ptr(), &mut usage) },
+            "memory::stream_reservation_lease::usage",
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Borrow this lease as per-operation execution overrides.
+    pub fn execution_overrides(&self) -> crate::ExecutionOverrides<'_> {
+        crate::ExecutionOverrides::new().with_stream(&self.stream).with_memory_resource(self.memory_resource())
+    }
+}
+
+impl Drop for ReservationHandle {
+    fn drop(&mut self) {
+        let status = unsafe { cudf_sys::cudf_reservation_detach(self.raw.as_ptr()) };
+        if status != cudf_sys::CUDF_SUCCESS {
+            eprintln!("[cudf::StreamReservationLease] warning: failed to detach stream reservation");
+        }
+    }
+}
+
 impl DeviceMemoryResource {
     fn raw_maximum_pool_size(maximum_pool_size: Option<usize>) -> usize {
         maximum_pool_size.unwrap_or(0)
@@ -164,7 +414,7 @@ impl DeviceMemoryResource {
     /// Create a CUDA (default) memory resource handle on an explicit device.
     ///
     /// The resource is created immediately on `device`, and the calling
-    /// thread's previous ambient CUDA device is restored before this function
+    /// thread's previous CUDA current device is restored before this function
     /// returns.
     pub fn cuda_on(device: DeviceId) -> Result<Self> {
         let _guard = DeviceGuard::new(device)?;
@@ -189,7 +439,7 @@ impl DeviceMemoryResource {
     /// Create a pool memory resource handle on an explicit device.
     ///
     /// The resource is created immediately on `device`, and the calling
-    /// thread's previous ambient CUDA device is restored before this function
+    /// thread's previous CUDA current device is restored before this function
     /// returns.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.

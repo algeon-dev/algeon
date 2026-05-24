@@ -121,14 +121,14 @@ impl<'a> SortKeyConfig<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct SortExecution<'a> {
     output_domain: &'a Arc<ExecutionDomain>,
-    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    exec_options: &'a cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 }
 
 impl<'a> SortExecution<'a> {
     pub(crate) fn new(
         output_domain: &'a Arc<ExecutionDomain>,
-        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        exec_options: &'a cudf_sys::cudf_exec_options_t,
         operation: &'static str,
     ) -> Self {
         Self { output_domain, exec_options, operation }
@@ -177,46 +177,35 @@ pub(crate) fn sort_table_impl(
     let num_keys_i32 = checked_num_keys(operation, num_keys)?;
     let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match (stable, execution.exec_options) {
-        (false, None) => unsafe {
-            cudf_sys::cudf_sort(input.raw_handle(), params.column_order, params.null_precedence, num_keys_i32, &mut out)
-        },
-        (true, None) => unsafe {
-            cudf_sys::cudf_stable_sort(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-            )
-        },
-        (false, Some(options)) => unsafe {
-            cudf_sys::cudf_sort_ex(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-                options,
-            )
-        },
-        (true, Some(options)) => unsafe {
+    let status = if stable {
+        unsafe {
             cudf_sys::cudf_stable_sort_ex(
                 input.raw_handle(),
                 params.column_order,
                 params.null_precedence,
                 num_keys_i32,
                 &mut out,
-                options,
+                execution.exec_options,
             )
-        },
+        }
+    } else {
+        unsafe {
+            cudf_sys::cudf_sort_ex(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+                execution.exec_options,
+            )
+        }
     };
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", ordering.column_order.is_some().to_string()),
             ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
-            ("execution_context_provided", execution.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ])
     })?;
 
@@ -236,39 +225,8 @@ pub(crate) fn sort_by_key_impl(
     let num_key_columns_i32 = checked_num_keys(operation, num_key_columns)?;
     let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match (stable, execution.exec_options) {
-        (false, None) => unsafe {
-            cudf_sys::cudf_sort_by_key(
-                values.raw_handle(),
-                keys.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_key_columns_i32,
-                &mut out,
-            )
-        },
-        (true, None) => unsafe {
-            cudf_sys::cudf_stable_sort_by_key(
-                values.raw_handle(),
-                keys.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_key_columns_i32,
-                &mut out,
-            )
-        },
-        (false, Some(options)) => unsafe {
-            cudf_sys::cudf_sort_by_key_ex(
-                values.raw_handle(),
-                keys.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_key_columns_i32,
-                &mut out,
-                options,
-            )
-        },
-        (true, Some(options)) => unsafe {
+    let status = if stable {
+        unsafe {
             cudf_sys::cudf_stable_sort_by_key_ex(
                 values.raw_handle(),
                 keys.raw_handle(),
@@ -276,16 +234,28 @@ pub(crate) fn sort_by_key_impl(
                 params.null_precedence,
                 num_key_columns_i32,
                 &mut out,
-                options,
+                execution.exec_options,
             )
-        },
+        }
+    } else {
+        unsafe {
+            cudf_sys::cudf_sort_by_key_ex(
+                values.raw_handle(),
+                keys.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_key_columns_i32,
+                &mut out,
+                execution.exec_options,
+            )
+        }
     };
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_key_columns).with_details([
             ("column_order_provided", ordering.column_order.is_some().to_string()),
             ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
-            ("execution_context_provided", execution.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ])
     })?;
 
@@ -303,33 +273,22 @@ pub(crate) fn sorted_order_impl(
     let num_keys_i32 = checked_num_keys(operation, num_keys)?;
     let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match execution.exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_sorted_order_ex(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_sorted_order(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_sorted_order_ex(
+            input.raw_handle(),
+            params.column_order,
+            params.null_precedence,
+            num_keys_i32,
+            &mut out,
+            execution.exec_options,
+        )
     };
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", ordering.column_order.is_some().to_string()),
             ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
-            ("execution_context_provided", execution.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ])
     })?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
@@ -350,7 +309,7 @@ pub fn sort(
         input,
         SortKeyConfig::new(column_order, null_precedence),
         false,
-        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sort"),
+        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sort"),
     )
 }
 
@@ -366,7 +325,7 @@ pub fn stable_sort(
         input,
         SortKeyConfig::new(column_order, null_precedence),
         true,
-        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::stable_sort"),
+        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::stable_sort"),
     )
 }
 
@@ -385,7 +344,7 @@ pub fn sort_by_key(
         keys,
         SortKeyConfig::new(column_order, null_precedence),
         false,
-        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sort_by_key"),
+        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sort_by_key"),
     )
 }
 
@@ -410,7 +369,7 @@ pub fn stable_sort_by_key(
         keys,
         SortKeyConfig::new(column_order, null_precedence),
         true,
-        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::stable_sort_by_key"),
+        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::stable_sort_by_key"),
     )
 }
 
@@ -427,7 +386,7 @@ pub fn sorted_order(
     sorted_order_impl(
         input,
         SortKeyConfig::new(column_order, null_precedence),
-        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sorted_order"),
+        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sorted_order"),
     )
 }
 
@@ -468,28 +427,34 @@ pub fn is_sorted(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<bool> {
+    let operation = "sorting::is_sorted";
     let num_keys = input.num_columns()?;
-    validate_sort_params("sorting::is_sorted", num_keys, column_order, null_precedence)?;
-    let num_keys_i32 = checked_num_keys("sorting::is_sorted", num_keys)?;
+    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    let num_keys_i32 = checked_num_keys(operation, num_keys)?;
     let params = sort_params(column_order, null_precedence);
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, operation)?;
     let mut out: i32 = 0;
     error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe {
-            cudf_sys::cudf_is_sorted(
+            cudf_sys::cudf_is_sorted_ex(
                 input.raw_handle(),
                 params.column_order,
                 params.null_precedence,
                 num_keys_i32,
                 &mut out,
+                execution.exec_options(),
             )
         },
-        "sorting::is_sorted",
+        operation,
     )
     .map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
+            ("host_boundary", "sortedness_boolean".to_string()),
         ])
     })?;
     Ok(out != 0)

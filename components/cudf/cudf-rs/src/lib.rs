@@ -45,8 +45,8 @@
 //! - [`DataFrame`] — A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
 //! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
-//! - [`Runtime`] — Owns the default CUDA stream, memory resource, and retained
-//!   provenance for a workflow.
+//! - [`Runtime`] — Owns the default CUDA stream and retained provenance for a
+//!   workflow, using the device-level memory manager by default.
 //!
 //! # Root-Level Operations
 //!
@@ -115,7 +115,7 @@
 //!
 //! Every owned GPU object ([`core::Column`], [`core::Table`], [`DataFrame`],
 //! [`core::Scalar`]) carries *retained provenance* — a record of the CUDA
-//! stream and memory resource that produced it. This differs from upstream
+//! stream and allocator handle that produced it. This differs from upstream
 //! libcudf, where callers pass a stream to each function call and are
 //! responsible for all cross-stream ordering themselves.
 //!
@@ -183,7 +183,9 @@ pub mod testing;
 // — Types and error —
 pub use core::{
     error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
-    memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
+    memory::{
+        DeviceMemoryManager, DeviceMemoryResource, DeviceMemoryResourceUsage, ReservationUsage, StreamReservationLease,
+    },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };

@@ -38,7 +38,7 @@ pub(crate) fn hash_partition_impl(
     column_indices: &[usize],
     num_partitions: usize,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<HashPartitionedTable> {
     if column_indices.is_empty() {
@@ -70,30 +70,17 @@ pub(crate) fn hash_partition_impl(
         .collect::<Result<Vec<_>>>()?;
     let mut offsets = vec![0i32; num_partitions + 1];
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_hash_partition_ex(
-                input.raw_handle(),
-                key_indices.as_ptr(),
-                key_indices.len() as i32,
-                num_partitions as i32,
-                &mut out,
-                offsets.as_mut_ptr(),
-                offsets.len(),
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_hash_partition(
-                input.raw_handle(),
-                key_indices.as_ptr(),
-                key_indices.len() as i32,
-                num_partitions as i32,
-                &mut out,
-                offsets.as_mut_ptr(),
-                offsets.len(),
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_hash_partition_ex(
+            input.raw_handle(),
+            key_indices.as_ptr(),
+            key_indices.len() as i32,
+            num_partitions as i32,
+            &mut out,
+            offsets.as_mut_ptr(),
+            offsets.len(),
+            exec_options,
+        )
     };
     error::check_status_in_with_details(
         status,
@@ -101,7 +88,7 @@ pub(crate) fn hash_partition_impl(
         [
             ("num_partitions", num_partitions.to_string()),
             ("key_count", column_indices.len().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     let offsets = offsets
@@ -131,7 +118,7 @@ pub fn hash_partition(
         column_indices,
         num_partitions,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "partitioning::hash_partition",
     )
 }

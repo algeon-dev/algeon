@@ -1,18 +1,24 @@
 //! Budget tokens for bounded execution boundaries.
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use super::{ExecutionOverrides, Runtime};
+use super::{CudaStream, ExecutionOverrides, Runtime};
 use crate::core::{
     error::{BudgetExhaustionDetail, Error, Result},
-    memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
+    memory::{DeviceMemoryManager, DeviceMemoryResource, ReservationUsage, StreamReservationLease},
 };
+
+static NEXT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Request for a bounded operation execution.
 ///
-/// `budget_bytes` is enforced by wrapping an existing device memory resource
-/// with an RMM limiting adaptor. It is not a claim that cudf-rs or libcudf can
-/// preflight every temporary workspace allocation for the operation.
+/// `budget_bytes` is enforced by attaching a hard live-byte reservation to
+/// the runtime stream. It is not a claim that cudf-rs or libcudf can preflight
+/// every temporary workspace allocation for the operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionBudgetRequest {
     budget_bytes: usize,
@@ -31,8 +37,7 @@ impl ExecutionBudgetRequest {
         self
     }
 
-    /// Maximum live bytes allowed through the budget token's limiting memory
-    /// resource.
+    /// Maximum live bytes allowed through the token's stream-bound reservation.
     pub fn budget_bytes(&self) -> usize {
         self.budget_bytes
     }
@@ -47,14 +52,14 @@ impl ExecutionBudgetRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExecutionBudgetEnforcement {
-    /// Allocations were routed through an RMM limiting resource adaptor.
-    HardMemoryResourceLimit,
+    /// Allocations are charged through a device-level adaptor by stream reservation.
+    StreamBoundReservation,
 }
 
 impl ExecutionBudgetEnforcement {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::HardMemoryResourceLimit => "hard_memory_resource_limit",
+            Self::StreamBoundReservation => "stream_bound_reservation",
         }
     }
 }
@@ -63,15 +68,14 @@ impl ExecutionBudgetEnforcement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExecutionBudgetStatus {
-    /// The operation completed while allocations were routed through the hard
-    /// budget limit.
-    HardEnforced,
+    /// The operation completed while the stream reservation was active.
+    ReservationEnforced,
 }
 
 impl ExecutionBudgetStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::HardEnforced => "hard_enforced",
+            Self::ReservationEnforced => "reservation_enforced",
         }
     }
 }
@@ -93,11 +97,11 @@ pub struct ExecutionBudgetReport {
 }
 
 impl ExecutionBudgetReport {
-    pub(crate) fn hard_enforced(request: ExecutionBudgetRequest) -> Self {
+    pub(crate) fn reservation_enforced(request: ExecutionBudgetRequest) -> Self {
         Self {
             request,
-            enforcement: ExecutionBudgetEnforcement::HardMemoryResourceLimit,
-            status: ExecutionBudgetStatus::HardEnforced,
+            enforcement: ExecutionBudgetEnforcement::StreamBoundReservation,
+            status: ExecutionBudgetStatus::ReservationEnforced,
             allocator_high_water_bytes: None,
             allocator_current_bytes: None,
             allocator_peak_aligned_bytes: None,
@@ -109,7 +113,7 @@ impl ExecutionBudgetReport {
         }
     }
 
-    pub(crate) fn with_allocator_usage(mut self, usage: DeviceMemoryResourceUsage) -> Self {
+    pub(crate) fn with_allocator_usage(mut self, usage: ReservationUsage) -> Self {
         self.allocator_high_water_bytes = Some(usage.peak_bytes as usize);
         self.allocator_current_bytes = Some(usage.current_bytes as usize);
         self.allocator_peak_aligned_bytes = Some(usage.peak_aligned_bytes as usize);
@@ -220,25 +224,20 @@ impl<T> BudgetedExecutionOutcome<T> {
     }
 }
 
-/// Hard execution-budget token backed by a budget-tracking memory resource.
-#[derive(Debug, Clone)]
+/// Hard execution-budget token backed by a stream-bound reservation.
+#[derive(Debug)]
 pub struct ExecutionBudgetToken {
     request: ExecutionBudgetRequest,
-    memory_resource: DeviceMemoryResource,
+    lease: StreamReservationLease,
 }
 
 impl ExecutionBudgetToken {
-    /// Create a budget token by wrapping `upstream` in a hard-limiting,
-    /// usage-tracking memory resource.
-    pub fn new(upstream: &DeviceMemoryResource, request: ExecutionBudgetRequest) -> Result<Self> {
-        let memory_resource = upstream.budget_tracking_limit(request.budget_bytes())?;
-        Ok(Self { request, memory_resource })
-    }
-
-    /// Create a budget token using a runtime's default memory resource as the
-    /// upstream allocator.
+    /// Create a budget token by attaching a reservation to a runtime's stream.
     pub fn from_runtime(runtime: &Runtime, request: ExecutionBudgetRequest) -> Result<Self> {
-        Self::new(runtime.memory_resource(), request)
+        let manager = DeviceMemoryManager::for_device(runtime.device())?;
+        let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
+        let lease = manager.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
+        Ok(Self { request, lease })
     }
 
     pub fn request(&self) -> &ExecutionBudgetRequest {
@@ -246,17 +245,27 @@ impl ExecutionBudgetToken {
     }
 
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
-        &self.memory_resource
+        self.lease.memory_resource()
+    }
+
+    /// Stream that owns this token's active reservation.
+    pub fn stream(&self) -> &CudaStream {
+        self.lease.stream()
+    }
+
+    /// Snapshot reservation usage counters.
+    pub fn reservation_usage(&self) -> Result<ReservationUsage> {
+        self.lease.usage()
     }
 
     /// Borrow this token as an execution override for one operation.
     pub fn execution_overrides(&self) -> ExecutionOverrides<'_> {
-        ExecutionOverrides::new().with_memory_resource(&self.memory_resource)
+        self.lease.execution_overrides()
     }
 
-    pub(crate) fn hard_enforced_report(&self) -> ExecutionBudgetReport {
-        let report = ExecutionBudgetReport::hard_enforced(self.request.clone());
-        match self.memory_resource.budget_tracking_usage() {
+    pub(crate) fn reservation_enforced_report(&self) -> ExecutionBudgetReport {
+        let report = ExecutionBudgetReport::reservation_enforced(self.request.clone());
+        match self.lease.usage() {
             Ok(usage) => report.with_allocator_usage(usage),
             Err(_) => report,
         }
@@ -268,9 +277,9 @@ impl ExecutionBudgetToken {
             .with_detail_if_absent("budget_operation", operation)
             .with_detail_if_absent("budget_boundary", self.request.boundary().to_string())
             .with_detail_if_absent("budget_bytes", self.request.budget_bytes().to_string())
-            .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())
+            .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::StreamBoundReservation.as_str())
             .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
-        match self.memory_resource.budget_tracking_usage() {
+        match self.lease.usage() {
             Ok(usage) => {
                 let detail = BudgetExhaustionDetail::new(
                     self.request.budget_bytes(),

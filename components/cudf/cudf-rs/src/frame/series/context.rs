@@ -34,7 +34,7 @@ type StringScalarColumnOp = fn(
     &crate::core::column::ColumnView<'_>,
     &Scalar,
     &Arc<ExecutionDomain>,
-    Option<&cudf_sys::cudf_exec_options_t>,
+    &cudf_sys::cudf_exec_options_t,
     &'static str,
 ) -> Result<crate::core::column::Column>;
 
@@ -55,7 +55,7 @@ macro_rules! series_context_op {
             let $op = $operation;
             let $domain = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
-            let $exec = $domain.explicit_exec_options_raw();
+            let $exec = $domain.exec_options_raw();
             let col = $call?;
             Series::from_column(col)
         }
@@ -66,7 +66,7 @@ macro_rules! series_context_op {
         fn $method(&self, $($param: $pty,)* ctx: &ExecutionOverrides<'_>, $op: &'static str) -> Result<Series> {
             let $domain = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
-            let $exec = $domain.explicit_exec_options_raw();
+            let $exec = $domain.exec_options_raw();
             let col = $call?;
             Series::from_column(col)
         }
@@ -91,7 +91,7 @@ macro_rules! series_context_op {
             }
             let $cv = self.column.view()?;
             let $other_cv = $other.column.view()?;
-            let $exec = $domain.explicit_exec_options_raw();
+            let $exec = $domain.exec_options_raw();
             let col = $call?;
             Series::from_column(col)
         }
@@ -292,12 +292,12 @@ impl Series {
         let (orders, null_orders) = options.resolve(1, operation)?;
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let sorted = crate::ops::sorting::sort_table_impl(
             ttv.table(),
             crate::ops::sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             options.stable,
-            crate::ops::sorting::SortExecution::new(&output_domain, exec_options.as_ref(), operation),
+            crate::ops::sorting::SortExecution::new(&output_domain, &exec_options, operation),
         )?
         .with_execution_domain(output_domain);
         let mut cols = sorted.into_columns()?;
@@ -345,13 +345,13 @@ impl Series {
         operation: &'static str,
     ) -> Result<Codebook> {
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let keys = factorization::keys_impl(
             &cv,
             TypeId::Int32,
             factorization_key_order(options.key_order_mode()),
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         let keys = Series::from_column(keys)?;
@@ -396,13 +396,13 @@ impl Series {
     ) -> Result<Factorized> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let parts = factorization::factorize_impl(
             &cv,
             TypeId::Int32,
             factorization_key_order(options.key_order_mode()),
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         let row_codes = Series::from_column(parts.row_codes)?;
@@ -424,14 +424,9 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_policy_with_exec_options(
-            &cv,
-            policy,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
-        )?;
+        let exec_options = output_domain.exec_options_raw();
+        let col =
+            replace::replace_nulls_policy_with_exec_options(&cv, policy, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -447,7 +442,7 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result = stream_compaction::distinct_impl(
             ttv.table(),
             stream_compaction::DistinctConfig::new(
@@ -456,7 +451,7 @@ impl Series {
                 NullEquality::Equal,
                 NanEquality::AllEqual,
             ),
-            stream_compaction::StreamCompactionExecution::new(&output_domain, exec_options.as_ref(), operation),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, &exec_options, operation),
         )?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
@@ -534,14 +529,14 @@ impl Series {
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result = crate::ops::copying::gather_impl(
             ttv.table(),
             &map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         let mut cols = result.into_columns()?;
@@ -574,14 +569,14 @@ impl Series {
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result = crate::ops::copying::gather_impl(
             ttv.table(),
             &idx_cv,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         let mut cols = result.into_columns()?;
@@ -613,12 +608,12 @@ impl Series {
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result = crate::ops::filter::apply_boolean_mask_impl(
             ttv.table(),
             &mask_cv,
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         let mut cols = result.into_columns()?;
@@ -633,9 +628,9 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result =
-            stream_compaction::drop_nulls_impl(ttv.table(), &[0], 1, &output_domain, exec_options.as_ref(), operation)?;
+            stream_compaction::drop_nulls_impl(ttv.table(), &[0], 1, &output_domain, &exec_options, operation)?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
     }
@@ -652,7 +647,7 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let result = stream_compaction::distinct_impl(
             ttv.table(),
             stream_compaction::DistinctConfig::new(
@@ -661,7 +656,7 @@ impl Series {
                 NullEquality::Equal,
                 NanEquality::AllEqual,
             ),
-            stream_compaction::StreamCompactionExecution::new(&output_domain, exec_options.as_ref(), operation),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, &exec_options, operation),
         )?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
@@ -683,13 +678,13 @@ impl Series {
         let ttv = TempTableView::from_column_views(vec![keys_view])?;
         let aggs = [GroupByAgg::Count { include_nulls: false }];
         let requests = [crate::ops::groupby::AggregationRequest { values: &values_view, aggregations: &aggs }];
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let gb = crate::ops::groupby::groupby_aggregate_impl(
             ttv.table(),
             &requests,
             NullPolicy::Exclude,
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         value_counts_from_groupby_output(gb, operation)
@@ -723,13 +718,13 @@ impl Series {
     {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         reduction::reduce_impl_with_status_error_mapper(
             &cv,
             agg,
             output_type,
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
             map_reduction_error,
         )
@@ -742,8 +737,8 @@ impl Series {
     ) -> Result<(Scalar, Scalar)> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        reduction::minmax_impl(&cv, &output_domain, exec_options.as_ref(), operation)
+        let exec_options = output_domain.exec_options_raw();
+        reduction::minmax_impl(&cv, &output_domain, &exec_options, operation)
     }
 
     fn minmax_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<(Scalar, Scalar)> {
@@ -755,8 +750,8 @@ impl Series {
     pub(super) fn is_nan_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::is_nan_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = unary::is_nan_impl(&cv, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -771,8 +766,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::is_not_nan_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = unary::is_not_nan_impl(&cv, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -795,8 +790,8 @@ impl Series {
     pub(super) fn is_null_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::is_null_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = unary::is_null_impl(&cv, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -811,8 +806,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::is_valid_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = unary::is_valid_impl(&cv, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -822,7 +817,13 @@ impl Series {
 
     // Unary helpers with caller-supplied operation string
     series_context_op!(unary fn unary_in_context(op: UnaryOperator),
-        caller_op |cv, output_domain, exec, operation| unary::unary_operation_impl(&cv, op, &output_domain, exec.as_ref(), operation));
+    caller_op |cv, output_domain, exec, operation| unary::unary_operation_impl(
+        &cv,
+        op,
+        &output_domain,
+        &exec,
+        operation
+    ));
 
     pub(super) fn unary_with_context(
         &self,
@@ -833,8 +834,20 @@ impl Series {
         self.unary_in_context(op, ctx, operation)
     }
 
-    series_context_op!(unary fn scan_in_context(agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy),
-        caller_op |cv, output_domain, exec, operation| reduction::scan_impl(&cv, agg, scan_type, null_policy, &output_domain, exec.as_ref(), operation));
+    fn scan_in_context(
+        &self,
+        agg: ScanAgg,
+        scan_type: ScanType,
+        null_policy: NullPolicy,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = reduction::scan_impl(&cv, agg, scan_type, null_policy, &output_domain, &exec_options, operation)?;
+        Series::from_column(col)
+    }
 
     pub(super) fn scan_with_context(
         &self,
@@ -848,20 +861,25 @@ impl Series {
     }
 
     series_context_op!(unary fn string_unary_in_context(
-        op: fn(
-            &crate::core::column::ColumnView<'_>,
-            &Arc<ExecutionDomain>,
-            Option<&cudf_sys::cudf_exec_options_t>,
-            &'static str,
-        ) -> Result<crate::core::column::Column>),
-        caller_op |cv, output_domain, exec, operation| op(&cv, &output_domain, exec.as_ref(), operation));
+    op: fn(
+        &crate::core::column::ColumnView<'_>,
+        &Arc<ExecutionDomain>,
+        &cudf_sys::cudf_exec_options_t,
+        &'static str,
+    ) -> Result<crate::core::column::Column>),
+    caller_op |cv, output_domain, exec, operation| op(
+        &cv,
+        &output_domain,
+        &exec,
+        operation
+    ));
 
     pub(super) fn string_unary_with_context(
         &self,
         op: fn(
             &crate::core::column::ColumnView<'_>,
             &Arc<ExecutionDomain>,
-            Option<&cudf_sys::cudf_exec_options_t>,
+            &cudf_sys::cudf_exec_options_t,
             &'static str,
         ) -> Result<crate::core::column::Column>,
         ctx: &ExecutionOverrides<'_>,
@@ -878,8 +896,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = datetime::extract_component_impl(&cv, component, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = datetime::extract_component_impl(&cv, component, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -893,8 +911,8 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(to_strip, &output_domain)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = strings::strip_impl(&cv, side, &scalar, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = strings::strip_impl(&cv, side, &scalar, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -908,8 +926,8 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(target, &output_domain)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = op(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = op(&cv, &scalar, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -922,8 +940,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = strings::like_impl(&cv, pattern, escape, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = strings::like_impl(&cv, pattern, escape, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -935,8 +953,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = strings::slice_impl(&cv, options, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = strings::slice_impl(&cv, options, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -948,8 +966,8 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = strings::try_to_integers_impl(&cv, output_type, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = strings::try_to_integers_impl(&cv, output_type, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -964,8 +982,8 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let target = target.into();
         let cv = self.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::cast_impl(&cv, &target, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = unary::cast_impl(&cv, &target, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -980,9 +998,8 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col =
-            replace::replace_nulls_with_exec_options(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
+        let exec_options = output_domain.exec_options_raw();
+        let col = replace::replace_nulls_with_exec_options(&cv, &scalar, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -1009,14 +1026,9 @@ impl Series {
         }
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_column_with_exec_options(
-            &cv,
-            &other_cv,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
-        )?;
+        let exec_options = output_domain.exec_options_raw();
+        let col =
+            replace::replace_nulls_column_with_exec_options(&cv, &other_cv, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -1060,8 +1072,8 @@ impl Series {
             ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)
                 .map_err(annotate_type_context)?;
         }
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.as_ref(), operation)
+        let exec_options = output_domain.exec_options_raw();
+        let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, &exec_options, operation)
             .map_err(annotate_type_context)?;
         Series::from_column(col)
     }
@@ -1091,16 +1103,9 @@ impl Series {
         let lhs = self.column.view()?;
         let rhs = other.column.view()?;
         let output_type = binary::infer_binary_output_dtype_in(lhs.data_type()?, rhs.data_type()?, op, operation)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vv_impl(
-            &lhs,
-            &rhs,
-            op,
-            &output_type,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
-        )?;
+        let exec_options = output_domain.exec_options_raw();
+        let col =
+            binary::binary_operation_vv_impl(&lhs, &rhs, op, &output_type, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 
@@ -1115,16 +1120,9 @@ impl Series {
         let cv = self.column.view()?;
         let scalar = value.into_runtime_scalar(&output_domain)?;
         let output_type = binary::infer_binary_output_dtype_in(cv.data_type()?, scalar.data_type()?, op, operation)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(
-            &cv,
-            &scalar,
-            op,
-            &output_type,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
-        )?;
+        let exec_options = output_domain.exec_options_raw();
+        let col =
+            binary::binary_operation_vs_impl(&cv, &scalar, op, &output_type, &output_domain, &exec_options, operation)?;
         Series::from_column(col)
     }
 

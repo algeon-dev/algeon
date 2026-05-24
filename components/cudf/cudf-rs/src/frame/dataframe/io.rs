@@ -1055,8 +1055,8 @@ impl DataFrame {
         };
         prepare_write_domain(&self.domain, &write_domain, "dataframe::write_csv_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.explicit_exec_options_raw();
-        csv::write_csv_with_exec(&tv, &opts, exec_options.as_ref())?;
+        let exec_options = write_domain.exec_options_raw();
+        csv::write_csv_with_exec(&tv, &opts, &exec_options)?;
         write_domain.synchronize_for_host_visibility("dataframe::write_csv_with_options")
     }
 
@@ -1256,7 +1256,7 @@ impl DataFrame {
     ///
     /// The Parquet decode, partition-column materialization, and final source
     /// projection run in a scoped execution domain whose memory resource is
-    /// the token's hard-limiting allocator. The report records observed
+    /// the token's stream-bound reservation. The report records observed
     /// retained/output device allocation bytes and output rows after the read.
     ///
     /// For source chunks covered by
@@ -1290,7 +1290,7 @@ impl DataFrame {
             .map_err(|error| token.annotate_error(error, operation))?;
         let preflight = Self::parquet_source_chunk_exact_preflight(source, chunk, mode)?;
         let mut report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
@@ -1338,8 +1338,8 @@ impl DataFrame {
         };
         prepare_write_domain(&self.domain, &write_domain, "dataframe::write_parquet_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.explicit_exec_options_raw();
-        parquet::write_parquet_with_exec(&tv, &table_options, exec_options.as_ref())?;
+        let exec_options = write_domain.exec_options_raw();
+        parquet::write_parquet_with_exec(&tv, &table_options, &exec_options)?;
         write_domain.synchronize_for_host_visibility("dataframe::write_parquet_with_options")
     }
 
@@ -1414,8 +1414,8 @@ impl DataFrame {
         };
         prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.explicit_exec_options_raw();
-        json::write_json_with_exec(&tv, &opts, exec_options.as_ref())?;
+        let exec_options = write_domain.exec_options_raw();
+        json::write_json_with_exec(&tv, &opts, &exec_options)?;
         write_domain.synchronize_for_host_visibility("dataframe::write_json_with_options")
     }
 }

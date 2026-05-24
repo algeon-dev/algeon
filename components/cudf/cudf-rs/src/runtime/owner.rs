@@ -1,4 +1,4 @@
-//! Public owner for device-pinned default stream, memory resource, and retained provenance.
+//! Public owner for device-pinned default stream, allocator provenance, and retained provenance.
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::{
     core::{
         column::{Column, DeviceBuffer},
         error::{self, DeviceIdFact, Error, ErrorCode, ErrorKind, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
-        memory::DeviceMemoryResource,
+        memory::{DeviceMemoryManager, DeviceMemoryResource, StreamReservationLease},
         scalar::Scalar,
         table::Table,
         types::{CudfType, DataType, TimestampResolution, TypeId},
@@ -64,7 +64,7 @@ fn budgeted_runtime_for_operation(
     operation: &'static str,
 ) -> Result<Runtime> {
     runtime
-        .with_memory_resource_override(token.memory_resource(), operation)
+        .with_execution_overrides(token.stream(), token.memory_resource(), operation)
         .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))
 }
 
@@ -77,7 +77,7 @@ fn budgeted_series_report(
 ) -> Result<ExecutionBudgetReport> {
     let output_bytes = series.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
     let mut report = token
-        .hard_enforced_report()
+        .reservation_enforced_report()
         .with_retained_bytes(output_bytes)
         .with_output_bytes(output_bytes)
         .with_output_rows(rows);
@@ -93,15 +93,20 @@ fn budgeted_series_report(
 /// [`RuntimeBuilder::with_device`]).  All resources created through this
 /// runtime live on that device.
 ///
-/// That bundle contains the runtime's default [`CudaStream`] and
-/// [`DeviceMemoryResource`]. Owned GPU objects created through the runtime
-/// retain those defaults unless a supported operation resolves same-device
-/// borrowed overrides for that call.
+/// That bundle contains the runtime's default [`CudaStream`] and allocator
+/// handle. By default the allocator is the device-level
+/// [`DeviceMemoryManager`](crate::core::memory::DeviceMemoryManager)
+/// resource for the runtime's CUDA device. Owned GPU objects created through
+/// the runtime retain those defaults unless a supported operation resolves
+/// same-device borrowed overrides for that call.
 ///
 /// `Runtime` is therefore the canonical place to express a workflow's default
-/// allocator choice. Create an explicit [`DeviceMemoryResource`] first only
-/// when you need to reuse that allocator handle across runtimes or borrow it
-/// through [`crate::ExecutionOverrides`] for one operation.
+/// execution placement. For query-style budgets, prefer
+/// [`Runtime::execution_budget_token`] or [`Runtime::stream_reservation`]
+/// instead of constructing a separate memory resource. Create an explicit
+/// [`DeviceMemoryResource`] first only when you need an advanced allocator
+/// handle to reuse across runtimes or borrow through
+/// [`crate::ExecutionOverrides`] for one operation.
 ///
 /// **Multi-GPU execution guarantee:** when an operation is invoked through
 /// this runtime, the runtime's device is re-entered at the FFI boundary before
@@ -133,14 +138,19 @@ pub struct RuntimeBuilder {
 }
 
 enum MemoryResourceSelection {
-    DefaultCuda,
     Owned(DeviceMemoryResource),
     Pool { initial_pool_size: usize, maximum_pool_size: Option<usize> },
+    DeviceMemoryManager,
 }
 
 impl Default for RuntimeBuilder {
     fn default() -> Self {
-        Self { stream: None, mr_selection: MemoryResourceSelection::DefaultCuda, device: None, boundary_observer: None }
+        Self {
+            stream: None,
+            mr_selection: MemoryResourceSelection::DeviceMemoryManager,
+            device: None,
+            boundary_observer: None,
+        }
     }
 }
 
@@ -183,9 +193,19 @@ impl Runtime {
     }
 
     /// Create a hard execution-budget token using this runtime's default
-    /// memory resource as the upstream allocator.
+    /// stream and a device-level reservation-aware memory manager.
     pub fn execution_budget_token(&self, request: ExecutionBudgetRequest) -> Result<ExecutionBudgetToken> {
         ExecutionBudgetToken::from_runtime(self, request)
+    }
+
+    /// Resolve the device-level reservation-aware memory manager for this runtime.
+    pub fn device_memory_manager(&self) -> Result<DeviceMemoryManager> {
+        DeviceMemoryManager::for_device(self.device())
+    }
+
+    /// Attach a stream-bound reservation to this runtime's default stream.
+    pub fn stream_reservation(&self, reservation_id: u64, limit_bytes: usize) -> Result<StreamReservationLease> {
+        self.device_memory_manager()?.reserve_stream(self.stream(), reservation_id, limit_bytes)
     }
 
     pub(crate) fn with_memory_resource_override(
@@ -194,6 +214,16 @@ impl Runtime {
         operation: &'static str,
     ) -> Result<Self> {
         let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
+        Ok(Self { domain })
+    }
+
+    pub(crate) fn with_execution_overrides(
+        &self,
+        stream: &CudaStream,
+        mr: &DeviceMemoryResource,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, Some(stream), Some(mr), operation)?;
         Ok(Self { domain })
     }
 
@@ -463,8 +493,8 @@ impl Runtime {
     /// This has the same scalar placement semantics as
     /// [`column_from_scalar`](Self::column_from_scalar), but the scalar
     /// relocation, if needed, and the output column allocation are routed
-    /// through the token allocator. The returned report records the observed
-    /// output column footprint and row count.
+    /// through the token's stream-bound reservation. The returned report
+    /// records the observed output column footprint and row count.
     pub fn column_from_scalar_with_budget(
         &self,
         scalar: &Scalar,
@@ -478,7 +508,7 @@ impl Runtime {
             .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
         let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(size);
@@ -588,8 +618,8 @@ impl Runtime {
     /// Create an unnamed all-null `Series` under a hard execution-budget token.
     ///
     /// The all-null column construction and output allocation are routed
-    /// through the token allocator. The returned report records the resulting
-    /// `Series` footprint and row count.
+    /// through the token's stream-bound reservation. The returned report
+    /// records the resulting `Series` footprint and row count.
     pub fn nulls_with_budget(
         &self,
         dtype: impl Into<DataType>,
@@ -637,9 +667,9 @@ impl Runtime {
     ///
     /// This is the budgeted counterpart to
     /// [`series_from_scalar`](Self::series_from_scalar). The underlying
-    /// scalar-to-column construction is executed through the token allocator,
-    /// and the returned report records the observed output footprint and row
-    /// count.
+    /// scalar-to-column construction is executed through the token's
+    /// stream-bound reservation, and the returned report records the observed
+    /// output footprint and row count.
     pub fn series_from_scalar_with_budget(
         &self,
         scalar: &Scalar,
@@ -660,7 +690,7 @@ impl Runtime {
     /// a hard execution-budget token.
     ///
     /// Both the temporary device scalar and the output column are created in a
-    /// token-routed execution domain. The report records the retained/output
+    /// reservation-routed execution domain. The report records the retained/output
     /// footprint of the resulting `Series`; it also marks the current scalar
     /// construction/broadcast preflight gap because libcudf does not expose an
     /// exact temporary workspace bound for this fused path.
@@ -763,14 +793,25 @@ impl RuntimeBuilder {
     /// resolved and entered, so this path does not depend on unrelated ambient
     /// current-device state at call time.
     ///
-    /// Prefer this over [`with_memory_resource`](Self::with_memory_resource)
-    /// when you want one fresh pool owned by the runtime and do not need the
-    /// allocator handle before `build()`.
+    /// Use this when you specifically need a fresh pool owned by the runtime
+    /// and do not need the allocator handle before `build()`. For normal
+    /// query-backend bounded execution, the default device-level memory
+    /// manager plus stream-bound reservations is the preferred model.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
     pub fn with_pool_memory_resource(mut self, initial_pool_size: usize, maximum_pool_size: Option<usize>) -> Self {
         self.mr_selection = MemoryResourceSelection::Pool { initial_pool_size, maximum_pool_size };
+        self
+    }
+
+    /// Use the device-level reservation-aware memory manager as this runtime's default allocator.
+    ///
+    /// This is the query-backend path: the runtime keeps one explicit stream,
+    /// while allocator accounting is controlled by stream-bound reservation
+    /// leases rather than replacing the memory resource for each task.
+    pub fn with_device_memory_manager(mut self) -> Self {
+        self.mr_selection = MemoryResourceSelection::DeviceMemoryManager;
         self
     }
 
@@ -791,10 +832,11 @@ impl RuntimeBuilder {
     /// on that device.  Otherwise the device is inferred from supplied handles,
     /// or defaults to the calling thread's current device.
     ///
-    /// The resulting runtime owns exactly one default stream and one default
-    /// memory resource. Borrowed per-operation overrides can temporarily
-    /// replace either handle for a supported call, but they do not mutate this
-    /// owned bundle.
+    /// The resulting runtime owns exactly one default stream and uses the
+    /// device-level reservation-aware memory manager as its default memory
+    /// resource. Borrowed per-operation overrides can temporarily replace
+    /// either handle for a supported call, but they do not mutate this owned
+    /// bundle.
     ///
     /// # Errors
     ///
@@ -816,11 +858,11 @@ impl RuntimeBuilder {
             None => CudaStream::new()?,
         };
         let mr = match mr_selection {
-            MemoryResourceSelection::DefaultCuda => DeviceMemoryResource::cuda_on(device)?,
             MemoryResourceSelection::Owned(mr) => mr,
             MemoryResourceSelection::Pool { initial_pool_size, maximum_pool_size } => {
                 DeviceMemoryResource::pool_on(device, initial_pool_size, maximum_pool_size)?
             },
+            MemoryResourceSelection::DeviceMemoryManager => DeviceMemoryManager::for_device(device)?.resource().clone(),
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr, boundary_observer)?;
         Ok(Runtime { domain })
@@ -867,7 +909,7 @@ impl RuntimeBuilder {
                 },
                 (Some(stream), _) => Ok(stream.device()),
                 (None, MemoryResourceSelection::Owned(mr)) => Ok(mr.device()),
-                (None, MemoryResourceSelection::DefaultCuda | MemoryResourceSelection::Pool { .. }) => {
+                (None, MemoryResourceSelection::Pool { .. } | MemoryResourceSelection::DeviceMemoryManager) => {
                     DeviceId::current()
                 },
             }

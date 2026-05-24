@@ -10,8 +10,8 @@
 //! It is not a general scheduler or execution-policy object. Its job is narrow:
 //!
 //! - remember retained provenance after an operation returns
-//! - supply default stream and memory-resource handles when an operation does
-//!   not receive explicit borrowed overrides
+//! - supply explicit stream and memory-resource handles from retained
+//!   provenance when an operation does not receive borrowed overrides
 //! - provide the synchronization hooks needed for host visibility and
 //!   device-side cross-stream ordering
 //!
@@ -30,9 +30,9 @@
 //! synchronize mixed-provenance inputs.
 //!
 //! Every retained domain is explicit and device-pinned. The C++ shim re-enters
-//! the pinned device before resolving stream / MR defaults, so operations
-//! execute on the correct GPU regardless of the calling thread's current CUDA
-//! device.
+//! the pinned device and receives non-null stream / MR handles, so production
+//! operations execute on the correct GPU regardless of the calling thread's
+//! current CUDA device.
 
 use std::{
     collections::HashMap,
@@ -287,10 +287,6 @@ impl ExecutionDomain {
                 .with_detail("source_domain", source.debug_label())
                 .with_detail("target_domain", target.debug_label())
         })
-    }
-
-    pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
-        Some(self.exec_options_raw())
     }
 
     pub(crate) fn exec_options_raw(&self) -> cudf_sys::cudf_exec_options_t {

@@ -4,6 +4,8 @@
 //!
 //! - [`Runtime`] owns one CUDA device binding plus default [`CudaStream`] and
 //!   [`crate::core::memory::DeviceMemoryResource`] handles
+//! - [`crate::core::memory::DeviceMemoryManager`] provides one reservation-aware
+//!   allocator adaptor per CUDA device for query backends
 //! - [`ExecutionOverrides`] borrows a stream and/or memory resource for one
 //!   operation
 //! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles

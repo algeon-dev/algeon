@@ -6,67 +6,40 @@ fn conditional_join_indices_impl(
     predicate: &AstExpression,
     join_type: JoinType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    let status = match (join_type, exec_options) {
-        (JoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_conditional_inner_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Left, None) => unsafe {
-            cudf_sys::cudf_conditional_left_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Full, None) => unsafe {
-            cudf_sys::cudf_conditional_full_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        JoinType::Inner => unsafe {
             cudf_sys::cudf_conditional_inner_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Left, Some(options)) => unsafe {
+        JoinType::Left => unsafe {
             cudf_sys::cudf_conditional_left_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Full, Some(options)) => unsafe {
+        JoinType::Full => unsafe {
             cudf_sys::cudf_conditional_full_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
     };
@@ -76,7 +49,7 @@ fn conditional_join_indices_impl(
         operation,
         [
             ("join_type", format!("{:?}", join_type).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("output_size_provided", "false".to_string()),
         ],
     )?;
@@ -94,33 +67,13 @@ fn conditional_join_indices_with_output_size_impl(
     join_type: SizedConditionalPairJoinType,
     output_size: usize,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    let status = match (join_type, exec_options) {
-        (SizedConditionalPairJoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_conditional_inner_join_indices_with_output_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                output_size,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (SizedConditionalPairJoinType::Left, None) => unsafe {
-            cudf_sys::cudf_conditional_left_join_indices_with_output_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                output_size,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (SizedConditionalPairJoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        SizedConditionalPairJoinType::Inner => unsafe {
             cudf_sys::cudf_conditional_inner_join_indices_with_output_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
@@ -128,10 +81,10 @@ fn conditional_join_indices_with_output_size_impl(
                 output_size,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (SizedConditionalPairJoinType::Left, Some(options)) => unsafe {
+        SizedConditionalPairJoinType::Left => unsafe {
             cudf_sys::cudf_conditional_left_join_indices_with_output_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
@@ -139,7 +92,7 @@ fn conditional_join_indices_with_output_size_impl(
                 output_size,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
     };
@@ -149,7 +102,7 @@ fn conditional_join_indices_with_output_size_impl(
         operation,
         [
             ("join_type", join_type.as_str().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("output_size_provided", "true".to_string()),
         ],
     )?;
@@ -167,81 +120,47 @@ fn conditional_single_side_join_indices_impl(
     semi_join: bool,
     output_size: Option<usize>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let mut out = ptr::null_mut();
-    let status = match (semi_join, output_size, exec_options) {
-        (true, None, None) => unsafe {
-            cudf_sys::cudf_conditional_left_semi_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (false, None, None) => unsafe {
-            cudf_sys::cudf_conditional_left_anti_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (true, None, Some(options)) => unsafe {
+    let status = match (semi_join, output_size) {
+        (true, None) => unsafe {
             cudf_sys::cudf_conditional_left_semi_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
         },
-        (false, None, Some(options)) => unsafe {
+        (false, None) => unsafe {
             cudf_sys::cudf_conditional_left_anti_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
         },
-        (true, Some(output_size), None) => unsafe {
-            cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                output_size,
-                &mut out,
-            )
-        },
-        (false, Some(output_size), None) => unsafe {
-            cudf_sys::cudf_conditional_left_anti_join_indices_with_output_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                output_size,
-                &mut out,
-            )
-        },
-        (true, Some(output_size), Some(options)) => unsafe {
+        (true, Some(output_size)) => unsafe {
             cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 output_size,
                 &mut out,
-                options,
+                exec_options,
             )
         },
-        (false, Some(output_size), Some(options)) => unsafe {
+        (false, Some(output_size)) => unsafe {
             cudf_sys::cudf_conditional_left_anti_join_indices_with_output_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 output_size,
                 &mut out,
-                options,
+                exec_options,
             )
         },
     };
@@ -251,7 +170,7 @@ fn conditional_single_side_join_indices_impl(
         operation,
         [
             ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("output_size_provided", output_size.is_some().to_string()),
         ],
     )?;
@@ -264,43 +183,27 @@ fn conditional_join_size_impl(
     right: &TableView<'_>,
     predicate: &AstExpression,
     join_type: SizedConditionalPairJoinType,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<usize> {
     let mut out = 0usize;
-    let status = match (join_type, exec_options) {
-        (SizedConditionalPairJoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_conditional_inner_join_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (SizedConditionalPairJoinType::Left, None) => unsafe {
-            cudf_sys::cudf_conditional_left_join_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (SizedConditionalPairJoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        SizedConditionalPairJoinType::Inner => unsafe {
             cudf_sys::cudf_conditional_inner_join_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
         },
-        (SizedConditionalPairJoinType::Left, Some(options)) => unsafe {
+        SizedConditionalPairJoinType::Left => unsafe {
             cudf_sys::cudf_conditional_left_join_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
         },
     };
@@ -308,10 +211,7 @@ fn conditional_join_size_impl(
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("join_type", join_type.as_str().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("join_type", join_type.as_str().to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
 
     Ok(out)
@@ -322,28 +222,18 @@ fn conditional_full_join_begin_size_data_impl<'a>(
     right: &TableView<'_>,
     predicate: &'a AstExpression,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<ConditionalFullJoinSizeData<'a>> {
     let mut handle = ptr::null_mut();
-    let status = match exec_options {
-        None => unsafe {
-            cudf_sys::cudf_conditional_full_join_begin_size_data(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut handle,
-            )
-        },
-        Some(options) => unsafe {
-            cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut handle,
-                options,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
+            left.raw_handle(),
+            right.raw_handle(),
+            predicate.raw_handle(),
+            &mut handle,
+            exec_options,
+        )
     };
 
     error::check_status_in_with_details(
@@ -351,7 +241,7 @@ fn conditional_full_join_begin_size_data_impl<'a>(
         operation,
         [
             ("join_type", "full".to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("reservation_contract", "conditional_full_join_retained_size_data".to_string()),
         ],
     )?;
@@ -378,45 +268,30 @@ fn conditional_single_side_join_size_impl(
     right: &TableView<'_>,
     predicate: &AstExpression,
     semi_join: bool,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<usize> {
     let mut out = 0usize;
-    let status = match (semi_join, exec_options) {
-        (true, None) => unsafe {
-            cudf_sys::cudf_conditional_left_semi_join_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (false, None) => unsafe {
-            cudf_sys::cudf_conditional_left_anti_join_size(
-                left.raw_handle(),
-                right.raw_handle(),
-                predicate.raw_handle(),
-                &mut out,
-            )
-        },
-        (true, Some(options)) => unsafe {
+    let status = if semi_join {
+        unsafe {
             cudf_sys::cudf_conditional_left_semi_join_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
-        },
-        (false, Some(options)) => unsafe {
+        }
+    } else {
+        unsafe {
             cudf_sys::cudf_conditional_left_anti_join_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
                 &mut out,
-                options,
+                exec_options,
             )
-        },
+        }
     };
 
     error::check_status_in_with_details(
@@ -424,7 +299,7 @@ fn conditional_single_side_join_size_impl(
         operation,
         [
             ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 
@@ -446,7 +321,7 @@ fn conditional_join_indices_with_context(
         predicate,
         join_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -468,7 +343,7 @@ fn conditional_join_indices_with_output_size_with_context(
         join_type,
         output_size,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -489,7 +364,7 @@ fn conditional_single_side_join_indices_with_context(
         semi_join,
         None,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -511,7 +386,7 @@ fn conditional_single_side_join_indices_with_output_size_with_context(
         semi_join,
         Some(output_size),
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -525,7 +400,7 @@ fn conditional_join_size_with_context(
     operation: &'static str,
 ) -> Result<usize> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
-    conditional_join_size_impl(left, right, predicate, join_type, Some(execution.exec_options()), operation)
+    conditional_join_size_impl(left, right, predicate, join_type, execution.exec_options(), operation)
 }
 
 fn conditional_full_join_begin_size_data_with_context<'a>(
@@ -541,7 +416,7 @@ fn conditional_full_join_begin_size_data_with_context<'a>(
         right,
         predicate,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -555,7 +430,7 @@ fn conditional_single_side_join_size_with_context(
     operation: &'static str,
 ) -> Result<usize> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
-    conditional_single_side_join_size_impl(left, right, predicate, semi_join, Some(execution.exec_options()), operation)
+    conditional_single_side_join_size_impl(left, right, predicate, semi_join, execution.exec_options(), operation)
 }
 
 /// Conditional inner join indices for row pairs where `predicate` is true.
@@ -1107,7 +982,7 @@ impl ConditionalFullJoinSizeData<'_> {
             [
                 ("join_type", "full".to_string()),
                 ("output_size", self.output_size.to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "conditional_full_join_retained_size_data_materialize_indices".to_string()),
             ],
         )?;

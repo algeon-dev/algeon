@@ -39,12 +39,7 @@ impl DataFrame {
     pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.view()?;
-        self.gather_by_column_view_impl(
-            &cv,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::gather",
-        )
+        self.gather_by_column_view_impl(&cv, output_domain, "dataframe::with_execution::gather")
     }
 
     pub(crate) fn gather_device_allocated_size_in_context(
@@ -67,12 +62,7 @@ impl DataFrame {
     pub(crate) fn filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
-        self.filter_by_mask_impl(
-            &mask_view,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::filter",
-        )
+        self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::with_execution::filter")
     }
     pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
@@ -125,24 +115,14 @@ impl DataFrame {
     pub fn gather(&self, indices: &Series) -> Result<Self> {
         let cv = indices.view()?;
         let output_domain = Arc::clone(&self.domain);
-        self.gather_by_column_view_impl(
-            &cv,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::gather",
-        )
+        self.gather_by_column_view_impl(&cv, output_domain, "dataframe::gather")
     }
 
     /// Filter rows using a precomputed `Series` boolean mask.
     pub fn filter(&self, mask: &Series) -> Result<Self> {
         let mask_view = self.validate_series_mask(mask)?;
         let output_domain = Arc::clone(&self.domain);
-        self.filter_by_mask_impl(
-            &mask_view,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::filter",
-        )
+        self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::filter")
     }
 
     /// Filter rows to those where `column` values appear in a `Series`.
@@ -157,15 +137,10 @@ impl DataFrame {
             [cv.execution_domain(), col_view.execution_domain()],
             operation,
         )?;
-        let mask = ops::search::contains_impl(
-            &cv,
-            &col_view,
-            execution.output_domain(),
-            Some(execution.exec_options()),
-            operation,
-        )?;
+        let mask =
+            ops::search::contains_impl(&cv, &col_view, execution.output_domain(), execution.exec_options(), operation)?;
         let mask_view = mask.view()?;
-        self.filter_by_mask_impl(&mask_view, output_domain.explicit_exec_options_raw(), output_domain, operation)
+        self.filter_by_mask_impl(&mask_view, output_domain, operation)
     }
 
     fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
@@ -183,7 +158,6 @@ impl DataFrame {
     fn gather_by_column_view_impl(
         &self,
         indices: &ColumnView<'_>,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -193,7 +167,6 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         if indices.is_empty()? {
             return self.empty_with_same_schema_in_domain(output_domain);
@@ -205,7 +178,7 @@ impl DataFrame {
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
             &output_domain,
-            Some(resolved_exec_options),
+            execution.exec_options(),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -234,7 +207,7 @@ impl DataFrame {
             indices,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
-            Some(execution.exec_options()),
+            execution.exec_options(),
             operation,
             reservation_contract,
         )
@@ -243,7 +216,6 @@ impl DataFrame {
     fn filter_by_mask_impl(
         &self,
         mask: &ColumnView<'_>,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -253,12 +225,11 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
         let result_table =
-            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, Some(resolved_exec_options), operation)?;
+            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, execution.exec_options(), operation)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -268,13 +239,7 @@ impl DataFrame {
         }
 
         let output_domain = Arc::clone(&self.domain);
-        self.gather_range_impl(
-            start,
-            len,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::gather_range",
-        )
+        self.gather_range_impl(start, len, output_domain, "dataframe::gather_range")
     }
 
     pub(crate) fn __debug_gather_range_for_test(
@@ -284,7 +249,7 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = Arc::clone(&self.domain);
-        self.gather_range_impl(start, len, output_domain.explicit_exec_options_raw(), output_domain, operation)
+        self.gather_range_impl(start, len, output_domain, operation)
     }
 
     fn gather_range_in_context(
@@ -295,14 +260,13 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.gather_range_impl(start, len, output_domain.explicit_exec_options_raw(), output_domain, operation)
+        self.gather_range_impl(start, len, output_domain, operation)
     }
 
     fn gather_range_impl(
         &self,
         start: usize,
         len: usize,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -318,7 +282,6 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let tv = self.build_table_view()?;
         let result_table = copying::gather_impl(
@@ -327,7 +290,7 @@ impl DataFrame {
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             &output_domain,
-            Some(resolved_exec_options),
+            execution.exec_options(),
             operation,
         )?;
 

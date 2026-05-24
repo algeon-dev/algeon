@@ -59,7 +59,7 @@ fn ordered_first_seen_keys(
     row_codes: &ColumnView<'_>,
     sorted_keys: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<FirstSeenKeyOrder> {
     if row_codes.len().map_err(|e| e.reanchor(operation))? == 0 {
@@ -124,7 +124,7 @@ fn ordered_first_seen_keys(
 fn sorted_key_order(
     encoded_keys: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<SortedKeyOrder> {
     let key_count = encoded_keys.len().map_err(|e| e.reanchor(operation))?;
@@ -167,7 +167,7 @@ pub(crate) fn keys_impl(
     indices_type: TypeId,
     key_order: KeyOrder,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let dict = dictionary::encode_impl(input, indices_type, output_domain, exec_options, operation)
@@ -192,7 +192,7 @@ pub(crate) fn factorize_impl(
     indices_type: TypeId,
     key_order: KeyOrder,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<FactorizationParts> {
     let dict = dictionary::encode_impl(input, indices_type, output_domain, exec_options, operation)

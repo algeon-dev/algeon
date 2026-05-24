@@ -829,7 +829,7 @@ impl ColumnView<'_> {
         }
 
         let exec_options = self.domain.exec_options_raw();
-        search::contains_impl(values, self, &self.domain, Some(&exec_options), "column_view::isin").map_err(|e| {
+        search::contains_impl(values, self, &self.domain, &exec_options, "column_view::isin").map_err(|e| {
             e.reanchor("column_view::isin")
                 .with_detail("input_type_id", input_type_id_str)
                 .with_detail("values_type_id", values_type_id_str)

@@ -224,7 +224,7 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
 pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "reduction::reduce")?;
-    reduce_impl(input, agg, output_type, execution.output_domain(), Some(execution.exec_options()), "reduction::reduce")
+    reduce_impl(input, agg, output_type, execution.output_domain(), execution.exec_options(), "reduction::reduce")
 }
 
 pub(crate) fn reduce_impl(
@@ -232,7 +232,7 @@ pub(crate) fn reduce_impl(
     agg: &ReduceAgg,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Scalar> {
     reduce_impl_with_status_error_mapper(input, agg, output_type, output_domain, exec_options, operation, |error| error)
@@ -243,7 +243,7 @@ pub(crate) fn reduce_impl_with_status_error_mapper<F>(
     agg: &ReduceAgg,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
     map_status_error: F,
 ) -> Result<Scalar>
@@ -257,12 +257,8 @@ where
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). agg_handle and dtype_handle
     // were returned by successful FFI calls.
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_reduce_ex(input.raw_handle(), agg_handle, dtype_handle, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_reduce_ex(input.raw_handle(), agg_handle, dtype_handle, &mut out, exec_options) };
 
     // SAFETY: agg_handle and dtype_handle are valid handles that must be
     // destroyed regardless of success/failure.
@@ -277,7 +273,7 @@ where
         [
             ("aggregation", reduce_agg_name(agg).to_string()),
             ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )
     .map_err(map_status_error)?;
@@ -295,7 +291,7 @@ pub fn scan(input: &ColumnView<'_>, agg: ScanAgg, scan_type: ScanType, null_poli
         scan_type,
         null_policy,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "reduction::scan",
     )
 }
@@ -306,7 +302,7 @@ pub(crate) fn scan_impl(
     scan_type: ScanType,
     null_policy: NullPolicy,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     // SAFETY: create_scan_agg_handle calls FFI with valid parameters.
@@ -316,20 +312,15 @@ pub(crate) fn scan_impl(
     let scan_type_ffi = scan_type.to_raw();
     // SAFETY: input handle is valid (NonNull). agg_handle was returned by a
     // successful FFI call.
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_scan_ex(
-                input.raw_handle(),
-                agg_handle,
-                scan_type_ffi,
-                null_policy.to_raw() as i32,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type_ffi, null_policy.to_raw() as i32, &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_scan_ex(
+            input.raw_handle(),
+            agg_handle,
+            scan_type_ffi,
+            null_policy.to_raw() as i32,
+            &mut out,
+            exec_options,
+        )
     };
 
     // SAFETY: agg_handle is a valid handle that must be destroyed.
@@ -342,7 +333,7 @@ pub(crate) fn scan_impl(
             ("aggregation", format!("{:?}", agg)),
             ("scan_type", format!("{:?}", scan_type)),
             ("null_policy", format!("{:?}", null_policy)),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -353,26 +344,19 @@ pub(crate) fn scan_impl(
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "reduction::minmax")?;
-    minmax_impl(input, execution.output_domain(), Some(execution.exec_options()), "reduction::minmax")
+    minmax_impl(input, execution.output_domain(), execution.exec_options(), "reduction::minmax")
 }
 
 pub(crate) fn minmax_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<(Scalar, Scalar)> {
     let mut out_min = ptr::null_mut();
     let mut out_max = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_minmax_ex(input.raw_handle(), &mut out_min, &mut out_max, options) },
-        None => unsafe { cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status = unsafe { cudf_sys::cudf_minmax_ex(input.raw_handle(), &mut out_min, &mut out_max, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out_min/out_max were returned by a successful FFI call.
     unsafe {
         Ok((

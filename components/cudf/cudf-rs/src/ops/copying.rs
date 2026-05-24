@@ -25,23 +25,17 @@ pub(crate) fn gather_impl(
     bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
     bounds_policy_label: &'static str,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Table> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_gather_ex(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_gather(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out) },
+    let status = unsafe {
+        cudf_sys::cudf_gather_ex(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out, exec_options)
     };
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("bounds_policy", bounds_policy_label.to_owned()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("bounds_policy", bounds_policy_label.to_owned()), ("execution_authority", "retained_domain".to_string())],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -51,7 +45,7 @@ pub(crate) fn gather_device_allocated_size_impl(
     gather_map: &ColumnView<'_>,
     bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
     bounds_policy_label: &'static str,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
     reservation_contract: &'static str,
 ) -> Result<usize> {
@@ -62,7 +56,7 @@ pub(crate) fn gather_device_allocated_size_impl(
             gather_map.raw_handle(),
             bounds_policy,
             &mut out,
-            exec_options.map_or(ptr::null(), |options| options as *const _),
+            exec_options,
         )
     };
     error::check_status_in_with_details(
@@ -70,7 +64,7 @@ pub(crate) fn gather_device_allocated_size_impl(
         operation,
         [
             ("bounds_policy", bounds_policy_label.to_owned()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("reservation_contract", reservation_contract.to_owned()),
         ],
     )?;
@@ -113,7 +107,7 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
         "nullify",
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "copying::gather",
     )
 }
@@ -131,7 +125,7 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 /// of rows in `input`). Violating this causes undefined behavior.
 ///
 /// # Example
-/// ```no_run
+/// ```ignore
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
@@ -162,7 +156,7 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
         "dont_check",
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "copying::gather_unchecked",
     )
 }
@@ -172,23 +166,18 @@ pub(crate) fn scatter_impl(
     scatter_map: &ColumnView<'_>,
     target: &TableView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Table> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_scatter_ex(
-                source.raw_handle(),
-                scatter_map.raw_handle(),
-                target.raw_handle(),
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_scatter(source.raw_handle(), scatter_map.raw_handle(), target.raw_handle(), &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_scatter_ex(
+            source.raw_handle(),
+            scatter_map.raw_handle(),
+            target.raw_handle(),
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in_with_details(
         status,
@@ -196,7 +185,7 @@ pub(crate) fn scatter_impl(
         [
             ("bounds_policy", "dont_check".to_owned()),
             ("duplicate_policy", "undefined_if_duplicate".to_owned()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -388,7 +377,7 @@ unsafe fn scatter_unchecked_with_context(
         ctx,
         operation,
     )?;
-    scatter_impl(source, scatter_map, target, execution.output_domain(), Some(execution.exec_options()), operation)
+    scatter_impl(source, scatter_map, target, execution.output_domain(), execution.exec_options(), operation)
 }
 
 // ---------------------------------------------------------------------------
@@ -400,29 +389,20 @@ pub(crate) fn copy_if_else_impl(
     rhs: &ColumnView<'_>,
     boolean_mask: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_copy_if_else_vv_ex(
-                lhs.raw_handle(),
-                rhs.raw_handle(),
-                boolean_mask.raw_handle(),
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_copy_if_else_vv(lhs.raw_handle(), rhs.raw_handle(), boolean_mask.raw_handle(), &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_copy_if_else_vv_ex(
+            lhs.raw_handle(),
+            rhs.raw_handle(),
+            boolean_mask.raw_handle(),
+            &mut out,
+            exec_options,
+        )
     };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -471,7 +451,7 @@ pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &C
         rhs,
         boolean_mask,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "copying::copy_if_else",
     )
 }
@@ -495,7 +475,7 @@ pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &C
 /// nullable.
 ///
 /// # Example
-/// ```no_run
+/// ```ignore
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
@@ -534,7 +514,7 @@ fn shift_with_context(
 ) -> Result<Column> {
     validate_shift_fill_dtype(input, fill_value, operation)?;
     let execution = ResolvedExecution::binary(input.execution_domain(), fill_value.execution_domain(), ctx, operation)?;
-    shift_impl(input, offset, fill_value, execution.output_domain(), Some(execution.exec_options()), operation)
+    shift_impl(input, offset, fill_value, execution.output_domain(), execution.exec_options(), operation)
 }
 
 fn validate_shift_fill_dtype(input: &ColumnView<'_>, fill_value: &Scalar, operation: &'static str) -> Result<()> {
@@ -560,20 +540,16 @@ pub(crate) fn shift_impl(
     offset: i32,
     fill_value: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_shift_ex(input.raw_handle(), offset, fill_value.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_shift(input.raw_handle(), offset, fill_value.raw_handle(), &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_shift_ex(input.raw_handle(), offset, fill_value.raw_handle(), &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
-        [("offset", offset.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [("offset", offset.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }

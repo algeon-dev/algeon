@@ -9,41 +9,8 @@ pub(crate) fn join_impl(
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, context.exec_options) {
-        (JoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_inner_join(
-                tables.left_keys.raw_handle(),
-                tables.right_keys.raw_handle(),
-                tables.left_payload.raw_handle(),
-                tables.right_payload.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Left, None) => unsafe {
-            cudf_sys::cudf_left_join(
-                tables.left_keys.raw_handle(),
-                tables.right_keys.raw_handle(),
-                tables.left_payload.raw_handle(),
-                tables.right_payload.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Full, None) => unsafe {
-            cudf_sys::cudf_full_join(
-                tables.left_keys.raw_handle(),
-                tables.right_keys.raw_handle(),
-                tables.left_payload.raw_handle(),
-                tables.right_payload.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        JoinType::Inner => unsafe {
             cudf_sys::cudf_inner_join_ex(
                 tables.left_keys.raw_handle(),
                 tables.right_keys.raw_handle(),
@@ -52,10 +19,10 @@ pub(crate) fn join_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                context.exec_options,
             )
         },
-        (JoinType::Left, Some(options)) => unsafe {
+        JoinType::Left => unsafe {
             cudf_sys::cudf_left_join_ex(
                 tables.left_keys.raw_handle(),
                 tables.right_keys.raw_handle(),
@@ -64,10 +31,10 @@ pub(crate) fn join_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                context.exec_options,
             )
         },
-        (JoinType::Full, Some(options)) => unsafe {
+        JoinType::Full => unsafe {
             cudf_sys::cudf_full_join_ex(
                 tables.left_keys.raw_handle(),
                 tables.right_keys.raw_handle(),
@@ -76,7 +43,7 @@ pub(crate) fn join_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                context.exec_options,
             )
         },
     };
@@ -86,7 +53,7 @@ pub(crate) fn join_impl(
         context.operation,
         [
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("execution_context_provided", context.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 
@@ -102,73 +69,46 @@ pub(crate) fn join_indices_impl(
     null_equality: NullEquality,
     join_type: JoinType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, exec_options) {
-        (JoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_inner_join_indices(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Left, None) => unsafe {
-            cudf_sys::cudf_left_join_indices(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Full, None) => unsafe {
-            cudf_sys::cudf_full_join_indices(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        JoinType::Inner => unsafe {
             cudf_sys::cudf_inner_join_indices_ex(
                 left_keys.raw_handle(),
                 right_keys.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Left, Some(options)) => unsafe {
+        JoinType::Left => unsafe {
             cudf_sys::cudf_left_join_indices_ex(
                 left_keys.raw_handle(),
                 right_keys.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Full, Some(options)) => unsafe {
+        JoinType::Full => unsafe {
             cudf_sys::cudf_full_join_indices_ex(
                 left_keys.raw_handle(),
                 right_keys.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
     };
 
-    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+    check_join_indices_status(status, null_equality, operation)?;
 
     Ok(JoinIndices {
         left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
@@ -182,49 +122,34 @@ pub(crate) fn single_side_join_indices_impl(
     null_equality: NullEquality,
     semi_join: bool,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let mut out = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (semi_join, exec_options) {
-        (true, None) => unsafe {
-            cudf_sys::cudf_left_semi_join_indices(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                null_eq_ffi,
-                &mut out,
-            )
-        },
-        (false, None) => unsafe {
-            cudf_sys::cudf_left_anti_join_indices(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                null_eq_ffi,
-                &mut out,
-            )
-        },
-        (true, Some(options)) => unsafe {
+    let status = if semi_join {
+        unsafe {
             cudf_sys::cudf_left_semi_join_indices_ex(
                 left_keys.raw_handle(),
                 right_keys.raw_handle(),
                 null_eq_ffi,
                 &mut out,
-                options,
+                exec_options,
             )
-        },
-        (false, Some(options)) => unsafe {
+        }
+    } else {
+        unsafe {
             cudf_sys::cudf_left_anti_join_indices_ex(
                 left_keys.raw_handle(),
                 right_keys.raw_handle(),
                 null_eq_ffi,
                 &mut out,
-                options,
+                exec_options,
             )
-        },
+        }
     };
 
-    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+    check_join_indices_status(status, null_equality, operation)?;
 
     Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
 }
@@ -243,7 +168,7 @@ pub fn inner_join(
         tables,
         null_equality,
         JoinType::Inner,
-        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
+        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
     )
 }
 
@@ -262,7 +187,7 @@ fn join_indices_with_context(
         null_equality,
         join_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -312,7 +237,7 @@ pub fn left_join(
         tables,
         null_equality,
         JoinType::Left,
-        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
+        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
     )
 }
 
@@ -359,7 +284,7 @@ fn single_side_join_indices_with_context(
         null_equality,
         semi_join,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -465,7 +390,7 @@ pub fn full_join(
         tables,
         null_equality,
         JoinType::Full,
-        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
+        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
     )
 }
 
@@ -592,7 +517,7 @@ pub(crate) fn projected_cross_join_impl(
             ("output_rows", output_rows.to_string()),
             ("left_projected_columns", left_selected.is_some().to_string()),
             ("right_projected_columns", right_selected.is_some().to_string()),
-            ("execution_context_provided", true.to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -636,7 +561,7 @@ pub(crate) fn projected_cross_join_device_allocated_size_impl(
             ("output_rows", output_rows.to_string()),
             ("left_projected_columns", left_selected.is_some().to_string()),
             ("right_projected_columns", right_selected.is_some().to_string()),
-            ("execution_context_provided", true.to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("reservation_contract", reservation_contract.to_string()),
         ],
     )?;
@@ -660,7 +585,7 @@ fn cross_join_with_context(
     error::check_status_in_with_details(
         status,
         operation,
-        [("output_rows", output_rows.to_string()), ("execution_context_provided", true.to_string())],
+        [("output_rows", output_rows.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
 }
@@ -780,7 +705,7 @@ impl HashJoin {
             operation,
             [
                 ("load_factor", options.load_factor_value().to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "retained_domain".to_string()),
                 ("reservation_contract", "hash_join_pre_build_reservation_size_bytes".to_string()),
             ],
         )?;
@@ -813,7 +738,7 @@ impl HashJoin {
                     ("nullable_join", format!("{:?}", options.nullable_join_setting()).to_lowercase()),
                     ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
                     ("load_factor", options.load_factor_value().to_string()),
-                    ("execution_context_provided", true.to_string()),
+                    ("execution_authority", "retained_domain".to_string()),
                 ],
             )?;
             HashJoinHandle {
@@ -1073,7 +998,7 @@ impl HashJoin {
             join_type,
             execution.output_domain(),
             None,
-            Some(execution.exec_options()),
+            execution.exec_options(),
             operation,
         )
     }
@@ -1093,7 +1018,7 @@ impl HashJoin {
             join_type,
             execution.output_domain(),
             Some(output_size),
-            Some(execution.exec_options()),
+            execution.exec_options(),
             operation,
         )
     }
@@ -1107,49 +1032,40 @@ impl HashJoin {
     ) -> Result<usize> {
         let execution =
             ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
-        self.probe_size_impl(probe_keys, join_type, Some(execution.exec_options()), operation)
+        self.probe_size_impl(probe_keys, join_type, execution.exec_options(), operation)
     }
 
     fn probe_size_impl(
         &self,
         probe_keys: &TableView<'_>,
         join_type: JoinType,
-        exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+        exec_options: &cudf_sys::cudf_exec_options_t,
         operation: &'static str,
     ) -> Result<usize> {
         let mut out = 0usize;
-        let status = match (join_type, exec_options) {
-            (JoinType::Inner, None) => unsafe {
-                cudf_sys::cudf_hash_join_inner_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
-            },
-            (JoinType::Left, None) => unsafe {
-                cudf_sys::cudf_hash_join_left_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
-            },
-            (JoinType::Full, None) => unsafe {
-                cudf_sys::cudf_hash_join_full_join_size(self.handle.handle.as_ptr(), probe_keys.raw_handle(), &mut out)
-            },
-            (JoinType::Inner, Some(options)) => unsafe {
+        let status = match join_type {
+            JoinType::Inner => unsafe {
                 cudf_sys::cudf_hash_join_inner_join_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Left, Some(options)) => unsafe {
+            JoinType::Left => unsafe {
                 cudf_sys::cudf_hash_join_left_join_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Full, Some(options)) => unsafe {
+            JoinType::Full => unsafe {
                 cudf_sys::cudf_hash_join_full_join_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out,
-                    options,
+                    exec_options,
                 )
             },
         };
@@ -1160,7 +1076,7 @@ impl HashJoin {
             [
                 ("nullable_join", format!("{:?}", self.options.nullable_join_setting()).to_lowercase()),
                 ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
-                ("execution_context_provided", exec_options.is_some().to_string()),
+                ("execution_authority", "retained_domain".to_string()),
             ],
         )?;
 
@@ -1173,118 +1089,67 @@ impl HashJoin {
         join_type: JoinType,
         output_domain: &Arc<ExecutionDomain>,
         output_size: Option<usize>,
-        exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+        exec_options: &cudf_sys::cudf_exec_options_t,
         operation: &'static str,
     ) -> Result<JoinIndices> {
         let mut out_left = ptr::null_mut();
         let mut out_right = ptr::null_mut();
-        let status = match (join_type, output_size, exec_options) {
-            (JoinType::Inner, None, None) => unsafe {
-                cudf_sys::cudf_hash_join_inner_join(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Left, None, None) => unsafe {
-                cudf_sys::cudf_hash_join_left_join(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Full, None, None) => unsafe {
-                cudf_sys::cudf_hash_join_full_join(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Inner, None, Some(options)) => unsafe {
+        let status = match (join_type, output_size) {
+            (JoinType::Inner, None) => unsafe {
                 cudf_sys::cudf_hash_join_inner_join_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Left, None, Some(options)) => unsafe {
+            (JoinType::Left, None) => unsafe {
                 cudf_sys::cudf_hash_join_left_join_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Full, None, Some(options)) => unsafe {
+            (JoinType::Full, None) => unsafe {
                 cudf_sys::cudf_hash_join_full_join_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Inner, Some(output_size), None) => unsafe {
-                cudf_sys::cudf_hash_join_inner_join_with_output_size(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    output_size,
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Left, Some(output_size), None) => unsafe {
-                cudf_sys::cudf_hash_join_left_join_with_output_size(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    output_size,
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Full, Some(output_size), None) => unsafe {
-                cudf_sys::cudf_hash_join_full_join_with_output_size(
-                    self.handle.handle.as_ptr(),
-                    probe_keys.raw_handle(),
-                    output_size,
-                    &mut out_left,
-                    &mut out_right,
-                )
-            },
-            (JoinType::Inner, Some(output_size), Some(options)) => unsafe {
+            (JoinType::Inner, Some(output_size)) => unsafe {
                 cudf_sys::cudf_hash_join_inner_join_with_output_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     output_size,
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Left, Some(output_size), Some(options)) => unsafe {
+            (JoinType::Left, Some(output_size)) => unsafe {
                 cudf_sys::cudf_hash_join_left_join_with_output_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     output_size,
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
-            (JoinType::Full, Some(output_size), Some(options)) => unsafe {
+            (JoinType::Full, Some(output_size)) => unsafe {
                 cudf_sys::cudf_hash_join_full_join_with_output_size_ex(
                     self.handle.handle.as_ptr(),
                     probe_keys.raw_handle(),
                     output_size,
                     &mut out_left,
                     &mut out_right,
-                    options,
+                    exec_options,
                 )
             },
         };
@@ -1295,7 +1160,7 @@ impl HashJoin {
             [
                 ("nullable_join", format!("{:?}", self.options.nullable_join_setting()).to_lowercase()),
                 ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
-                ("execution_context_provided", exec_options.is_some().to_string()),
+                ("execution_authority", "retained_domain".to_string()),
                 ("output_size_provided", output_size.is_some().to_string()),
             ],
         )?;
@@ -1316,7 +1181,7 @@ fn is_hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
 fn hash_join_retained_preprocessing_fallback_supported(build: &TableView<'_>) -> Result<bool> {
     for index in 0..build.num_columns()? {
         match build.column(index)?.data_type()?.id() {
-            TypeId::List | TypeId::Struct => return Ok(false),
+            TypeId::String | TypeId::List | TypeId::Struct => return Ok(false),
             _ => {},
         }
     }

@@ -89,20 +89,17 @@ impl Default for StringSliceOptions {
 pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_lower")?;
-    to_lower_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::to_lower")
+    to_lower_impl(input, execution.output_domain(), execution.exec_options(), "strings::to_lower")
 }
 
 pub(crate) fn to_lower_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_strings_to_lower_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_strings_to_lower(input.raw_handle(), &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_strings_to_lower_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -111,20 +108,17 @@ pub(crate) fn to_lower_impl(
 pub fn to_upper(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_upper")?;
-    to_upper_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::to_upper")
+    to_upper_impl(input, execution.output_domain(), execution.exec_options(), "strings::to_upper")
 }
 
 pub(crate) fn to_upper_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_strings_to_upper_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_strings_to_upper(input.raw_handle(), &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_strings_to_upper_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -140,23 +134,19 @@ pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution =
         ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::contains")?;
-    str_contains_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::contains")
+    str_contains_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::contains")
 }
 
 pub(crate) fn str_contains_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_contains_ex(input.raw_handle(), target.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_strings_contains(input.raw_handle(), target.raw_handle(), &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_strings_contains_ex(input.raw_handle(), target.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -174,7 +164,7 @@ pub(crate) fn str_contains_impl(
 pub fn like(input: &ColumnView<'_>, pattern: &str, escape: Option<&str>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::like")?;
-    like_impl(input, pattern, escape, execution.output_domain(), Some(execution.exec_options()), "strings::like")
+    like_impl(input, pattern, escape, execution.output_domain(), execution.exec_options(), "strings::like")
 }
 
 pub(crate) fn like_impl(
@@ -182,7 +172,7 @@ pub(crate) fn like_impl(
     pattern: &str,
     escape: Option<&str>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let pattern_len = error::usize_to_i32(pattern.len(), operation, "pattern_len")?;
@@ -190,28 +180,16 @@ pub(crate) fn like_impl(
     let escape_len = error::usize_to_i32(escape.len(), operation, "escape_len")?;
     let escape_ptr = if escape.is_empty() { ptr::null() } else { escape.as_ptr() as *const c_char };
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_like_ex(
-                input.raw_handle(),
-                pattern.as_ptr() as *const c_char,
-                pattern_len,
-                escape_ptr,
-                escape_len,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_strings_like(
-                input.raw_handle(),
-                pattern.as_ptr() as *const c_char,
-                pattern_len,
-                escape_ptr,
-                escape_len,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_strings_like_ex(
+            input.raw_handle(),
+            pattern.as_ptr() as *const c_char,
+            pattern_len,
+            escape_ptr,
+            escape_len,
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -233,7 +211,7 @@ pub fn replace_with_backrefs(input: &ColumnView<'_>, pattern: &str, replacement:
         pattern,
         replacement,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "strings::replace_with_backrefs",
     )
 }
@@ -243,34 +221,22 @@ pub(crate) fn replace_with_backrefs_impl(
     pattern: &str,
     replacement: &str,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let pattern_len = error::usize_to_i32(pattern.len(), operation, "pattern_len")?;
     let replacement_len = error::usize_to_i32(replacement.len(), operation, "replacement_len")?;
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_replace_with_backrefs_ex(
-                input.raw_handle(),
-                pattern.as_ptr() as *const c_char,
-                pattern_len,
-                replacement.as_ptr() as *const c_char,
-                replacement_len,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_strings_replace_with_backrefs(
-                input.raw_handle(),
-                pattern.as_ptr() as *const c_char,
-                pattern_len,
-                replacement.as_ptr() as *const c_char,
-                replacement_len,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_strings_replace_with_backrefs_ex(
+            input.raw_handle(),
+            pattern.as_ptr() as *const c_char,
+            pattern_len,
+            replacement.as_ptr() as *const c_char,
+            replacement_len,
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -281,22 +247,19 @@ pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution =
         ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::starts_with")?;
-    starts_with_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::starts_with")
+    starts_with_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::starts_with")
 }
 
 pub(crate) fn starts_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_starts_with_ex(input.raw_handle(), target.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_strings_starts_with(input.raw_handle(), target.raw_handle(), &mut out) },
+    let status = unsafe {
+        cudf_sys::cudf_strings_starts_with_ex(input.raw_handle(), target.raw_handle(), &mut out, exec_options)
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -307,23 +270,19 @@ pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution =
         ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::ends_with")?;
-    ends_with_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::ends_with")
+    ends_with_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::ends_with")
 }
 
 pub(crate) fn ends_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_ends_with_ex(input.raw_handle(), target.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_strings_ends_with(input.raw_handle(), target.raw_handle(), &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_strings_ends_with_ex(input.raw_handle(), target.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -335,14 +294,14 @@ pub(crate) fn ends_with_impl(
 pub fn slice(input: &ColumnView<'_>, options: StringSliceOptions) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::slice")?;
-    slice_impl(input, options, execution.output_domain(), Some(execution.exec_options()), "strings::slice")
+    slice_impl(input, options, execution.output_domain(), execution.exec_options(), "strings::slice")
 }
 
 pub(crate) fn slice_impl(
     input: &ColumnView<'_>,
     options: StringSliceOptions,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let (start, start_valid) = match options.start {
@@ -354,30 +313,17 @@ pub(crate) fn slice_impl(
         None => (0, 0),
     };
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(exec_options) => unsafe {
-            cudf_sys::cudf_strings_slice_ex(
-                input.raw_handle(),
-                start,
-                start_valid,
-                stop,
-                stop_valid,
-                options.step,
-                &mut out,
-                exec_options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_strings_slice(
-                input.raw_handle(),
-                start,
-                start_valid,
-                stop,
-                stop_valid,
-                options.step,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_strings_slice_ex(
+            input.raw_handle(),
+            start,
+            start_valid,
+            stop,
+            stop_valid,
+            options.step,
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -432,7 +378,7 @@ pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Resu
     let ctx = ExecutionOverrides::new();
     let execution =
         ResolvedExecution::binary(input.execution_domain(), to_strip.execution_domain(), &ctx, "strings::strip")?;
-    strip_impl(input, side, to_strip, execution.output_domain(), Some(execution.exec_options()), "strings::strip")
+    strip_impl(input, side, to_strip, execution.output_domain(), execution.exec_options(), "strings::strip")
 }
 
 pub(crate) fn strip_impl(
@@ -440,16 +386,13 @@ pub(crate) fn strip_impl(
     side: StripSide,
     to_strip: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
     let side_ffi = side.to_raw();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_strip_ex(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_strings_strip(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out) },
+    let status = unsafe {
+        cudf_sys::cudf_strings_strip_ex(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out, exec_options)
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -465,20 +408,17 @@ pub(crate) fn strip_impl(
 pub fn count_characters(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_characters")?;
-    count_characters_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::count_characters")
+    count_characters_impl(input, execution.output_domain(), execution.exec_options(), "strings::count_characters")
 }
 
 pub(crate) fn count_characters_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_strings_count_characters_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_strings_count_characters(input.raw_handle(), &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_strings_count_characters_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -487,20 +427,17 @@ pub(crate) fn count_characters_impl(
 pub fn count_bytes(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_bytes")?;
-    count_bytes_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::count_bytes")
+    count_bytes_impl(input, execution.output_domain(), execution.exec_options(), "strings::count_bytes")
 }
 
 pub(crate) fn count_bytes_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_strings_count_bytes_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_strings_count_bytes(input.raw_handle(), &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_strings_count_bytes_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -522,7 +459,7 @@ pub fn try_to_integers(input: &ColumnView<'_>, output_type: &DataType) -> Result
         input,
         output_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "strings::try_to_integers",
     )
 }
@@ -531,17 +468,13 @@ pub(crate) fn try_to_integers_impl(
     input: &ColumnView<'_>,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for(operation)?;
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_strings_try_to_integers_ex(input.raw_handle(), dtype_handle, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_strings_try_to_integers(input.raw_handle(), dtype_handle, &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_strings_try_to_integers_ex(input.raw_handle(), dtype_handle, &mut out, exec_options) };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }

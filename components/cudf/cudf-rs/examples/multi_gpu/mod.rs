@@ -549,24 +549,14 @@ impl Drop for ExampleDeviceGuard {
 }
 
 struct DeviceBuffer {
-    raw: cudf_sys::cudf_device_buffer_handle,
+    _buffer: cudf::core::DeviceBuffer,
     size_bytes: usize,
 }
 
 impl DeviceBuffer {
-    fn new(size_bytes: usize) -> cudf::Result<Self> {
-        let mut raw = std::ptr::null_mut();
-        check_status(
-            unsafe { cudf_sys::cudf_device_buffer_create(size_bytes, &mut raw) },
-            "examples::multi_gpu::device_buffer::create",
-        )?;
-        Ok(Self { raw, size_bytes })
-    }
-}
-
-impl Drop for DeviceBuffer {
-    fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_device_buffer_destroy(self.raw) };
+    fn new(runtime: &Runtime, size_bytes: usize) -> cudf::Result<Self> {
+        let buffer = runtime.device_buffer(size_bytes)?;
+        Ok(Self { _buffer: buffer, size_bytes })
     }
 }
 
@@ -577,7 +567,7 @@ struct VramPressure {
 
 impl VramPressure {
     fn apply(device: DeviceId, ctx: &WorkflowContext) -> cudf::Result<Self> {
-        let _guard = ExampleDeviceGuard::new(device)?;
+        let pressure_runtime = Runtime::builder().with_device(device).build()?;
         let mut buffers = Vec::new();
         let mut retained_bytes = 0usize;
 
@@ -592,7 +582,7 @@ impl VramPressure {
                 .with_context("retained_bytes", retained_bytes.to_string()));
             }
 
-            match DeviceBuffer::new(PRESSURE_CHUNK_BYTES) {
+            match DeviceBuffer::new(&pressure_runtime, PRESSURE_CHUNK_BYTES) {
                 Ok(buffer) => {
                     retained_bytes += buffer.size_bytes;
                     buffers.push(buffer);

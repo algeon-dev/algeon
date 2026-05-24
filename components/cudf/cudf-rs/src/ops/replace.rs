@@ -54,7 +54,7 @@ pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Col
         input,
         replacement,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "replace::replace_nulls",
     )
 }
@@ -63,21 +63,14 @@ pub(crate) fn replace_nulls_with_exec_options(
     input: &ColumnView<'_>,
     replacement: &Scalar,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        None => unsafe { cudf_sys::cudf_replace_nulls_scalar(input.raw_handle(), replacement.raw_handle(), &mut out) },
-        Some(options) => unsafe {
-            cudf_sys::cudf_replace_nulls_scalar_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_replace_nulls_scalar_ex(input.raw_handle(), replacement.raw_handle(), &mut out, exec_options)
     };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -111,7 +104,7 @@ pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>
         input,
         replacement,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "replace::replace_nulls_column",
     )
 }
@@ -120,21 +113,14 @@ pub(crate) fn replace_nulls_column_with_exec_options(
     input: &ColumnView<'_>,
     replacement: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        None => unsafe { cudf_sys::cudf_replace_nulls_column(input.raw_handle(), replacement.raw_handle(), &mut out) },
-        Some(options) => unsafe {
-            cudf_sys::cudf_replace_nulls_column_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_replace_nulls_column_ex(input.raw_handle(), replacement.raw_handle(), &mut out, exec_options)
     };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -164,7 +150,7 @@ pub fn replace_nulls_policy(input: &ColumnView<'_>, policy: FillPolicy) -> Resul
         input,
         policy,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "replace::replace_nulls_policy",
     )
 }
@@ -173,20 +159,16 @@ pub(crate) fn replace_nulls_policy_with_exec_options(
     input: &ColumnView<'_>,
     policy: FillPolicy,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        None => unsafe { cudf_sys::cudf_replace_nulls_policy(input.raw_handle(), policy as i32, &mut out) },
-        Some(options) => unsafe {
-            cudf_sys::cudf_replace_nulls_policy_ex(input.raw_handle(), policy as i32, &mut out, options)
-        },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_replace_nulls_policy_ex(input.raw_handle(), policy as i32, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
-        [("execution_context_provided", exec_options.is_some().to_string()), ("policy", format!("{policy:?}"))],
+        [("execution_authority", "retained_domain".to_string()), ("policy", format!("{policy:?}"))],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }

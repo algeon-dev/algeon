@@ -115,10 +115,10 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
 
     /// Execute the prepared scalar reduction with a hard execution-budget token.
     ///
-    /// Execution allocations are routed through the token's limiting memory
-    /// resource. The report records the fixed scalar output row count and the
-    /// unresolved libcudf temporary-workspace preflight contract. It does not
-    /// estimate scalar retained/output bytes.
+    /// Execution allocations are routed through the token's stream-bound
+    /// reservation. The report records the fixed scalar output row count and
+    /// the unresolved libcudf temporary-workspace preflight contract. It does
+    /// not estimate scalar retained/output bytes.
     pub fn execute_with_budget(
         &self,
         token: &ExecutionBudgetToken,
@@ -129,7 +129,7 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
             annotate_scalar_reduction_budget_execution_error(error, token, operation)
         })?;
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_output_rows(output.output_rows())
             .with_unresolved_contract(SCALAR_REDUCTION_TEMPORARY_WORKSPACE_CONTRACT_GAP);
 

@@ -78,7 +78,7 @@ pub fn groupby_shift(
         null_policy,
         keys_are_sorted,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "groupby::groupby_shift",
     )
 }
@@ -102,7 +102,7 @@ pub(crate) fn groupby_shift_impl(
     null_policy: NullPolicy,
     keys_are_sorted: bool,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<GroupByShiftOutput> {
     validate_request_dtypes(requests, operation)?;
@@ -132,35 +132,19 @@ pub(crate) fn groupby_shift_impl(
 
     let null_policy_ffi = null_policy.to_raw();
     let keys_are_sorted_ffi = i32::from(keys_are_sorted);
-    let status = if let Some(options) = exec_options {
-        unsafe {
-            cudf_sys::cudf_groupby_shift_ex(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                offsets.as_ptr(),
-                fill_handles.as_ptr(),
-                num_value_columns,
-                null_policy_ffi,
-                keys_are_sorted_ffi,
-                &mut out_keys,
-                &mut out_values,
-                options,
-            )
-        }
-    } else {
-        unsafe {
-            cudf_sys::cudf_groupby_shift(
-                keys.raw_handle(),
-                value_handles.as_ptr(),
-                offsets.as_ptr(),
-                fill_handles.as_ptr(),
-                num_value_columns,
-                null_policy_ffi,
-                keys_are_sorted_ffi,
-                &mut out_keys,
-                &mut out_values,
-            )
-        }
+    let status = unsafe {
+        cudf_sys::cudf_groupby_shift_ex(
+            keys.raw_handle(),
+            value_handles.as_ptr(),
+            offsets.as_ptr(),
+            fill_handles.as_ptr(),
+            num_value_columns,
+            null_policy_ffi,
+            keys_are_sorted_ffi,
+            &mut out_keys,
+            &mut out_values,
+            exec_options,
+        )
     };
 
     error::check_status_in_with_details(
@@ -170,7 +154,7 @@ pub(crate) fn groupby_shift_impl(
             ("num_value_columns", num_value_columns.to_string()),
             ("null_policy", (null_policy as i32).to_string()),
             ("keys_are_sorted", keys_are_sorted.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
 

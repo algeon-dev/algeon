@@ -92,14 +92,14 @@ impl<'a> DistinctConfig<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct StreamCompactionExecution<'a> {
     output_domain: &'a Arc<ExecutionDomain>,
-    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    exec_options: &'a cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 }
 
 impl<'a> StreamCompactionExecution<'a> {
     pub(crate) fn new(
         output_domain: &'a Arc<ExecutionDomain>,
-        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        exec_options: &'a cudf_sys::cudf_exec_options_t,
         operation: &'static str,
     ) -> Self {
         Self { output_domain, exec_options, operation }
@@ -125,7 +125,7 @@ pub(crate) fn drop_nulls_impl(
     keys: &[usize],
     keep_threshold: i32,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Table> {
     let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
@@ -143,20 +143,15 @@ pub(crate) fn drop_nulls_impl(
     }
 
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_drop_nulls_ex(
-                input.raw_handle(),
-                keys_i32.as_ptr(),
-                keys_count,
-                keep_threshold,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys_i32.as_ptr(), keys_count, keep_threshold, &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_drop_nulls_ex(
+            input.raw_handle(),
+            keys_i32.as_ptr(),
+            keys_count,
+            keep_threshold,
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in_with_details(
         status,
@@ -164,7 +159,7 @@ pub(crate) fn drop_nulls_impl(
         [
             ("keys_count", keys_count.to_string()),
             ("keep_threshold", keep_threshold.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -183,30 +178,17 @@ pub(crate) fn distinct_impl(
     let keep_ffi = config.keep.to_raw();
     let null_eq_ffi = config.null_equality.to_stream_compaction_raw();
     let nan_eq_ffi = config.nan_equality.to_raw();
-    let status = match execution.exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_distinct_ex(
-                input.raw_handle(),
-                keys_i32.as_ptr(),
-                keys_count,
-                keep_ffi,
-                null_eq_ffi,
-                nan_eq_ffi,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_distinct(
-                input.raw_handle(),
-                keys_i32.as_ptr(),
-                keys_count,
-                keep_ffi,
-                null_eq_ffi,
-                nan_eq_ffi,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_distinct_ex(
+            input.raw_handle(),
+            keys_i32.as_ptr(),
+            keys_count,
+            keep_ffi,
+            null_eq_ffi,
+            nan_eq_ffi,
+            &mut out,
+            execution.exec_options,
+        )
     };
     error::check_status_in_with_details(
         status,
@@ -216,7 +198,7 @@ pub(crate) fn distinct_impl(
             ("keep", format!("{:?}", config.keep).to_lowercase()),
             ("null_equality", format!("{:?}", config.null_equality).to_lowercase()),
             ("nan_equality", format!("{:?}", config.nan_equality).to_lowercase()),
-            ("execution_context_provided", execution.exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
@@ -248,7 +230,7 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) ->
         keys,
         keep_threshold,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "stream_compaction::drop_nulls",
     )
 }
@@ -284,7 +266,7 @@ pub fn distinct(
         DistinctConfig::new(keys, keep, null_equality, nan_equality),
         StreamCompactionExecution::new(
             execution.output_domain(),
-            Some(execution.exec_options()),
+            execution.exec_options(),
             "stream_compaction::distinct",
         ),
     )
