@@ -6,7 +6,8 @@ use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support}
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory,
-        CapabilityRejectionOwner, CapabilityRejectionProjection, ReservationRequirementScope,
+        CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
+        ReservationRequirement, ReservationRequirementScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
@@ -81,11 +82,27 @@ impl CapabilityFirstPipelineAdmission {
 pub(super) fn capability_first_bounded_pipeline_admission(
     plan: &QueryPlan,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
+    capability_first_bounded_pipeline_admission_impl(plan, false)
+}
+
+pub(super) fn capability_first_bounded_cugraph_pipeline_admission(
+    plan: &QueryPlan,
+) -> Result<Option<CapabilityFirstPipelineAdmission>> {
+    capability_first_bounded_pipeline_admission_impl(plan, true)
+}
+
+fn capability_first_bounded_pipeline_admission_impl(
+    plan: &QueryPlan,
+    cugraph_execution_attested: bool,
+) -> Result<Option<CapabilityFirstPipelineAdmission>> {
     if !plan.contains_join() && !plan.contains_vector_algorithm() {
         return Ok(None);
     }
 
-    let analysis = plan.capability_analysis();
+    let mut analysis = plan.capability_analysis();
+    if cugraph_execution_attested {
+        rewrite_graph_requirements_for_cugraph_execution(&mut analysis);
+    }
     let envelope = match analysis.capability_envelope_admission() {
         CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
         CapabilityEnvelopeAdmission::Rejected { projection } => {
@@ -122,6 +139,32 @@ pub(super) fn capability_first_bounded_pipeline_admission(
             Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)))
         },
     }
+}
+
+fn rewrite_graph_requirements_for_cugraph_execution(analysis: &mut CapabilityAnalysis) {
+    let replacement = ReservationRequirement::modeled(
+        crate::runtime::ReservationKind::GraphAlgorithm,
+        "cugraph_graph_execution",
+        "cugraph_graph_execution_contract",
+        ContractQuality::CapabilityProof,
+    );
+    for node in &mut analysis.nodes {
+        for requirement in &mut node.local_requirements {
+            if requirement.status == ContractStatus::BlockedByLowerLevel
+                && requirement.required_contract == crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
+            {
+                *requirement = replacement.clone();
+            }
+        }
+    }
+    analysis.requirements = analysis
+        .nodes
+        .iter()
+        .flat_map(|node| node.local_requirements.iter())
+        .chain(analysis.edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
+        .chain(analysis.invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
+        .cloned()
+        .collect();
 }
 
 fn admission_projection(

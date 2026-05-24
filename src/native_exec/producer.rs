@@ -40,6 +40,13 @@ use crate::error::{Error, ErrorCode};
 pub(crate) trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
 
+    fn rewrite_subsumed_composed_consumer(
+        &self,
+        _consumer_plan: &QueryPlan,
+    ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+        Ok(None)
+    }
+
     /// Returns every post-preparation admission ticket owned by this producer
     /// subtree.  A composed root aggregates these immutable proofs with its
     /// own consumer proof before it acquires one context for the whole GPU
@@ -332,6 +339,15 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
 
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
+}
+
+pub(crate) fn rewrite_gpu_resident_producer_for_subsumed_composed_consumer(
+    plan: &dyn ExecutionPlan,
+    consumer_plan: &QueryPlan,
+) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+    gpu_resident_producer(plan)
+        .map(|producer| producer.rewrite_subsumed_composed_consumer(consumer_plan))
+        .unwrap_or(Ok(None))
 }
 
 /// Returns the admission tickets emitted by a fully prepared producer

@@ -570,7 +570,7 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 }
 
 #[tokio::test]
-async fn cugraph_bfs_string_subplans_remain_host_physical_plans() {
+async fn cugraph_bfs_string_subplans_lower_to_native_gpu_producers() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default())
         .try_with_cugraph_sql(CugraphSqlConfig::default())
@@ -593,11 +593,11 @@ async fn cugraph_bfs_string_subplans_remain_host_physical_plans() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("logical BFS must retain its host graph boundary");
-    assert_eq!(cugraph.children().len(), 3, "edge, source, and include relations must remain side-input children");
+    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("logical BFS must retain its graph producer boundary");
+    assert_eq!(cugraph.children().len(), 3, "edge, source, and include relations remain graph inputs");
     assert!(
-        cugraph.children().iter().all(|child| !plan_contains_native_exec(child.as_ref())),
-        "logical BFS child plans must not contain native execution descendants"
+        cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
+        "logical BFS edge and side inputs must lower through native GPU producers"
     );
 }
 

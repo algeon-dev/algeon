@@ -2406,7 +2406,7 @@ mod tests {
     }
 
     #[test]
-    fn cugraph_side_input_proof_fails_closed_without_a_finite_fixed_width_frame() {
+    fn cugraph_side_input_proof_prices_literal_strings_and_rejects_unbounded_string_frames() {
         let unknown = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&unknown_row_bound_side_input_plan())
             .expect_err("an unknown resident row bound cannot price a side-input frame");
         assert_eq!(unknown.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
@@ -2415,11 +2415,19 @@ mod tests {
 
         let variable_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Utf8, false)]));
         let mut variable_builder = QueryPlanBuilder::new();
-        let variable_source =
-            variable_builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(variable_schema)));
-        let variable = variable_builder.finish_gpu_resident(variable_source);
-        let variable_error = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&variable)
-            .expect_err("variable-width predicate output lacks a finite engine bound");
+        let variable_source = variable_builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&variable_schema))));
+        let literal = variable_builder.finish_gpu_resident(variable_source);
+        QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&literal)
+            .expect("an exact literal string batch has finite byte statistics");
+
+        let mut resident_builder = QueryPlanBuilder::new();
+        let resident_source = resident_builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("string_side_input", variable_schema).with_row_count_upper_bound(1),
+        ));
+        let resident = resident_builder.finish_gpu_resident(resident_source);
+        let variable_error = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&resident)
+            .expect_err("a resident variable-width predicate lacks an exact byte bound");
         assert_eq!(variable_error.fact_value("schedule_reason"), Some("side_input_schema_unmodeled"));
 
         let overflow = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&overflow_row_bound_side_input_plan())

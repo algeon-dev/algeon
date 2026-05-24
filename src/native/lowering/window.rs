@@ -577,7 +577,7 @@ fn lower_window_spec(
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
             match standard_window_kind(standard)? {
                 StandardWindowKind::Rank => functions.push(NativeWindowFunction::Rank { alias }),
-                StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::RowNumber { alias }),
+                StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::row_number(alias)),
                 StandardWindowKind::Lag | StandardWindowKind::Lead => {
                     let direction = match standard_window_kind(standard)? {
                         StandardWindowKind::Lag => NativeShiftDirection::Lag,

@@ -423,9 +423,15 @@ fn build_tasks(
                 );
             },
             PlanNode::GraphAlgorithm(_) => {
-                return Err(invalid("graph algorithm nodes are not supported by the strict compiled pipeline")
-                    .with_fact("node_id", node_id)
-                    .with_fact("operator", "graph_algorithm"));
+                let task = single_task(task_ids, *node_id)?;
+                let gates = gate_builder
+                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
+                tasks.push(
+                    PipelineTask::for_plan_node(task, PipelineTaskKind::GraphAlgorithm, *node_id)
+                        .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
+                        .with_output_resources(vec![output])
+                        .with_gates(gates),
+                );
             },
             PlanNode::VectorAlgorithm(_) => {
                 return Err(invalid("vector algorithm nodes are not supported by the strict compiled pipeline")
@@ -433,9 +439,15 @@ fn build_tasks(
                     .with_fact("operator", "vector_algorithm"));
             },
             PlanNode::EdgeNormalize(_) => {
-                return Err(invalid("edge normalize nodes are not supported by the strict compiled pipeline")
-                    .with_fact("node_id", node_id)
-                    .with_fact("operator", "edge_normalize"));
+                let task = single_task(task_ids, *node_id)?;
+                let gates = gate_builder
+                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
+                tasks.push(
+                    PipelineTask::for_plan_node(task, PipelineTaskKind::EdgeNormalize, *node_id)
+                        .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
+                        .with_output_resources(vec![output])
+                        .with_gates(gates),
+                );
             },
             PlanNode::Join(_) => {
                 let NodeTasks::Join { build, probe, materialize } = tasks_for(task_ids, *node_id)? else {

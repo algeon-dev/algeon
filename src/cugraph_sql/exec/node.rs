@@ -8,8 +8,7 @@ pub struct CugraphAlgoExec {
     pub(super) edge_source: Arc<dyn ExecutionPlan>,
     pub(super) predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
     pub(super) input_row_bounds: CugraphInputRowBounds,
-    pub(super) projection: Option<Vec<usize>>,
-    pub(super) limit: Option<usize>,
+    pub(super) result_options: CugraphResultPlanOptions,
     pub(super) native_execution_config: NexusNativeExecutionConfig,
     pub(super) host_boundary_config: GpuIslandHostBoundaryConfig,
     pub(super) prepared_staged_inputs: Option<Arc<std::sync::Mutex<Option<StagedCugraphInputs>>>>,
@@ -74,8 +73,29 @@ impl CugraphAlgoExec {
         host_boundary_config: GpuIslandHostBoundaryConfig,
         gpu_result_input_name: String,
     ) -> Result<Self> {
+        let result_options = CugraphResultPlanOptions::new(projection, limit);
+        Self::try_new_with_result_options(
+            spec,
+            edge_source,
+            predicate_sources,
+            result_options,
+            native_execution_config,
+            host_boundary_config,
+            gpu_result_input_name,
+        )
+    }
+
+    fn try_new_with_result_options(
+        spec: CugraphAlgorithmSpec,
+        edge_source: Arc<dyn ExecutionPlan>,
+        predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
+        result_options: CugraphResultPlanOptions,
+        native_execution_config: NexusNativeExecutionConfig,
+        host_boundary_config: GpuIslandHostBoundaryConfig,
+        gpu_result_input_name: String,
+    ) -> Result<Self> {
         register_cugraph_execution_spis();
-        let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
+        let schema = projected_schema(&spec.output_schema, result_options.projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
         let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
@@ -85,8 +105,7 @@ impl CugraphAlgoExec {
             &spec,
             edge_source.schema(),
             predicate_sources.iter().map(|source| source.schema()).collect(),
-            projection.as_ref(),
-            limit,
+            &result_options,
             edge_normalize_inserted,
             input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
@@ -103,8 +122,7 @@ impl CugraphAlgoExec {
             edge_source,
             predicate_sources,
             input_row_bounds,
-            projection,
-            limit,
+            result_options,
             native_execution_config,
             host_boundary_config,
             prepared_staged_inputs: None,
@@ -136,8 +154,7 @@ impl CugraphAlgoExec {
             self.edge_source.schema(),
             self.predicate_sources.iter().map(|source| source.schema()).collect(),
             self.input_row_bounds.predicate_row_upper_bounds(),
-            self.projection.as_ref(),
-            self.limit,
+            &self.result_options,
             self.edge_normalize_inserted(),
             self.input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
@@ -197,8 +214,7 @@ impl CugraphAlgoExec {
             self.edge_source.as_ref(),
             &self.predicate_sources,
             &input_row_bounds,
-            self.projection.as_ref(),
-            self.limit,
+            &self.result_options,
             self.edge_normalize_inserted(),
             &self.native_execution_config,
             task_context,
@@ -237,8 +253,7 @@ impl CugraphAlgoExec {
             prepared.edge_source.as_ref(),
             &prepared.predicate_sources,
             &prelogical_row_bounds,
-            prepared.projection.as_ref(),
-            prepared.limit,
+            &prepared.result_options,
             prepared.edge_normalize_inserted(),
             &prepared.native_execution_config,
         )?;
@@ -321,8 +336,8 @@ impl CugraphAlgoExec {
             resident_graph_key: Some(resident_graph_key),
             source_vertex,
             normalized_output: params.output.mode == CugraphBfsOutputMode::Normalized,
-            projection: self.projection.clone(),
-            limit: self.limit,
+            projection: self.result_options.projection.clone(),
+            limit: self.result_options.limit,
             max_output_staging_bytes: self.host_boundary_config.max_output_staging_bytes(),
         })
     }
@@ -667,8 +682,6 @@ impl CugraphAlgoExec {
                 edge_schema,
                 edge_frame,
                 predicate_frames,
-                logical_codebook,
-                execution_spec,
                 host_evidence,
                 reservation: _input_reservation,
             } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
@@ -683,23 +696,17 @@ impl CugraphAlgoExec {
                 Some(&host_evidence),
                 &mut graph_metrics,
             )?;
-            let path_target = path_target
-                .map(|target| match logical_codebook.as_ref() {
-                    Some(codebook) => target.map_vertex(codebook),
-                    None => Ok(target),
-                })
-                .transpose()?;
-            let logical_mapping = logical_codebook.is_some();
+            let result_options =
+                if path_target.is_some() { CugraphResultPlanOptions::default() } else { self.result_options.clone() };
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &execution_spec,
+                &self.spec,
                 edge_schema,
                 edge_frame,
                 predicate_frames,
                 self.input_row_bounds.predicate_row_upper_bounds(),
-                if logical_mapping || path_target.is_some() { None } else { self.projection.as_ref() },
-                if logical_mapping || path_target.is_some() { None } else { self.limit },
+                &result_options,
                 self.edge_normalize_inserted(),
                 self.input_row_bounds.edge_row_upper_bound(),
                 edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
@@ -713,24 +720,16 @@ impl CugraphAlgoExec {
                 Some(&host_evidence),
                 &mut graph_metrics,
             )?;
-            let output = if let Some(codebook) = logical_codebook.as_ref() {
-                decode_bfs_logical_host_output(output, codebook, bfs_decoded_output_schema_for_host(&self.spec))?
-            } else {
-                output
-            };
             if let Some(path_target) = path_target {
                 let (path, reservation) = materialize_bfs_path_output_from_host(
                     output,
                     &self.spec,
                     path_target,
-                    self.projection.as_ref(),
-                    self.limit,
+                    self.result_options.projection.as_ref(),
+                    self.result_options.limit,
                     self.host_boundary_config.max_output_staging_bytes(),
                 )?;
                 return Ok(EagerCugraphHostOutput::from_shared_parts(self.schema(), Arc::new(vec![path]), reservation));
-            }
-            if logical_mapping {
-                return apply_host_projection_limit(output, &self.spec, self.projection.as_ref(), self.limit);
             }
             Ok(output)
         };
@@ -813,14 +812,13 @@ impl CugraphAlgoExec {
         let mut graph_metrics =
             GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
         let result = async {
-            let logical_bfs_mapping = logical_bfs_mapping_for_gpu_boundary(&self.spec, &self.edge_source.schema())?;
-            if is_bfs_path_output(&self.spec) || logical_bfs_mapping {
+            if is_bfs_path_output(&self.spec) {
                 return Err(Error::new(
                     ErrorCode::RequiredGpuOperationUnsupported,
                     "datafusion_nexus.cugraph_sql.execute_gpu",
-                    "logical and path BFS results are host-owned and cannot be GPU-resident producers",
+                    "BFS path results are host-owned and cannot be GPU-resident producers",
                 )
-                .with_fact("reason", "logical_bfs_gpu_result_unsupported")
+                .with_fact("reason", "bfs_path_gpu_result_unsupported")
                 .with_fact("output_boundary", "gpu_resident")
                 .into());
             }
@@ -828,8 +826,6 @@ impl CugraphAlgoExec {
                 edge_schema,
                 edge_frame,
                 predicate_frames,
-                logical_codebook: _,
-                execution_spec,
                 host_evidence: _,
                 reservation: _input_reservation,
             } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
@@ -838,13 +834,12 @@ impl CugraphAlgoExec {
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &execution_spec,
+                &self.spec,
                 edge_schema,
                 edge_frame,
                 predicate_frames,
                 self.input_row_bounds.predicate_row_upper_bounds(),
-                self.projection.as_ref(),
-                self.limit,
+                &self.result_options,
                 self.edge_normalize_inserted(),
                 self.input_row_bounds.edge_row_upper_bound(),
                 edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
@@ -860,6 +855,25 @@ impl CugraphAlgoExec {
 impl GpuResidentProducer for CugraphAlgoExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
+    }
+
+    fn rewrite_subsumed_composed_consumer(
+        &self,
+        consumer_plan: &nexus_query_engine::plan::QueryPlan,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(result_options) = pushed_logical_consumer_options(self, consumer_plan)? else {
+            return Ok(None);
+        };
+        Self::try_new_with_result_options(
+            self.spec.clone(),
+            Arc::clone(&self.edge_source),
+            self.predicate_sources.clone(),
+            result_options,
+            self.native_execution_config.clone(),
+            self.host_boundary_config,
+            self.gpu_result_input_name.clone(),
+        )
+        .map(|producer| Some(Arc::new(producer) as Arc<dyn ExecutionPlan>))
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
@@ -890,18 +904,75 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 }
 
-fn logical_bfs_mapping_for_gpu_boundary(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<bool> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Ok(false);
+fn pushed_logical_consumer_options(
+    producer: &CugraphAlgoExec,
+    consumer_plan: &nexus_query_engine::plan::QueryPlan,
+) -> Result<Option<CugraphResultPlanOptions>> {
+    if !matches!(producer.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::Bfs)
+        || is_bfs_path_output(&producer.spec)
+        || !graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema())?
+        || !consumer_plan.unreachable_node_ids().is_empty()
+        || consumer_plan.output_schema() != &producer.schema()
+    {
+        return Ok(None);
+    }
+    let [source_node, remaining @ ..] = consumer_plan.nodes() else {
+        return Ok(None);
     };
-    bfs_uses_logical_mapping(spec, params, edge_schema)
+    let PlanNode::Source(source) = &source_node.kind else {
+        return Ok(None);
+    };
+    let SourceNode::GpuResident(source) = source.as_ref() else {
+        return Ok(None);
+    };
+    if source.input_name != producer.gpu_result_input_name {
+        return Ok(None);
+    }
+
+    let mut result_options = producer.result_options.clone();
+    let mut input = source_node.id;
+    for node in remaining {
+        match &node.kind {
+            PlanNode::Sort(sort)
+                if sort.input == input
+                    && result_options.pre_decode_sort.is_none()
+                    && sort.spec.expressions.iter().all(|expression| {
+                        let NativeExpr::Column(column) = &expression.expr else {
+                            return false;
+                        };
+                        match producer.spec.algorithm {
+                            CugraphAlgorithm::PageRank => matches!(column.name(), "vertex" | "value"),
+                            CugraphAlgorithm::Bfs => matches!(column.name(), "vertex" | "distance" | "reachable"),
+                            _ => false,
+                        }
+                    }) =>
+            {
+                result_options.pre_decode_sort = Some(sort.spec.clone());
+            },
+            PlanNode::Limit(limit)
+                if limit.input == input
+                    && limit.spec.skip == 0
+                    && limit.spec.fetch.is_some()
+                    && result_options.limit.is_none_or(|fetch| Some(fetch) == limit.spec.fetch) =>
+            {
+                result_options.limit = limit.spec.fetch;
+            },
+            _ => return Ok(None),
+        }
+        input = node.id;
+    }
+    if remaining.is_empty() || consumer_plan.root_id() != input {
+        return Ok(None);
+    }
+    Ok(Some(result_options))
 }
 
 pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
     let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
-    let logical_bfs_mapping =
-        logical_bfs_mapping_for_gpu_boundary(&producer.spec, &producer.edge_source.schema()).ok()?;
-    if is_bfs_path_output(&producer.spec) || logical_bfs_mapping {
+    let logical_mapping = graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema()).ok()?;
+    if crate::cugraph_sql::validate_bfs_logical_edge_id_capability(&producer.spec, logical_mapping).is_err()
+        || is_bfs_path_output(&producer.spec)
+    {
         return None;
     }
     Some(producer as &dyn GpuResidentProducer)
@@ -928,8 +999,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
             self.edge_source.schema(),
             self.predicate_sources.iter().map(|source| source.schema()).collect(),
             self.input_row_bounds.predicate_row_upper_bounds(),
-            self.projection.as_ref(),
-            self.limit,
+            &self.result_options,
             cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
             self.input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
@@ -946,20 +1016,23 @@ impl GraphExecutionPlan for CugraphAlgoExec {
     }
 
     fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
-        let logical_bfs_mapping = match logical_bfs_mapping_for_gpu_boundary(&self.spec, &self.edge_source.schema()) {
-            Ok(value) => value,
+        let logical_mapping = match graph_uses_logical_mapping(&self.spec, &self.edge_source.schema()) {
+            Ok(logical_mapping) => logical_mapping,
             Err(error) => return Some(error),
         };
-        if !is_bfs_path_output(&self.spec) && !logical_bfs_mapping {
+        if let Err(error) = crate::cugraph_sql::validate_bfs_logical_edge_id_capability(&self.spec, logical_mapping) {
+            return Some(error);
+        }
+        if !is_bfs_path_output(&self.spec) {
             return None;
         }
         Some(
             Error::new(
                 ErrorCode::RequiredGpuOperationUnsupported,
                 "datafusion_nexus.cugraph_sql.gpu_result_producer",
-                "logical and path BFS results are host-owned and cannot be GPU-resident producers",
+                "BFS path results are host-owned and cannot be GPU-resident producers",
             )
-            .with_fact("reason", "logical_bfs_gpu_result_unsupported")
+            .with_fact("reason", "bfs_path_gpu_result_unsupported")
             .with_fact("output_boundary", "gpu_resident")
             .into(),
         )
@@ -1044,12 +1117,11 @@ impl ExecutionPlan for CugraphAlgoExec {
         let mut children = children.into_iter();
         let edge_source = children.next().expect("child count checked above");
         let predicate_sources = children.collect();
-        Ok(Arc::new(Self::try_new_with_gpu_result_input_name(
+        Ok(Arc::new(Self::try_new_with_result_options(
             self.spec.clone(),
             edge_source,
             predicate_sources,
-            self.projection.clone(),
-            self.limit,
+            self.result_options.clone(),
             self.native_execution_config.clone(),
             self.host_boundary_config,
             self.gpu_result_input_name.clone(),

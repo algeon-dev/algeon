@@ -42,10 +42,8 @@ use super::{
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
 #[cfg(feature = "cugraph")]
 use crate::{
-    cugraph_sql::CugraphAlgoExec,
-    native_exec::NexusNativeExecutionConfig,
-    session::{session_state_for_cugraph_host_subplan, session_state_with_native_execution_config},
-    session_config::DataFusionNexusSessionConfig,
+    cugraph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
+    session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
 };
 
 #[cfg(feature = "cugraph")]
@@ -98,9 +96,7 @@ impl TableProvider for CugraphAlgoTableProvider {
             .await?
             .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
         let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
-        if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
-            spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
-        }
+        resolve_vertex_output_schema(&mut spec, &vertex_domain);
         let native_execution_config =
             native_execution_config_with_request_options(session_state, self.native_execution_config.clone());
         // This nested state lowers the edge/predicate relations only.  The
@@ -109,12 +105,8 @@ impl TableProvider for CugraphAlgoTableProvider {
         // source-only claim on the parent attempt and shadow that graph ticket
         // at execution time.
         let nested_planning_config = native_execution_config.clone().without_query_admission_for_cugraph_subplan();
-        let planning_state = if vertex_domain.is_string_logical() {
-            session_state_for_cugraph_host_subplan(session_state)
-        } else {
-            session_state_with_native_execution_config(session_state, nested_planning_config)
-                .unwrap_or_else(|| session_state.clone())
-        };
+        let planning_state = session_state_with_native_execution_config(session_state, nested_planning_config)
+            .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
@@ -320,7 +312,7 @@ impl TableFunctionImpl for CugraphTableFunction {
         #[cfg(feature = "cugraph")]
         {
             let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
-            maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
+            maybe_resolve_vertex_output_schema(&mut spec, args.session());
             Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
         }
         #[cfg(not(feature = "cugraph"))]
@@ -332,13 +324,7 @@ impl TableFunctionImpl for CugraphTableFunction {
 }
 
 #[cfg(feature = "cugraph")]
-fn maybe_resolve_bfs_relation_output_schema(spec: &mut CugraphAlgorithmSpec, session: &dyn Session) {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return;
-    };
-    if !matches!(params.source, CugraphBfsSource::Relation(_)) {
-        return;
-    }
+fn maybe_resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, session: &dyn Session) {
     let Some(session_state) = session.as_any().downcast_ref::<SessionState>() else {
         return;
     };
@@ -352,8 +338,18 @@ fn maybe_resolve_bfs_relation_output_schema(spec: &mut CugraphAlgorithmSpec, ses
     let Ok(vertex_domain) = validate_edge_source_schema(spec, &provider.schema()) else {
         return;
     };
+    resolve_vertex_output_schema(spec, &vertex_domain);
+}
+
+#[cfg(feature = "cugraph")]
+fn resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, vertex_domain: &CugraphVertexIdDomain) {
     if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
-        spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
+        spec.output_schema = bfs_result_schema_for_vertex_domain(params, vertex_domain);
+    } else if spec.algorithm == CugraphAlgorithm::PageRank && vertex_domain.is_string_logical() {
+        spec.output_schema = Arc::new(Schema::new(vec![
+            arrow::datatypes::Field::new("vertex", DataType::Utf8, false),
+            arrow::datatypes::Field::new("value", DataType::Float64, false),
+        ]));
     }
 }
 

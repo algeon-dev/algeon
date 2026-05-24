@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use super::{
     CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support,
     shared::{
-        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
+        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission,
+        capability_first_bounded_cugraph_pipeline_admission, capability_first_bounded_pipeline_admission,
     },
 };
 use crate::{
@@ -76,6 +77,20 @@ pub fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipe
             },
             _ => Ok(None),
         },
+    }
+}
+
+pub(crate) fn bounded_cugraph_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
+    let Some(admission) = capability_first_bounded_cugraph_pipeline_admission(plan)? else {
+        return Ok(None);
+    };
+    match admission.candidate_status() {
+        CapabilityFirstCandidateStatus::Admitted => capability_admission_from_capability_first(admission).map(Some),
+        CapabilityFirstCandidateStatus::Rejected => Err(compiled_bounded_pipeline_required_error(
+            plan,
+            admission.pipeline(),
+            admission.rejection_projection().expect("rejected cuGraph pipeline admission should carry a projection"),
+        )),
     }
 }
 

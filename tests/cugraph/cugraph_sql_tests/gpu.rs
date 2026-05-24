@@ -1,6 +1,7 @@
 use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
-use datafusion_nexus::planner::{
-    FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan,
+use datafusion_nexus::{
+    gpu_coverage::{QueryGpuCoverageOverall, validate_query},
+    planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan},
 };
 use futures::StreamExt;
 use nexus_query_engine::{expr::Expr, plan::PlanNode, source::SourceNode};
@@ -1388,6 +1389,83 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
     assert_eq!(string_bfs_distance_for(batch, "b"), Some(1));
     assert_eq!(string_bfs_distance_for(batch, "c"), Some(1));
     assert_eq!(string_bfs_distance_for(batch, "d"), Some(2));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
+    register_string_vertex_memtable(&ctx, "node_universe", "vertex", &["a", "b", "c", "d", "isolated"]);
+    let string_sql = "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst')";
+
+    let coverage = validate_query(&ctx, string_sql).await.unwrap();
+    assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
+    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(coverage.domains.datafusion_boundary_count, 0);
+
+    let string_df = ctx.sql(string_sql).await.unwrap();
+    assert_eq!(string_df.schema().field(0).data_type(), &DataType::Utf8);
+    let string_plan = string_df.create_physical_plan().await.unwrap();
+    assert_eq!(classify_final_plan(string_plan.as_ref()), FinalPlanDisposition::Native);
+    let string_batches = datafusion::physical_plan::collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
+
+    let numeric_batches = ctx
+        .sql("SELECT vertex, value FROM cugraph_pagerank('numeric_edges', 'src', 'dst')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let limited_df =
+        ctx.sql("SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') LIMIT 2").await.unwrap();
+    let limited_plan = limited_df.create_physical_plan().await.unwrap();
+    let limited_consumer =
+        find_composed_exec(limited_plan.as_ref()).expect("pushed string PageRank limit stays native");
+    assert_eq!(limited_consumer.native_plan_for_test().nodes().len(), 1);
+    assert!(matches!(limited_consumer.native_plan_for_test().root_node().kind, PlanNode::Source(_)));
+    let limited_rows = datafusion::physical_plan::collect(limited_plan, ctx.task_ctx()).await.unwrap();
+    assert_eq!(limited_rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let top_k_df = ctx
+        .sql(
+            "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+             ORDER BY value DESC LIMIT 2",
+        )
+        .await
+        .unwrap();
+    let top_k_plan = top_k_df.create_physical_plan().await.unwrap();
+    let top_k_consumer = find_composed_exec(top_k_plan.as_ref()).expect("string PageRank top-k stays native");
+    assert_eq!(top_k_consumer.native_plan_for_test().nodes().len(), 1);
+    assert!(matches!(top_k_consumer.native_plan_for_test().root_node().kind, PlanNode::Source(_)));
+    let top_k_rows = datafusion::physical_plan::collect(top_k_plan, ctx.task_ctx()).await.unwrap();
+    let top_k_batch = single_batch(&top_k_rows);
+    let top_k_values = top_k_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+    assert_eq!(top_k_batch.num_rows(), 2);
+    assert!(top_k_values.value(0) >= top_k_values.value(1));
+    drop_session_context_on_blocking_thread(ctx).await;
+
+    let string_batch = single_batch(&string_batches);
+    let numeric_batch = single_batch(&numeric_batches);
+    let vertices = string_batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let string_values = string_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+    let numeric_vertices = numeric_batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let numeric_values = numeric_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+
+    let mut vertex_names = (0..vertices.len()).map(|row| vertices.value(row)).collect::<Vec<_>>();
+    vertex_names.sort_unstable();
+    assert_eq!(vertex_names, vec!["a", "b", "c", "d"]);
+    for row in 0..string_values.len() {
+        let expected_id = i64::from(vertices.value(row).as_bytes()[0] - b'a' + 1);
+        let numeric_row = (0..numeric_vertices.len())
+            .find(|numeric_row| numeric_vertices.value(*numeric_row) == expected_id)
+            .expect("dense numeric fixture must contain every string endpoint");
+        assert!(
+            (string_values.value(row) - numeric_values.value(numeric_row)).abs() <= 1.0e-12,
+            "PageRank mismatch for {}: string={} numeric={}",
+            vertices.value(row),
+            string_values.value(row),
+            numeric_values.value(numeric_row),
+        );
+    }
 }
 
 #[tokio::test]

@@ -933,6 +933,17 @@ pub(crate) fn vertex_id_domain_for_call(
         return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
+    if algorithm == CugraphAlgorithm::PageRank && is_string_vertex_dtype(src_type) && is_string_vertex_dtype(dst_type) {
+        return Ok(CugraphVertexIdDomain::StringLogical);
+    }
+
+    if algorithm == CugraphAlgorithm::PageRank && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type))
+    {
+        return Err(vertex_dtype_mismatch_error(format!(
+            "cuGraph PageRank string logical vertex mapping requires string source and destination columns, found source={src_type:?}, destination={dst_type:?}"
+        )));
+    }
+
     if !is_numeric_vertex_dtype(src_type) {
         return Err(unsupported_vertex_dtype_error(format!(
             "cuGraph {} source column has unsupported dtype {src_type:?}",

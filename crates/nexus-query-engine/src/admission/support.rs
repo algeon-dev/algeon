@@ -274,6 +274,8 @@ fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
                 | PipelineTaskKind::FinalSort
                 | PipelineTaskKind::Limit
                 | PipelineTaskKind::Union
+                | PipelineTaskKind::EdgeNormalize
+                | PipelineTaskKind::GraphAlgorithm
                 | PipelineTaskKind::SinkMaterialize
         )
     })
@@ -290,6 +292,8 @@ fn task_resource_shapes_are_in_d2_envelope(pipeline: &CompiledPipeline, join_gro
         | PipelineTaskKind::FinalSort
         | PipelineTaskKind::Limit => task.input_resources().len() == 1 && task.output_resources().len() == 1,
         PipelineTaskKind::Union => !task.input_resources().is_empty() && task.output_resources().len() == 1,
+        PipelineTaskKind::GraphAlgorithm => !task.input_resources().is_empty() && task.output_resources().len() == 1,
+        PipelineTaskKind::EdgeNormalize => task.input_resources().len() == 1 && task.output_resources().len() == 1,
         PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => {
             task.input_resources().len() == 1 && task.output_resources().is_empty()
         },
@@ -739,6 +743,8 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
             | PipelineTaskKind::Aggregate
             | PipelineTaskKind::Window
             | PipelineTaskKind::Union
+            | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::EdgeNormalize
                 if !seen_limit => {},
             PipelineTaskKind::FinalSort if !seen_limit => {},
             PipelineTaskKind::Limit if !seen_limit => {
@@ -754,6 +760,8 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
             | PipelineTaskKind::Aggregate
             | PipelineTaskKind::Window
             | PipelineTaskKind::Union
+            | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::EdgeNormalize
             | PipelineTaskKind::FinalSort
             | PipelineTaskKind::Limit => return false,
         }
@@ -963,6 +971,12 @@ fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) ->
         },
         PipelineTaskKind::Union => {
             matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Union(_)))
+        },
+        PipelineTaskKind::GraphAlgorithm => {
+            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::GraphAlgorithm(_)))
+        },
+        PipelineTaskKind::EdgeNormalize => {
+            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::EdgeNormalize(_)))
         },
         PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe | PipelineTaskKind::JoinMaterialize => {
             matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Join(_)))

@@ -130,6 +130,9 @@ pub enum WindowFunction {
     RowNumber {
         /// Output column name.
         alias: String,
+        /// Integer output type. SQL lowering uses UInt64; internal dense-id
+        /// mapping may request Int64 for downstream native consumers.
+        output_type: DataType,
     },
     /// SQL `LAG(expr, offset, default)` or `LEAD(expr, offset, default)` over
     /// the ordered window partition.
@@ -197,7 +200,12 @@ impl WindowFunction {
 
     /// Create a `row_number()` window function.
     pub fn row_number(alias: impl Into<String>) -> Self {
-        Self::RowNumber { alias: alias.into() }
+        Self::RowNumber { alias: alias.into(), output_type: DataType::UInt64 }
+    }
+
+    /// Create a one-based `row_number()` with an Int64 output.
+    pub fn row_number_i64(alias: impl Into<String>) -> Self {
+        Self::RowNumber { alias: alias.into(), output_type: DataType::Int64 }
     }
 
     /// Create a `LAG(expr, offset, default)` window function.
@@ -215,7 +223,7 @@ impl WindowFunction {
         match self {
             Self::Aggregate { alias, .. }
             | Self::Rank { alias }
-            | Self::RowNumber { alias }
+            | Self::RowNumber { alias, .. }
             | Self::LagLead { alias, .. } => alias,
         }
     }

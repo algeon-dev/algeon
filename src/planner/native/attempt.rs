@@ -21,7 +21,7 @@ use crate::{
     error::{Error, ErrorCode},
     native_exec::{
         NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig,
-        producer::gpu_resident_producer_input_name,
+        producer::{gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer},
     },
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
 };
@@ -263,6 +263,7 @@ fn native_datafusion_exec_for_plan(
     }
 
     let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
+    let (native_plan, gpu_inputs) = remove_subsumed_composed_consumer(native_plan, gpu_inputs)?;
     NexusNativeComposedExec::try_new_with_equivalence_properties(
         native_plan,
         gpu_inputs,
@@ -271,6 +272,38 @@ fn native_datafusion_exec_for_plan(
     )
     .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
     .map_err(DataFusionError::from)
+}
+
+fn remove_subsumed_composed_consumer(
+    plan: nexus_query_engine::plan::QueryPlan,
+    mut gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+) -> DataFusionResult<(nexus_query_engine::plan::QueryPlan, Vec<Arc<dyn ExecutionPlan>>)> {
+    let [producer] = gpu_inputs.as_slice() else {
+        return Ok((plan, gpu_inputs));
+    };
+    let Some(rewritten_producer) =
+        rewrite_gpu_resident_producer_for_subsumed_composed_consumer(producer.as_ref(), &plan)?
+    else {
+        return Ok((plan, gpu_inputs));
+    };
+    gpu_inputs[0] = rewritten_producer;
+    let source = plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            nexus_query_engine::plan::PlanNode::Source(source) => Some(source.as_ref().clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            DataFusionError::from(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_optimizer.subsumed_consumer",
+                "a subsumed composed consumer is missing its GPU-resident source",
+            ))
+        })?;
+    let mut builder = nexus_query_engine::plan::QueryPlanBuilder::new();
+    let source = builder.add_source(source);
+    Ok((builder.finish_with_host_sink(source), gpu_inputs))
 }
 
 fn native_plan_gpu_resident_source_names(plan: &nexus_query_engine::plan::QueryPlan) -> BTreeSet<String> {
