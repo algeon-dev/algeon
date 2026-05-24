@@ -49,6 +49,9 @@ pub(super) fn validate_joined_aggregate_scalar_expressions(
             validate_physical_expr(&expr, &root.aggregate.input().schema())?;
         }
     }
+    for filter in root.aggregate.filter_expr().iter().flatten() {
+        validate_physical_expr(filter, &root.aggregate.input().schema())?;
+    }
     for (group_expr, _alias) in root.aggregate.group_expr().expr() {
         validate_physical_expr(group_expr, &root.aggregate.input().schema())?;
     }
@@ -74,6 +77,9 @@ pub(super) fn required_aggregate_input_fields(
             for expr in aggregate_expr.expressions() {
                 collect_required_field_indices(&expr, &aggregate.input().schema(), &mut required)?;
             }
+        }
+        for filter in aggregate.filter_expr().iter().flatten() {
+            collect_required_field_indices(filter, &aggregate.input().schema(), &mut required)?;
         }
         for (group_expr, _alias) in aggregate.group_expr().expr() {
             collect_required_field_indices(group_expr, &aggregate.input().schema(), &mut required)?;
@@ -122,6 +128,9 @@ fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<()
         for expr in aggregate_expr.expressions() {
             validate_physical_expr(&expr, &aggregate.input().schema())?;
         }
+    }
+    for filter in aggregate.filter_expr().iter().flatten() {
+        validate_physical_expr(filter, &aggregate.input().schema())?;
     }
     for (group_expr, _alias) in aggregate.group_expr().expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
@@ -214,6 +223,9 @@ pub(super) fn validate_required_scalar_expressions(
             validate_physical_expr(&expr, &inputs.aggregate.input().schema())?;
         }
     }
+    for filter in inputs.aggregate.filter_expr().iter().flatten() {
+        validate_physical_expr(filter, &inputs.aggregate.input().schema())?;
+    }
     for (group_expr, _alias) in inputs.aggregate.group_expr().expr() {
         validate_physical_expr(group_expr, &inputs.aggregate.input().schema())?;
     }
@@ -258,8 +270,29 @@ pub(super) fn lower_aggregate_spec(
                     || lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&prepared.input.bindings)),
                     |alias| Ok(NativeExpr::column(alias)),
                 )?;
-            Ok(NativeAggregateExpr::new(lower_native_aggregate_function(expr.fun().name())?, lowered_arg, expr.name())
-                .with_distinct(expr.is_distinct()))
+            let lowered_filter =
+                aggregate.filter_expr().get(index).and_then(Option::as_ref).map_or(Ok(None), |filter| {
+                    prepared
+                        .filter_aliases
+                        .as_ref()
+                        .and_then(|aliases| aliases.get(index))
+                        .and_then(Option::as_ref)
+                        .map_or_else(
+                            || {
+                                lower_physical_expr_with_bindings(
+                                    filter,
+                                    &frontend_schema,
+                                    Some(&prepared.input.bindings),
+                                )
+                            },
+                            |alias| Ok(NativeExpr::column(alias)),
+                        )
+                        .map(Some)
+                })?;
+            let (function, distinct) = lower_native_aggregate_expr_function(expr.fun().name(), expr.is_distinct())?;
+            Ok(NativeAggregateExpr::new(function, lowered_arg, expr.name())
+                .with_distinct(distinct)
+                .with_filter(lowered_filter))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -337,5 +370,17 @@ pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggreg
         Ok(NativeAggregateFunction::StddevSamp)
     } else {
         Err(FallbackReason::UnsupportedOperator)
+    }
+}
+
+fn lower_native_aggregate_expr_function(
+    name: &str,
+    distinct: bool,
+) -> Result<(NativeAggregateFunction, bool), FallbackReason> {
+    let function = lower_native_aggregate_function(name)?;
+    if distinct && function == NativeAggregateFunction::Count {
+        Ok((NativeAggregateFunction::NUnique, false))
+    } else {
+        Ok((function, distinct))
     }
 }

@@ -368,6 +368,12 @@ fn node_signature(node: &PlanNode) -> String {
                 source.diagnostics.zero_column_count_disposition.as_str()
             ),
             SourceNode::GpuResident(_) => "source:gpu_resident".to_string(),
+            SourceNode::LiteralBatch(source) => format!(
+                "source:literal_batch:batches={}:rows={}:columns={}",
+                source.batches.len(),
+                source.row_count(),
+                source.schema.fields().len()
+            ),
         },
         PlanNode::Filter(node) => format!("filter:predicate={}", expr_signature(&node.predicate)),
         PlanNode::Projection(node) => {
@@ -411,6 +417,18 @@ fn node_signature(node: &PlanNode) -> String {
                     )
                 },
                 crate::plan::WindowFunction::Rank { .. } => "rank".to_string(),
+                crate::plan::WindowFunction::RowNumber { .. } => "row_number".to_string(),
+                crate::plan::WindowFunction::LagLead { expr, offset, default, direction, .. } => {
+                    let name = match direction {
+                        crate::plan::ShiftDirection::Lag => "lag",
+                        crate::plan::ShiftDirection::Lead => "lead",
+                    };
+                    let default_sig = match default {
+                        Some(value) => format!("{value}"),
+                        None => "null".to_string(),
+                    };
+                    format!("{name}:expr={}:offset={offset}:default={default_sig}", expr_signature(expr))
+                },
             });
             format!(
                 "window:partitions={}:orderings={}:functions={}",
@@ -430,7 +448,7 @@ fn node_signature(node: &PlanNode) -> String {
             });
             format!("sort:exprs={}", join_signatures(expressions))
         },
-        PlanNode::Limit(node) => format!("limit:skip={}:fetch={}", node.spec.skip > 0, node.spec.fetch > 0),
+        PlanNode::Limit(node) => format!("limit:skip={}:fetch={}", node.spec.skip > 0, node.spec.fetch.is_some()),
         PlanNode::Join(node) => format!(
             "join:type={}:keys={}:residual={}:null_equality={}:build_side={}:outputs={}",
             node.spec.join_type,
@@ -530,6 +548,9 @@ fn expr_signature(expr: &Expr) -> String {
         Expr::Cast { expr, target_type } => {
             format!("cast({}:target={})", expr_signature(expr), data_type_signature(target_type))
         },
+        Expr::TryCast { expr, target_type } => {
+            format!("try_cast({}:target={})", expr_signature(expr), data_type_signature(target_type))
+        },
         Expr::Binary { left, op, right, output_type } => format!(
             "binary:op={}:left={}:right={}:output={}",
             binary_op_signature(*op),
@@ -553,6 +574,9 @@ fn expr_signature(expr: &Expr) -> String {
         },
         Expr::Concat(exprs) => format!("concat({})", join_signatures(exprs.iter().map(expr_signature))),
         Expr::Abs(expr) => format!("abs({})", expr_signature(expr)),
+        Expr::Sqrt { expr, output_type } => {
+            format!("sqrt:expr={}:output={}", expr_signature(expr), data_type_signature(output_type))
+        },
         Expr::Round { expr, decimal_places, output_type } => format!(
             "round:expr={}:decimal_places={}:output={}",
             expr_signature(expr),
@@ -562,6 +586,12 @@ fn expr_signature(expr: &Expr) -> String {
         Expr::InList { expr, list, negated } => {
             let list = list.iter().map(expr_signature);
             format!("in_list:expr={}:list={}:negated={}", expr_signature(expr), join_signatures(list), negated)
+        },
+        Expr::IsDistinctFrom { left, right } => {
+            format!("is_distinct_from:left={}:right={}", expr_signature(left), expr_signature(right))
+        },
+        Expr::IsNotDistinctFrom { left, right } => {
+            format!("is_not_distinct_from:left={}:right={}", expr_signature(left), expr_signature(right))
         },
         Expr::Case { branches, else_expr } => {
             let branches = branches
@@ -612,6 +642,7 @@ fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
         AggregateFunction::Min => "min",
         AggregateFunction::Max => "max",
         AggregateFunction::Count => "count",
+        AggregateFunction::NUnique => "nunique",
         AggregateFunction::Avg => "avg",
         AggregateFunction::StddevSamp => "stddev_samp",
     }

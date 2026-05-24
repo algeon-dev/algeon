@@ -68,10 +68,44 @@ pub(in crate::native) fn validate_physical_expr(
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         return validate_scalar_function_expr(function, input_schema);
     }
-    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
-        return Err(FallbackReason::UnsupportedExpression);
+    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+        return validate_try_cast_expr(try_cast, input_schema);
     }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let source_type =
+        try_cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_try_cast_pair(&source_type, try_cast.cast_type()) {
+        // Unsupported type pairs stay on the UnsupportedExpression path so the
+        // planner's child-rewrite short-circuit treats TRY_CAST the same way
+        // it treated it before native admission of `STRING → integer`.
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    validate_physical_expr(try_cast.expr(), input_schema)
+}
+
+fn is_supported_try_cast_pair(source_type: &DataType, target_type: &DataType) -> bool {
+    is_string_data_type(source_type) && is_integer_data_type(target_type)
+}
+
+fn is_string_data_type(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+}
+
+fn is_integer_data_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+    )
 }
 
 fn literal_string_date32_cast_is_supported(expr: &Arc<dyn PhysicalExpr>, target_type: &DataType) -> bool {
@@ -166,6 +200,7 @@ fn validate_scalar_function_expr(
         "regexp_replace" => validate_regexp_replace_function(function, input_schema),
         "concat" => validate_concat_function(function, input_schema),
         "abs" => validate_abs_function(function, input_schema),
+        "sqrt" => validate_sqrt_function(function, input_schema),
         "round" => validate_round_function(function, input_schema),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
@@ -308,6 +343,21 @@ fn validate_abs_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef
     }
 }
 
+fn validate_sqrt_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    validate_numeric_or_decimal_expr(expr, input_schema)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_supported_native_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
 fn validate_round_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
     let args = function.args();
     if !(1..=2).contains(&args.len()) {
@@ -355,6 +405,10 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
     validate_physical_expr(binary.left(), input_schema)?;
     validate_physical_expr(binary.right(), input_schema)?;
     validate_binary_operator(binary.op())?;
+    if matches!(binary.op(), Operator::StringConcat) {
+        validate_string_expr(binary.left(), input_schema)?;
+        validate_string_expr(binary.right(), input_schema)?;
+    }
     if matches!(binary.op(), Operator::Modulo) {
         validate_integral_operand_type(binary.left(), input_schema)?;
         validate_integral_operand_type(binary.right(), input_schema)?;
@@ -451,7 +505,10 @@ fn validate_binary_operator(op: &Operator) -> Result<(), FallbackReason> {
         | Operator::Gt
         | Operator::GtEq
         | Operator::And
-        | Operator::Or => Ok(()),
+        | Operator::Or
+        | Operator::StringConcat
+        | Operator::IsDistinctFrom
+        | Operator::IsNotDistinctFrom => Ok(()),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }
@@ -651,6 +708,10 @@ fn is_integral_type(data_type: &DataType) -> bool {
 }
 
 fn is_numeric_or_decimal_type(data_type: &DataType) -> bool {
+    is_numeric_type(data_type) || matches!(data_type, DataType::Decimal128(_, _))
+}
+
+fn is_numeric_type(data_type: &DataType) -> bool {
     matches!(
         data_type,
         DataType::Int8
@@ -663,7 +724,6 @@ fn is_numeric_or_decimal_type(data_type: &DataType) -> bool {
             | DataType::UInt64
             | DataType::Float32
             | DataType::Float64
-            | DataType::Decimal128(_, _)
     )
 }
 

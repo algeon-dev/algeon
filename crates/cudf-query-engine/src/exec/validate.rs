@@ -60,6 +60,11 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 }
                 for expr in &aggregate.spec.aggr_exprs {
                     validate_expr(&expr.expr, input.output_schema(), input_available)?;
+                    if let Some(filter) = &expr.filter {
+                        let filter_type = validate_expr(filter, input.output_schema(), input_available)?;
+                        require_boolean(&filter_type, "aggregate filter predicate")?;
+                        lower_expr(filter)?;
+                    }
                 }
                 validate_aggregate_capability(aggregate, node.output_schema())?;
                 schema_column_names(node.output_schema())
@@ -78,7 +83,10 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                         crate::plan::WindowFunction::Aggregate { expr, .. } => {
                             validate_expr(expr, input.output_schema(), input_available)?;
                         },
-                        crate::plan::WindowFunction::Rank { .. } => {},
+                        crate::plan::WindowFunction::Rank { .. } | crate::plan::WindowFunction::RowNumber { .. } => {},
+                        crate::plan::WindowFunction::LagLead { expr, .. } => {
+                            validate_expr(expr, input.output_schema(), input_available)?;
+                        },
                     }
                 }
                 validate_window_capability(window, input.output_schema(), node.output_schema())?;
@@ -95,7 +103,9 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             },
             PlanNode::Limit(limit) => {
                 let input = input_node(plan, limit.input, node.id)?;
-                topk_candidate_rows(limit.spec)?;
+                if limit.spec.fetch.is_some() {
+                    topk_candidate_rows(limit.spec)?;
+                }
                 let input_available = available_columns(&available_columns_by_node, limit.input)?;
                 filter_available_columns(input_available, input.output_schema())
             },
@@ -248,7 +258,36 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             }
             Ok(schema_column_names(&source.schema))
         },
+        crate::source::SourceNode::LiteralBatch(source) => {
+            validate_literal_batch_source(source)?;
+            Ok(schema_column_names(&source.schema))
+        },
     }
+}
+
+pub(crate) fn validate_literal_batch_source(source: &crate::source::LiteralBatchSource) -> Result<()> {
+    if source.batches.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.literal_batch_source.validate",
+            "literal batch source requires at least one batch",
+        )
+        .with_fact("reason", "empty_batches"));
+    }
+    validate_schema_supported(&source.schema, "cudf_query_engine.literal_batch_source.validate_schema")?;
+    for (index, batch) in source.batches.iter().enumerate() {
+        if batch.schema().as_ref() != source.schema.as_ref() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.literal_batch_source.validate",
+                "literal batch schema must match declared source schema",
+            )
+            .with_fact("batch_index", index)
+            .with_fact("declared_fields", source.schema.fields().len())
+            .with_fact("batch_fields", batch.schema().fields().len()));
+        }
+    }
+    Ok(())
 }
 
 fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&QueryNode> {
@@ -639,6 +678,62 @@ fn validate_window_capability(
                     .with_fact("field", field.name())
                     .with_fact("data_type", format!("{:?}", field.data_type())));
                 }
+            },
+            crate::plan::WindowFunction::RowNumber { .. } => {
+                if !matches!(field.data_type(), arrow::datatypes::DataType::UInt64) {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "cudf_query_engine.window.validate",
+                        "native row_number output must be UInt64",
+                    )
+                    .with_fact("field", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type())));
+                }
+                if field.is_nullable() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "cudf_query_engine.window.validate",
+                        "native row_number output must be non-nullable",
+                    )
+                    .with_fact("field", field.name()));
+                }
+            },
+            crate::plan::WindowFunction::LagLead { expr, default, .. } => {
+                if window.spec.order_by.is_empty() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedOperator,
+                        "cudf_query_engine.window.validate",
+                        "native LAG / LEAD windows require ORDER BY",
+                    ));
+                }
+                for partition_expr in &window.spec.partition_by {
+                    lower_column_expr(partition_expr, "cudf_query_engine.window.validate_partition")?;
+                }
+                // LAG / LEAD output dtype matches the input expression dtype as declared
+                // by the planner. Verify the planner-declared field is nullable, because
+                // the shift always produces nullable rows on partition boundaries even
+                // when a non-null default is supplied (libcudf models the absence of a
+                // fill scalar as a null-yielding shift).
+                if let Some(value) = default {
+                    if &value.data_type() != field.data_type() {
+                        return Err(QueryError::new(
+                            QueryErrorCode::UnsupportedType,
+                            "cudf_query_engine.window.validate",
+                            "native LAG / LEAD default literal type must match output field type",
+                        )
+                        .with_fact("field", field.name())
+                        .with_fact("expected", format!("{:?}", field.data_type()))
+                        .with_fact("actual", format!("{:?}", value.data_type())));
+                    }
+                } else if !field.is_nullable() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "cudf_query_engine.window.validate",
+                        "native LAG / LEAD output without an explicit default must be nullable",
+                    )
+                    .with_fact("field", field.name()));
+                }
+                let _ = expr;
             },
         }
     }

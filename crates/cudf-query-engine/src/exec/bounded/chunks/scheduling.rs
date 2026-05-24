@@ -125,7 +125,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     Ok(partials)
 }
 
-
 struct OrderedSourceReadQueue {
     pending: VecDeque<ScheduledLocalParquetRead>,
     next_chunk_index: usize,
@@ -317,7 +316,7 @@ fn start_scheduled_source_read(
     let reservation = reservations.try_reserve(request, metrics)?;
     let source_token_budget =
         if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
-    Ok(ScheduledLocalParquetRead::spawn(
+    ScheduledLocalParquetRead::spawn(
         context.clone(),
         source.clone(),
         chunk.clone(),
@@ -327,7 +326,7 @@ fn start_scheduled_source_read(
         prefetch,
         attempt,
         max_attempts,
-    ))
+    )
 }
 
 fn finish_scheduled_source_read(
@@ -391,4 +390,3 @@ fn finish_scheduled_source_read(
     }
     Ok(output)
 }
-

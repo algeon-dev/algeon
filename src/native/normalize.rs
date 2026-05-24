@@ -1,15 +1,17 @@
 use cudf_query_engine::LimitSpec as NativeLimitSpec;
 use datafusion::{
-    datasource::source::DataSourceExec,
+    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
     physical_plan::{
         ExecutionPlan,
         aggregates::AggregateExec,
         coalesce_partitions::CoalescePartitionsExec,
         coop::CooperativeExec,
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
         limit::{GlobalLimitExec, LocalLimitExec},
+        placeholder_row::PlaceholderRowExec,
         projection::ProjectionExec,
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
@@ -175,6 +177,8 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     if plan.as_any().downcast_ref::<FilterExec>().is_some()
         || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+        || plan.as_any().downcast_ref::<PlaceholderRowExec>().is_some()
+        || plan.as_any().downcast_ref::<EmptyExec>().is_some()
         || plan.as_any().downcast_ref::<CoalescePartitionsExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
         || plan.as_any().downcast_ref::<CudfTableFormatScanExec>().is_some()
@@ -327,12 +331,21 @@ fn with_global_limit(mut normalized: NormalizedNativePlan<'_>, limit: NativeLimi
 }
 
 fn compose_limits(inner: NativeLimitSpec, outer: NativeLimitSpec) -> NativeLimitSpec {
-    NativeLimitSpec::new(inner.skip.saturating_add(outer.skip), inner.fetch.saturating_sub(outer.skip).min(outer.fetch))
+    let skip = inner.skip.saturating_add(outer.skip);
+    let fetch = match (inner.fetch, outer.fetch) {
+        (Some(inner_fetch), Some(outer_fetch)) => Some(inner_fetch.saturating_sub(outer.skip).min(outer_fetch)),
+        (Some(inner_fetch), None) => Some(inner_fetch.saturating_sub(outer.skip)),
+        (None, Some(outer_fetch)) => Some(outer_fetch),
+        (None, None) => None,
+    };
+    NativeLimitSpec::new(skip, fetch)
 }
 
-fn global_limit_spec(limit: &GlobalLimitExec, candidate: GpuCandidate) -> Result<NativeLimitSpec, NativePlanRejection> {
-    let fetch = limit.fetch().ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })?;
-    Ok(NativeLimitSpec::new(limit.skip(), fetch))
+fn global_limit_spec(
+    limit: &GlobalLimitExec,
+    _candidate: GpuCandidate,
+) -> Result<NativeLimitSpec, NativePlanRejection> {
+    Ok(NativeLimitSpec::new(limit.skip(), limit.fetch()))
 }
 
 fn normalize_sort_input_root(
@@ -428,7 +441,9 @@ fn normalize_native_input<'a>(
     let plan = peel_repartition(plan);
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
         let input = peel_repartition(filter.input().as_ref());
-        let normalized = if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>() {
+        let normalized = if let Some(source_exec) = input.as_any().downcast_ref::<DataSourceExec>()
+            && !data_source_is_memory(source_exec)
+        {
             NormalizedNativeInput::Source(NormalizedNativeSource {
                 scan: NormalizedNativeScan::LocalParquet(source_exec),
                 filter: Some(filter),
@@ -451,10 +466,19 @@ fn normalize_native_input<'a>(
         return Ok(normalized);
     }
     if let Some(source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
+        if data_source_is_memory(source_exec) {
+            return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
+        }
         return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
             scan: NormalizedNativeScan::LocalParquet(source_exec),
             filter: None,
         }));
+    }
+    if let Some(placeholder) = plan.as_any().downcast_ref::<PlaceholderRowExec>() {
+        return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::PlaceholderRow(placeholder)));
+    }
+    if let Some(empty) = plan.as_any().downcast_ref::<EmptyExec>() {
+        return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Empty(empty)));
     }
     if let Some(scan_exec) = plan.as_any().downcast_ref::<CudfTableFormatScanExec>() {
         return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
@@ -564,6 +588,10 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
     } else {
         plan
     }
+}
+
+fn data_source_is_memory(source_exec: &DataSourceExec) -> bool {
+    source_exec.data_source().as_any().downcast_ref::<MemorySourceConfig>().is_some()
 }
 
 fn wrap_shape(operator: &str, input: String) -> String {

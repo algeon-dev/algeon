@@ -6,6 +6,8 @@ mod avg;
 mod decimal_sum_and_zero_column;
 #[path = "aggregate_execution/distinct_count.rs"]
 mod distinct_count;
+#[path = "aggregate_execution/filtered.rs"]
+mod filtered;
 #[path = "aggregate_execution/global_avg.rs"]
 mod global_avg;
 #[path = "aggregate_execution/global_state.rs"]

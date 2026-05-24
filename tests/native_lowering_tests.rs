@@ -57,11 +57,14 @@ use datafusion::{
 };
 use datafusion_cudf::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapLoweringExpectation,
-    CandidateOutcome, FallbackReason, NativeFallbackPressureWorkloadInput, NativeLoweringResult,
+    CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
+    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeLoweringResult,
     ad_hoc_olap_fallback_pressure_workload_items, ad_hoc_olap_query_ids, lower_physical_plan_to_native,
     tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 
+#[path = "native_lowering_tests/ad_hoc_full_gpu_gaps.rs"]
+mod ad_hoc_full_gpu_gaps;
 #[path = "native_lowering_tests/ad_hoc_olap.rs"]
 mod ad_hoc_olap;
 #[path = "native_lowering_tests/fixtures.rs"]
@@ -201,6 +204,7 @@ fn native_local_parquet_sources(plan: &cudf_query_engine::QueryPlan) -> Vec<&cud
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
                 SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })

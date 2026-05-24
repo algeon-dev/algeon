@@ -31,7 +31,7 @@ pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &Execu
     error
         .with_fact_if_absent("budget_boundary", token.request().boundary())
         .with_fact_if_absent("budget_bytes", token.request().budget_bytes())
-        .with_fact_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())
+        .with_fact_if_absent("budget_enforcement", ExecutionBudgetEnforcement::StreamBoundReservation.as_str())
         .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
 }
 
@@ -191,6 +191,27 @@ pub(super) fn execute_window(
             frame = execute_rank_window(context, node, frame, alias.as_str(), metrics)?;
         }
     }
+    for function in &node.spec.functions {
+        if let crate::plan::WindowFunction::RowNumber { alias } = function {
+            frame = execute_row_number_window(context, node, frame, alias.as_str(), metrics)?;
+        }
+    }
+    for function in &node.spec.functions {
+        if let crate::plan::WindowFunction::LagLead { expr, offset, default, alias, direction } = function {
+            frame = execute_lag_lead_window(
+                context,
+                node,
+                output_schema,
+                frame,
+                expr,
+                *offset,
+                default.as_ref(),
+                alias.as_str(),
+                *direction,
+                metrics,
+            )?;
+        }
+    }
 
     let output_names = output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let output = frame.select(output_names).map_err(|error| {
@@ -239,7 +260,10 @@ fn execute_partition_window_aggregate(
             crate::plan::WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::WholePartition } => {
                 Some(AggregateExpr::new(*function, expr.clone(), alias.clone()))
             },
-            crate::plan::WindowFunction::Aggregate { .. } | crate::plan::WindowFunction::Rank { .. } => None,
+            crate::plan::WindowFunction::Aggregate { .. }
+            | crate::plan::WindowFunction::Rank { .. }
+            | crate::plan::WindowFunction::RowNumber { .. }
+            | crate::plan::WindowFunction::LagLead { .. } => None,
         })
         .collect::<Vec<_>>();
     let aggregate_spec = AggregateSpec::new(group_exprs, aggr_exprs);
@@ -561,6 +585,305 @@ fn execute_rank_window(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(output)
+}
+
+fn execute_row_number_window(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    frame: DataFrame,
+    alias: &str,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let timer = Instant::now();
+    let mut output = frame;
+    let mut temp_columns = Vec::new();
+    let (with_partition_key, partition_keys) =
+        rank_partition_keys(context, output, &node.spec.partition_by, &mut temp_columns)?;
+    output = with_partition_key;
+
+    let partition_rank_name = unique_temp_column_name(&output, "__cudf_window_row_number_partition_rank");
+    let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.row_number.partition",
+            "failed to compute partition row numbers",
+            error,
+        )
+    })?;
+    output = output.with_column(partition_rank_name.as_str(), partition_rank).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.row_number.columns",
+            "failed to append row_number work column",
+            error,
+        )
+    })?;
+
+    let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
+    let row_number_expr = (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)).alias(alias);
+    output = output.with_execution(&execution_overrides(context)).with_columns([row_number_expr]).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.row_number.output",
+            "failed to append row_number output column",
+            error,
+        )
+    })?;
+    temp_columns.push(partition_rank_name);
+    output = output.without_columns(temp_columns.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.row_number.cleanup",
+            "failed to remove row_number work columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_lag_lead_window(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    output_schema: &arrow::datatypes::SchemaRef,
+    frame: DataFrame,
+    value_expr: &Expr,
+    offset: u32,
+    default: Option<&crate::expr::LiteralValue>,
+    alias: &str,
+    direction: crate::plan::ShiftDirection,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let timer = Instant::now();
+
+    let output_field = output_schema.field_with_name(alias).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.window.lag_lead",
+            "LAG / LEAD output column not found in window schema",
+        )
+        .with_fact("alias", alias)
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    let output_arrow_dtype = output_field.data_type().clone();
+
+    // 1. Append a stable row_index column so we can recover input row order
+    //    after libcudf's group-defined output order.
+    let row_index_name = unique_temp_column_name(&frame, "__cudf_window_lag_lead_row_index");
+    let row_index_series = frame.row_positions().map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.lag_lead.row_index",
+            "failed to construct LAG / LEAD row index column",
+            error,
+        )
+    })?;
+    let working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.lag_lead.row_index",
+            "failed to append LAG / LEAD row index column",
+            error,
+        )
+    })?;
+
+    // 2. Materialize partition keys (or a synthesized global key).
+    let mut temp_columns: Vec<String> = Vec::new();
+    let (working, partition_keys) = rank_partition_keys(context, working, &node.spec.partition_by, &mut temp_columns)?;
+
+    // 3. Sort working by (partition_keys, order_keys). row_index rides along.
+    let mut sort_columns = partition_keys.clone();
+    let mut descending = vec![false; partition_keys.len()];
+    let mut nulls_first = vec![false; partition_keys.len()];
+    for sort_expr in &node.spec.order_by {
+        sort_columns.push(lower_column_expr(&sort_expr.expr, "cudf_query_engine.window.lag_lead.order_key")?);
+        descending.push(sort_expr.descending);
+        nulls_first.push(sort_expr.nulls_first);
+    }
+    let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
+    let sorted = working
+        .with_execution(&execution_overrides(context))
+        .sort_values(sort_columns, sort_options)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.sort",
+                "failed to sort LAG / LEAD window input",
+                error,
+            )
+        })?;
+
+    // 4. Materialize the shifted value column on the sorted frame.
+    let value_name = unique_temp_column_name(&sorted, "__cudf_window_lag_lead_value");
+    let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
+    let sorted =
+        sorted.with_execution(&execution_overrides(context)).with_columns([value_expr_cudf]).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.value",
+                "failed to materialize LAG / LEAD value column",
+                error,
+            )
+        })?;
+
+    // 5. Build fill scalars. The shifted value's fill is the user-supplied
+    //    default (or NULL of the output type). The row_index column is shifted
+    //    by 0, so its fill value is never observed; we still construct a
+    //    matching Int32 scalar so libcudf sees a well-typed pair.
+    let value_fill = build_lag_lead_value_fill_scalar(context, default, &output_arrow_dtype)?;
+    let row_index_fill = context.runtime().scalar(0i32).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.lag_lead.row_index_fill",
+            "failed to construct LAG / LEAD row index fill scalar",
+            error,
+        )
+    })?;
+
+    let signed_offset: i32 = match direction {
+        crate::plan::ShiftDirection::Lag => i32::try_from(offset).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.window.lag_lead",
+                "LAG offset exceeds the i32 range supported by libcudf",
+            )
+            .with_fact("offset", offset.to_string())
+        })?,
+        crate::plan::ShiftDirection::Lead => {
+            let positive = i32::try_from(offset).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.window.lag_lead",
+                    "LEAD offset exceeds the i32 range supported by libcudf",
+                )
+                .with_fact("offset", offset.to_string())
+            })?;
+            positive.checked_neg().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.window.lag_lead",
+                    "LEAD offset overflows when negated to libcudf's signed shift contract",
+                )
+                .with_fact("offset", offset.to_string())
+            })?
+        },
+    };
+
+    // 6. Per-group shift the value column. The row_index column rides along
+    //    with offset 0 so we can re-sort by it to recover input order.
+    //
+    // SQL `PARTITION BY` groups NULL keys together, so we have to request
+    // `include_null_keys` from cudf-rs explicitly: `DataFrame::groupby`
+    // defaults to excluding null keys, which would drop those rows from the
+    // shift output and break the row-index based reattach below.
+    let shift_specs = [
+        CudfShiftSpec::new(value_name.as_str(), signed_offset, value_fill),
+        CudfShiftSpec::new(row_index_name.as_str(), 0, row_index_fill),
+    ];
+    let groupby_options = GroupByOptions::builder().include_null_keys(true).build();
+    let shifted = sorted
+        .groupby(partition_keys.iter().map(String::as_str))
+        .options(groupby_options)
+        .shift_sorted(&shift_specs)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.shift",
+                "failed to execute grouped LAG / LEAD shift",
+                error,
+            )
+            .with_fact("alias", alias)
+        })?;
+
+    // 7. Sort the shift output by the shifted row index to recover input
+    //    row order, then peel off the shifted value column.
+    let shifted_row_index_column = format!("{row_index_name}_shift");
+    let shifted_value_column = format!("{value_name}_shift");
+    let restored = shifted
+        .with_execution(&execution_overrides(context))
+        .sort_values(
+            [shifted_row_index_column.as_str()],
+            CudfSortOptions::new().with_descending(vec![false]).with_nulls_first(vec![false]).with_stable(true),
+        )
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.restore_order",
+                "failed to restore LAG / LEAD row order",
+                error,
+            )
+        })?;
+    let shifted_series = restored.series(shifted_value_column.as_str()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.lag_lead.extract",
+            "failed to extract shifted LAG / LEAD column",
+            error,
+        )
+    })?;
+
+    let result = frame.with_column(alias, shifted_series).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.lag_lead.attach",
+            "failed to attach LAG / LEAD output column to input frame",
+            error,
+        )
+        .with_fact("alias", alias)
+    })?;
+
+    let _ = temp_columns;
+    metrics.operator_time += timer.elapsed();
+    Ok(result)
+}
+
+fn build_lag_lead_value_fill_scalar(
+    context: &ExecutionContext,
+    default: Option<&crate::expr::LiteralValue>,
+    output_arrow_dtype: &ArrowDataType,
+) -> Result<CudfScalar> {
+    use crate::expr::LiteralValue::*;
+    let runtime = context.runtime();
+    let null_for_output = || {
+        let cudf_dtype = crate::datatypes::cudf_dtype_from_arrow_type(output_arrow_dtype).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.window.lag_lead.fill_null",
+                "LAG / LEAD output Arrow type is not supported by the native engine",
+            )
+            .with_fact("dtype", format!("{output_arrow_dtype:?}"))
+        })?;
+        runtime.null_scalar_with_data_type(cudf_dtype).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.fill_null",
+                "failed to construct LAG / LEAD null fill scalar",
+                error,
+            )
+            .with_fact("dtype", format!("{output_arrow_dtype:?}"))
+        })
+    };
+    match default {
+        None => null_for_output(),
+        Some(value) => match value {
+            Boolean(v) => runtime.scalar(*v),
+            Int8(v) => runtime.scalar(*v),
+            Int16(v) => runtime.scalar(*v),
+            Int32(v) => runtime.scalar(*v),
+            Int64(v) => runtime.scalar(*v),
+            UInt8(v) => runtime.scalar(*v),
+            UInt16(v) => runtime.scalar(*v),
+            UInt32(v) => runtime.scalar(*v),
+            UInt64(v) => runtime.scalar(*v),
+            Float32(v) => runtime.scalar(*v),
+            Float64(v) => runtime.scalar(*v),
+            Utf8(s) | LargeUtf8(s) => runtime.string_scalar(s),
+            Null(_) => return null_for_output(),
+            Decimal128 { .. } | Date32(_) | Timestamp { .. } | Duration { .. } | IntervalMonthDayNano { .. } => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.window.lag_lead.fill",
+                    "LAG / LEAD default literal type is not yet supported by native shift",
+                )
+                .with_fact("literal", format!("{value:?}")));
+            },
+        }
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.lag_lead.fill_value",
+                "failed to construct LAG / LEAD fill scalar",
+                error,
+            )
+            .with_fact("literal", format!("{value:?}"))
+        }),
+    }
 }
 
 fn rank_partition_keys(

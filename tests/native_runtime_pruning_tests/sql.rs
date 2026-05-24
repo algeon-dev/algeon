@@ -37,6 +37,29 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 3
 ";
 
+pub(super) const SQL_FILTERED_AGGREGATE_QUERY: &str = "
+SELECT key, SUM(m00) FILTER (WHERE payload >= 10) AS sum_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY sum_m00 DESC, key ASC
+LIMIT 2
+";
+
+pub(super) const SQL_MIXED_FILTERED_AGGREGATES_QUERY: &str = "
+SELECT
+    key,
+    SUM(m00) AS total_m00,
+    SUM(m00) FILTER (WHERE payload >= 10) AS filtered_sum_m00,
+    COUNT(payload) FILTER (WHERE payload >= 10) AS filtered_count_payload,
+    COUNT(*) FILTER (WHERE payload >= 10) AS filtered_count_rows,
+    AVG(m00) FILTER (WHERE payload >= 10) AS filtered_avg_m00
+FROM bench
+GROUP BY key
+ORDER BY key ASC
+LIMIT 3
+";
+
 pub(super) const SQL_SELECTIVE_READER_PUSHDOWN_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
@@ -80,8 +103,8 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 3
 ";
 
-pub(super) const SQL_FILTERED_GLOBAL_COUNT_QUERY: &str = "
-SELECT COUNT(*) FILTER (WHERE payload >= 10) AS count_rows
+pub(super) const SQL_UNSUPPORTED_APPROX_DISTINCT_QUERY: &str = "
+SELECT APPROX_DISTINCT(payload) AS approx_payload
 FROM bench
 ";
 
@@ -338,6 +361,53 @@ FROM (
     FROM bench
 ) abs_scalars
 GROUP BY row_id, abs_order_delta
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE2_SQRT_SCALAR_QUERY: &str = "
+SELECT row_id, root_orderkey, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, SQRT(CAST(orderkey AS DOUBLE)) AS root_orderkey
+    FROM bench
+) sqrt_scalars
+GROUP BY row_id, root_orderkey
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE2_STRING_CONCAT_OPERATOR_QUERY: &str = "
+SELECT row_id, status_label, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, status || '-x' AS status_label
+    FROM bench
+) concat_operator
+GROUP BY row_id, status_label
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE2_NULL_AWARE_COMPARISON_QUERY: &str = "
+SELECT row_id, status_distinct, status_not_distinct, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        status IS DISTINCT FROM 'O' AS status_distinct,
+        status IS NOT DISTINCT FROM 'O' AS status_not_distinct
+    FROM bench
+) null_aware_comparison
+GROUP BY row_id, status_distinct, status_not_distinct
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_PHASE2_INTEGER_TO_TIMESTAMP_CAST_QUERY: &str = "
+SELECT row_id, order_ts, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, CAST(orderkey AS TIMESTAMP) AS order_ts
+    FROM bench
+) temporal_cast
+GROUP BY row_id, order_ts
 ORDER BY row_id ASC
 LIMIT 20
 ";

@@ -12,23 +12,22 @@ use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSource
 const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
 const SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES: u64 = 8 * 1024 * 1024;
 
-
 mod retry;
 mod scheduling;
 mod source_read;
 
-pub(in crate::exec) use retry::record_chunk_retry_error;
-pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
 // Private re-export so sibling submodules can reach `is_prefetch_chunk_error`
 // via `use super::*;` without exposing it outside the chunks module.
 use retry::is_prefetch_chunk_error;
+pub(in crate::exec) use retry::record_chunk_retry_error;
+pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
 pub(super) use scheduling::execute_bounded_chunks_with_source_scheduler;
-pub(in crate::exec::bounded) use source_read::{
-    insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk,
-};
 pub(super) use source_read::{
     concatenate_source_read_outputs, read_local_parquet_chunks_required_only,
     read_local_parquet_chunks_required_only_with_observation, release_source_read_outputs_reverse,
+};
+pub(in crate::exec::bounded) use source_read::{
+    insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk,
 };
 
 pub(super) fn execute_bounded_chunk_with_retry(
@@ -55,7 +54,6 @@ pub(super) fn execute_bounded_chunk_with_retry(
         min_retry_chunk_row_groups.max(1),
     )
 }
-
 
 pub(super) fn execute_bounded_chunk_retry_attempt(
     context: &ExecutionContext,
@@ -632,7 +630,6 @@ fn shrink_source_reservation_to_observed_without_grow(
     Ok(source_observed_bytes)
 }
 
-
 pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     source_read_reservation_contract(policy, chunk).requested_bytes
 }
@@ -986,4 +983,3 @@ pub(super) fn observed_source_read_reservation_request(
         chunk.estimated_source_read_bytes,
     )
 }
-

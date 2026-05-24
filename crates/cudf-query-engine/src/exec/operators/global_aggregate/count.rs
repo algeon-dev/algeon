@@ -24,7 +24,7 @@ fn global_count_series_impl(
     expr: &AggregateExpr,
     token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<cudf::Series> {
-    let count = if !expr.distinct && global_count_star_expr(&expr.expr) {
+    let count = if expr.function == AggregateFunction::Count && !expr.distinct && global_count_star_expr(&expr.expr) {
         frame.num_rows()
     } else {
         let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.count_expr")?;
@@ -36,7 +36,7 @@ fn global_count_series_impl(
             )
             .with_fact("column", input_column.as_str())
         })?;
-        if expr.distinct {
+        if aggregate_expr_is_exact_nunique(expr) {
             match token.as_ref() {
                 Some((token, _metrics)) => series.nunique_in(&token.execution_overrides()),
                 None => series.nunique(),

@@ -116,7 +116,7 @@ pub use plan::{
     GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
     LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder,
-    ResultSink, SchemaBehavior, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
+    ResultSink, SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
     stable_graph_result_schema,
 };
 pub use runtime::{
@@ -127,7 +127,7 @@ pub use runtime::{
     SourceSchedulerPolicy,
 };
 pub use source::{
-    ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+    ByteRangeDisposition, GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
     ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
     ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode,
     ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,

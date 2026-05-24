@@ -39,9 +39,6 @@ pub(super) fn is_supported_native_type(data_type: &DataType) -> bool {
 }
 
 pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    if is_integer_to_timestamp_cast(source_type, target_type) {
-        return false;
-    }
     is_supported_arrow_cast(source_type, target_type)
 }
 
@@ -74,9 +71,6 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         return Err(FallbackReason::UnsupportedOperator);
     }
     let group_by = aggregate.group_expr();
-    if aggregate.filter_expr().iter().any(Option::is_some) {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
     if group_by.has_grouping_set() {
         validate_grouping_sets(group_by)?;
     } else if !group_by.expr().is_empty()
@@ -100,6 +94,7 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
     }
+    validate_aggregate_filters(aggregate)?;
     for (group_expr, _alias) in group_by.expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
     }
@@ -123,10 +118,6 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
     {
         return Err(FallbackReason::UnsupportedOperator);
     }
-    if aggregate.filter_expr().iter().any(Option::is_some) {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
-
     let group_by = aggregate.group_expr();
     if !group_by.has_grouping_set()
         || group_by.expr().is_empty()
@@ -149,11 +140,25 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
     }
+    validate_aggregate_filters(aggregate)?;
     for (group_expr, _alias) in group_by.expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
     }
     for (null_expr, _alias) in group_by.null_expr() {
         validate_physical_expr(null_expr, &aggregate.input().schema())?;
+    }
+    Ok(())
+}
+
+fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), FallbackReason> {
+    for filter in aggregate.filter_expr().iter().flatten() {
+        validate_physical_expr(filter, &aggregate.input().schema())?;
+        let data_type = filter
+            .data_type(aggregate.input().schema().as_ref())
+            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        if !matches!(data_type, DataType::Boolean) {
+            return Err(FallbackReason::UnsupportedType);
+        }
     }
     Ok(())
 }
@@ -297,8 +302,9 @@ pub(super) fn collect_required_columns(
         collect_required_columns_for_scalar_function(function, input_schema, required)?;
         return Ok(());
     }
-    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
-        return Err(FallbackReason::UnsupportedExpression);
+    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+        collect_required_columns(try_cast.expr(), input_schema, required)?;
+        return Ok(());
     }
     Err(FallbackReason::UnsupportedExpression)
 }

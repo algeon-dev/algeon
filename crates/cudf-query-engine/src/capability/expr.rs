@@ -66,12 +66,24 @@ pub(super) fn validate_aggregate_expr_capability(
             expression_family: "aggregate",
         });
     }
-    if is_scalar_aggregate
+    if let Some(filter) = &aggregate_expr.filter {
+        validate_general_expr_capability(filter).map_err(|rejection| ExpressionCapabilityRejection {
+            reason: rejection.reason,
+            expression_family: "aggregate_filter",
+        })?;
+    }
+    if (is_scalar_aggregate || aggregate_expr.filter.is_some())
         && aggregate_expr.function == AggregateFunction::Count
         && !aggregate_expr.distinct
         && is_count_star_expr(&aggregate_expr.expr)
     {
         return Ok(());
+    }
+    if aggregate_expr.function == AggregateFunction::NUnique && is_count_star_expr(&aggregate_expr.expr) {
+        return Err(ExpressionCapabilityRejection {
+            reason: "nunique_requires_value_expression",
+            expression_family: "aggregate",
+        });
     }
     validate_column_expr_capability(&aggregate_expr.expr)
 }
@@ -111,6 +123,7 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
             validate_general_expr_capability(expr)
         },
         Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Lower(expr)
@@ -118,6 +131,7 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. } => validate_general_expr_capability(expr),
         Expr::Abs(expr) => validate_general_expr_capability(expr),
+        Expr::Sqrt { expr, .. } => validate_general_expr_capability(expr),
         Expr::Concat(exprs) => {
             if exprs.is_empty() {
                 return Err(ExpressionCapabilityRejection {
@@ -170,6 +184,10 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
             validate_general_expr_capability(expr)?;
             validate_in_list_capability(list, "in_list")
         },
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            validate_general_expr_capability(left)?;
+            validate_general_expr_capability(right)
+        },
         Expr::Case { branches, else_expr } => {
             if branches.is_empty() {
                 return Err(ExpressionCapabilityRejection {
@@ -202,7 +220,13 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
             validate_join_residual_expr_capability(expr)
         },
         Expr::Cast { expr, .. } => validate_join_residual_expr_capability(expr),
-        Expr::Abs(_) | Expr::Round { .. } => Err(ExpressionCapabilityRejection {
+        // TRY_CAST is rejected from join residuals: null-on-failure changes
+        // the filter semantics versus strict CAST.
+        Expr::TryCast { .. } => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_expression_family_not_supported",
+            expression_family: expr_family(expr),
+        }),
+        Expr::Abs(_) | Expr::Sqrt { .. } | Expr::Round { .. } => Err(ExpressionCapabilityRejection {
             reason: "join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
         }),
@@ -217,6 +241,10 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
             validate_join_residual_expr_capability(expr)?;
             validate_in_list_capability(list, "in_list")
         },
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_expression_family_not_supported",
+            expression_family: expr_family(expr),
+        }),
         Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
@@ -249,13 +277,15 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
             validate_post_join_residual_expr_capability(expr)
         },
         Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
-        | Expr::Abs(expr) => validate_post_join_residual_expr_capability(expr),
+        | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. } => validate_post_join_residual_expr_capability(expr),
         Expr::Round { expr, .. } => validate_post_join_residual_expr_capability(expr),
         Expr::Concat(exprs) => {
             if exprs.is_empty() {
@@ -279,6 +309,10 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
         Expr::InList { expr, list, .. } => {
             validate_post_join_residual_expr_capability(expr)?;
             validate_in_list_capability(list, "in_list")
+        },
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            validate_post_join_residual_expr_capability(left)?;
+            validate_post_join_residual_expr_capability(right)
         },
         Expr::Case { branches, else_expr } => {
             if branches.is_empty() {
@@ -450,6 +484,7 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::IsNull(_) => "is_null",
         Expr::IsNotNull(_) => "is_not_null",
         Expr::Cast { .. } => "cast",
+        Expr::TryCast { .. } => "try_cast",
         Expr::Binary { .. } => "binary",
         Expr::Like { .. } => "like",
         Expr::Substring { .. } => "substring",
@@ -459,8 +494,11 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::RegexpReplace { .. } => "regexp_replace",
         Expr::Concat(_) => "concat",
         Expr::Abs(_) => "abs",
+        Expr::Sqrt { .. } => "sqrt",
         Expr::Round { .. } => "round",
         Expr::InList { .. } => "in_list",
+        Expr::IsDistinctFrom { .. } => "is_distinct_from",
+        Expr::IsNotDistinctFrom { .. } => "is_not_distinct_from",
         Expr::Case { .. } => "case",
         Expr::Extract { .. } => "extract",
         Expr::DateTrunc { .. } => "date_trunc",

@@ -38,7 +38,7 @@ use datafusion_cudf::{
     TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
     TableFormatScanRequest,
     iceberg::CudfIcebergTableProvider,
-    server::{ServerSessionProfile, apply_session_profile},
+    server::{FlightSqlNativeRejectClass, ServerSessionProfile, apply_session_profile, log_leaf_guard_rejection},
 };
 use futures::future::BoxFuture;
 
@@ -122,6 +122,37 @@ async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
     assert!(
         !rendered.contains("does not execute a CPU Arrow reader"),
         "the placeholder execute() error must not surface under the leaf guard; got: {rendered}",
+    );
+}
+
+#[tokio::test]
+async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
+    // Phase 4 ships a Flight SQL diagnostics helper that the server uses to
+    // emit a `tracing::warn!` line when a query fails because the Phase 1
+    // GPU-only leaf guard fired. The macro itself is hard to assert on
+    // without a tracing-subscriber, but the helper is a thin wrapper around
+    // `log_leaf_guard_rejection` which calls a `pub(crate)`
+    // `leaf_guard_event_fields` extractor exercised by `server::diagnostics`
+    // unit tests. Here we pin the end-to-end contract: the same CPU-style
+    // session profile that triggers the audit shape produces an error the
+    // public helper recognises (does not panic + classifies correctly).
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let error = run_iceberg_sql_under_cpu_profile(
+        &[("iceberg_t", plan)],
+        "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value",
+    )
+    .await
+    .expect_err("CPU-style profile must fail in planning rather than at scan execution");
+
+    log_leaf_guard_rejection("test-query-id", &error, ServerSessionProfile::CpuFallback);
+
+    let adapter_error = adapter_error_from(&error);
+    let facts = collect_facts(adapter_error);
+    let bucket = FlightSqlNativeRejectClass::from_reason(FallbackReason::TableFormatGpuOnlyLeafNotRewritten);
+    assert_eq!(
+        bucket.as_str(),
+        facts.get("fallback_reason").map(String::as_str).unwrap(),
+        "the leaf-guard rejection bucket label must equal the structured fallback_reason",
     );
 }
 

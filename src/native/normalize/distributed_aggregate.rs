@@ -55,13 +55,13 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
 fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
     // Safety is structural: group columns must be the partial output columns,
     // aggregate functions and state fields must match, and no distinct/order
-    // by/filter semantics may be hidden in the pair.
+    // by semantics may be hidden in the pair. Per-aggregate filters are
+    // carried by the partial aggregate, where input rows are still available.
     matches!(partial_aggregate.mode(), AggregateMode::Partial)
         && distributed_group_expr_layout_is_native_safe(final_aggregate, partial_aggregate)
         && final_aggregate.group_expr().expr().len() == partial_group_output_count(partial_aggregate)
         && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
-        && final_aggregate.filter_expr().iter().all(Option::is_none)
-        && partial_aggregate.filter_expr().iter().all(Option::is_none)
+        && distributed_aggregate_filters_are_native_safe(final_aggregate, partial_aggregate)
         && distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate)
         && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
             final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
@@ -73,6 +73,28 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
                 && partial_expr.order_bys().is_empty()
         })
         && distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate)
+}
+
+fn distributed_aggregate_filters_are_native_safe(
+    final_aggregate: &AggregateExec,
+    partial_aggregate: &AggregateExec,
+) -> bool {
+    // SQL aggregate filters must be evaluated while the original input rows are
+    // still available. DataFusion may keep matching filter metadata on the
+    // final aggregate expression, but the state-schema proof below lets native
+    // lowering execute the partial aggregate directly and use the final node
+    // only as the output-schema contract. Mismatched final/partial filters are
+    // rejected because they would no longer prove the same SQL aggregate.
+    final_aggregate.filter_expr().len() == final_aggregate.aggr_expr().len()
+        && partial_aggregate.filter_expr().len() == partial_aggregate.aggr_expr().len()
+        && final_aggregate.filter_expr().iter().zip(partial_aggregate.filter_expr()).all(
+            |(final_filter, partial_filter)| match (final_filter, partial_filter) {
+                (Some(final_filter), Some(partial_filter)) => final_filter.eq(partial_filter),
+                (None, Some(_partial_filter)) => true,
+                (None, None) => true,
+                _ => false,
+            },
+        )
 }
 
 fn partial_group_output_count(partial_aggregate: &AggregateExec) -> usize {

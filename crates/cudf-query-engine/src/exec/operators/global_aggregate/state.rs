@@ -22,7 +22,9 @@ pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> Ag
                         global_valid_count_state_alias(expr.alias.as_str()),
                     ),
                 ],
-                _ => vec![expr.clone()],
+                AggregateFunction::Count | AggregateFunction::NUnique | AggregateFunction::StddevSamp => {
+                    vec![expr.clone()]
+                },
             })
             .collect(),
     )
@@ -44,7 +46,7 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
                 fields.push(Field::new(state.sum(), sum_state_type, true));
                 fields.push(Field::new(state.count(), ArrowDataType::Int64, false));
             },
-            AggregateFunction::Count => {
+            AggregateFunction::Count | AggregateFunction::NUnique => {
                 fields.push(Field::new(expr.alias.as_str(), ArrowDataType::Int64, false));
             },
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {

@@ -240,6 +240,8 @@ pub enum PipelineTaskKind {
     SourceRead,
     /// Import an already GPU-resident input frame.
     GpuResidentSource,
+    /// Import host Arrow literal batches into a resident frame.
+    LiteralBatchSource,
     /// Apply pipelineable unary work such as filter or projection.
     Unary,
     /// Execute a blocking aggregate.
@@ -268,6 +270,7 @@ impl PipelineTaskKind {
         match self {
             Self::SourceRead => "source_read",
             Self::GpuResidentSource => "gpu_resident_source",
+            Self::LiteralBatchSource => "literal_batch_source",
             Self::Unary => "unary",
             Self::Aggregate => "aggregate",
             Self::Window => "window",

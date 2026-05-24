@@ -27,23 +27,32 @@ pub use self::{
 /// structured diagnostic. The `Display` implementation is part of the
 /// human-readable diagnostics contract; keep it stable unless the displayed IR
 /// is misleading.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// A column reference resolved against the current node input schema.
     Column(ColumnRef),
     /// A typed literal value.
     Literal(LiteralValue),
-    /// SQL logical negation of a boolean expression.
     Not(Box<Expr>),
-    /// SQL `IS NULL` predicate.
     IsNull(Box<Expr>),
-    /// SQL `IS NOT NULL` predicate.
     IsNotNull(Box<Expr>),
     /// Explicit cast to an Arrow data type.
     Cast {
         /// Expression whose result is cast.
         expr: Box<Expr>,
         /// Desired output type after the cast.
+        target_type: DataType,
+    },
+    /// SQL `TRY_CAST` to an Arrow data type. Rows whose value cannot be
+    /// represented in `target_type` evaluate to null instead of raising.
+    ///
+    /// Native execution currently admits only `Utf8` → integer targets;
+    /// other type pairs are rejected during validation/lowering.
+    TryCast {
+        /// Expression whose result is try-cast.
+        expr: Box<Expr>,
+        /// Desired output type after the try-cast.
         target_type: DataType,
     },
     /// Binary infix operation such as arithmetic, comparison, or boolean logic.
@@ -84,9 +93,7 @@ pub enum Expr {
         /// `(start - 1) + length` must fit in `i32`.
         length: Option<i32>,
     },
-    /// SQL `LOWER(expr)` string expression.
     Lower(Box<Expr>),
-    /// SQL `UPPER(expr)` string expression.
     Upper(Box<Expr>),
     /// SQL `CHARACTER_LENGTH(expr)` string expression.
     StringLength {
@@ -111,8 +118,19 @@ pub enum Expr {
     /// Native execution follows DataFusion semantics: null inputs contribute
     /// empty strings rather than producing a null output row.
     Concat(Vec<Expr>),
-    /// SQL `ABS(expr)` numeric expression.
     Abs(Box<Expr>),
+    /// SQL `SQRT(expr)` numeric expression.
+    ///
+    /// The `output_type` is the frontend-declared result type. It is part of
+    /// the native contract because cudf's expression builder can infer a
+    /// physical type that still needs to be aligned with DataFusion's exposed
+    /// schema.
+    Sqrt {
+        /// Numeric expression whose square root is computed.
+        expr: Box<Expr>,
+        /// Declared output type after square root evaluation.
+        output_type: DataType,
+    },
     /// SQL `ROUND(expr, decimal_places)` numeric expression.
     ///
     /// The `output_type` is the frontend-declared DataFusion result type. It
@@ -141,6 +159,26 @@ pub enum Expr {
         list: Vec<Expr>,
         /// `true` for `NOT IN`; `false` for `IN`.
         negated: bool,
+    },
+    /// SQL `IS DISTINCT FROM` null-aware comparison.
+    ///
+    /// Unlike ordinary inequality this always produces a non-null boolean:
+    /// two nulls are not distinct, and exactly one null is distinct.
+    IsDistinctFrom {
+        /// Left comparison operand.
+        left: Box<Expr>,
+        /// Right comparison operand.
+        right: Box<Expr>,
+    },
+    /// SQL `IS NOT DISTINCT FROM` null-aware comparison.
+    ///
+    /// Unlike ordinary equality this always produces a non-null boolean:
+    /// two nulls are not distinct and therefore compare true.
+    IsNotDistinctFrom {
+        /// Left comparison operand.
+        left: Box<Expr>,
+        /// Right comparison operand.
+        right: Box<Expr>,
     },
     /// Searched SQL `CASE WHEN ... THEN ... ELSE ... END`.
     Case {
@@ -174,8 +212,8 @@ pub enum Expr {
     },
 }
 
+#[allow(missing_docs)]
 impl Expr {
-    /// Build an unqualified column expression.
     pub fn column(name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::unqualified(name))
     }
@@ -189,17 +227,14 @@ impl Expr {
         Self::Column(ColumnRef::input(input, name, display_name))
     }
 
-    /// Build a column expression qualified by a plan-node identifier.
     pub fn node_column(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::node(node_id, name, display_name))
     }
 
-    /// Build a literal expression.
     pub fn literal(value: LiteralValue) -> Self {
         Self::Literal(value)
     }
 
-    /// Build a binary operation expression.
     pub fn binary(left: Self, op: BinaryOp, right: Self) -> Self {
         Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: None }
     }
@@ -209,42 +244,38 @@ impl Expr {
         Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: Some(output_type) }
     }
 
-    /// Build a SQL logical negation expression.
     pub fn logical_not(expr: Self) -> Self {
         Self::Not(Box::new(expr))
     }
 
-    /// Build a SQL `IS NULL` predicate.
     pub fn is_null(expr: Self) -> Self {
         Self::IsNull(Box::new(expr))
     }
 
-    /// Build a SQL `IS NOT NULL` predicate.
     pub fn is_not_null(expr: Self) -> Self {
         Self::IsNotNull(Box::new(expr))
     }
 
-    /// Build an explicit cast expression.
     pub fn cast(expr: Self, target_type: DataType) -> Self {
         Self::Cast { expr: Box::new(expr), target_type }
     }
 
-    /// Build a SQL `LIKE` predicate without an explicit escape marker.
+    pub fn try_cast(expr: Self, target_type: DataType) -> Self {
+        Self::TryCast { expr: Box::new(expr), target_type }
+    }
+
     pub fn like(expr: Self, pattern: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: false }
     }
 
-    /// Build a SQL `NOT LIKE` predicate without an explicit escape marker.
     pub fn not_like(expr: Self, pattern: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: true }
     }
 
-    /// Build a SQL `LIKE` predicate with an explicit escape marker.
     pub fn like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: false }
     }
 
-    /// Build a SQL `NOT LIKE` predicate with an explicit escape marker.
     pub fn not_like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: true }
     }
@@ -257,22 +288,18 @@ impl Expr {
         Self::Substring { expr: Box::new(expr), start, length }
     }
 
-    /// Build a SQL `LOWER(expr)` string expression.
     pub fn lower(expr: Self) -> Self {
         Self::Lower(Box::new(expr))
     }
 
-    /// Build a SQL `UPPER(expr)` string expression.
     pub fn upper(expr: Self) -> Self {
         Self::Upper(Box::new(expr))
     }
 
-    /// Build a SQL `CHARACTER_LENGTH(expr)` expression.
     pub fn string_length(expr: Self, output_type: DataType) -> Self {
         Self::StringLength { expr: Box::new(expr), output_type }
     }
 
-    /// Build a SQL `REGEXP_REPLACE(expr, pattern, replacement)` expression.
     pub fn regexp_replace(
         expr: Self,
         pattern: impl Into<String>,
@@ -287,17 +314,18 @@ impl Expr {
         }
     }
 
-    /// Build a SQL `CONCAT(expr, ...)` string expression.
     pub fn concat(exprs: Vec<Self>) -> Self {
         Self::Concat(exprs)
     }
 
-    /// Build a SQL `ABS(expr)` numeric expression.
     pub fn abs(expr: Self) -> Self {
         Self::Abs(Box::new(expr))
     }
 
-    /// Build a SQL `ROUND(expr, decimal_places)` numeric expression.
+    pub fn sqrt(expr: Self, output_type: DataType) -> Self {
+        Self::Sqrt { expr: Box::new(expr), output_type }
+    }
+
     pub fn round(expr: Self, decimal_places: i32, output_type: DataType) -> Self {
         Self::Round { expr: Box::new(expr), decimal_places, output_type }
     }
@@ -318,22 +346,26 @@ impl Expr {
         Self::InList { expr: Box::new(expr), list, negated: true }
     }
 
-    /// Build a searched SQL `CASE` expression.
+    pub fn is_distinct_from(left: Self, right: Self) -> Self {
+        Self::IsDistinctFrom { left: Box::new(left), right: Box::new(right) }
+    }
+
+    pub fn is_not_distinct_from(left: Self, right: Self) -> Self {
+        Self::IsNotDistinctFrom { left: Box::new(left), right: Box::new(right) }
+    }
+
     pub fn case(branches: Vec<CaseWhen>, else_expr: Self) -> Self {
         Self::Case { branches, else_expr: Box::new(else_expr) }
     }
 
-    /// Build a SQL `EXTRACT(field FROM expr)` expression.
     pub fn extract(field: DatePart, expr: Self) -> Self {
         Self::Extract { field, expr: Box::new(expr) }
     }
 
-    /// Build a SQL `DATE_TRUNC(field, expr)` expression.
     pub fn date_trunc(field: DatePart, expr: Self, output_type: DataType) -> Self {
         Self::DateTrunc { field, expr: Box::new(expr), output_type }
     }
 
-    /// Wrap this expression in an output alias.
     pub fn alias(self, alias: impl Into<String>) -> Self {
         Self::Alias { expr: Box::new(self), alias: alias.into() }
     }
@@ -356,6 +388,7 @@ impl fmt::Display for Expr {
             Self::IsNull(expr) => write!(f, "{expr} IS NULL"),
             Self::IsNotNull(expr) => write!(f, "{expr} IS NOT NULL"),
             Self::Cast { expr, target_type } => write!(f, "CAST({expr} AS {target_type})"),
+            Self::TryCast { expr, target_type } => write!(f, "TRY_CAST({expr} AS {target_type})"),
             Self::Binary { left, op, right, output_type } => {
                 write!(f, "({left} {op} {right})")?;
                 if let Some(output_type) = output_type {
@@ -392,6 +425,7 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             },
             Self::Abs(expr) => write!(f, "ABS({expr})"),
+            Self::Sqrt { expr, output_type } => write!(f, "SQRT({expr})::{output_type}"),
             Self::Round { expr, decimal_places, output_type } => {
                 write!(f, "ROUND({expr}, {decimal_places})::{output_type}")
             },
@@ -406,6 +440,8 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             },
+            Self::IsDistinctFrom { left, right } => write!(f, "({left} IS DISTINCT FROM {right})"),
+            Self::IsNotDistinctFrom { left, right } => write!(f, "({left} IS NOT DISTINCT FROM {right})"),
             Self::Case { branches, else_expr } => {
                 f.write_str("CASE")?;
                 for branch in branches {
@@ -439,15 +475,12 @@ impl CaseWhen {
 }
 
 /// Date or timestamp field supported by `EXTRACT`.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatePart {
-    /// Calendar year field.
     Year,
-    /// Calendar month field.
     Month,
-    /// Calendar day-of-month field.
     Day,
-    /// Minute-of-hour field.
     Minute,
 }
 
@@ -463,43 +496,28 @@ impl fmt::Display for DatePart {
 }
 
 /// Binary operator in native expression IR.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     /// Arithmetic addition. Temporal handling is context/type-dependent.
     Add,
     /// Arithmetic subtraction. Temporal handling is context/type-dependent.
     Subtract,
-    /// Numeric multiplication.
     Multiply,
-    /// Numeric division.
     Divide,
-    /// Numeric remainder.
     Modulo,
-    /// Bitwise conjunction.
     BitwiseAnd,
-    /// Bitwise disjunction.
     BitwiseOr,
-    /// Bitwise exclusive disjunction.
     BitwiseXor,
-    /// Bitwise left shift.
     ShiftLeft,
-    /// Bitwise right shift.
     ShiftRight,
-    /// Equality comparison.
     Eq,
-    /// Inequality comparison.
     NotEq,
-    /// Less-than comparison.
     Lt,
-    /// Less-than-or-equal comparison.
     LtEq,
-    /// Greater-than comparison.
     Gt,
-    /// Greater-than-or-equal comparison.
     GtEq,
-    /// Boolean conjunction.
     And,
-    /// Boolean disjunction.
     Or,
 }
 
@@ -598,6 +616,10 @@ impl GroupingSetsSpec {
 /// `expr` is the aggregate argument. For `COUNT`, normal column expressions
 /// count non-null values. Planner-produced count-star forms use a non-null
 /// literal or the native zero-column count source representation.
+///
+/// When `filter` is present, it is evaluated for every input row before this
+/// aggregate is updated. Only rows where the predicate evaluates true
+/// contribute to this aggregate; false and null predicate values are ignored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateExpr {
     /// Aggregate function to apply.
@@ -608,17 +630,25 @@ pub struct AggregateExpr {
     pub alias: String,
     /// Whether SQL DISTINCT semantics are requested for the argument.
     pub distinct: bool,
+    /// Optional per-aggregate SQL `FILTER (WHERE ...)` predicate.
+    pub filter: Option<Expr>,
 }
 
 impl AggregateExpr {
     /// Creates a non-DISTINCT aggregate expression.
     pub fn new(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
-        Self { function, expr, alias: alias.into(), distinct: false }
+        Self { function, expr, alias: alias.into(), distinct: false, filter: None }
     }
 
     /// Sets the SQL DISTINCT flag.
     pub fn with_distinct(mut self, distinct: bool) -> Self {
         self.distinct = distinct;
+        self
+    }
+
+    /// Sets an optional SQL aggregate filter predicate.
+    pub fn with_filter(mut self, filter: Option<Expr>) -> Self {
+        self.filter = filter;
         self
     }
 }
@@ -638,6 +668,15 @@ pub enum AggregateFunction {
     Max,
     /// SQL COUNT over non-null inputs or count-star representation.
     Count,
+    /// Exact SQL count-distinct over non-null inputs.
+    ///
+    /// Nulls do not contribute to the count. The logical output is a count
+    /// integer and must be explicitly cast to the frontend-declared output
+    /// dtype when libcudf returns a different integer width. Partial/final
+    /// execution must not merge per-partition `NUnique` counts by summing
+    /// them; bounded execution must aggregate over the complete raw input for
+    /// the distinct scope.
+    NUnique,
     /// SQL AVG represented logically; execution expands it to sum/count state.
     Avg,
     /// SQL sample standard deviation.
@@ -684,26 +723,32 @@ impl SortExpr {
 
 /// Row-count limit with SQL offset/fetch semantics.
 ///
-/// `skip` rows are discarded first, then up to `fetch` rows are returned. If
-/// `skip` is greater than the input row count, the result is empty. If fewer
-/// than `fetch` rows remain after skipping, all remaining rows are returned.
-/// Planning and execution require `skip + fetch` to fit in `usize`.
+/// `skip` rows are discarded first. When `fetch` is `Some`, at most that many
+/// rows are returned after `skip`; when `fetch` is `None`, all remaining rows
+/// are returned. If `skip` is greater than the input row count, the result is
+/// empty. Finite top-k planning is valid only when `fetch` is `Some` and
+/// `skip + fetch` fits in `usize`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LimitSpec {
     /// Number of leading rows to discard.
     pub skip: usize,
-    /// Maximum number of rows to return after `skip`.
-    pub fetch: usize,
+    /// Maximum number of rows to return after `skip`; `None` means no fetch bound.
+    pub fetch: Option<usize>,
 }
 
 impl LimitSpec {
     /// Build a limit with explicit `skip` and `fetch` values.
-    pub fn new(skip: usize, fetch: usize) -> Self {
-        Self { skip, fetch }
+    pub fn new(skip: usize, fetch: impl Into<Option<usize>>) -> Self {
+        Self { skip, fetch: fetch.into() }
     }
 
     /// Build a limit that returns at most `fetch` rows from the start.
     pub fn fetch(fetch: usize) -> Self {
-        Self { skip: 0, fetch }
+        Self { skip: 0, fetch: Some(fetch) }
+    }
+
+    /// Build an offset-only limit that returns all rows after `skip`.
+    pub fn offset(skip: usize) -> Self {
+        Self { skip, fetch: None }
     }
 }

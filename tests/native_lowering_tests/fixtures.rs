@@ -2,8 +2,8 @@ use std::{fs::File, sync::Arc};
 
 use arrow::{
     array::{
-        BinaryArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
-        TimestampNanosecondArray,
+        BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array, Int64Array,
+        StringArray, TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -24,6 +24,30 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![5, 10, 20])),
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_ad_hoc_full_gpu_gaps_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, true),
+        Field::new("score", DataType::Float64, true),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int32Array::from(vec![10, 10, 20, 30])),
+            Arc::new(Int64Array::from(vec![Some(5), Some(15), None, Some(25)])),
+            Arc::new(Float64Array::from(vec![Some(1.0), Some(4.0), Some(9.0), None])),
+            Arc::new(StringArray::from(vec![Some("alpha"), Some("beta"), Some("gamma"), None])),
+            Arc::new(BooleanArray::from(vec![Some(true), Some(false), None, Some(true)])),
         ],
     )
     .unwrap();

@@ -67,6 +67,7 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
     match source {
         SourceNode::LocalParquet(_) => SourceFormatCapability::LocalParquet,
         SourceNode::GpuResident(_) => SourceFormatCapability::GpuResident,
+        SourceNode::LiteralBatch(_) => SourceFormatCapability::LiteralBatch,
     }
 }
 
@@ -123,6 +124,11 @@ pub(super) fn source_node_executable_decision(source: &SourceNode) -> Capability
             [("reason", "empty_input_name".to_string()), ("source_format", "gpu_resident".to_string())],
         ),
         SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
+        SourceNode::LiteralBatch(source) => validation_result_decision(
+            crate::exec::validate_literal_batch_source(source),
+            "unsupported_literal_batch_source_capability",
+            [("source_format", "literal_batch".to_string())],
+        ),
     }
 }
 
@@ -264,6 +270,27 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
                 );
             },
             crate::plan::WindowFunction::Rank { .. } => {},
+            crate::plan::WindowFunction::RowNumber { .. } => {},
+            crate::plan::WindowFunction::LagLead { expr, .. } if window.spec.order_by.is_empty() => {
+                return CapabilityDecision::rejected(
+                    "unsupported_window_node_capability",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("reason", "lag_lead_requires_order_by".to_string()),
+                        ("expression", format!("{expr}")),
+                    ],
+                );
+            },
+            crate::plan::WindowFunction::LagLead { expr, .. } => {
+                if let Err(rejection) = validate_column_expr_capability(expr) {
+                    return expression_rejection_decision(
+                        node_id,
+                        "unsupported_window_lag_lead_expression_capability",
+                        expr,
+                        rejection,
+                    );
+                }
+            },
         }
     }
     CapabilityDecision::Satisfied
@@ -315,14 +342,16 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &crate::plan::SortNode) 
 }
 
 fn limit_node_executable_decision(_plan: &QueryPlan, node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
-    if limit.spec.skip.checked_add(limit.spec.fetch).is_none() {
+    if let Some(fetch) = limit.spec.fetch
+        && limit.spec.skip.checked_add(fetch).is_none()
+    {
         return CapabilityDecision::rejected(
             "unsupported_limit_node_capability",
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "skip_fetch_overflow".to_string()),
                 ("skip", limit.spec.skip.to_string()),
-                ("fetch", limit.spec.fetch.to_string()),
+                ("fetch", fetch.to_string()),
             ],
         );
     }

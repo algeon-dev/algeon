@@ -186,7 +186,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let plan = unsupported_distinct_projection_aggregate_sort_limit_plan(parquet_scan(&path));
+    let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
@@ -231,7 +231,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-gpu-only-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let plan = unsupported_distinct_projection_aggregate_sort_limit_plan(parquet_scan(&path));
+    let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
     let rule = CudfNativePhysicalOptimizerRule::new(config);
 
@@ -327,4 +327,89 @@ fn native_optimizer_rule_is_inserted_before_final_validation() {
     let default_names = default_rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
     assert!(default_names.contains(&"datafusion_cudf_native"));
     assert!(default_names.contains(&"datafusion_cudf_native_count_only"));
+}
+
+#[test]
+fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failure() {
+    use std::fs::File;
+
+    use arrow::{
+        array::{Array, Int32Array, StringArray},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use datafusion::{
+        common::Result as DfResult,
+        execution::{SessionStateBuilder, context::TaskContext},
+        parquet::arrow::ArrowWriter,
+        prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    };
+    use datafusion_cudf::CudfSessionStateBuilderExt;
+
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-try-cast");
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(StringArray::from(vec![Some("42"), Some("abc"), Some("-7"), None, Some("999999999999")])),
+            ],
+        )
+        .unwrap();
+        let file = File::create(&path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false))
+        .with_cudf_native(native_optimizer_config())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    futures::executor::block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()))
+        .unwrap();
+
+    let df =
+        futures::executor::block_on(ctx.sql("SELECT id, TRY_CAST(name AS INT) AS maybe_int FROM bench ORDER BY id"))
+            .unwrap();
+    let plan = futures::executor::block_on(df.create_physical_plan()).unwrap();
+    let optimized_tree = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(
+        optimized_tree.contains("NativeCudfExec"),
+        "TRY_CAST(string -> int) should lower into a native execution node:\n{optimized_tree}"
+    );
+
+    let batches: DfResult<Vec<RecordBatch>> =
+        futures::executor::block_on(collect(plan, Arc::new(TaskContext::default())));
+    let batches = batches.unwrap();
+    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
+
+    let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let mut ids = Vec::with_capacity(row_count);
+    let mut values = Vec::with_capacity(row_count);
+    for batch in &batches {
+        let id_array = int32_array(batch, 0);
+        let value_array = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("TRY_CAST projection should produce an Int32 column");
+        for row in 0..batch.num_rows() {
+            ids.push(id_array.value(row));
+            values.push(if value_array.is_null(row) { None } else { Some(value_array.value(row)) });
+        }
+    }
+    assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+    // Row 1 parses ("42"), row 2 fails ("abc" → null), row 3 parses ("-7"),
+    // row 4 is null input (stays null), row 5 overflows Int32 ("999999999999" → null).
+    assert_eq!(values, vec![Some(42), None, Some(-7), None, None]);
+
+    fs::remove_dir_all(dir).unwrap();
 }

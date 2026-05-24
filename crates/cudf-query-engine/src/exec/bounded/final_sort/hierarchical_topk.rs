@@ -133,7 +133,7 @@ impl<'a> FinalSortExecutor<'a> {
         }
 
         let candidate = candidates.pop().expect("hierarchical top-k leaves exactly one candidate");
-        if limit.spec.skip == 0 && candidate.frame.num_rows() <= limit.spec.fetch {
+        if limit.spec.skip == 0 && limit.spec.fetch.is_some_and(|fetch| candidate.frame.num_rows() <= fetch) {
             return Ok(candidate);
         }
 
@@ -302,7 +302,7 @@ impl<'a> FinalSortExecutor<'a> {
         }
 
         let candidate = candidates.pop().expect("stream hierarchical top-k leaves exactly one candidate");
-        if limit.spec.skip == 0 && candidate.frame.num_rows() <= limit.spec.fetch {
+        if limit.spec.skip == 0 && limit.spec.fetch.is_some_and(|fetch| candidate.frame.num_rows() <= fetch) {
             return Ok(candidate);
         }
 
@@ -388,56 +388,48 @@ impl<'a> FinalSortExecutor<'a> {
                 return Err(error);
             },
         };
-        let work_token =
-            match self.final_sort_budget_token_including("final_sort_topk_chunk", slice.attempt, &work_reservation) {
-                Ok(token) => token,
-                Err(error) => {
-                    self.reservations.release(output_reservation, self.metrics);
-                    self.reservations.release(work_reservation, self.metrics);
-                    return Err(error);
-                },
-            };
-        let limit_token =
-            match self.final_sort_budget_token_including("final_sort_topk_chunk", slice.attempt, &output_reservation) {
-                Ok(token) => token,
-                Err(error) => {
-                    self.reservations.release(output_reservation, self.metrics);
-                    self.reservations.release(work_reservation, self.metrics);
-                    return Err(error);
-                },
-            };
-        let result = input
-            .frame
-            .frame()
-            .clone()
-            .with_execution(&work_token.execution_overrides())
-            .slice(slice.offset, slice.length)
-            .map(GpuDataFrame::new)
-            .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
-                    "cudf_query_engine.final_sort.topk_slice",
-                    "failed to slice bounded native final sort input",
-                    error,
-                )
-                .with_fact_if_absent("budget_boundary", work_token.request().boundary())
-                .with_fact_if_absent("budget_bytes", work_token.request().budget_bytes())
-                .with_fact_if_absent("budget_operation", "dataframe::slice")
-            })
-            .and_then(|frame| {
-                execute_topk_candidate_with_budget(
-                    self.sort,
-                    frame,
-                    slice.keep_rows,
-                    &work_token,
-                    &limit_token,
-                    "final_sort_topk_chunk",
-                    self.metrics,
-                )
-            });
-        self.reservations.release(work_reservation, self.metrics);
-        let frame = match result {
+        let sorted = {
+            let work_token =
+                match self.final_sort_budget_token_including("final_sort_topk_chunk", slice.attempt, &work_reservation)
+                {
+                    Ok(token) => token,
+                    Err(error) => {
+                        self.reservations.release(output_reservation, self.metrics);
+                        self.reservations.release(work_reservation, self.metrics);
+                        return Err(error);
+                    },
+                };
+            input
+                .frame
+                .frame()
+                .clone()
+                .with_execution(&work_token.execution_overrides())
+                .slice(slice.offset, slice.length)
+                .map(GpuDataFrame::new)
+                .map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "cudf_query_engine.final_sort.topk_slice",
+                        "failed to slice bounded native final sort input",
+                        error,
+                    )
+                    .with_fact_if_absent("budget_boundary", work_token.request().boundary())
+                    .with_fact_if_absent("budget_bytes", work_token.request().budget_bytes())
+                    .with_fact_if_absent("budget_operation", "dataframe::slice")
+                })
+                .and_then(|frame| {
+                    sort_topk_candidate_with_budget(
+                        self.sort,
+                        frame,
+                        &work_token,
+                        "final_sort_topk_chunk",
+                        self.metrics,
+                    )
+                })
+        };
+        let sorted = match sorted {
             Ok(frame) => frame,
             Err(error) => {
+                self.reservations.release(work_reservation, self.metrics);
                 self.reservations.release(output_reservation, self.metrics);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_topk_chunk",
@@ -451,6 +443,39 @@ impl<'a> FinalSortExecutor<'a> {
                 .attach_to(error));
             },
         };
+        let limit_token =
+            match self.final_sort_budget_token_including("final_sort_topk_chunk", slice.attempt, &output_reservation) {
+                Ok(token) => token,
+                Err(error) => {
+                    self.reservations.release(work_reservation, self.metrics);
+                    self.reservations.release(output_reservation, self.metrics);
+                    return Err(error);
+                },
+            };
+        let frame = match execute_limit_spec_with_token(
+            LimitSpec::fetch(slice.keep_rows),
+            sorted,
+            &limit_token,
+            "cudf_query_engine.final_sort.topk_limit",
+            self.metrics,
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.reservations.release(work_reservation, self.metrics);
+                self.reservations.release(output_reservation, self.metrics);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: "final_sort_topk_chunk",
+                    stage: "final_sort",
+                    node_id: self.node_id,
+                    attempt: slice.attempt,
+                    max_attempts: self.max_attempts,
+                    resume_boundary: "final_sort",
+                    metrics: self.metrics,
+                }
+                .attach_to(error));
+            },
+        };
+        self.reservations.release(work_reservation, self.metrics);
         self.finalize_final_sort_output_reservation(frame, output_reservation, slice.attempt)
     }
 
@@ -485,45 +510,34 @@ impl<'a> FinalSortExecutor<'a> {
                     return Err(error);
                 },
             };
-        let work_token =
-            match self.final_sort_budget_token_including("final_sort_topk_stream_chunk", attempt, &work_reservation) {
+        let input_reservation = input.reservation;
+        let sorted = {
+            let work_token = match self.final_sort_budget_token_including(
+                "final_sort_topk_stream_chunk",
+                attempt,
+                &work_reservation,
+            ) {
                 Ok(token) => token,
                 Err(error) => {
                     self.reservations.release(output_reservation, self.metrics);
                     self.reservations.release(work_reservation, self.metrics);
-                    self.reservations.release(input.reservation, self.metrics);
+                    self.reservations.release(input_reservation, self.metrics);
                     return Err(error);
                 },
             };
-        let limit_token = match self.final_sort_budget_token_including(
-            "final_sort_topk_stream_chunk",
-            attempt,
-            &output_reservation,
-        ) {
-            Ok(token) => token,
-            Err(error) => {
-                self.reservations.release(output_reservation, self.metrics);
-                self.reservations.release(work_reservation, self.metrics);
-                self.reservations.release(input.reservation, self.metrics);
-                return Err(error);
-            },
+            sort_topk_candidate_with_budget(
+                self.sort,
+                input.frame,
+                &work_token,
+                "final_sort_topk_stream_chunk",
+                self.metrics,
+            )
         };
-
-        let input_reservation = input.reservation;
-        let result = execute_topk_candidate_with_budget(
-            self.sort,
-            input.frame,
-            keep_rows,
-            &work_token,
-            &limit_token,
-            "final_sort_topk_stream_chunk",
-            self.metrics,
-        );
-        self.reservations.release(work_reservation, self.metrics);
         self.reservations.release(input_reservation, self.metrics);
-        let frame = match result {
+        let sorted = match sorted {
             Ok(frame) => frame,
             Err(error) => {
+                self.reservations.release(work_reservation, self.metrics);
                 self.reservations.release(output_reservation, self.metrics);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_topk_stream_chunk",
@@ -537,6 +551,42 @@ impl<'a> FinalSortExecutor<'a> {
                 .attach_to(error));
             },
         };
+        let limit_token = match self.final_sort_budget_token_including(
+            "final_sort_topk_stream_chunk",
+            attempt,
+            &output_reservation,
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                self.reservations.release(work_reservation, self.metrics);
+                self.reservations.release(output_reservation, self.metrics);
+                return Err(error);
+            },
+        };
+        let frame = match execute_limit_spec_with_token(
+            LimitSpec::fetch(keep_rows),
+            sorted,
+            &limit_token,
+            "cudf_query_engine.final_sort.topk_limit",
+            self.metrics,
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.reservations.release(work_reservation, self.metrics);
+                self.reservations.release(output_reservation, self.metrics);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: "final_sort_topk_stream_chunk",
+                    stage: "final_sort",
+                    node_id: self.node_id,
+                    attempt,
+                    max_attempts: self.max_attempts,
+                    resume_boundary: "final_sort",
+                    metrics: self.metrics,
+                }
+                .attach_to(error));
+            },
+        };
+        self.reservations.release(work_reservation, self.metrics);
         self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
     }
 
@@ -595,30 +645,20 @@ impl<'a> FinalSortExecutor<'a> {
                 return Err(error);
             },
         };
-        let result = (|| {
+        let sorted = (|| {
             let work_token =
                 self.final_sort_budget_token_including("final_sort_topk_merge", merge.attempt, &merge_reservation)?;
-            let limit_token =
-                self.final_sort_budget_token_including("final_sort_topk_merge", merge.attempt, &output_reservation)?;
             let frame = concat_committed_frames_with_token(
                 candidates,
                 &work_token,
                 "cudf_query_engine.final_sort.topk_concat",
             )?;
-            execute_topk_candidate_with_budget(
-                self.sort,
-                frame,
-                merge.keep_rows,
-                &work_token,
-                &limit_token,
-                "final_sort_topk_merge",
-                self.metrics,
-            )
+            sort_topk_candidate_with_budget(self.sort, frame, &work_token, "final_sort_topk_merge", self.metrics)
         })();
-        self.reservations.release(merge_reservation, self.metrics);
-        let frame = match result {
+        let sorted = match sorted {
             Ok(frame) => frame,
             Err(error) => {
+                self.reservations.release(merge_reservation, self.metrics);
                 self.reservations.release(output_reservation, self.metrics);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_sort_topk_merge",
@@ -632,6 +672,39 @@ impl<'a> FinalSortExecutor<'a> {
                 .attach_to(error));
             },
         };
+        let limit_token =
+            match self.final_sort_budget_token_including("final_sort_topk_merge", merge.attempt, &output_reservation) {
+                Ok(token) => token,
+                Err(error) => {
+                    self.reservations.release(merge_reservation, self.metrics);
+                    self.reservations.release(output_reservation, self.metrics);
+                    return Err(error);
+                },
+            };
+        let frame = match execute_limit_spec_with_token(
+            LimitSpec::fetch(merge.keep_rows),
+            sorted,
+            &limit_token,
+            "cudf_query_engine.final_sort.topk_limit",
+            self.metrics,
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.reservations.release(merge_reservation, self.metrics);
+                self.reservations.release(output_reservation, self.metrics);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: "final_sort_topk_merge",
+                    stage: "final_sort",
+                    node_id: self.node_id,
+                    attempt: merge.attempt,
+                    max_attempts: self.max_attempts,
+                    resume_boundary: "final_sort",
+                    metrics: self.metrics,
+                }
+                .attach_to(error));
+            },
+        };
+        self.reservations.release(merge_reservation, self.metrics);
         self.finalize_final_sort_output_reservation(frame, output_reservation, merge.attempt)
     }
 

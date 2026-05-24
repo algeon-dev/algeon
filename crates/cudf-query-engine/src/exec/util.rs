@@ -30,16 +30,19 @@ pub(super) fn record_device_memory_observation(frame: &GpuDataFrame, metrics: &m
 }
 
 pub(super) fn limit_slice(row_count: usize, spec: LimitSpec) -> Result<(usize, usize)> {
-    let Some(end) = spec.skip.checked_add(spec.fetch) else {
+    let offset = spec.skip.min(row_count);
+    let Some(fetch) = spec.fetch else {
+        return Ok((offset, row_count.saturating_sub(offset)));
+    };
+    let Some(end) = spec.skip.checked_add(fetch) else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.limit.validate",
             "limit skip and fetch overflow usize",
         )
         .with_fact("skip", spec.skip)
-        .with_fact("fetch", spec.fetch));
+        .with_fact("fetch", fetch));
     };
-    let offset = spec.skip.min(row_count);
     let length = end.min(row_count).saturating_sub(offset);
     Ok((offset, length))
 }

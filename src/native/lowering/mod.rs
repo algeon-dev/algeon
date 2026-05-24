@@ -15,13 +15,18 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::{
+    datatypes::{Field, Schema, SchemaRef},
+    record_batch::RecordBatch,
+};
 use cudf_query_engine::{
-    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, NodeId as NativeNodeId,
-    ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
+    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LiteralBatchSource as NativeLiteralBatchSource,
+    NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
-use datafusion::physical_expr::expressions::Column;
+use datafusion::{
+    datasource::memory::MemorySourceConfig, physical_expr::expressions::Column, physical_plan::ExecutionPlan,
+};
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
 use crate::policy::FallbackReason;
@@ -216,6 +221,9 @@ fn lower_native_input(
         NormalizedNativeInput::GpuResidentSource(source) => {
             lower_gpu_resident_source_input(source, builder, required_output_fields)
         },
+        NormalizedNativeInput::LiteralSource(source) => {
+            lower_literal_source_input(source, builder, required_output_fields)
+        },
         NormalizedNativeInput::Filter(filter) => unary::lower_filter_input(filter, builder, required_output_fields),
         NormalizedNativeInput::Projection(projection) => {
             unary::lower_projection_input(projection, builder, required_output_fields)
@@ -237,6 +245,86 @@ fn lower_native_input(
         },
         NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
     }
+}
+
+fn lower_literal_source_input(
+    source: &super::normalize::NormalizedNativeLiteralSource<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_fields: &RequiredFields,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let (source_schema, batches, fetch) = match source {
+        super::normalize::NormalizedNativeLiteralSource::PlaceholderRow(placeholder) => {
+            if !placeholder.schema().fields().is_empty() {
+                return Err(FallbackReason::UnsupportedOperator);
+            }
+            (placeholder.schema(), NativeLiteralBatchSource::placeholder_row().batches, None)
+        },
+        super::normalize::NormalizedNativeLiteralSource::Empty(empty) => {
+            let schema = empty.schema();
+            let literal = NativeLiteralBatchSource::empty(Arc::clone(&schema));
+            (schema, literal.batches, None)
+        },
+        super::normalize::NormalizedNativeLiteralSource::Memory(source_exec) => {
+            let memory = source_exec
+                .data_source()
+                .as_any()
+                .downcast_ref::<MemorySourceConfig>()
+                .ok_or(FallbackReason::UnsupportedOperator)?;
+            let batches = memory
+                .partitions()
+                .iter()
+                .flat_map(|partition| partition.iter())
+                .map(|batch| project_memory_batch(batch, memory.projection()))
+                .collect::<Result<Vec<_>, _>>()?;
+            (source_exec.schema(), batches, source_exec.fetch())
+        },
+    };
+
+    let (native_schema, source_bindings) = executable_schema_and_bindings(&source_schema, &RequiredFields::all())?;
+    let source_node = builder
+        .add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::new(Arc::clone(&native_schema), batches)));
+    let source_node = if let Some(fetch) = fetch {
+        builder.add_limit(source_node, cudf_query_engine::LimitSpec::fetch(fetch), Arc::clone(&native_schema))
+    } else {
+        source_node
+    };
+    let source_input = LoweredNativeInput::with_bindings(source_node, Arc::clone(&native_schema), source_bindings);
+    project_literal_output_columns(builder, source_input, required_output_fields)
+}
+
+fn project_memory_batch(batch: &RecordBatch, projection: &Option<Vec<usize>>) -> Result<RecordBatch, FallbackReason> {
+    projection.as_ref().map_or_else(
+        || Ok(batch.clone()),
+        |projection| batch.project(projection).map_err(|_| FallbackReason::UnsupportedOperator),
+    )
+}
+
+fn project_literal_output_columns(
+    builder: &mut NativeQueryPlanBuilder,
+    input: LoweredNativeInput,
+    required_output_fields: &RequiredFields,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    if required_output_fields.is_all() {
+        return Ok(input);
+    }
+    let (projected_schema, projected_bindings) =
+        executable_schema_and_bindings(&input.frontend_schema()?, required_output_fields)?;
+    let expressions = projected_bindings
+        .iter()
+        .map(|projected| {
+            let input_binding = input.binding_for_frontend_index(projected.frontend_index)?;
+            let field = input
+                .schema
+                .field_with_name(input_binding.native_name.as_str())
+                .map_err(|_| FallbackReason::UnsupportedExpression)?;
+            Ok(NativeProjectionOutput::new(
+                NativeExpr::column(input_binding.native_name.as_str()),
+                rename_field(field, projected.native_name.as_str()),
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let projected_node = builder.add_projection(input.node, expressions);
+    Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
 }
 
 fn lower_gpu_resident_source_input(

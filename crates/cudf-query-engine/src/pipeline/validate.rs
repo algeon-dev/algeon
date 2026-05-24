@@ -224,7 +224,10 @@ fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<P
     }
 
     for task in pipeline.tasks() {
-        if matches!(task.kind(), PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource) {
+        if matches!(
+            task.kind(),
+            PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource
+        ) {
             continue;
         }
         if !incoming.contains(&task.id()) {

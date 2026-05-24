@@ -280,7 +280,6 @@ fn release_source_reservations_reverse(
     }
 }
 
-
 pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,

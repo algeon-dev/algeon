@@ -116,7 +116,7 @@ async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
 }
 
 #[tokio::test]
-async fn direct_friendly_sql_filtered_avg_is_rejected() {
+async fn direct_friendly_sql_filtered_avg_lowers() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-filtered-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
@@ -124,7 +124,13 @@ async fn direct_friendly_sql_filtered_avg_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedExpression);
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 1);
+    assert!(aggregates[0].spec.aggr_exprs[0].filter.is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }

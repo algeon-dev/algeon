@@ -74,6 +74,7 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
                 SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })

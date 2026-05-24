@@ -5,8 +5,6 @@
 //! The IR can be built without the optional cuGraph feature; execution support
 //! is selected later by the adapter/runtime.
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Strict bounded memory-boundary label for graph algorithm rejection facts.
@@ -51,49 +49,53 @@ pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithm
 /// Native graph algorithm supported by the cuGraph operator boundary.
 ///
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].
+/// Ref: https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphAlgorithm {
-    /// PageRank centrality.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank
     PageRank,
-    /// Breadth-first search.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#breadth-first-search-bfs
     Bfs,
-    /// Louvain community detection.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#louvain
     Louvain,
-    /// Eigenvector centrality.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#eigenvector-centrality
     EigenvectorCentrality,
-    /// Katz centrality.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#katz-centrality
     KatzCentrality,
-    /// HITS hub/authority scores.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#hits-centrality
     Hits,
-    /// Single-source shortest paths.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp
     Sssp,
     /// In-degree and out-degree for every vertex.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.degrees/
     DegreesAll,
-    /// In-degree for every vertex.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.in_degree/
     InDegreesAll,
-    /// Out-degree for every vertex.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.out_degree/
     OutDegreesAll,
-    /// Weakly connected components.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#weakly-connected-components
     WeaklyConnectedComponents,
-    /// Strongly connected components.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#strongly-connected-components
     StronglyConnectedComponents,
-    /// Triangle count for every vertex.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#triangle-counting
     TriangleCountAll,
-    /// Core number for every vertex.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#core-number
     CoreNumber,
-    /// K-core subgraph extraction.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#k-core
     KCore,
-    /// Minimum spanning tree edge list.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/
     MinimumSpanningTree,
     /// PageRank variant that uses strict convergence/error behavior.
+    /// TODO: link?
     PageRankStrict,
-    /// Leiden community detection.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#leiden
     Leiden,
     /// Ensemble clustering for graphs.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#ecg
     Ecg,
-    /// Spectral modularity maximization clustering.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization
     SpectralModularityMaximization,
-    /// Balanced-cut spectral clustering.
+    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#balanced-cut
     BalancedCutClustering,
 }
 
@@ -511,49 +513,29 @@ impl fmt::Display for GraphKCoreDegreeType {
 }
 
 /// Algorithm-specific parameters.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
-    /// PageRank parameters.
     PageRank(GraphPageRankParams),
-    /// Breadth-first search parameters.
     Bfs(GraphBfsParams),
-    /// Louvain parameters.
     Louvain(GraphLouvainParams),
-    /// Eigenvector centrality parameters.
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
-    /// Katz centrality parameters.
     KatzCentrality(GraphKatzCentralityParams),
-    /// HITS parameters.
     Hits(GraphHitsParams),
-    /// Single-source shortest path parameters.
     Sssp(GraphSsspParams),
-    /// All-degree parameters.
     DegreesAll(GraphDegreesAllParams),
-    /// In-degree parameters.
     InDegreesAll(GraphInDegreesAllParams),
-    /// Out-degree parameters.
     OutDegreesAll(GraphOutDegreesAllParams),
-    /// Weakly connected component parameters.
     WeaklyConnectedComponents(GraphWccParams),
-    /// Strongly connected component parameters.
     StronglyConnectedComponents(GraphSccParams),
-    /// Triangle count parameters.
     TriangleCountAll(GraphTriangleCountAllParams),
-    /// Core-number parameters.
     CoreNumber(GraphCoreNumberParams),
-    /// K-core parameters.
     KCore(GraphKCoreParams),
-    /// Minimum spanning tree parameters.
     MinimumSpanningTree(GraphMstParams),
-    /// Strict PageRank parameters.
     PageRankStrict(GraphPageRankParams),
-    /// Leiden parameters.
     Leiden(GraphLeidenParams),
-    /// ECG parameters.
     Ecg(GraphEcgParams),
-    /// Spectral modularity maximization parameters.
     SpectralModularityMaximization(GraphSpectralClusteringParams),
-    /// Balanced-cut clustering parameters.
     BalancedCutClustering(GraphSpectralClusteringParams),
 }
 

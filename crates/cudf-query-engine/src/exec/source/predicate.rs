@@ -112,6 +112,15 @@ fn lower_source_reader_ast_expr(
                     .with_fact("target_type", format!("{target_type:?}"))
             })
         },
+        // TRY_CAST is rejected from reader-predicate pushdown: the cudf AST
+        // surface has no try-cast operator and null-on-failure changes the
+        // filter semantics.
+        Expr::TryCast { target_type, .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "TRY_CAST is not supported in reader predicate pushdown",
+        )
+        .with_fact("target_type", format!("{target_type:?}"))),
         Expr::Binary { left, op, right, .. } => {
             let (left_literal_target_type, right_literal_target_type) =
                 source_reader_binary_literal_target_types(source, left, *op, right);
@@ -166,7 +175,10 @@ fn lower_source_reader_ast_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => Err(QueryError::new(
@@ -447,7 +459,8 @@ fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource
         | Expr::IsNull(input)
         | Expr::IsNotNull(input)
         | Expr::Alias { expr: input, .. }
-        | Expr::Cast { expr: input, .. } => source_reader_predicate_references_decimal_column(source, input),
+        | Expr::Cast { expr: input, .. }
+        | Expr::TryCast { expr: input, .. } => source_reader_predicate_references_decimal_column(source, input),
         Expr::Binary { left, right, .. } => {
             source_reader_predicate_references_decimal_column(source, left)
                 || source_reader_predicate_references_decimal_column(source, right)
@@ -463,10 +476,15 @@ fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. } => source_reader_predicate_references_decimal_column(source, expr),
         Expr::Concat(exprs) => exprs.iter().any(|expr| source_reader_predicate_references_decimal_column(source, expr)),
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            source_reader_predicate_references_decimal_column(source, left)
+                || source_reader_predicate_references_decimal_column(source, right)
+        },
         Expr::Case { branches, else_expr } => {
             branches.iter().any(|branch| {
                 source_reader_predicate_references_decimal_column(source, &branch.when)

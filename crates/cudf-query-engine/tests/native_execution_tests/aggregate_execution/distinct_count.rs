@@ -19,9 +19,7 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
     );
     let aggregate = AggregateSpec::new(
         Vec::new(),
-        vec![
-            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
-        ],
+        vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values")],
     );
 
     let mut builder = QueryPlanBuilder::new();
@@ -38,6 +36,46 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
     };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int64_array(batch, 0).value(0), 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_global_nunique_casts_to_declared_count_dtype() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-global-nunique-int32");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_distinct_count_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_groups(vec![0, 1, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["value".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = distinct_count_context(runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int32);
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).value(0), 3);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -64,9 +102,7 @@ fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
     );
     let aggregate = AggregateSpec::new(
         vec![Expr::column("key")],
-        vec![
-            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
-        ],
+        vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values")],
     );
     let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
 
@@ -133,7 +169,7 @@ fn bounded_grouped_count_distinct_with_count_star_across_multiple_files_is_corre
     let aggregate = AggregateSpec::new(
         vec![Expr::column("key")],
         vec![
-            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
+            AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values"),
             AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "total_count"),
         ],
     );
@@ -198,9 +234,7 @@ fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
     );
     let aggregate = AggregateSpec::new(
         vec![Expr::column("key")],
-        vec![
-            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
-        ],
+        vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values")],
     );
     let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
 

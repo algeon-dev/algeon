@@ -107,10 +107,16 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
         | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
         | Expr::Abs(inner)
+        | Expr::Sqrt { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => collect_join_expr_columns(inner, left, right),
         Expr::Binary { left: lhs, right: rhs, .. } => {
+            collect_join_expr_columns(lhs, left, right)?;
+            collect_join_expr_columns(rhs, left, right)
+        },
+        Expr::IsDistinctFrom { left: lhs, right: rhs } | Expr::IsNotDistinctFrom { left: lhs, right: rhs } => {
             collect_join_expr_columns(lhs, left, right)?;
             collect_join_expr_columns(rhs, left, right)
         },
@@ -377,7 +383,8 @@ fn lower_join_ast_expr(
             })
         },
         Expr::Alias { expr, .. } => lower_join_ast_expr(context, expr, residual_columns),
-        Expr::Like { .. }
+        Expr::TryCast { .. }
+        | Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
@@ -385,7 +392,10 @@ fn lower_join_ast_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => Err(QueryError::new(
@@ -569,6 +579,7 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
         | Expr::IsNull(expr)
         | Expr::IsNotNull(expr)
         | Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::StringLength { expr, .. }
@@ -576,6 +587,7 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }
@@ -584,6 +596,9 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
             expr_contains_interval_literal(left) || expr_contains_interval_literal(right)
         },
         Expr::Concat(exprs) => exprs.iter().any(expr_contains_interval_literal),
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            expr_contains_interval_literal(left) || expr_contains_interval_literal(right)
+        },
         Expr::InList { expr, list, .. } => {
             expr_contains_interval_literal(expr) || list.iter().any(expr_contains_interval_literal)
         },

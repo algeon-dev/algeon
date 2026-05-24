@@ -242,6 +242,32 @@ impl ExecutionContext {
         Arc::clone(&self.runtime)
     }
 
+    /// Builds a same-device context for a scheduled source-read worker.
+    pub(crate) fn clone_for_source_read_worker(&self) -> Result<Self> {
+        let runtime =
+            cudf::Runtime::builder().with_device(self.runtime.device()).with_device_memory_manager().build().map_err(
+                |error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.runtime.source_read_worker",
+                        "failed to initialize source read worker runtime",
+                        error,
+                    )
+                },
+            )?;
+        Ok(Self {
+            runtime: Arc::new(runtime),
+            memory_policy: MemoryResourcePolicy::ExternalRuntime,
+            memory_control_policy: self.memory_control_policy,
+            boundary_policy: self.boundary_policy,
+            source_scheduler_policy: self.source_scheduler_policy,
+            cancellation: self.cancellation.clone(),
+            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
+            adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
+            hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
+            local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
+        })
+    }
+
     /// Returns the cooperative cancellation flag for this execution.
     pub fn cancellation(&self) -> &ExecutionCancellation {
         &self.cancellation

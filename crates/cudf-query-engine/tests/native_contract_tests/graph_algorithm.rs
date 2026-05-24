@@ -460,12 +460,10 @@ fn graph_operation_registry_covers_cugraph_rs_surface_without_unknown_gaps() {
         }
         // Extract `    pub fn <name>(` inside an active Graph impl block.
         let trimmed = line.trim_start();
-        if trimmed.starts_with("pub fn ") {
-            if let Some(rest) = trimmed.strip_prefix("pub fn ") {
-                if let Some(name_end) = rest.find(|c: char| !c.is_alphanumeric() && c != '_') {
-                    extracted.insert(rest[..name_end].to_string());
-                }
-            }
+        if let Some(rest) = trimmed.strip_prefix("pub fn ")
+            && let Some(name_end) = rest.find(|c: char| !c.is_alphanumeric() && c != '_')
+        {
+            extracted.insert(rest[..name_end].to_string());
         }
     }
 

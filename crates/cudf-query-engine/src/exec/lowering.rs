@@ -42,6 +42,7 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
             })?;
             Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
         },
+        Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => lower_binary_expr(left, *op, right, output_type.as_ref()),
         Expr::Like { expr, pattern, escape, negated } => {
             let expr = match escape {
@@ -62,8 +63,15 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         },
         Expr::Concat(exprs) => lower_concat(exprs),
         Expr::Abs(expr) => Ok(lower_expr(expr)?.abs()),
+        Expr::Sqrt { expr, output_type } => lower_sqrt(expr, output_type),
         Expr::Round { expr, decimal_places, output_type } => lower_round(expr, *decimal_places, output_type),
         Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
+        Expr::IsDistinctFrom { left, right } => {
+            Ok(cudf_binary_expr(lower_expr(left)?, BinaryOperator::NullNotEquals, lower_expr(right)?))
+        },
+        Expr::IsNotDistinctFrom { left, right } => {
+            Ok(cudf_binary_expr(lower_expr(left)?, BinaryOperator::NullEquals, lower_expr(right)?))
+        },
         Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
         Expr::Extract { field, expr } => lower_extract(*field, expr),
         Expr::DateTrunc { field, expr, output_type } => lower_date_trunc(*field, expr, output_type),
@@ -108,12 +116,53 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
             })?;
             Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
         },
+        Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => {
             lower_binary_expr_with_expected_type(left, *op, right, output_type.as_ref(), expected_type)
         },
         Expr::Alias { expr, alias } => Ok(lower_expr_with_expected_type(expr, expected_type)?.alias(alias)),
         _ => lower_expr(expr),
     }
+}
+
+/// Lower a `TRY_CAST(input AS target_type)` expression to a cudf expression.
+///
+/// Native execution currently admits only string -> integer try-casts. The IR
+/// only carries the target type, so this rejects unsupported targets here;
+/// the source type is enforced at runtime by `cudf::Expr::TryCast` eval (and
+/// by the adapter-side validator before the IR is built).
+fn lower_try_cast_expr(input: &Expr, target_type: &ArrowDataType) -> Result<cudf::Expr> {
+    if !is_integer_type(target_type) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_try_cast",
+            "native execution supports TRY_CAST only when the target type is an integer",
+        )
+        .with_fact("target_type", format!("{target_type:?}")));
+    }
+    let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_try_cast",
+            "native execution does not support try-casts to this target type",
+        )
+        .with_fact("target_type", format!("{target_type:?}"))
+    })?;
+    Ok(lower_expr(input)?.try_cast(target_dtype))
+}
+
+fn is_integer_type(data_type: &ArrowDataType) -> bool {
+    matches!(
+        data_type,
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+    )
 }
 
 pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
@@ -197,6 +246,7 @@ fn filter_expr_is_bare_nullable_boolean_value(expr: &Expr) -> bool {
         Expr::Literal(LiteralValue::Boolean(_) | LiteralValue::Null(ArrowDataType::Boolean)) => true,
         Expr::Not(expr) | Expr::Alias { expr, .. } => filter_expr_is_bare_nullable_boolean_value(expr),
         Expr::Cast { target_type, .. } => matches!(target_type, ArrowDataType::Boolean),
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => false,
         _ => false,
     }
 }
@@ -249,9 +299,11 @@ fn expr_declared_type(expr: &Expr) -> Option<ArrowDataType> {
         Expr::Substring { .. } => Some(ArrowDataType::Utf8),
         Expr::StringLength { output_type, .. }
         | Expr::RegexpReplace { output_type, .. }
+        | Expr::Sqrt { output_type, .. }
         | Expr::Round { output_type, .. }
         | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
         Expr::Extract { .. } => Some(ArrowDataType::Int32),
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => Some(ArrowDataType::Boolean),
         Expr::Alias { expr, .. } => expr_declared_type(expr),
         _ => None,
     }
@@ -518,6 +570,18 @@ fn lower_round(expr: &Expr, decimal_places: i32, output_type: &ArrowDataType) ->
         return lower_float_round(expr, decimal_places).map(|expr| expr.cast(dtype));
     }
     Ok(lower_expr(expr)?.round(decimal_places).cast(dtype))
+}
+
+fn lower_sqrt(expr: &Expr, output_type: &ArrowDataType) -> Result<cudf::Expr> {
+    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_sqrt",
+            "native SQRT output type is not supported",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+    })?;
+    Ok(lower_expr(expr)?.cast(dtype).sqrt().cast(dtype))
 }
 
 fn lower_float_round(expr: &Expr, decimal_places: i32) -> Result<cudf::Expr> {

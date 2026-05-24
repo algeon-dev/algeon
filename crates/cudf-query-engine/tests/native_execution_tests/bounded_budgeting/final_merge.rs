@@ -194,7 +194,7 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
         assert_eq!(error.fact_value("reservation_kind"), Some("final_merge"));
     } else {
         assert_eq!(error.fact_value("budget_boundary"), Some("final_aggregate_merge"));
-        assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+        assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
     }
 
     fs::remove_dir_all(dir).unwrap();

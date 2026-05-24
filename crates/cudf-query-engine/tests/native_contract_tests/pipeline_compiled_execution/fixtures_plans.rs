@@ -1382,7 +1382,7 @@ pub(super) fn adaptive_memory_history_key_probe_plan(
         Field::new("adaptive_value", value_type.clone(), true),
     ]));
     let aggregate_value_type = match aggregate_function {
-        AggregateFunction::Count => DataType::Int64,
+        AggregateFunction::Count | AggregateFunction::NUnique => DataType::Int64,
         AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg => {
             value_type.clone()
         },

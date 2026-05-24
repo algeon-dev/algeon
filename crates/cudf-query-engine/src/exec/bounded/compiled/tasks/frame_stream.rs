@@ -626,4 +626,3 @@ impl ResidentFrameStreamProducerTestHarness {
         drop(self.payload.take());
     }
 }
-

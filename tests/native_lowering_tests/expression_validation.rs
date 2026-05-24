@@ -114,7 +114,10 @@ async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
 }
 
 #[test]
-fn try_cast_is_rejected_during_native_planning() {
+fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
+    // Native admission for TRY_CAST is currently limited to `STRING → integer`.
+    // Wrapping a numeric column in TRY_CAST keeps the structured rejection so
+    // the adapter falls back to CPU instead of treating it as a plain CAST.
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-try-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -221,38 +224,54 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
 
 #[test]
 fn non_numeric_cast_targets_are_rejected_during_native_planning() {
-    for (name, target_type, literal) in [
-        ("string", DataType::Utf8, ScalarValue::Utf8(Some("10".to_string()))),
-        (
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            ScalarValue::TimestampNanosecond(Some(10), None),
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-string-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Utf8, None));
+    let predicate = binary(cast, Operator::Eq, lit(ScalarValue::Utf8(Some("10".to_string()))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty(), "string cast should not lower");
+    assert_eq!(result.rejected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
+    assert!(
+        matches!(
+            result.report.outcomes()[0],
+            CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
         ),
-    ] {
-        let dir = unique_temp_dir(format!("datafusion-cudf-native-lowering-{name}-cast").as_str());
-        let path = dir.join("input.parquet");
-        write_numeric_parquet_file(&path);
-        let scan = parquet_scan(&path);
-        let scan_schema = scan.schema();
-        let cast = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), target_type, None));
-        let predicate = binary(cast, Operator::Eq, lit(literal), &scan_schema).unwrap();
-        let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+        "string cast outcomes={:?}",
+        result.report.outcomes()
+    );
 
-        let result = lower_physical_plan_to_native(plan);
+    fs::remove_dir_all(dir).unwrap();
+}
 
-        assert!(result.plans.is_empty(), "{name} cast should not lower");
-        assert_eq!(result.rejected_count(), 1, "{name} cast outcomes={:?}", result.report.outcomes());
-        assert!(
-            matches!(
-                result.report.outcomes()[0],
-                CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
-            ),
-            "{name} cast outcomes={:?}",
-            result.report.outcomes()
-        );
+#[test]
+fn integer_to_timestamp_cast_lowers_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-timestamp-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(
+        col("payload", &scan_schema).unwrap(),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        None,
+    ));
+    let predicate =
+        binary(cast, Operator::Eq, lit(ScalarValue::TimestampNanosecond(Some(10), None)), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-        fs::remove_dir_all(dir).unwrap();
-    }
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plans.first().expect("timestamp cast should lower to a native plan").to_string();
+    assert!(native.contains("CAST(payload AS Timestamp(ns))"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

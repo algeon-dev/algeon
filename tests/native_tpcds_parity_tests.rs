@@ -1028,13 +1028,15 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q28").await);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    let rendered = cudf_query_engine::optimize_query_plan(
+    let optimized = cudf_query_engine::optimize_query_plan(
         lowering.plans[0].clone(),
         &cudf_query_engine::NativeOptimizerOptions::default(),
     )
-    .plan
-    .to_string();
-    assert!(rendered.contains("Count(DISTINCT "), "q28 must retain count-distinct in native IR:\n{rendered}");
+    .plan;
+    assert!(
+        plan_contains_aggregate_function(&optimized, cudf_query_engine::AggregateFunction::NUnique),
+        "q28 must retain count-distinct as the native NUnique aggregate:\n{optimized}"
+    );
 
     let query_filter = vec!["q28".to_string()];
     let items = tpcds_parity_workload_items(
@@ -1506,4 +1508,16 @@ fn q72_native_optimizer_config() -> CudfOptimizerConfig {
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded(13_958_643_712, 4 * 1024 * 1024 * 1024, 1024, 3, 1),
     )
+}
+
+fn plan_contains_aggregate_function(
+    plan: &cudf_query_engine::QueryPlan,
+    function: cudf_query_engine::AggregateFunction,
+) -> bool {
+    plan.nodes().iter().any(|node| match &node.kind {
+        cudf_query_engine::PlanNode::Aggregate(aggregate) => {
+            aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == function)
+        },
+        _ => false,
+    })
 }

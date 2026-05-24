@@ -62,6 +62,31 @@ pub(super) fn lower_physical_expr_with_bindings(
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
         let left = lower_physical_expr_with_bindings(binary.left(), input_schema, bindings)?;
         let right = lower_physical_expr_with_bindings(binary.right(), input_schema, bindings)?;
+        if matches!(binary.op(), Operator::StringConcat) {
+            let output_type =
+                binary.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            if !is_supported_native_type(&output_type) {
+                return Err(FallbackReason::UnsupportedType);
+            }
+            let null_guard = NativeExpr::binary(
+                NativeExpr::is_null(left.clone()),
+                NativeBinaryOp::Or,
+                NativeExpr::is_null(right.clone()),
+            );
+            return Ok(NativeExpr::case(
+                vec![NativeCaseWhen::new(
+                    null_guard,
+                    NativeExpr::literal(cudf_query_engine::LiteralValue::Null(output_type)),
+                )],
+                NativeExpr::concat(vec![left, right]),
+            ));
+        }
+        if matches!(binary.op(), Operator::IsDistinctFrom) {
+            return Ok(NativeExpr::is_distinct_from(left, right));
+        }
+        if matches!(binary.op(), Operator::IsNotDistinctFrom) {
+            return Ok(NativeExpr::is_not_distinct_from(left, right));
+        }
         let op = lower_binary_operator(binary.op())?;
         if matches!(binary.op(), Operator::Divide)
             && let Some(declared_type) = declared_decimal_divide_output_type(binary, input_schema)?
@@ -115,10 +140,39 @@ pub(super) fn lower_physical_expr_with_bindings(
     if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
         return lower_scalar_function_expr(function, input_schema, bindings);
     }
-    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
-        return Err(FallbackReason::UnsupportedExpression);
+    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+        return lower_try_cast_expr(try_cast, input_schema, bindings);
     }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn lower_try_cast_expr(
+    try_cast: &TryCastExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let source_type =
+        try_cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_try_cast_pair(&source_type, try_cast.cast_type()) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    let inner = lower_physical_expr_with_bindings(try_cast.expr(), input_schema, bindings)?;
+    Ok(NativeExpr::try_cast(inner, try_cast.cast_type().clone()))
+}
+
+fn is_supported_try_cast_pair(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    matches!(source_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+        && matches!(
+            target_type,
+            ArrowDataType::Int8
+                | ArrowDataType::Int16
+                | ArrowDataType::Int32
+                | ArrowDataType::Int64
+                | ArrowDataType::UInt8
+                | ArrowDataType::UInt16
+                | ArrowDataType::UInt32
+                | ArrowDataType::UInt64
+        )
 }
 
 fn lower_literal_string_date32_cast(
@@ -230,6 +284,7 @@ fn lower_scalar_function_expr(
         "regexp_replace" => lower_regexp_replace_function(function, input_schema, bindings),
         "concat" => lower_concat_function(function, input_schema, bindings),
         "abs" => lower_abs_function(function, input_schema, bindings),
+        "sqrt" => lower_sqrt_function(function, input_schema, bindings),
         "round" => lower_round_function(function, input_schema, bindings),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
@@ -390,6 +445,22 @@ fn lower_abs_function(
         return Err(FallbackReason::UnsupportedExpression);
     };
     Ok(NativeExpr::abs(lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
+}
+
+fn lower_sqrt_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(&output_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(NativeExpr::sqrt(lower_physical_expr_with_bindings(expr, input_schema, bindings)?, output_type))
 }
 
 fn lower_round_function(
@@ -583,6 +654,12 @@ pub(super) fn collect_required_field_indices(
                 };
                 collect_required_field_indices(expr, input_schema, required)
             },
+            "sqrt" => {
+                let [expr] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                collect_required_field_indices(expr, input_schema, required)
+            },
             "round" => {
                 let args = function.args();
                 if !(1..=2).contains(&args.len()) {
@@ -597,8 +674,8 @@ pub(super) fn collect_required_field_indices(
         }?;
         return Ok(());
     }
-    if expr.as_any().downcast_ref::<TryCastExpr>().is_some() {
-        return Err(FallbackReason::UnsupportedExpression);
+    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+        return collect_required_field_indices(try_cast.expr(), input_schema, required);
     }
     Err(FallbackReason::UnsupportedExpression)
 }

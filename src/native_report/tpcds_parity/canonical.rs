@@ -66,7 +66,11 @@ impl From<TimeUnit> for TimeUnitTag {
     }
 }
 
-pub(super) fn canonicalize_value(array: &dyn Array, data_type: &DataType, row: usize) -> Result<CanonicalField, String> {
+pub(super) fn canonicalize_value(
+    array: &dyn Array,
+    data_type: &DataType,
+    row: usize,
+) -> Result<CanonicalField, String> {
     if array.is_null(row) {
         return Ok(CanonicalField::Null);
     }

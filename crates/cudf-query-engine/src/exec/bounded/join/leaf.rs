@@ -84,6 +84,19 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
             )?;
             Ok(ResidentGpuFrame { frame, reservation })
         },
+        crate::source::SourceNode::LiteralBatch(source) => {
+            let frame = read_literal_batch_source(context, source, metrics)?;
+            let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+            let reservation = reservations.try_reserve(
+                MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+                    .with_memory_boundary("literal_batch_join_input")
+                    .with_node_id(node_id)
+                    .with_stage("literal_batch_join_input")
+                    .with_attempt(1, 1),
+                metrics,
+            )?;
+            Ok(ResidentGpuFrame { frame, reservation })
+        },
     }
 }
 
@@ -990,7 +1003,7 @@ fn start_join_leaf_scheduled_source_read(
     let reservation = reservations.try_reserve(request, metrics)?;
     let source_token_budget =
         if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
-    Ok(ScheduledLocalParquetRead::spawn(
+    ScheduledLocalParquetRead::spawn(
         context.clone(),
         source.clone(),
         chunk.clone(),
@@ -1000,7 +1013,7 @@ fn start_join_leaf_scheduled_source_read(
         prefetch,
         attempt,
         max_attempts,
-    ))
+    )
 }
 
 fn abandon_join_leaf_reads(

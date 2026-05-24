@@ -128,6 +128,48 @@ pub enum WindowFunction {
         /// Output column name.
         alias: String,
     },
+    /// SQL `row_number()` over the ordered window partition.
+    RowNumber {
+        /// Output column name.
+        alias: String,
+    },
+    /// SQL `LAG(expr, offset, default)` or `LEAD(expr, offset, default)` over
+    /// the ordered window partition.
+    ///
+    /// Within each partition, the value column is shifted by `offset` rows in
+    /// `direction`; rows that fall outside the partition take `default` (or
+    /// `NULL` when `default` is `None`). Execution requires at least one
+    /// `ORDER BY` key so the per-partition row order is well-defined.
+    ///
+    /// `default` and the input expression must share the output Arrow data
+    /// type. Type coercion is performed by the planner before lowering
+    /// reaches the native IR.
+    LagLead {
+        /// Input expression supplying the shifted values.
+        expr: Expr,
+        /// Non-negative shift magnitude. `offset == 0` is a no-op (returns
+        /// the input value for every row) and is supported for symmetry.
+        offset: u32,
+        /// Fill value when the shift overflows the partition. `None` means
+        /// `NULL` of the output type.
+        default: Option<LiteralValue>,
+        /// Output column name.
+        alias: String,
+        /// Whether the shift moves the value forward (`Lag`) or backward
+        /// (`Lead`) within each partition's ordered rows.
+        direction: ShiftDirection,
+    },
+}
+
+/// Direction of a per-partition row shift for [`WindowFunction::LagLead`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftDirection {
+    /// SQL `LAG(...)`: output row `i` carries the value from row `i - offset`
+    /// within the same partition, in window order.
+    Lag,
+    /// SQL `LEAD(...)`: output row `i` carries the value from row
+    /// `i + offset` within the same partition, in window order.
+    Lead,
 }
 
 /// Supported native aggregate window frames.
@@ -155,10 +197,28 @@ impl WindowFunction {
         Self::Rank { alias: alias.into() }
     }
 
+    /// Create a `row_number()` window function.
+    pub fn row_number(alias: impl Into<String>) -> Self {
+        Self::RowNumber { alias: alias.into() }
+    }
+
+    /// Create a `LAG(expr, offset, default)` window function.
+    pub fn lag(expr: Expr, offset: u32, default: Option<LiteralValue>, alias: impl Into<String>) -> Self {
+        Self::LagLead { expr, offset, default, alias: alias.into(), direction: ShiftDirection::Lag }
+    }
+
+    /// Create a `LEAD(expr, offset, default)` window function.
+    pub fn lead(expr: Expr, offset: u32, default: Option<LiteralValue>, alias: impl Into<String>) -> Self {
+        Self::LagLead { expr, offset, default, alias: alias.into(), direction: ShiftDirection::Lead }
+    }
+
     /// Output column name for this window function.
     pub fn alias(&self) -> &str {
         match self {
-            Self::Aggregate { alias, .. } | Self::Rank { alias } => alias,
+            Self::Aggregate { alias, .. }
+            | Self::Rank { alias }
+            | Self::RowNumber { alias }
+            | Self::LagLead { alias, .. } => alias,
         }
     }
 }

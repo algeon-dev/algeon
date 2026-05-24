@@ -110,6 +110,30 @@ async fn native_runtime_default_sql_distributed_avg_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_default_sql_distributed_filtered_aggregate_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-default-filtered-aggregate");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+
+    assert_default_sql_native_parity(&path, SQL_FILTERED_AGGREGATE_QUERY, Some((2, total_row_groups))).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-filtered-aggregate");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    assert_sql_native_parity(&path, direct_friendly_sql_session_config(), SQL_MIXED_FILTERED_AGGREGATES_QUERY, None)
+        .await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-reader-pushdown-selective");
     let path = dir.join("input.parquet");
@@ -499,8 +523,17 @@ async fn assert_default_sql_native_parity(
     sql: &str,
     expected_selected_row_groups: Option<(usize, usize)>,
 ) {
+    assert_sql_native_parity(path, SessionConfig::new(), sql, expected_selected_row_groups).await;
+}
+
+async fn assert_sql_native_parity(
+    path: &std::path::Path,
+    config: SessionConfig,
+    sql: &str,
+    expected_selected_row_groups: Option<(usize, usize)>,
+) {
     let cpu_batches = cpu_sql_output(path, sql).await;
-    let native_physical_plan = sql_plan(path, SessionConfig::new(), sql).await;
+    let native_physical_plan = sql_plan(path, config, sql).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());

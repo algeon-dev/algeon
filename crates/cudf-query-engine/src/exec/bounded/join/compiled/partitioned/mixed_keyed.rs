@@ -295,7 +295,6 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     Ok(BoundedCompiledJoinMaterializeOutput::Frame(Box::new(output)))
 }
 
-
 fn materialize_partitioned_mixed_keyed_residual_join_partition(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -506,7 +505,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
         output_rows,
     })
 }
-
 
 fn partitioned_mixed_join_output_upper_bound_bytes(
     context: &ExecutionContext,
@@ -862,4 +860,3 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
         }
     }
 }
-
