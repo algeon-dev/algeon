@@ -164,8 +164,8 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
     assert_eq!(report.request().boundary(), "q15_scalar_max");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(1));
     assert_eq!(report.retained_bytes(), None);
     assert_eq!(report.output_bytes(), None);
@@ -176,7 +176,7 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     assert_eq!(
         budgeted_exec_mr,
         token.memory_resource().testing_raw_handle_value(),
-        "budgeted scalar reduction should route execution through the budget token allocator",
+        "budgeted scalar reduction should route execution through the device manager resource",
     );
 }
 
@@ -196,7 +196,7 @@ fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagno
 
     assert_eq!(output.scalar().value::<f64>().unwrap(), 3000.0);
     assert_eq!(report.request().boundary(), "q17_global_sum");
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(1));
     assert_eq!(report.retained_bytes(), None);
     assert_eq!(report.output_bytes(), None);
@@ -223,7 +223,7 @@ fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     assert_eq!(err.operation(), "series::prepared_scalar_reduction::execute_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("q15_scalar_max"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 

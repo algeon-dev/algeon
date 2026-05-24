@@ -12,6 +12,22 @@ mod runtime_debug_tests;
 mod series_display_tests;
 
 #[test]
+fn query_memory_manager_surface_is_publicly_importable() {
+    use cudf::{
+        DeviceMemoryManager, ExecutionBudgetEnforcement, ExecutionBudgetStatus, ReservationUsage, Runtime,
+        StreamReservationLease,
+    };
+
+    let _: Option<DeviceMemoryManager> = None;
+    let _: Option<StreamReservationLease> = None;
+    let _: Option<ReservationUsage> = None;
+    let _ =
+        (Runtime::device_memory_manager, Runtime::stream_reservation, cudf::RuntimeBuilder::with_device_memory_manager);
+    let _ = ExecutionBudgetEnforcement::StreamBoundReservation;
+    let _ = ExecutionBudgetStatus::ReservationEnforced;
+}
+
+#[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::{
         DataFrame, DataFrameProjectedCrossJoinPlan,

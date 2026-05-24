@@ -7,20 +7,13 @@ fn column_slice_uses_public_column_view_null_count_api() {
     let slice_ex_body = function_region(
         COLUMN_CPP,
         "cudf_status_t cudf_column_view_slice_ex",
-        "cudf_status_t cudf_column_view_to_host",
+        "cudf_status_t cudf_column_view_to_host_ex",
     );
 
     assert!(
         source_contract_support::contains_normalized(
-            COLUMN_CPP,
-            "return cudf_column_view_slice_ex(handle, offset, length, nullptr, out);"
-        ),
-        "expected legacy column_view_slice to delegate to the execution-context-aware _ex entry point"
-    );
-    assert!(
-        source_contract_support::contains_normalized(
             slice_ex_body,
-            "auto const null_count = view->nullable() ? view->null_count(start, start + len, exec.stream) : 0;"
+            "auto const null_count = view->nullable() ? view->null_count(start, start + len, exec->stream) : 0;"
         ),
         "expected column.cpp to use the public column_view::null_count overload with the resolved execution stream for sliced views"
     );

@@ -514,16 +514,16 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     let df = outcome.value();
     let report = outcome.report();
     let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
-    let token_mr = token.memory_resource().testing_raw_handle_value();
+    let manager_mr = token.memory_resource().testing_raw_handle_value();
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
-    assert_eq!(df.testing_execution_domain_mr_value(), token_mr);
-    assert_eq!(last_exec_mr_value(), token_mr);
+    assert_eq!(df.testing_execution_domain_mr_value(), manager_mr);
+    assert_eq!(last_exec_mr_value(), manager_mr);
     assert_eq!(report.request().boundary(), "source_read");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(4));
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
@@ -948,7 +948,7 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("source_read"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));

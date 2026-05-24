@@ -4,7 +4,7 @@ use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
     support::{
         CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
-        last_exec_stream_value, lock_shim_state, reset_exec_observation, stream_value,
+        last_exec_stream_value, lock_shim_state, required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
@@ -19,16 +19,6 @@ type BeginSizeDataExRaw = unsafe extern "C" fn(
     cudf_sys::cudf_null_equality_t,
     *mut cudf_sys::cudf_mixed_join_size_data_handle,
     *const cudf_sys::cudf_exec_options_t,
-) -> cudf_sys::cudf_status_t;
-
-type BeginSizeDataRaw = unsafe extern "C" fn(
-    cudf_sys::cudf_table_view_handle,
-    cudf_sys::cudf_table_view_handle,
-    cudf_sys::cudf_table_view_handle,
-    cudf_sys::cudf_table_view_handle,
-    cudf_sys::cudf_ast_expression_handle,
-    cudf_sys::cudf_null_equality_t,
-    *mut cudf_sys::cudf_mixed_join_size_data_handle,
 ) -> cudf_sys::cudf_status_t;
 
 struct MixedJoinInputs {
@@ -133,7 +123,7 @@ fn assert_size_data_payload(
     expected_size: usize,
     expected_left_indices: &[i32],
     expected_right_indices: &[i32],
-    exec: &cudf_sys::ExecutionContext<'_>,
+    exec: &cudf_sys::cudf_exec_options_t,
     expected_stream: usize,
     expected_mr_raw: *mut c_void,
 ) {
@@ -161,7 +151,7 @@ fn assert_size_data_payload(
             size_data,
             &mut left_indices,
             &mut right_indices,
-            exec.as_raw(),
+            exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} materialize_indices failed");
@@ -193,7 +183,7 @@ fn assert_size_data_case(
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let expected_stream = stream_value(stream.as_raw());
     let expected_mr_raw = target_mr.raw_device_resource();
     let inputs = MixedJoinInputs::new();
@@ -215,7 +205,7 @@ fn assert_size_data_case(
             inputs.predicate,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             &mut size_data,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -265,7 +255,7 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let expected_stream = stream_value(stream.as_raw());
     let expected_mr_raw = target_mr.raw_device_resource();
     let inputs = MixedJoinInputs::new();
@@ -287,7 +277,7 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
             inputs.predicate,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             &mut size_data,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -331,9 +321,8 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
 
     reset_exec_observation();
     let mut indices: *mut c_void = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_mixed_join_size_data_materialize_single_indices_ex(size_data, &mut indices, exec.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_mixed_join_size_data_materialize_single_indices_ex(size_data, &mut indices, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} materialize_single_indices failed");
     assert!(!indices.is_null(), "{name} did not publish indices");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} materialize stream");
@@ -385,14 +374,14 @@ fn mixed_left_anti_join_size_data_reports_exact_size_and_materializes_indices() 
 }
 
 #[test]
-fn mixed_join_size_data_default_forms_match_ex_contract() {
+fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
     let _shim_state = lock_shim_state();
     let inputs = MixedJoinInputs::new();
 
-    for (name, begin, expected_size) in [
-        ("inner", cudf_sys::cudf_mixed_inner_join_begin_size_data as BeginSizeDataRaw, 1usize),
-        ("left", cudf_sys::cudf_mixed_left_join_begin_size_data, 3usize),
-        ("full", cudf_sys::cudf_mixed_full_join_begin_size_data, 4usize),
+    for (name, begin) in [
+        ("inner", cudf_sys::cudf_mixed_inner_join_begin_size_data_ex as BeginSizeDataExRaw),
+        ("left", cudf_sys::cudf_mixed_left_join_begin_size_data_ex),
+        ("full", cudf_sys::cudf_mixed_full_join_begin_size_data_ex),
     ] {
         let mut size_data: *mut c_void = ptr::null_mut();
         let status = unsafe {
@@ -404,35 +393,16 @@ fn mixed_join_size_data_default_forms_match_ex_contract() {
                 inputs.predicate,
                 cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                 &mut size_data,
+                ptr::null(),
             )
         };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default begin_size_data failed");
-        assert!(!size_data.is_null(), "{name} default begin did not publish size-data handle");
-
-        let mut output_size = usize::MAX;
-        let status = unsafe { cudf_sys::cudf_mixed_join_size_data_output_size(size_data, &mut output_size) };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default output_size failed");
-        assert_eq!(output_size, expected_size, "{name} default output size");
-
-        let mut left_indices: *mut c_void = ptr::null_mut();
-        let mut right_indices: *mut c_void = ptr::null_mut();
-        let status = unsafe {
-            cudf_sys::cudf_mixed_join_size_data_materialize_indices(size_data, &mut left_indices, &mut right_indices)
-        };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default materialize_indices failed");
-        assert_eq!(column_len(left_indices), expected_size);
-        assert_eq!(column_len(right_indices), expected_size);
-
-        unsafe {
-            cudf_sys::cudf_column_destroy(right_indices);
-            cudf_sys::cudf_column_destroy(left_indices);
-            cudf_sys::cudf_mixed_join_size_data_destroy(size_data);
-        }
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} begin must reject null options");
+        assert!(size_data.is_null(), "{name} begin must not publish size-data handle");
     }
 
-    for (name, begin, expected_size) in [
-        ("semi", cudf_sys::cudf_mixed_left_semi_join_begin_size_data as BeginSizeDataRaw, 1usize),
-        ("anti", cudf_sys::cudf_mixed_left_anti_join_begin_size_data, 2usize),
+    for (name, begin) in [
+        ("semi", cudf_sys::cudf_mixed_left_semi_join_begin_size_data_ex as BeginSizeDataExRaw),
+        ("anti", cudf_sys::cudf_mixed_left_anti_join_begin_size_data_ex),
     ] {
         let mut size_data: *mut c_void = ptr::null_mut();
         let status = unsafe {
@@ -444,24 +414,10 @@ fn mixed_join_size_data_default_forms_match_ex_contract() {
                 inputs.predicate,
                 cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                 &mut size_data,
+                ptr::null(),
             )
         };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default begin_size_data failed");
-        assert!(!size_data.is_null(), "{name} default begin did not publish size-data handle");
-
-        let mut output_size = usize::MAX;
-        let status = unsafe { cudf_sys::cudf_mixed_join_size_data_output_size(size_data, &mut output_size) };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default output_size failed");
-        assert_eq!(output_size, expected_size, "{name} default output size");
-
-        let mut indices: *mut c_void = ptr::null_mut();
-        let status = unsafe { cudf_sys::cudf_mixed_join_size_data_materialize_single_indices(size_data, &mut indices) };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} default materialize_single_indices failed");
-        assert_eq!(column_len(indices), expected_size);
-
-        unsafe {
-            cudf_sys::cudf_column_destroy(indices);
-            cudf_sys::cudf_mixed_join_size_data_destroy(size_data);
-        }
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} begin must reject null options");
+        assert!(size_data.is_null(), "{name} begin must not publish size-data handle");
     }
 }

@@ -4,18 +4,22 @@ use std::{ffi::c_void, ptr};
 
 use support::{
     CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw,
-    lock_shim_state,
+    lock_shim_state, required_exec_options,
 };
 
-fn make_i32_column(data: &[i32]) -> *mut c_void {
+fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMemoryResource<'_>) -> *mut c_void {
+    let stream = OwnedStream::new();
+    let stream = stream.borrowed();
+    let exec = required_exec_options(&stream, mr);
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -41,7 +45,7 @@ fn create_pool_memory_resource() -> *mut c_void {
 }
 
 #[test]
-fn stats_memory_resource_can_be_installed_as_current_allocator() {
+fn stats_memory_resource_can_be_installed_as_current_resource_and_used_explicitly() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
     let stats = OwnedMemoryResource::new_test_stats();
@@ -54,12 +58,12 @@ fn stats_memory_resource_can_be_installed_as_current_allocator() {
     assert_ne!(installed_raw, previous_raw, "test allocator should replace the previous current allocator");
 
     let before = stats.allocation_count();
-    let col = make_i32_column(&[1, 2, 3, 4]);
+    let col = make_i32_column_with_memory_resource(&[1, 2, 3, 4], &borrowed);
     let after = stats.allocation_count();
 
     assert!(
         after > before,
-        "allocating a column through the current allocator should increase the stats allocation count"
+        "allocating a column through the installed stats resource should increase its allocation count"
     );
 
     unsafe { cudf_sys::cudf_column_destroy(col) };

@@ -12,7 +12,8 @@
 //! 3. **High-level execution-context contract** — hidden safe-layer hooks
 //!    route explicit-lineage operations through `_ex` entry points and preserve
 //!    explicit retained provenance under borrowed overrides.
-//! 4. **Default-context fallback** — existing APIs still use the default stream.
+//! 4. **Strict-context rejection** — production `_ex` APIs reject missing or
+//!    partial execution options.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
 use std::{ffi::c_void, ptr};
@@ -96,6 +97,27 @@ fn obs_current_device_resource() -> *mut c_void {
     out
 }
 
+fn required_exec_options(
+    stream: &cudf_sys::BorrowedStream<'_>,
+    mr: &cudf_sys::BorrowedMemoryResource<'_>,
+) -> cudf_sys::cudf_exec_options_t {
+    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
+    opts.device = DeviceId::current().expect("current device must be available").ordinal() as i32;
+    opts.flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+    opts.stream = stream.as_raw();
+    opts.mr = mr.as_raw();
+    opts
+}
+
+fn strict_exec_owners() -> (CudaStream, DeviceMemoryResource, cudf_sys::cudf_exec_options_t) {
+    let stream = CudaStream::new().expect("stream must be created");
+    let mr = DeviceMemoryResource::cuda().expect("memory resource must be created");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
+    (stream, mr, exec)
+}
+
 // ---------------------------------------------------------------------------
 // Helper: create a cudf_sys column from i32 data (via cudf safe API, then
 // extract the raw handle for _ex FFI calls).
@@ -106,13 +128,15 @@ fn obs_current_device_resource() -> *mut c_void {
 /// The caller is responsible for destroying the handle.
 fn create_i32_column_raw(data: &[i32]) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(), // no validity mask
             0,           // null_count = 0
+            &exec,
             &mut handle,
         )
     };
@@ -124,13 +148,15 @@ fn create_i32_column_raw(data: &[i32]) -> cudf_sys::cudf_column_handle {
 /// Create an i64 column and return its raw cudf_column_handle.
 fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT64,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut handle,
         )
     };
@@ -142,13 +168,15 @@ fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
 /// Create a bool column and return its raw cudf_column_handle.
 fn create_bool_column_raw(data: &[bool]) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut handle,
         )
     };
@@ -162,13 +190,15 @@ fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let mask = [validity_bits];
     let null_count = data.len() as i32 - validity_bits.count_ones() as i32;
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             mask.as_ptr(),
             null_count,
+            &exec,
             &mut handle,
         )
     };
@@ -180,11 +210,13 @@ fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::
 /// Create an i32 scalar and return its raw cudf_scalar_handle.
 fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
     let mut handle: cudf_sys::cudf_scalar_handle = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_scalar_create_numeric(
+        cudf_sys::cudf_scalar_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             &value as *const i32 as *const c_void,
             1,
+            &exec,
             &mut handle,
         )
     };
@@ -231,11 +263,13 @@ fn column_view_device_ptr(view: cudf_sys::cudf_column_view_handle) -> *const c_v
 fn read_i32_column_raw(col: cudf_sys::cudf_column_handle, len: usize) -> Vec<i32> {
     let view = column_view_raw(col);
     let mut host = vec![0i32; len];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_view_to_host(
+        cudf_sys::cudf_column_view_to_host_ex(
             view,
             host.as_mut_ptr() as *mut c_void,
             std::mem::size_of_val(host.as_slice()),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read i32 column to host");
@@ -247,11 +281,13 @@ fn read_first_i32_table_column_raw(table: cudf_sys::cudf_table_handle, len: usiz
     let table_view = table_view_raw(table);
     let column_view = table_view_column_raw(table_view, 0);
     let mut host = vec![0i32; len];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_column_view_to_host(
+        cudf_sys::cudf_column_view_to_host_ex(
             column_view,
             host.as_mut_ptr() as *mut c_void,
             std::mem::size_of_val(host.as_slice()),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read first table column to host");
@@ -469,8 +505,10 @@ fn column_copy_ex_uses_explicit_stream() {
     let col = create_i32_column_raw(&[10, 20, 30]);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let explicit_stream = stream.testing_raw_handle_value();
     assert_ne!(
@@ -481,7 +519,7 @@ fn column_copy_ex_uses_explicit_stream() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_copy_ex failed");
     assert!(!out_handle.is_null());
 
@@ -501,17 +539,18 @@ fn column_to_host_ex_uses_explicit_stream() {
     let view = column_view_raw(col);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut host_buf = [0i32; 3];
     let buf_size = std::mem::size_of_val(&host_buf);
-    let status = unsafe {
-        cudf_sys::cudf_column_view_to_host_ex(view, host_buf.as_mut_ptr() as *mut c_void, buf_size, ctx.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_column_view_to_host_ex(view, host_buf.as_mut_ptr() as *mut c_void, buf_size, &ctx) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_to_host_ex failed");
 
     assert_observed_stream(explicit_stream);
@@ -532,8 +571,10 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     let device_ptr = column_view_device_ptr(src_view);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let explicit_stream = stream.testing_raw_handle_value();
 
@@ -544,7 +585,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT64,
             device_ptr,
             4,
-            ctx.as_raw(),
+            &ctx,
             &mut out_handle,
         )
     };
@@ -560,11 +601,13 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     // Verify round-trip: read back the copied column.
     let out_view = column_view_raw(out_handle);
     let mut host_buf = [0i64; 4];
+    let (_read_stream, _read_mr, read_exec) = strict_exec_owners();
     let s3 = unsafe {
-        cudf_sys::cudf_column_view_to_host(
+        cudf_sys::cudf_column_view_to_host_ex(
             out_view,
             host_buf.as_mut_ptr() as *mut c_void,
             std::mem::size_of_val(&host_buf),
+            &read_exec,
         )
     };
     assert_eq!(s3, cudf_sys::CUDF_SUCCESS);
@@ -583,14 +626,15 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
     let replacement = create_i32_scalar_raw(99);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
     let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_replace_nulls_scalar_ex(input_view, replacement, &mut out_handle, ctx.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_replace_nulls_scalar_ex(input_view, replacement, &mut out_handle, &ctx) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_scalar_ex failed");
     assert!(!out_handle.is_null());
 
@@ -613,14 +657,15 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
     let replacement_view = column_view_raw(replacement);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
     let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_replace_nulls_column_ex(input_view, replacement_view, &mut out_handle, ctx.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_replace_nulls_column_ex(input_view, replacement_view, &mut out_handle, &ctx) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_column_ex failed");
     assert!(!out_handle.is_null());
 
@@ -647,7 +692,7 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     let mr = pool_mr();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
     let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
@@ -659,7 +704,7 @@ fn gather_ex_uses_explicit_stream_and_mr() {
             gather_map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             &mut out_table,
-            ctx.as_raw(),
+            &ctx,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_gather_ex failed");
@@ -689,13 +734,13 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     let mr = pool_mr();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
     let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(table_view, mask_view, &mut out_table, ctx.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(table_view, mask_view, &mut out_table, &ctx) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_apply_boolean_mask_ex failed");
     assert!(!out_table.is_null());
 
@@ -712,46 +757,39 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     destroy_table(table);
 }
 
-/// When `_ex` ops are called with null options (default context), the
-/// observation hook records the process-global default stream.
+/// Production `_ex` ops reject null options instead of falling back to ambient
+/// defaults.
 #[test]
-fn column_copy_ex_null_options_uses_default_stream() {
+fn column_copy_ex_null_options_are_rejected() {
     let col = create_i32_column_raw(&[10, 20, 30]);
-
-    let default_stream = obs_default_stream();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ptr::null(), &mut out_handle) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert!(!out_handle.is_null());
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), default_stream, "null options should resolve to the default stream");
+    assert_eq!(obs_last_device(), -1, "rejected null options should not record execution");
 
-    destroy_column(out_handle);
     destroy_column(col);
 }
 
-/// When `_ex` ops are called with default cudf_sys::ExecutionContext (null handles),
-/// the observation hook records the default stream and default mr.
+/// Production `_ex` ops reject default `cudf_sys::ExecutionContext` values
+/// because they contain no explicit device, stream, or memory resource.
 #[test]
-fn column_copy_ex_default_context_uses_defaults() {
+fn column_copy_ex_default_context_is_rejected() {
     let col = create_i32_column_raw(&[1, 2, 3]);
-
-    let default_stream = obs_default_stream();
-    let default_mr = obs_current_device_resource();
 
     let ctx = cudf_sys::ExecutionContext::default();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), default_stream);
-    assert_eq!(obs_last_mr(), default_mr);
+    assert_eq!(obs_last_device(), -1, "rejected default context should not record execution");
 
-    destroy_column(out_handle);
     destroy_column(col);
 }
 
@@ -760,18 +798,21 @@ fn column_copy_ex_default_context_uses_defaults() {
 fn column_copy_ex_explicit_mr_is_observed() {
     let col = create_i32_column_raw(&[5, 10, 15]);
 
+    let stream = CudaStream::new().expect("failed to create stream");
     let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
-    let borrowed = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed);
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let observed_mr = obs_last_mr();
     assert!(!observed_mr.is_null(), "observed mr should be non-null");
 
+    stream.synchronize().expect("stream sync failed");
     destroy_column(out_handle);
     destroy_column(col);
 }
@@ -786,11 +827,11 @@ fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     let explicit_stream = stream.testing_raw_handle_value();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_column_copy_from_view_ex(view, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_column_copy_from_view_ex(view, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
@@ -811,11 +852,11 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
     let explicit_stream = stream.testing_raw_handle_value();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_table_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_table_copy_ex(table, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_table_copy_ex(table, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
@@ -1005,10 +1046,10 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
 }
 
 // ===========================================================================
-// Category 4: Default-context fallback
+// Category 4: Retained-domain default behavior
 //
-// Verify that existing high-level APIs outside the scoped override path still use the default stream
-// by checking the observation hook after a regular operation.
+// Verify that existing high-level APIs outside the scoped override path still
+// derive explicit execution from the retained source domain.
 // ===========================================================================
 
 /// Calling `Column::deep_copy()` without an override keeps using the source
@@ -1082,16 +1123,18 @@ fn groupby_agg_default_produces_correct_results() {
 fn column_copy_ex_pool_mr_is_observed() {
     let col = create_i32_column_raw(&[42, 43, 44]);
 
+    let stream = CudaStream::new().expect("failed to create stream");
     let pool_mr = pool_mr();
+    let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = pool_mr.as_borrowed_sys();
 
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let default_mr = obs_current_device_resource();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let observed_mr = obs_last_mr();
@@ -1100,6 +1143,7 @@ fn column_copy_ex_pool_mr_is_observed() {
     // The pool MR's raw pointer should differ from the process-global default.
     assert_ne!(observed_mr, default_mr, "pool MR should differ from the process-global default MR");
 
+    stream.synchronize().expect("stream sync failed");
     destroy_column(out_handle);
     destroy_column(col);
 }
@@ -1114,14 +1158,14 @@ fn column_copy_ex_stream_and_mr_combined() {
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = pool_mr.as_borrowed_sys();
 
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let ctx = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, &ctx, &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     assert_observed_stream(explicit_stream);
@@ -1247,14 +1291,13 @@ fn exec_options_nonzero_reserved_returns_error() {
 }
 
 /// A `cudf_exec_options_t` with an explicit device ordinal that does not exist
-/// is rejected with `CUDF_ERROR_CUDA` before any execution observation occurs.
+/// is rejected as invalid before any execution observation occurs.
 #[test]
 fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     let col = create_i32_column_raw(&[1, 2, 3]);
     let before = DeviceId::current().unwrap();
 
-    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
-    opts.flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+    let (_stream, _mr, mut opts) = strict_exec_owners();
     opts.device = DeviceId::count().unwrap() as i32 + 1000;
 
     obs_reset();
@@ -1263,7 +1306,11 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
         cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
-    assert_eq!(status, cudf_sys::CUDF_ERROR_CUDA, "invalid explicit device should return CUDF_ERROR_CUDA");
+    assert_eq!(
+        status,
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        "invalid explicit device ordinal should be rejected during strict validation"
+    );
     assert!(out.is_null(), "output handle should remain null on device-selection error");
     assert_eq!(obs_last_device(), -1, "failed device selection should not record execution observation");
     assert_eq!(
@@ -1275,10 +1322,11 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     destroy_column(col);
 }
 
-/// A `cudf_exec_options_t` constructed via `defaults()` (correct struct_size,
-/// zero flags, zero reserved) is accepted.
+/// A `cudf_exec_options_t` constructed via `defaults()` is rejected for
+/// production `_ex` calls because it has no explicit device, stream, or memory
+/// resource.
 #[test]
-fn exec_options_valid_defaults_succeeds() {
+fn exec_options_defaults_are_rejected() {
     let col = create_i32_column_raw(&[1, 2, 3]);
 
     let opts = cudf_sys::cudf_exec_options_t::defaults();
@@ -1288,9 +1336,8 @@ fn exec_options_valid_defaults_succeeds() {
         cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "valid defaults should succeed");
-    assert!(!out.is_null(), "output handle should be non-null on success");
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "defaults should not satisfy strict execution");
+    assert!(out.is_null(), "output handle should remain null on validation error");
 
-    destroy_column(out);
     destroy_column(col);
 }

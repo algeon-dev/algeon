@@ -96,6 +96,111 @@ fn gpu_owning_handle_owners_carry_destroy_provenance() {
 }
 
 #[test]
+fn cached_join_owners_retain_stream_lifetime_and_destroy_under_captured_mr() {
+    let sources = NativeSources::load();
+    let combined = sources.combined();
+    let mut violations = Vec::new();
+
+    for (owner, first_gpu_member) in [
+        ("distinct_hash_join_owner", "join"),
+        ("hash_join_owner", "join"),
+        ("filtered_join_owner", "observed_mr"),
+        ("filtered_join_probe_owner", "observed_mr"),
+        ("conditional_full_join_size_data_owner", "observed_mr"),
+        ("mixed_join_size_data_owner", "observed_mr"),
+    ] {
+        let body = type_body(combined, owner);
+        let stream_position = body.find("stream_lifetime");
+        let mr_position = body.find("upstream_mr_lifetime");
+        let gpu_member_position = body
+            .find(first_gpu_member)
+            .unwrap_or_else(|| panic!("expected {owner} to contain member `{first_gpu_member}`"));
+
+        if stream_position.is_none() {
+            violations.push(format!("{owner} must retain the creation stream lifetime"));
+        }
+        if mr_position.is_none() {
+            violations.push(format!("{owner} must retain the creation memory-resource lifetime"));
+        }
+        if stream_position.is_some_and(|position| position > gpu_member_position) {
+            violations.push(format!(
+                "{owner} must declare stream_lifetime before GPU-owning members so it is destroyed after them"
+            ));
+        }
+        if mr_position.is_some_and(|position| position > gpu_member_position) {
+            violations.push(format!(
+                "{owner} must declare upstream_mr_lifetime before GPU-owning members so it is destroyed after them"
+            ));
+        }
+    }
+
+    for function in [
+        "cudf_distinct_hash_join_create_ex",
+        "cudf_hash_join_create_ex",
+        "conditional_full_join_size_data_impl",
+        "mixed_join_size_data_impl",
+        "filtered_join_create_impl",
+        "filtered_join_begin_probe_impl",
+    ] {
+        let body = sources.function_body(function).body;
+        if !source_contract_support::contains_normalized(body, "stream_lifetime = exec->stream_lifetime") {
+            violations.push(format!("{function} must copy exec->stream_lifetime into the cached owner"));
+        }
+    }
+
+    let destroy_helper = sources.function_body("cudf_destroy_under_provenance").body;
+    if !source_contract_support::contains_normalized(
+        destroy_helper,
+        "cudf_current_device_resource_guard current_mr{provenance.mr_raw};",
+    ) {
+        violations.push(
+            "cudf_destroy_under_provenance must install the captured memory resource while destroying retained GPU state"
+                .to_string(),
+        );
+    }
+    if !source_contract_support::contains_normalized(destroy_helper, "std::forward<Callable>(cleanup)();") {
+        violations
+            .push("cudf_destroy_under_provenance must run cleanup inside the captured provenance scope".to_string());
+    }
+
+    assert!(
+        violations.is_empty(),
+        "cached join artifacts must retain CUDA stream/RMM lifetimes and destroy under captured MR.\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn hash_join_create_preserves_pre_build_rejection_instead_of_building_unknown_retained_state() {
+    let sources = NativeSources::load();
+    let body = sources.function_body("cudf_hash_join_create_ex").body;
+    let mut violations = Vec::new();
+
+    if !source_contract_support::contains_normalized(
+        body,
+        "auto const reservation_size = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);",
+    ) {
+        violations.push(
+            "cudf_hash_join_create_ex must compute the retained-size contract before constructing the join".to_string(),
+        );
+    }
+    if !source_contract_support::contains_normalized(body, "owner->device_allocated_size_bytes = reservation_size;") {
+        violations.push("cudf_hash_join_create_ex must publish the exact pre-build reservation size".to_string());
+    }
+    for forbidden in ["reservation_size = std::nullopt", "value_or(0)", "catch (...)"] {
+        if body.contains(forbidden) {
+            violations.push(format!("cudf_hash_join_create_ex must not swallow pre-build rejection via `{forbidden}`"));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "hash join creation must not build retained state after libcudf rejects exact pre-build sizing.\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn arrow_device_array_release_carries_provenance_without_global_side_map() {
     let sources = NativeSources::load();
     let combined = sources.combined();

@@ -310,14 +310,14 @@ fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
     df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
-fn assert_all_observed_exec_mrs_are_token_mr(token: &cudf::ExecutionBudgetToken) {
+fn assert_all_observed_exec_mrs_are_manager_mr(token: &cudf::ExecutionBudgetToken) {
     let expected_mr = token.memory_resource().testing_raw_handle_value();
     let observed_mrs = observed_exec_mr_values();
 
     assert!(!observed_mrs.is_empty(), "expected at least one observed budgeted execution allocation route");
     assert!(
         observed_mrs.iter().all(|observed| *observed == expected_mr),
-        "expected all observed execution memory resources to be token MR {expected_mr:#x}, got {observed_mrs:?}"
+        "expected all observed execution memory resources to be the device manager MR {expected_mr:#x}, got {observed_mrs:?}"
     );
 }
 
@@ -344,8 +344,8 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.column_names(), &["a", "b", "sum"]);
     assert_eq!(result.series("sum").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(report.request().boundary(), "shape_with_columns");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -354,7 +354,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
         Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
     );
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
-    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
 #[test]
@@ -380,8 +380,8 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.series("qty").unwrap().dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.series("qty").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
     assert_eq!(report.request().boundary(), "shape_cast");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -390,7 +390,7 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
         Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
     );
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
-    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
 #[test]
@@ -422,8 +422,8 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
 
     assert_amount_decimal128_scale_8(result);
     assert_eq!(report.request().boundary(), "shape_cast_decimal_scale");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -432,7 +432,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
         Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
     );
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
-    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "dataframe::with_columns_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_with_columns"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
@@ -479,7 +479,7 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
@@ -501,6 +501,6 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast_decimal_scale"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
