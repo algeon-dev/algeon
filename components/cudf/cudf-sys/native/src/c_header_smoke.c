@@ -244,6 +244,9 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f48)(int32_t*)              = &cudf_cuda_get_device_count;
   cudf_status_t (*f49)(const void*, int32_t*) = &cudf_cuda_pointer_get_device;
 
+  /* gds.h */
+  cudf_status_t (*f49g)(void) = &cudf_gds_driver_available;
+
   /* datetime.h */
   cudf_status_t (*f50)(cudf_column_view_handle,
                        cudf_datetime_component_t,
@@ -341,6 +344,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f47;
   (void)f48;
   (void)f49;
+  (void)f49g;
   (void)f50;
   (void)f51;
   (void)c1;

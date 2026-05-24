@@ -1242,14 +1242,24 @@ fn io_ex_entries_use_required_exec_options() {
         (IO_JSON_CPP, "cudf_io_read_json_ex", "cudf_status_t cudf_io_read_json_with_metadata_ex"),
         (IO_JSON_CPP, "cudf_io_read_json_with_metadata_ex", "cudf_status_t cudf_io_write_json_ex"),
         (IO_JSON_CPP, "cudf_io_write_json_ex", "}  // extern \"C\""),
-        (IO_PARQUET_CPP, "cudf_io_read_parquet_ex", "cudf_status_t cudf_io_write_parquet_ex"),
+        (IO_PARQUET_CPP, "cudf_io_read_parquet_ex", "cudf_status_t cudf_io_read_parquet_from_host_buffer_ex"),
+        (IO_PARQUET_CPP, "cudf_io_read_parquet_from_host_buffer_ex", "cudf_status_t cudf_io_write_parquet_ex"),
         (IO_PARQUET_CPP, "cudf_io_write_parquet_ex", "cudf_status_t cudf_io_read_parquet_with_metadata_ex"),
         (
             IO_PARQUET_CPP,
             "cudf_io_read_parquet_with_metadata_ex",
             "cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex",
         ),
-        (IO_PARQUET_CPP, "cudf_io_read_parquet_with_metadata_filter_ex", "void cudf_io_free_column_names"),
+        (
+            IO_PARQUET_CPP,
+            "cudf_io_read_parquet_with_metadata_filter_ex",
+            "cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex",
+        ),
+        (
+            IO_PARQUET_CPP,
+            "cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex",
+            "void cudf_io_free_column_names",
+        ),
     ] {
         let body = function_region(source, &format!("cudf_status_t {function}"), end_marker);
         assert!(

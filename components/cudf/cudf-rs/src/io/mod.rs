@@ -56,6 +56,23 @@ pub mod json;
 pub mod parquet;
 pub mod source;
 
+/// Probe whether the cuFile driver can be opened by this process.
+///
+/// This is a deployment capability check for GPUDirect Storage. It only
+/// verifies that `libcufile` can be loaded and `cuFileDriverOpen()` succeeds;
+/// callers still need their own source-location eligibility checks before
+/// choosing a GDS read path.
+pub fn gds_driver_available() -> Result<()> {
+    const OPERATION: &str = "io::gds_driver_available";
+    error::check_status_in_with_details(
+        // SAFETY: The shim takes no borrowed pointers and performs a
+        // process-local cuFile driver open/close probe.
+        unsafe { cudf_sys::cudf_gds_driver_available() },
+        OPERATION,
+        [("resource", "cufile_driver".to_string())],
+    )
+}
+
 /// Shared output envelope for low-level table readers.
 pub struct TableReadOutput {
     pub table: Table,

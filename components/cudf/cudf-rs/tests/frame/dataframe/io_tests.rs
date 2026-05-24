@@ -1,4 +1,5 @@
 //! Tests for DataFrame I/O integration.
+use std::fs;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
@@ -87,6 +88,57 @@ fn test_read_parquet_with_options() {
 
     let col = df.series("b").unwrap();
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_host_buffer.parquet");
+    let rt = sample_runtime();
+
+    let c1 = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
+    let c2 = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let table = Table::from_columns(vec![c1, c2]).unwrap();
+    let write_opts =
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
+    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+
+    let mut filebytes = fs::read(&path).unwrap();
+    let opts = ParquetReadOptions::builder().columns(&["b"]).num_rows(3).with_runtime(&rt).build();
+    let df = DataFrame::read_parquet_from_host_buffer(&filebytes, opts).unwrap();
+
+    filebytes.fill(0);
+    drop(filebytes);
+
+    assert_eq!(df.column_names(), vec!["b"]);
+    assert_eq!(df.series("b").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn test_read_parquet_with_options_accepts_filebytes_source() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_filebytes_option.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[7i32, 8, 9]).unwrap()]).unwrap();
+    let write_opts =
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
+    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+
+    let filebytes = fs::read(&path).unwrap();
+    let opts = ParquetReadOptions::builder().filebytes(&filebytes).with_runtime(&rt).build();
+    let df = DataFrame::read_parquet_with_options(opts).unwrap();
+
+    assert_eq!(df.column_names(), vec!["id"]);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
+fn test_gds_driver_available_probe_returns_structured_result() {
+    if let Err(err) = cudf::io::gds_driver_available() {
+        assert_eq!(err.operation(), "io::gds_driver_available");
+        assert_eq!(error_context_value(&err, "resource").as_deref(), Some("cufile_driver"));
+    }
 }
 
 #[test]

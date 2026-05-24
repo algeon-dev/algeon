@@ -1,6 +1,6 @@
 //! Tests for high-level local Parquet source execution.
 
-use std::process::Command;
+use std::{fs, process::Command};
 
 use arrow::{
     array::{Array, AsArray},
@@ -482,6 +482,52 @@ fn read_parquet_source_chunk_honors_selected_row_groups() {
 }
 
 #[test]
+fn read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predicate() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("host_buffer_row_groups_predicate.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
+        return;
+    }
+    let filebytes = fs::read(&path).unwrap();
+
+    let predicate = AstExpression::greater(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.scalar(3i32).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "host-buffer-rg", [])
+            .unwrap()
+            .with_row_groups(Some(vec![1]))
+            .with_row_group_metadata(vec![128, 128], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap()
+    .with_reader_predicate(std::sync::Arc::new(predicate))
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+
+    let df = DataFrame::read_parquet_source_chunk_from_host_buffer(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &filebytes,
+    )
+    .unwrap();
+
+    assert_eq!(df.column_names(), vec!["id"]);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![4]);
+}
+
+#[test]
 fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observed_output() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("budgeted_source.parquet");
@@ -555,6 +601,63 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.context_facts().get("projected_column_count").map(String::as_str), Some("1"));
     assert!(report.context_facts().get("path").is_some_and(|path| path.ends_with("budgeted_source.parquet")));
     assert!(expected_output_bytes > 0);
+}
+
+#[test]
+fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("budgeted_host_buffer_source.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2, 3, 4]).unwrap()], 0);
+    let filebytes = fs::read(&path).unwrap();
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "budgeted-host-buffer", [])
+            .unwrap()
+            .with_row_group_metadata(vec![128], vec![4])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("host_buffer_source_read"))
+        .unwrap();
+
+    reset_exec_observation();
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &filebytes,
+        &token,
+    )
+    .unwrap();
+    let df = outcome.value();
+    let report = outcome.report();
+    let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
+    let manager_mr = token.memory_resource().testing_raw_handle_value();
+
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(df.testing_execution_domain_mr_value(), manager_mr);
+    assert_eq!(last_exec_mr_value(), manager_mr);
+    assert_eq!(report.request().boundary(), "host_buffer_source_read");
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
+    assert_eq!(report.output_bytes(), Some(expected_output_bytes));
+    assert_budget_report_high_water(report, expected_output_bytes);
+    assert_eq!(report.unresolved_contract(), None);
+    assert_eq!(
+        report.context_facts().get("source_read_preflight_contract").map(String::as_str),
+        Some("exact_retained_output_upper_bound")
+    );
 }
 
 #[test]
@@ -966,6 +1069,47 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
 }
 
 #[test]
+fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budget_facts() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("host_buffer_budget_too_small.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()], 0);
+    let filebytes = fs::read(&path).unwrap();
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "host-buffer-too-small", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("host_buffer_source_read")).unwrap();
+
+    let err = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &filebytes,
+        &token,
+    )
+    .expect_err("one-byte budget should not cover host-buffer parquet decoded output allocations");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("host_buffer_source_read"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(
+        error_context_value(&err, "budget_operation").as_deref(),
+        Some("dataframe::read_parquet_source_chunk_with_budget_from_host_buffer")
+    );
+}
+
+#[test]
 fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("minimum_budget.parquet");
@@ -1048,7 +1192,7 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
 }
 
 #[test]
-fn source_contract_keeps_decoded_output_preflight_unresolved_with_source_estimates() {
+fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadata() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("source_contract.parquet");
     let rt = sample_runtime();
@@ -1091,7 +1235,15 @@ fn source_contract_keeps_decoded_output_preflight_unresolved_with_source_estimat
 
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
     assert_eq!(outcome.report().request().boundary(), "estimated_source_read");
-    assert_eq!(outcome.report().unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+    assert_eq!(outcome.report().unresolved_contract(), None);
+    assert_eq!(
+        outcome.report().context_facts().get("source_read_preflight_contract").map(String::as_str),
+        Some("exact_retained_output_upper_bound")
+    );
+    assert_eq!(
+        outcome.report().context_facts().get("source_read_preflight_retained_output_bytes").map(String::as_str),
+        Some("8")
+    );
     assert_eq!(outcome.report().context_facts().get("reads_all_row_groups").map(String::as_str), Some("false"));
     assert_eq!(outcome.report().context_facts().get("selected_row_groups").map(String::as_str), Some("1"));
     assert_eq!(outcome.report().context_facts().get("selected_row_group_count").map(String::as_str), Some("1"));
