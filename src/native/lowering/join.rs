@@ -4,7 +4,10 @@ use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
-    physical_expr::{PhysicalExpr, expressions::Column},
+    physical_expr::{
+        PhysicalExpr,
+        expressions::{CastExpr, Column},
+    },
     physical_plan::{
         ExecutionPlan,
         joins::{NestedLoopJoinExec, PartitionMode},
@@ -12,7 +15,7 @@ use datafusion::{
 };
 use nexus_query_engine::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
-    expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
+    expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr, representation_cast_preserves_identity},
     plan::{
         JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide,
         JoinSpec as NativeJoinSpec, JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
@@ -33,7 +36,9 @@ use crate::{
     capability::CapabilityReason,
     native::{
         expression_contract::validate_join_residual,
-        normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
+        normalize::{
+            NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeNestedLoopJoin,
+        },
     },
 };
 
@@ -460,6 +465,12 @@ pub(super) fn lower_hash_join_input(
     {
         spec = spec.with_mark_column_name(mark_name);
     }
+    let inferred_lookup_side = unique_lookup_bounded_side(join, canonical);
+    if matches!(canonical.join_type, NativeJoinType::Inner | NativeJoinType::Left)
+        && let Some(bounded_side) = inferred_lookup_side
+    {
+        spec = spec.with_at_most_one_match_per_bounded_row(bounded_side);
+    }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
     let output = LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings);
     if let Some(fetch) = join.fetch {
@@ -468,6 +479,86 @@ pub(super) fn lower_hash_join_input(
     } else {
         Ok(output)
     }
+}
+
+fn unique_lookup_bounded_side(join: &NormalizedNativeHashJoin<'_>, canonical: CanonicalJoin) -> Option<NativeJoinSide> {
+    if join.join.filter().is_some() || join.join.on().is_empty() {
+        return None;
+    }
+    let left_keys = join
+        .join
+        .on()
+        .iter()
+        .map(|(left, _)| left.downcast_ref::<Column>().map(|column| column.name().to_owned()))
+        .collect::<Option<BTreeSet<_>>>()?;
+    let right_keys = join
+        .join
+        .on()
+        .iter()
+        .map(|(_, right)| right.downcast_ref::<Column>().map(|column| column.name().to_owned()))
+        .collect::<Option<BTreeSet<_>>>()?;
+    if left_keys.len() != join.join.on().len() || right_keys.len() != join.join.on().len() {
+        return None;
+    }
+
+    let left_unique = input_is_unique_on(&join.left, &left_keys);
+    let right_unique = input_is_unique_on(&join.right, &right_keys);
+    let bounded_datafusion_side = match join.join.join_type() {
+        JoinType::Inner if right_unique => DataFusionJoinSide::Left,
+        JoinType::Inner if left_unique => DataFusionJoinSide::Right,
+        JoinType::Left if right_unique => DataFusionJoinSide::Left,
+        JoinType::Right if left_unique => DataFusionJoinSide::Right,
+        _ => return None,
+    };
+    canonical.native_side_for_datafusion_side(bounded_datafusion_side).ok()
+}
+
+fn input_is_unique_on(input: &NormalizedNativeInput<'_>, key_names: &BTreeSet<String>) -> bool {
+    match input {
+        NormalizedNativeInput::GpuResidentSource(source) => {
+            source.unique_output_key.as_ref().is_some_and(|unique_key| unique_key.is_subset(key_names))
+        },
+        NormalizedNativeInput::Filter(filter) => input_is_unique_on(&filter.input, key_names),
+        NormalizedNativeInput::Projection(projection) => {
+            let mut input_key_names = BTreeSet::new();
+            let input_schema = projection.projection.input().schema();
+            for key_name in key_names {
+                let Some(projection_expr) = projection.projection.expr().iter().find(|expr| expr.alias == *key_name)
+                else {
+                    return false;
+                };
+                let Some(column_index) = unique_projection_input_column(&projection_expr.expr, &input_schema) else {
+                    return false;
+                };
+                let Some(field) = input_schema.fields().get(column_index) else {
+                    return false;
+                };
+                input_key_names.insert(field.name().to_owned());
+            }
+            input_is_unique_on(&projection.input, &input_key_names)
+        },
+        NormalizedNativeInput::Limit(limit) => input_is_unique_on(&limit.input, key_names),
+        NormalizedNativeInput::Sort(sort) => input_is_unique_on(&sort.input, key_names),
+        NormalizedNativeInput::Aggregate(aggregate) => {
+            if aggregate.aggregate.group_expr().has_grouping_set() {
+                return false;
+            }
+            let group_names =
+                aggregate.aggregate.group_expr().expr().iter().map(|(_, alias)| alias.clone()).collect::<BTreeSet<_>>();
+            group_names == *key_names
+        },
+        _ => false,
+    }
+}
+
+fn unique_projection_input_column(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Option<usize> {
+    if let Some(column) = expr.downcast_ref::<Column>() {
+        return input_schema.fields().get(column.index()).map(|_| column.index());
+    }
+    let cast = expr.downcast_ref::<CastExpr>()?;
+    let column_index = unique_projection_input_column(cast.expr(), input_schema)?;
+    let source_type = input_schema.field(column_index).data_type();
+    representation_cast_preserves_identity(source_type, cast.cast_type()).then_some(column_index)
 }
 
 pub(super) fn lower_nested_loop_join_input(
@@ -732,5 +823,50 @@ fn lower_join_null_equality(null_equality: NullEquality) -> NativeJoinNullEquali
     match null_equality {
         NullEquality::NullEqualsNothing => NativeJoinNullEquality::NullsDoNotMatch,
         NullEquality::NullEqualsNull => NativeJoinNullEquality::NullsMatch,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::{
+        physical_expr::{
+            expressions::{cast, col},
+            projection::ProjectionExpr,
+        },
+        physical_plan::{ExecutionPlan, empty::EmptyExec, projection::ProjectionExec},
+    };
+
+    use super::*;
+    use crate::native::normalize::{NormalizedNativeGpuResidentSource, NormalizedNativeProjection};
+
+    #[test]
+    fn graph_resident_unique_vertex_survives_string_representation_cast() {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertexId", DataType::Utf8, false)]));
+        let source = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let cast_vertex = cast(col("vertexId", &schema).unwrap(), &schema, DataType::Utf8View).unwrap();
+        let projection = Arc::new(
+            ProjectionExec::try_new(
+                [ProjectionExpr { expr: cast_vertex, alias: "vertexId".to_string() }],
+                Arc::clone(&source),
+            )
+            .unwrap(),
+        );
+        let input = NormalizedNativeInput::Projection(NormalizedNativeProjection {
+            projection: projection.as_ref(),
+            input: Box::new(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
+                source_exec: source.as_ref(),
+                input_name: "pagerank-result".to_string(),
+                unique_output_key: Some(BTreeSet::from(["vertexId".to_string()])),
+            })),
+        });
+
+        assert!(input_is_unique_on(&input, &BTreeSet::from(["vertexId".to_string()])));
+    }
+
+    #[test]
+    fn narrowing_cast_does_not_claim_unique_graph_key() {
+        assert!(!representation_cast_preserves_identity(&DataType::Int64, &DataType::Int32));
+        assert!(representation_cast_preserves_identity(&DataType::Utf8, &DataType::Utf8View));
     }
 }

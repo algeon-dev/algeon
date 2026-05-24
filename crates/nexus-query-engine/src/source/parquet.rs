@@ -22,7 +22,10 @@ use super::{
     },
     read_policy::{CredentialMode, ResolvedParquetSource},
 };
-use crate::expr::{Expr, LiteralValue};
+use crate::{
+    expr::{Expr, LiteralValue},
+    parquet_stats::ParquetVariableWidthPayloadEvidence,
+};
 
 /// Synthetic output column used for Parquet plans that only need a row count.
 ///
@@ -797,6 +800,8 @@ pub struct LocalParquetFile {
     /// row-group position. `None` means the footer did not prove a null count
     /// for that column chunk.
     pub row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
+    /// Footer-proven variable-width payload bounds keyed by physical root-column index.
+    pub variable_width_payload_evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
     /// Per-file field-id bindings proven from table-format and Parquet footer metadata.
@@ -827,6 +832,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("graph_vertex_upper_bound", &self.graph_vertex_upper_bound)
             .field("graph_simple_directed_edge_topology", &self.graph_simple_directed_edge_topology)
             .field("row_group_null_counts", &self.row_group_null_counts)
+            .field("variable_width_payload_evidence", &self.variable_width_payload_evidence)
             .field("reader_decimal_types", &self.reader_decimal_types)
             .field("field_id_read_bindings", &self.field_id_read_bindings)
             .field("position_delete_files", &self.position_delete_files)
@@ -858,6 +864,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
+            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -887,6 +894,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
+            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -915,6 +923,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
+            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -1012,6 +1021,15 @@ impl LocalParquetFile {
         self
     }
 
+    /// Sets footer-proven variable-width payload evidence keyed by physical root-column index.
+    pub fn with_variable_width_payload_evidence(
+        mut self,
+        evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
+    ) -> Self {
+        self.variable_width_payload_evidence = evidence;
+        self
+    }
+
     /// Returns true when footer stats prove this file column has no nulls in
     /// every selected row group represented by this file descriptor.
     pub fn selected_row_groups_have_no_nulls(&self, file_column_index: usize) -> bool {
@@ -1020,6 +1038,11 @@ impl LocalParquetFile {
         };
         let selected = self.row_groups.clone().unwrap_or_else(|| (0..null_counts.len()).collect::<Vec<_>>());
         selected.iter().all(|row_group| null_counts.get(*row_group).and_then(|count| *count) == Some(0))
+    }
+
+    /// Footer-proven variable-width payload bounds keyed by physical root-column index.
+    pub fn variable_width_payload_evidence(&self) -> &BTreeMap<usize, ParquetVariableWidthPayloadEvidence> {
+        &self.variable_width_payload_evidence
     }
 
     /// Sets per-read-column decimal storage types proven from Parquet metadata.

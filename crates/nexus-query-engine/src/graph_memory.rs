@@ -13,7 +13,7 @@ use crate::{
     metrics::{PlanNodeId, QueryId},
     plan::{
         EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy,
-        GraphEdgeColumnBindings, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_rows,
+        GraphEdgeColumnBindings, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_rows,
     },
 };
 
@@ -3409,8 +3409,26 @@ fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Opti
             let left_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[0])?.0;
             let rows = match join.spec.join_type {
                 JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => Some(left_rows),
+                JoinType::Inner
+                    if !join.spec.keys.is_empty()
+                        && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) =>
+                {
+                    Some(left_rows)
+                },
+                JoinType::Inner
+                    if !join.spec.keys.is_empty()
+                        && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Right) =>
+                {
+                    Some(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0)
+                },
                 JoinType::Inner | JoinType::Cross => {
                     left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0)
+                },
+                JoinType::Left
+                    if !join.spec.keys.is_empty()
+                        && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) =>
+                {
+                    Some(left_rows)
                 },
                 JoinType::Left => {
                     left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0.max(1))
@@ -3848,6 +3866,53 @@ mod tests {
         builder.finish_gpu_resident(join)
     }
 
+    fn bounded_lookup_mapping_builder(edge_rows: u64, at_most_one_match: bool) -> (QueryPlanBuilder, NodeId, NodeId) {
+        let edge_schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let codebook_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let edge = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("logical-mapping-edges", Arc::clone(&edge_schema))
+                .with_row_count_upper_bound(edge_rows),
+        ));
+        let codebook = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("logical-mapping-codebook", Arc::clone(&codebook_schema))
+                .with_row_count_upper_bound(edge_rows.checked_mul(2).expect("test codebook bound fits")),
+        ));
+        let lookup_spec = |column: &str| {
+            let mut spec = JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, column, column), ColumnRef::input(1, "vertex", "vertex"))],
+            );
+            if at_most_one_match {
+                spec = spec.with_at_most_one_match_per_bounded_row(JoinSide::Left);
+            }
+            spec
+        };
+        let first = builder.add_join(edge, codebook, lookup_spec("src"), Arc::clone(&edge_schema));
+        let second = builder.add_join(first, codebook, lookup_spec("dst"), Arc::clone(&edge_schema));
+        (builder, first, second)
+    }
+
+    fn bounded_lookup_mapping_plan(edge_rows: u64, at_most_one_match: bool) -> (QueryPlan, NodeId, NodeId) {
+        let (builder, first, second) = bounded_lookup_mapping_builder(edge_rows, at_most_one_match);
+        (builder.finish_gpu_resident(second), first, second)
+    }
+
+    fn bounded_lookup_mapping_graph_plan(edge_rows: u64) -> QueryPlan {
+        let (mut builder, _, encoded_edges) = bounded_lookup_mapping_builder(edge_rows, true);
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        );
+        let graph = builder.add_graph_algorithm(encoded_edges, spec);
+        builder.finish_gpu_resident(graph)
+    }
+
     #[test]
     fn join_hard_row_bounds_are_checked_and_fail_closed() {
         let bounded = bounded_join_plan(Some(3), Some(4), JoinType::Inner, true, false);
@@ -3891,6 +3956,48 @@ mod tests {
 
         let full_overflow = bounded_join_plan(Some(u64::MAX), Some(1), JoinType::Full, true, false);
         assert_eq!(query_plan_hard_row_upper_bound(&full_overflow), None);
+    }
+
+    #[test]
+    fn at_most_one_match_bounds_both_logical_endpoint_joins() {
+        let edge_rows = 48_322_510;
+        let (plan, first, second) = bounded_lookup_mapping_plan(edge_rows, true);
+
+        assert_eq!(query_plan_node_hard_row_upper_bound(&plan, first), Some(edge_rows));
+        assert_eq!(query_plan_node_hard_row_upper_bound(&plan, second), Some(edge_rows));
+        assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(edge_rows));
+
+        let estimates = graph_memory_estimates_for_plan(
+            &bounded_lookup_mapping_graph_plan(edge_rows),
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .expect("large logical mapping graph plan must remain priceable");
+        assert_eq!(estimates.len(), 1);
+        assert_eq!(estimates[0].estimate.input_edges, edge_rows);
+
+        let evidence = graph_memory_bounded_admission_evidence_for_plan(
+            &bounded_lookup_mapping_graph_plan(edge_rows),
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .expect("large logical mapping graph plan must produce one admission token");
+        assert_eq!(evidence.owner_term_facts().iter().filter(|fact| fact.row_count_upper_bound().is_some()).count(), 1);
+    }
+
+    #[test]
+    fn lookup_contract_preserves_bounds_past_generic_checked_multiplication_boundary() {
+        let last_safe_rows = 1_664_510;
+        let first_overflow_rows = last_safe_rows + 1;
+
+        let (safe_generic, _, safe_root) = bounded_lookup_mapping_plan(last_safe_rows, false);
+        assert!(query_plan_node_hard_row_upper_bound(&safe_generic, safe_root).is_some());
+
+        let (overflow_generic, _, overflow_root) = bounded_lookup_mapping_plan(first_overflow_rows, false);
+        assert_eq!(query_plan_node_hard_row_upper_bound(&overflow_generic, overflow_root), None);
+
+        let (overflow_lookup, _, lookup_root) = bounded_lookup_mapping_plan(first_overflow_rows, true);
+        assert_eq!(query_plan_node_hard_row_upper_bound(&overflow_lookup, lookup_root), Some(first_overflow_rows));
     }
 
     #[test]

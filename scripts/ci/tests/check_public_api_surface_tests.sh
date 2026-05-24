@@ -282,6 +282,31 @@ assert_contains "${facade_output}" "PASS: 1 live engine types have unique approv
 echo "PASS: an approved selective re-export has a reachable facade path"
 
 printf '%s\n' \
+  'pub use datafusion_nexus::attempt::RuntimeTerminalOutcome' \
+  >"${facade_snapshot}"
+printf '%s\n' \
+  "${facade_header}" \
+  $'datafusion_nexus::attempt::RuntimeTerminalOutcome\tnexus_query_engine::observability::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\tdatafusion_nexus::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
+  >"${facade_ledger}"
+python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
+assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
+echo "PASS: a pure facade re-export has a live disposition"
+
+printf '%s\n' \
+  'pub use datafusion_nexus::attempt::RuntimeTerminalOutcome' \
+  >"${facade_snapshot}"
+printf '%s\n' \
+  "${facade_header}" \
+  $'datafusion_nexus::attempt::RuntimeTerminalOutcome\tnexus_query_engine::observability::RuntimeTerminalOutcome\tattempt observability\tHIDE\tdatafusion_nexus::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
+  >"${facade_ledger}"
+if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
+  echo "FAIL: a pure facade re-export with HIDE disposition passed the facade policy" >&2
+  exit 1
+fi
+assert_contains "${facade_output}" "forbidden HIDE type reappeared in the live surface: nexus_query_engine::observability::RuntimeTerminalOutcome"
+echo "PASS: a pure facade re-export cannot bypass a HIDE disposition"
+
+printf '%s\n' \
   'pub use datafusion_nexus::attempt::AttemptId' \
   "pub fn datafusion_nexus::attempt::id() -> ${facade_engine_type}" \
   'pub fn datafusion_nexus::native::plan() -> nexus_query_engine::plan::core::QueryPlan' \

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use arrow::datatypes::SchemaRef;
 use nexus_query_engine::expr::LimitSpec;
 
@@ -197,6 +199,7 @@ impl NormalizedNativeLiteralSource<'_> {
 pub(in crate::native) struct NormalizedNativeGpuResidentSource<'a> {
     pub(in crate::native) source_exec: &'a dyn ExecutionPlan,
     pub(in crate::native) input_name: String,
+    pub(in crate::native) unique_output_key: Option<BTreeSet<String>>,
 }
 
 impl NormalizedNativeGpuResidentSource<'_> {

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+cd "${ROOT}"
 MANIFEST="${ROOT}/scripts/ci/fixtures/datafusion-facade-consumer/Cargo.toml"
 
 if rg -n '^nexus-query-engine[[:space:]]*=' "${MANIFEST}"; then

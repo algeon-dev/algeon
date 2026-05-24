@@ -9,7 +9,10 @@ use datafusion::{
 use datafusion::{datasource::source::DataSourceExec, physical_plan::ExecutionPlan};
 use nexus_query_engine::{
     expr::LiteralValue as NativeLiteralValue,
-    parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
+    parquet_stats::{
+        ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column,
+        variable_width_payload_evidence_by_root_column,
+    },
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
         GraphSimpleDirectedEdgeTopology, LocalParquetFile as NativeLocalParquetFile,
@@ -345,6 +348,12 @@ pub(super) fn attach_row_group_byte_metadata(
     };
     let metadata = reader.metadata();
     let read_column_indexes = column_requirements.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
+    let variable_width_payload_evidence = variable_width_payload_evidence_by_root_column(
+        metadata,
+        &read_column_indexes,
+        native_file.row_groups.as_deref(),
+    );
+    native_file = native_file.with_variable_width_payload_evidence(variable_width_payload_evidence);
     let projected_column_indexes = column_requirements
         .projected_output_column_source_refs
         .iter()

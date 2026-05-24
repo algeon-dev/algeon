@@ -30,6 +30,18 @@ pub(crate) fn alias_wrapped_column(expr: &Expr) -> Option<&ColumnRef> {
     }
 }
 
+/// Returns whether a string representation cast preserves the source value and row identity.
+pub fn representation_cast_preserves_identity(source_type: &DataType, target_type: &DataType) -> bool {
+    source_type == target_type
+        || matches!(
+            (source_type, target_type),
+            (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View, DataType::Utf8View)
+                | (DataType::Utf8View, DataType::Utf8 | DataType::LargeUtf8)
+                | (DataType::Utf8, DataType::LargeUtf8)
+                | (DataType::LargeUtf8, DataType::Utf8)
+        )
+}
+
 pub(crate) fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
         return None;

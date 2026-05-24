@@ -79,8 +79,18 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
                 .map_or_else(|| Ok(chunk.clone()), Ok)
         })
         .collect::<Result<Vec<_>>>()?;
-    let cudf_files =
-        chunks.iter().map(|chunk| cudf_local_parquet_file_for_chunk(context, chunk)).collect::<Result<Vec<_>>>()?;
+    let cudf_files = chunks
+        .iter()
+        .map(|chunk| {
+            let file = crate::chunk::source_file_for_chunk(
+                source,
+                chunk,
+                "nexus_query_engine.local_parquet_chunk_batch.file_cudf",
+            )?;
+            let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
+            Ok(attach_cudf_variable_width_payload_evidence(cudf_file, file))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut cudf_source = cudf_local_parquet_source_from_files(
         source,
         cudf_files,
@@ -233,8 +243,10 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_chunk(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
 ) -> Result<cudf::io::source::LocalParquetSource> {
-    crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.source_cudf")?;
+    let file =
+        crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.source_cudf")?;
     let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
+    let cudf_file = attach_cudf_variable_width_payload_evidence(cudf_file, file);
     cudf_local_parquet_source_from_file(
         source,
         cudf_file,
@@ -566,5 +578,41 @@ pub(in crate::exec::source) fn cudf_local_parquet_file(
         "nexus_query_engine.local_parquet_source.file_cudf",
         &file.location,
     )?;
-    Ok(cudf_file)
+    Ok(attach_cudf_variable_width_payload_evidence(cudf_file, file))
+}
+
+fn attach_cudf_variable_width_payload_evidence(
+    cudf_file: cudf::io::source::LocalParquetFile,
+    file: &LocalParquetFile,
+) -> cudf::io::source::LocalParquetFile {
+    let evidence = file
+        .variable_width_payload_evidence
+        .iter()
+        .map(|(column_index, evidence)| {
+            let encoding_proof = match evidence.encoding_proof {
+                crate::parquet_stats::ParquetVariableWidthEncodingProof::Empty => {
+                    cudf::io::source::ParquetVariableWidthEncodingProof::Empty
+                },
+                crate::parquet_stats::ParquetVariableWidthEncodingProof::Plain => {
+                    cudf::io::source::ParquetVariableWidthEncodingProof::Plain
+                },
+                crate::parquet_stats::ParquetVariableWidthEncodingProof::Dictionary => {
+                    cudf::io::source::ParquetVariableWidthEncodingProof::Dictionary
+                },
+                crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary => {
+                    cudf::io::source::ParquetVariableWidthEncodingProof::PlainAndDictionary
+                },
+            };
+            (
+                *column_index,
+                cudf::io::source::ParquetVariableWidthPayloadEvidence::new(
+                    evidence.physical_column_index,
+                    evidence.selected_row_groups.clone(),
+                    evidence.payload_upper_bound_bytes,
+                    encoding_proof,
+                ),
+            )
+        })
+        .collect();
+    cudf_file.with_variable_width_payload_evidence(evidence)
 }

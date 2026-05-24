@@ -31,6 +31,8 @@ const FALLBACK_MESSAGE: &str = "datafusion-nexus error without a message";
 pub type Result<T> = std::result::Result<T, Error>;
 
 const MAX_SOURCE_CHAIN_DEPTH: usize = 32;
+const MAX_LOG_CAUSE_BYTES: usize = 512;
+const MAX_LOG_SOURCE_PATH_BYTES: usize = 1_024;
 const MAX_NEXUS_ERROR_TRAVERSAL_DEPTH: usize = 64;
 const MAX_NEXUS_ERROR_TRAVERSAL_NODES: usize = 256;
 const MAX_LOG_SAFE_FACT_COUNT: usize = 16;
@@ -170,7 +172,7 @@ impl Facts {
         let mut rendered_bytes = 0usize;
 
         for (key, raw_value) in safe_facts.into_iter().take(MAX_LOG_SAFE_FACT_COUNT) {
-            let sanitized = sanitize_log_fact_value(raw_value);
+            let sanitized = sanitize_log_text(raw_value);
             let (mut value, value_truncated) = truncate_with_marker(&sanitized, MAX_LOG_SAFE_FACT_VALUE_BYTES);
             truncated |= value_truncated;
 
@@ -228,7 +230,7 @@ impl LogSafeFactProjection {
     }
 }
 
-fn sanitize_log_fact_value(value: &str) -> String {
+fn sanitize_log_text(value: &str) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.split_whitespace().any(is_credential_token) {
         return "<redacted-credential>".to_string();
@@ -295,15 +297,88 @@ pub struct Error {
 
 /// Human diagnostics derived from an error source chain.
 ///
-/// Boundary logs and retained query diagnostics should keep machine-readable
-/// fields (`code`, `kind`, `status`, `operation`, facts) separate from human
-/// root-cause text. This formatter walks `std::error::Error::source()` and
-/// renders project errors by their human message, not by their structured
-/// `Display` representation.
+/// Retained query diagnostics should keep machine-readable fields (`code`,
+/// `kind`, `status`, `operation`, facts) separate from human root-cause text.
+/// This formatter walks `std::error::Error::source()` and renders project
+/// errors by their human message, not by their structured `Display`
+/// representation. Server-side logs should use [`ErrorLogDiagnostics`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorSourceDiagnostics {
     chain: Option<String>,
     root_cause: Option<String>,
+}
+
+/// Bounded source diagnostics for privileged server-side logs.
+///
+/// This projection keeps only the deepest cause. Consumers that log the
+/// boundary error's message separately may omit an identical cause. Full
+/// source chains remain available through [`ErrorSourceDiagnostics`] for
+/// retained diagnostics.
+/// Local source paths are preserved for incident response; URI-shaped paths
+/// and credential-bearing messages remain redacted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorLogDiagnostics {
+    cause: Option<String>,
+    source_path: Option<String>,
+    truncated: bool,
+}
+
+impl ErrorLogDiagnostics {
+    /// Builds log diagnostics from `error` and all of its sources.
+    pub fn from_error(error: &(dyn StdError + 'static)) -> Self {
+        let mut current = Some(error);
+        let mut cause = None;
+        let mut diagnostics = Self { cause: None, source_path: None, truncated: false };
+        for _ in 0..MAX_SOURCE_CHAIN_DEPTH {
+            let Some(error) = current else {
+                break;
+            };
+            if diagnostics.source_path.is_none() {
+                diagnostics.set_source_path(diagnostic_source_path(error));
+            }
+            let message = log_diagnostic_error_message(error);
+            if !message.is_empty() {
+                cause = Some(message);
+            }
+            current = error.source();
+        }
+        let depth_truncated = current.is_some();
+        let (cause, message_truncated) = match cause {
+            Some(cause) => {
+                let (cause, truncated) = truncate_with_marker(&cause, MAX_LOG_CAUSE_BYTES);
+                (Some(cause), truncated)
+            },
+            None => (None, false),
+        };
+        diagnostics.cause = cause;
+        diagnostics.truncated |= depth_truncated || message_truncated;
+        diagnostics
+    }
+
+    /// Deepest bounded and redacted cause message.
+    pub fn cause(&self) -> Option<&str> {
+        self.cause.as_deref()
+    }
+
+    /// Input path associated with the failure, when present.
+    pub fn source_path(&self) -> Option<&str> {
+        self.source_path.as_deref()
+    }
+
+    /// Whether traversal or any projected diagnostic exceeded its log budget.
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn set_source_path(&mut self, path: Option<&str>) {
+        let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+            return;
+        };
+        let path = if path.contains("://") { "<redacted-uri>" } else { path };
+        let (path, truncated) = truncate_with_marker(path, MAX_LOG_SOURCE_PATH_BYTES);
+        self.source_path = Some(path);
+        self.truncated |= truncated;
+    }
 }
 
 impl ErrorSourceDiagnostics {
@@ -648,6 +723,22 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
         return datafusion_error_human_message(error);
     }
     normalize_diagnostic_message(&error.to_string())
+}
+
+fn log_diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
+    let message = if let Some(error) = error.downcast_ref::<cudf::Error>() {
+        normalize_diagnostic_message(error.message())
+    } else {
+        diagnostic_error_message(error)
+    };
+    sanitize_log_text(&message)
+}
+
+fn diagnostic_source_path<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a str> {
+    if let Some(error) = error.downcast_ref::<Error>() {
+        return error.fact_value("path");
+    }
+    error.downcast_ref::<nexus_query_engine::error::QueryError>().and_then(|error| error.fact_value("path"))
 }
 
 /// Returns human-facing text for the current DataFusion error layer.
@@ -1077,5 +1168,53 @@ mod tests {
         assert_eq!(diagnostics.root_cause(), Some("native root cause"));
         assert!(!chain.contains("code="), "{chain}");
         assert!(!chain.contains("facts="), "{chain}");
+    }
+
+    #[test]
+    fn log_diagnostics_keep_one_bounded_redacted_cudf_cause() {
+        let cudf = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::ForeignInvalidArgument,
+            "cudf.test.log_diagnostics",
+            "CUDF failure at: /home/customer/cudf/reader.cu:518: Parquet header parsing failed with code(s) 0x400",
+        );
+        let native = nexus_query_engine::error::QueryError::from_cudf(
+            "nexus_query_engine.test.log_diagnostics",
+            "failed to read bounded native local parquet source chunk with cudf",
+            cudf,
+        )
+        .with_fact("path", "/srv/nexus/dataset/part-00000.parquet");
+        let adapter = Error::from_native(
+            "datafusion_nexus.test.log_diagnostics",
+            "native cuGraph edge-source execution failed",
+            native,
+        );
+
+        let diagnostics = ErrorLogDiagnostics::from_error(&adapter);
+
+        assert_eq!(
+            diagnostics.cause(),
+            Some(
+                "CUDF failure at: /home/customer/cudf/reader.cu:518: Parquet header parsing failed with code(s) 0x400"
+            )
+        );
+        assert_eq!(diagnostics.source_path(), Some("/srv/nexus/dataset/part-00000.parquet"));
+        assert!(!diagnostics.truncated());
+    }
+
+    #[test]
+    fn log_diagnostics_redact_credentials_and_bound_foreign_messages() {
+        let credentials = TestSourceError::leaf("request failed Authorization=Bearer-secret");
+        assert_eq!(ErrorLogDiagnostics::from_error(&credentials).cause(), Some("<redacted-credential>"));
+
+        let uri = Error::new(ErrorCode::Internal, "datafusion_nexus.test.log_uri", "read failed")
+            .with_fact("path", "s3://user:secret@bucket/private.parquet");
+        assert_eq!(ErrorLogDiagnostics::from_error(&uri).source_path(), Some("<redacted-uri>"));
+
+        let long =
+            TestSourceError { message: Box::leak("x".repeat(MAX_LOG_CAUSE_BYTES + 1).into_boxed_str()), source: None };
+        let diagnostics = ErrorLogDiagnostics::from_error(&long);
+        assert_eq!(diagnostics.cause().expect("bounded cause").len(), MAX_LOG_CAUSE_BYTES);
+        assert!(diagnostics.cause().expect("bounded cause").ends_with("..."));
+        assert!(diagnostics.truncated());
     }
 }

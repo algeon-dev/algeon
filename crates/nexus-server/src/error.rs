@@ -5,8 +5,8 @@ use tonic::{Status, metadata::MetadataValue};
 
 use crate::{
     adapter_error::{
-        DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorSourceDiagnostics, ErrorStatus, Facts,
-        datafusion_error_human_message,
+        DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
+        Facts, datafusion_error_human_message,
     },
     observability::CapturedError,
 };
@@ -350,7 +350,7 @@ pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operat
 
 pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client_status_message(error);
-    let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
+    let diagnostics = ErrorLogDiagnostics::from_error(error);
     let log_messages = adapter_status_log_messages(error.message(), message.as_str(), &diagnostics);
     let log_facts = adapter_status_log_facts(error);
     macro_rules! log_status_conversion {
@@ -362,8 +362,9 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
                 error_status = error.status().as_str(),
                 error_operation = error.operation(),
                 error_message = error.message(),
-                error_source_chain = log_messages.source_chain,
-                error_root_cause = log_messages.root_cause,
+                error_cause = log_messages.cause,
+                error_source_path = diagnostics.source_path(),
+                error_diagnostics_truncated = log_messages.diagnostics_truncated,
                 client_message = log_messages.client_message,
                 error_facts = log_facts.rendered.as_deref(),
                 error_facts_truncated = log_facts.truncated,
@@ -416,8 +417,8 @@ fn adapter_status_log_level(kind: ErrorKind) -> AdapterStatusLogLevel {
 
 #[derive(Debug, PartialEq, Eq)]
 struct AdapterStatusLogMessages<'a> {
-    source_chain: Option<&'a str>,
-    root_cause: Option<&'a str>,
+    cause: Option<&'a str>,
+    diagnostics_truncated: Option<bool>,
     client_message: Option<&'a str>,
 }
 
@@ -435,11 +436,11 @@ fn adapter_status_log_facts(error: &Error) -> AdapterStatusLogFacts {
 fn adapter_status_log_messages<'a>(
     error_message: &'a str,
     client_message: &'a str,
-    diagnostics: &'a ErrorSourceDiagnostics,
+    diagnostics: &'a ErrorLogDiagnostics,
 ) -> AdapterStatusLogMessages<'a> {
     AdapterStatusLogMessages {
-        source_chain: diagnostics.chain().filter(|source_chain| *source_chain != error_message),
-        root_cause: diagnostics.root_cause_when_distinct(),
+        cause: diagnostics.cause().filter(|cause| *cause != error_message),
+        diagnostics_truncated: diagnostics.truncated().then_some(true),
         client_message: (client_message != error_message).then_some(client_message),
     }
 }
@@ -677,9 +678,10 @@ mod tests {
         assert_eq!(diagnostics.chain().unwrap().matches(&parser_display).count(), 1);
         assert!(!diagnostics.chain().unwrap().contains("ParserError("));
 
-        let log_messages = adapter_status_log_messages(adapter.message(), adapter.message(), &diagnostics);
-        assert_eq!(log_messages.source_chain, Some(parser_display.as_str()));
-        assert_eq!(log_messages.root_cause, None);
+        let log_diagnostics = ErrorLogDiagnostics::from_error(&adapter);
+        let log_messages = adapter_status_log_messages(adapter.message(), adapter.message(), &log_diagnostics);
+        assert_eq!(log_messages.cause, Some(parser_display.as_str()));
+        assert_eq!(log_messages.diagnostics_truncated, None);
         assert_eq!(log_messages.client_message, None);
 
         let status = adapter_error_to_status(&adapter);
@@ -694,11 +696,11 @@ mod tests {
     fn boundary_log_omits_source_and_client_messages_equal_to_error_message() {
         let error = Error::new(ErrorCode::InvalidRequest, TEST_OPERATION, "same human message")
             .with_source(TestSourceError::leaf("same human message"));
-        let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
+        let diagnostics = ErrorLogDiagnostics::from_error(&error);
 
         assert_eq!(
             adapter_status_log_messages(error.message(), error.message(), &diagnostics),
-            AdapterStatusLogMessages { source_chain: None, root_cause: None, client_message: None }
+            AdapterStatusLogMessages { cause: None, diagnostics_truncated: None, client_message: None }
         );
     }
 

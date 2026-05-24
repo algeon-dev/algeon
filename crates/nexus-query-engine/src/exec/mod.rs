@@ -64,6 +64,11 @@ pub use bounded::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
+pub(crate) fn lower_projection_output_expr_for_admission(
+    output: &crate::plan::ProjectionOutput,
+) -> crate::error::Result<cudf::Expr> {
+    lowering::lower_projection_output_expr(output)
+}
 use edge_normalize::execute_edge_normalize;
 #[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
 #[doc(hidden)]

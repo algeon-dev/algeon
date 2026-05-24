@@ -21,7 +21,9 @@ use datafusion::{
 use nexus_query_engine::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
-    capability::CapabilityReason, native_exec::producer::gpu_resident_producer_input_name, report::GpuCandidate,
+    capability::CapabilityReason,
+    native_exec::producer::{gpu_resident_producer_input_name, gpu_resident_producer_unique_output_key},
+    report::GpuCandidate,
     table_format::NexusIcebergScanExec,
 };
 
@@ -672,6 +674,7 @@ fn normalize_native_input(
         return Ok(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
             source_exec: plan,
             input_name,
+            unique_output_key: gpu_resident_producer_unique_output_key(plan),
         }));
     }
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {

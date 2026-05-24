@@ -169,6 +169,11 @@ fn impossible_requirement_is_rejected_before_enqueue() {
         )
         .expect_err("floor exceeding capacity must reject");
     assert_eq!(error.fact_value("reason"), Some("impossible_requirement"));
+    assert_eq!(error.fact_value("minimum_compatible_required_floor_bytes"), Some("2048"));
+    assert_eq!(error.fact_value("minimum_compatible_required_floor_device_ordinal"), Some("0"));
+    assert_eq!(error.fact_value("minimum_compatible_configured_floor_bytes"), Some("2048"));
+    assert_eq!(error.fact_value("minimum_compatible_required_phase_floor_bytes"), Some("0"));
+    assert_eq!(error.fact_value("minimum_compatible_capability_floor_raise_bytes"), Some("0"));
 }
 
 #[test]

@@ -1,6 +1,10 @@
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicUsize, Ordering},
+    io::Write,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use arrow::{
@@ -31,6 +35,20 @@ use crate::{
 };
 
 type PlannerFuture<'a> = BoxFuture<'a, crate::adapter_error::Result<TableFormatScanPlan>>;
+
+#[derive(Clone, Default)]
+struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedLogBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 struct SleepingPlanner {
@@ -69,6 +87,35 @@ fn cancel_invalid_argument_status_carries_adapter_metadata() {
     assert_eq!(status.metadata().get(ERROR_KIND_METADATA_KEY).unwrap().to_str().unwrap(), "invalid_input");
     assert_eq!(status.metadata().get(ERROR_STATUS_METADATA_KEY).unwrap().to_str().unwrap(), "permanent");
     assert_eq!(status.message(), "Flight SQL cancel action contained a non-UTF-8 query id");
+}
+
+#[test]
+fn get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause() {
+    let target = Error::new(ErrorCode::Internal, "datafusion_nexus.test.collection_target", "target adapter failure")
+        .with_fact("path", "/srv/nexus/target.parquet")
+        .with_source(std::io::Error::other("target root cause"));
+    let error = DataFusionError::Collection(vec![
+        DataFusionError::Execution("unrelated first failure".to_string()),
+        target.into(),
+    ]);
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        DatafusionNexusFlightSqlService::warn_get_tables_metadata_error("catalog", "schema", "table", "schema", &error);
+    });
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    assert!(output.contains("error_operation=\"datafusion_nexus.test.collection_target\""), "{output}");
+    assert!(output.contains("error_cause=\"target root cause\""), "{output}");
+    assert!(output.contains("error_source_path=\"/srv/nexus/target.parquet\""), "{output}");
+    assert!(!output.contains("unrelated first failure"), "{output}");
 }
 
 fn query_stats_payload(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {

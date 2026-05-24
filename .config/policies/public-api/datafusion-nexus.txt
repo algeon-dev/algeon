@@ -10,6 +10,7 @@ pub use datafusion_nexus::attempt::AttemptTraceContext
 pub use datafusion_nexus::attempt::GraphClaimCalibrationRow
 pub use datafusion_nexus::attempt::QueryAttemptReport
 pub use datafusion_nexus::attempt::RuntimeObservationConfig
+pub use datafusion_nexus::attempt::RuntimeTerminalOutcome
 pub use datafusion_nexus::attempt::SealedRuntimeObservationSnapshot
 pub enum datafusion_nexus::attempt::GraphClaimCalibrationExecution
 pub datafusion_nexus::attempt::GraphClaimCalibrationExecution::NonPhysical(datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason)
@@ -726,6 +727,12 @@ impl core::fmt::Debug for datafusion_nexus::error::Error
 pub fn datafusion_nexus::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for datafusion_nexus::error::Error
 pub fn datafusion_nexus::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datafusion_nexus::error::ErrorLogDiagnostics
+impl datafusion_nexus::error::ErrorLogDiagnostics
+pub fn datafusion_nexus::error::ErrorLogDiagnostics::cause(&self) -> core::option::Option<&str>
+pub fn datafusion_nexus::error::ErrorLogDiagnostics::from_error(&(dyn core::error::Error + 'static)) -> Self
+pub fn datafusion_nexus::error::ErrorLogDiagnostics::source_path(&self) -> core::option::Option<&str>
+pub fn datafusion_nexus::error::ErrorLogDiagnostics::truncated(&self) -> bool
 pub struct datafusion_nexus::error::ErrorSourceDiagnostics
 impl datafusion_nexus::error::ErrorSourceDiagnostics
 pub fn datafusion_nexus::error::ErrorSourceDiagnostics::chain(&self) -> core::option::Option<&str>

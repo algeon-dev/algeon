@@ -9,6 +9,7 @@ mod envelope;
 mod join_strategy;
 mod requirement;
 mod shared;
+mod string_payload;
 mod support;
 
 pub(crate) use bounded::bounded_cugraph_pipeline_admission;

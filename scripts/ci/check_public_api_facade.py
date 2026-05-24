@@ -54,6 +54,10 @@ def main() -> int:
         by_type[engine_type] = row
 
     live_types = set(ENGINE_TYPE.findall(snapshot))
+
+    def row_is_live(row: dict[str, str]) -> bool:
+        return row["engine_type"] in live_types or f"pub use {row['public_symbol']}" in snapshot
+
     for engine_type in sorted(live_types):
         row = by_type.get(engine_type)
         if row is None:
@@ -70,15 +74,17 @@ def main() -> int:
             status = 1
 
     for engine_type, row in sorted(by_type.items()):
-        if row["decision"] == "RE-EXPORT" and engine_type not in live_types:
+        live = row_is_live(row)
+        if row["decision"] == "RE-EXPORT" and not live:
             fail(f"stale RE-EXPORT disposition is not used by the live surface: {engine_type}")
             status = 1
-        if row["decision"] in {"ADAPT", "HIDE", "INTERNAL CONSUMER"} and engine_type in live_types:
+        if row["decision"] in {"ADAPT", "HIDE", "INTERNAL CONSUMER"} and live:
             fail(f"forbidden {row['decision']} type reappeared in the live surface: {engine_type}")
             status = 1
 
     if status == 0:
-        print(f"PASS: {len(live_types)} live engine types have unique approved facade reachability")
+        live_ledger_identities = {engine_type for engine_type, row in by_type.items() if row_is_live(row)}
+        print(f"PASS: {len(live_ledger_identities)} live engine types have unique approved facade reachability")
     return status
 
 

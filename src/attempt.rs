@@ -23,14 +23,14 @@ use datafusion::{
 use futures::{FutureExt, Stream};
 use nexus_query_engine::{
     attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
-    observability::{AttemptFailureSummary, RuntimeTerminalOutcome},
+    observability::AttemptFailureSummary,
 };
 pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
     graph_memory::GraphClaimCalibrationRow,
     observability::{
         AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport,
-        RuntimeObservationConfig, SealedRuntimeObservationSnapshot,
+        RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
 };
 
