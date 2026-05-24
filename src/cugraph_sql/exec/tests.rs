@@ -345,7 +345,15 @@ fn write_string_edge_parquet(path: &std::path::Path) {
     let mut writer = ArrowWriter::try_new(
         file,
         schema,
-        Some(WriterProperties::builder().set_max_row_group_row_count(Some(2)).build()),
+        Some(
+            WriterProperties::builder()
+                .set_max_row_group_row_count(Some(2))
+                .set_key_value_metadata(Some(vec![KeyValue::new(
+                    GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY.to_string(),
+                    r#"{"source_column_index":0,"destination_column_index":1}"#.to_string(),
+                )]))
+                .build(),
+        ),
     )
     .unwrap();
     writer.write(&batch).unwrap();
@@ -408,6 +416,13 @@ fn graph_ticket_proof_with_resident_edge_plan(
     exec: &CugraphAlgoExec,
     edge_plan: &QueryPlan,
 ) -> nexus_query_engine::admission::QueryPlanCapabilityProof {
+    graph_ticket_plan_and_proof_with_resident_edge_plan(exec, edge_plan).1
+}
+
+fn graph_ticket_plan_and_proof_with_resident_edge_plan(
+    exec: &CugraphAlgoExec,
+    edge_plan: &QueryPlan,
+) -> (nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof) {
     let edge_vertex_upper_bound =
         edge_source_graph_vertex_estimate(exec.edge_source.as_ref()).map(|estimate| estimate.count);
     cugraph_execution_capability_proof_with_resident_edge_plan(
@@ -422,7 +437,6 @@ fn graph_ticket_proof_with_resident_edge_plan(
         Some(edge_plan),
     )
     .expect("prepared graph fixture must issue a resident-input-bound proof")
-    .1
 }
 
 fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
@@ -2164,6 +2178,83 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
         proof, &expected_proof,
         "the post-hydration ticket must retain the exact graph and resolved source proofs with phase-aware model evidence"
     );
+}
+
+#[tokio::test]
+async fn installed_backend_string_pagerank_ticket_orders_source_mapping_and_graph_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("string-edges.parquet");
+    write_string_edge_parquet(&path);
+
+    let backend = test_gpu_backend();
+    let state = backend
+        .backend()
+        .install_on_with_cugraph_sql(
+            datafusion::execution::SessionStateBuilder::new_with_default_features(),
+            CugraphSqlConfig::default(),
+        )
+        .unwrap()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("string_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let invocation = attempt.planning_context(&ctx).unwrap();
+    let plan = invocation
+        .sql(
+            "SELECT vertex, value FROM cugraph_pagerank(\
+             'string_edges', 'src', 'dst', NULL, '{\"alpha\": 0.85}')",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let exec = cugraph_exec_in_plan(plan).expect("installed backend plan should contain CugraphAlgoExec");
+    let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
+    let (prepared, _staged) = exec.clone().prepare_staged_attempt(invocation.task_ctx()).await.unwrap();
+    let ticket = prepared
+        .native_execution_config
+        .query_admission_ticket()
+        .expect("metadata hydration must mint the string graph ticket");
+    let proof = ticket.attempt_capability_proof().expect("string graph ticket must retain its capability proof");
+    let source_plan = lowered_native_edge_plan(prepared.edge_source.as_ref())
+        .expect("metadata hydration must lower the string edge scan")
+        .clone_with_gpu_resident_sink();
+    let model_ask = prepared
+        .graph_model_ask_bytes_for_admission_ticket()
+        .unwrap()
+        .expect("string PageRank must retain exact graph model evidence");
+    let (graph_plan, graph) = graph_ticket_plan_and_proof_with_resident_edge_plan(&prepared, &source_plan);
+    let graph = graph
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("graph evidence must bind before the mapping schedule");
+    let independently_derived =
+        nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+            &graph_plan,
+            graph,
+            CUGRAPH_EDGE_INPUT_NAME,
+            &source_plan,
+            std::iter::empty(),
+        )
+        .expect("string mapping schedule must be derivable")
+        .expect("string mapping must materialize between the source and graph");
+
+    assert_eq!(
+        proof.ordered_schedule_phase_group_counts_for_test(),
+        independently_derived.ordered_schedule_phase_group_counts_for_test(),
+        "the admitted proof must retain the phase shape derived from the exact native plan"
+    );
+    let (producer_phases, consumer_phase_groups) = proof
+        .ordered_schedule_phase_group_counts_for_test()
+        .expect("string PageRank must carry an ordered source-to-graph schedule");
+    assert_eq!(producer_phases, 1);
+    assert!(consumer_phase_groups > 2, "mapping operators must be priced in addition to graph phases");
+
+    let context = ticket
+        .acquire_context(invocation.task_ctx(), ExecutionCancellation::new())
+        .await
+        .expect("the exact string mapping schedule must resolve to an admission grant");
+    assert!(context.admission_facts().query_grant_bytes > 0);
 }
 
 /// The S2 G1 query aggregates the ForceAtlas2 output on the native side. Keep

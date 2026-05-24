@@ -100,7 +100,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [features]
 default = []
-test-support = []
+test-support = ["nexus-query-engine/test-hooks"]
 # Workspace-internal bridge for the companion Flight SQL frontend.
 server-internal = []
 # Application/test support surface; not part of the normal embedded/server report contract.
