@@ -10,22 +10,15 @@
 extern "C" {
 #endif
 
-/// Drop rows from a table where key columns contain nulls.
-/// `keys` is an array of column indices, `num_keys` is its length.
-/// `keep_threshold` is the minimum number of non-null key values required
-/// to keep a row.
-cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
-                              const int* keys,
-                              int num_keys,
-                              int keep_threshold,
-                              cudf_table_handle* out);
-
 /// Drop rows from a table where key columns contain nulls with explicit
 /// execution context.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// `keys` is an array of column indices, `num_keys` is its length.
+/// `keep_threshold` is the minimum number of non-null key values required
+/// to keep a row.
+///
+/// `options` must be non-NULL and must carry an explicit device, stream, and
+/// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
                                  const int* keys,
                                  int num_keys,
@@ -53,21 +46,11 @@ typedef enum {
   CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL   = 1,
 } cudf_stream_compaction_nan_equality_t;
 
-/// Create a new table with distinct rows based on key columns.
-cudf_status_t cudf_distinct(cudf_table_view_handle input,
-                            const int* keys,
-                            int num_keys,
-                            cudf_duplicate_keep_option_t keep,
-                            cudf_stream_compaction_null_equality_t null_equality,
-                            cudf_stream_compaction_nan_equality_t nan_equality,
-                            cudf_table_handle* out);
-
 /// Create a new table with distinct rows based on key columns with explicit
 /// execution context.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// `options` must be non-NULL and must carry an explicit device, stream, and
+/// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
                                const int* keys,
                                int num_keys,

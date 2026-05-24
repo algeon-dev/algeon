@@ -10,7 +10,6 @@
 #include <cudf/reduction.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <memory>
@@ -144,14 +143,6 @@ void cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle)
   delete static_cast<cudf::scan_aggregation*>(handle);
 }
 
-cudf_status_t cudf_reduce(cudf_column_view_handle input,
-                          cudf_reduce_aggregation_handle agg,
-                          cudf_data_type_handle output_type,
-                          cudf_scalar_handle* out)
-{
-  return cudf_reduce_ex(input, agg, output_type, out, nullptr);
-}
-
 cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
                              cudf_reduce_aggregation_handle agg,
                              cudf_data_type_handle output_type,
@@ -165,8 +156,8 @@ cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view       = static_cast<cudf::column_view*>(input);
@@ -174,21 +165,13 @@ cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
     auto* dtype      = static_cast<cudf::data_type*>(output_type);
 
     {
-      auto result = cudf::reduce(*view, *reduce_agg, *dtype, exec.stream, exec.mr);
-      *out = cudf_release_scalar_handle(std::move(result), cudf_capture_exec_provenance(exec));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::reduce(*view, *reduce_agg, *dtype, exec->stream, *exec->mr);
+      *out = cudf_release_scalar_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_scan(cudf_column_view_handle input,
-                        cudf_scan_aggregation_handle agg,
-                        cudf_scan_type_t scan_type,
-                        int32_t null_policy,
-                        cudf_column_handle* out)
-{
-  return cudf_scan_ex(input, agg, scan_type, null_policy, out, nullptr);
 }
 
 cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
@@ -210,28 +193,22 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view     = static_cast<cudf::column_view*>(input);
     auto* scan_agg = static_cast<cudf::scan_aggregation*>(agg);
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::scan(*view, *scan_agg, cudf_scan_type, cudf_null_policy, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::scan(*view, *scan_agg, cudf_scan_type, cudf_null_policy, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_minmax(cudf_column_view_handle input,
-                          cudf_scalar_handle* out_min,
-                          cudf_scalar_handle* out_max)
-{
-  return cudf_minmax_ex(input, out_min, out_max, nullptr);
 }
 
 cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
@@ -246,18 +223,19 @@ cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
-      auto [min_scalar, max_scalar] = cudf::minmax(*view, exec.stream, exec.mr);
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto [min_scalar, max_scalar] = cudf::minmax(*view, exec->stream, *exec->mr);
       *out_min =
-        cudf_release_scalar_handle(std::move(min_scalar), cudf_capture_exec_provenance(exec));
+        cudf_release_scalar_handle(std::move(min_scalar), cudf_capture_exec_provenance(*exec));
       *out_max =
-        cudf_release_scalar_handle(std::move(max_scalar), cudf_capture_exec_provenance(exec));
+        cudf_release_scalar_handle(std::move(max_scalar), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

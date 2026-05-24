@@ -6,16 +6,10 @@ use crate::{
 extern "C" {
     // -- Copying (gather) ----------------------------------------------------
 
-    pub fn cudf_gather(
-        input: cudf_table_view_handle,
-        gather_map: cudf_column_view_handle,
-        bounds_policy: cudf_out_of_bounds_policy_t,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-
     /// Gather rows with explicit execution options.
     ///
-    /// When `options->mr` is non-null, it must outlive the returned table.
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned table.
     pub fn cudf_gather_ex(
         input: cudf_table_view_handle,
         gather_map: cudf_column_view_handle,
@@ -26,6 +20,7 @@ extern "C" {
 
     /// Return the exact retained device allocation footprint of a gather
     /// result using explicit execution options.
+    /// `options` must name an explicit valid device and non-null stream/MR.
     pub fn cudf_gather_device_allocated_size_ex(
         input: cudf_table_view_handle,
         gather_map: cudf_column_view_handle,
@@ -36,16 +31,10 @@ extern "C" {
 
     // -- Copying (scatter) ---------------------------------------------------
 
-    pub fn cudf_scatter(
-        source: cudf_table_view_handle,
-        scatter_map: cudf_column_view_handle,
-        target: cudf_table_view_handle,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-
     /// Scatter rows with explicit execution options.
     ///
-    /// When `options->mr` is non-null, it must outlive the returned table.
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned table.
     pub fn cudf_scatter_ex(
         source: cudf_table_view_handle,
         scatter_map: cudf_column_view_handle,
@@ -56,13 +45,8 @@ extern "C" {
 
     // -- Copying (copy_if_else) ----------------------------------------------
 
-    pub fn cudf_copy_if_else_vv(
-        lhs: cudf_column_view_handle,
-        rhs: cudf_column_view_handle,
-        boolean_mask: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned column.
     pub fn cudf_copy_if_else_vv_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
@@ -73,23 +57,10 @@ extern "C" {
 
     // -- Copying (shift) -----------------------------------------------------
 
-    /// Shift the rows of `input` by `offset` positions, filling indeterminate
-    /// outputs with `fill_value`.
-    ///
-    /// `output[i] = input[i - offset]` when `i - offset` is in
-    /// `[0, input.size())`, otherwise `output[i] = fill_value`. libcudf
-    /// requires `input` to be fixed-width or string and `fill_value` to share
-    /// `input`'s data type.
-    pub fn cudf_shift(
-        input: cudf_column_view_handle,
-        offset: i32,
-        fill_value: cudf_scalar_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-
     /// Shift with explicit execution options.
     ///
-    /// When `options->mr` is non-null, it must outlive the returned column.
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned column.
     pub fn cudf_shift_ex(
         input: cudf_column_view_handle,
         offset: i32,

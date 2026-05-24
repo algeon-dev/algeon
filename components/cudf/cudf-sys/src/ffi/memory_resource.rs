@@ -1,6 +1,9 @@
 use std::os::raw::c_void;
 
-use crate::{cudf_memory_resource_handle, cudf_memory_resource_usage_t, cudf_status_t};
+use crate::{
+    cudf_memory_manager_handle, cudf_memory_resource_handle, cudf_memory_resource_usage_t, cudf_reservation_handle,
+    cudf_status_t, cudf_stream_handle,
+};
 
 extern "C" {
     // -- Memory Resource -----------------------------------------------------
@@ -41,6 +44,33 @@ extern "C" {
         handle: cudf_memory_resource_handle,
         out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
+
+    /// Resolve the process-local reservation-aware memory manager for one CUDA device.
+    pub fn cudf_memory_manager_for_device(device: i32, out: *mut cudf_memory_manager_handle) -> cudf_status_t;
+
+    /// Create a memory-resource handle alias for a device memory manager.
+    pub fn cudf_memory_manager_resource(
+        manager: cudf_memory_manager_handle,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
+    /// Attach a hard live-byte reservation to a CUDA stream.
+    pub fn cudf_memory_manager_attach_reservation(
+        manager: cudf_memory_manager_handle,
+        stream: cudf_stream_handle,
+        reservation_id: u64,
+        limit_bytes: usize,
+        out: *mut cudf_reservation_handle,
+    ) -> cudf_status_t;
+
+    /// Read usage counters for a live stream-bound reservation.
+    pub fn cudf_reservation_usage(
+        reservation: cudf_reservation_handle,
+        out: *mut cudf_memory_resource_usage_t,
+    ) -> cudf_status_t;
+
+    /// Detach a reservation from its stream and destroy the reservation handle.
+    pub fn cudf_reservation_detach(reservation: cudf_reservation_handle) -> cudf_status_t;
 
     /// Destroy a memory resource created by this shim on its owning device.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle, device: i32) -> cudf_status_t;

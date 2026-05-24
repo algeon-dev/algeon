@@ -11,40 +11,56 @@
 
 #include <cuda_runtime_api.h>
 
+#include <memory>
 #include <string>
 
-rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle)
-{
-  return static_cast<rmm::cuda_stream*>(handle)->view();
+namespace {
+struct cudf_stream_owner {
+  rmm::cuda_stream stream;
+};
+
+struct cudf_stream_handle_state {
+  std::shared_ptr<cudf_stream_owner> owner;
+};
+
+cudf_stream_handle_state &
+cudf_stream_state_from_handle(cudf_stream_handle handle) {
+  return *static_cast<cudf_stream_handle_state *>(handle);
+}
+} // namespace
+
+rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle) {
+  return cudf_stream_state_from_handle(handle).owner->stream.view();
+}
+
+std::shared_ptr<void>
+cudf_stream_lifetime_from_handle(cudf_stream_handle handle) {
+  return cudf_stream_state_from_handle(handle).owner;
 }
 
 extern "C" {
 /// Create a new CUDA stream.
-cudf_status_t cudf_stream_create(cudf_stream_handle* out)
-{
+cudf_status_t cudf_stream_create(cudf_stream_handle *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
-  CUDF_RUST_TRY
-  {
-    auto* stream = new rmm::cuda_stream();
-    *out         = static_cast<cudf_stream_handle>(stream);
+  CUDF_RUST_TRY {
+    auto state = std::make_unique<cudf_stream_handle_state>();
+    state->owner = std::make_shared<cudf_stream_owner>();
+    *out = static_cast<cudf_stream_handle>(state.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
 /// Destroy a CUDA stream handle.
-void cudf_stream_destroy(cudf_stream_handle handle)
-{
-  delete static_cast<rmm::cuda_stream*>(handle);
+void cudf_stream_destroy(cudf_stream_handle handle) {
+  delete static_cast<cudf_stream_handle_state *>(handle);
 }
 
 /// Synchronize a CUDA stream (block until all operations complete).
-cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle)
-{
+cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY
-  {
+  CUDF_RUST_TRY {
     auto stream = cudf_stream_view_from_handle(handle);
     stream.synchronize();
     cudf_record_synchronized_stream(stream);
@@ -54,12 +70,11 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle)
 }
 
 /// Synchronize a raw borrowed CUDA stream pointer.
-cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream)
-{
+cudf_status_t cudf_raw_cuda_stream_synchronize(void *raw_stream) {
   CUDF_RUST_NULL_CHECK(raw_stream, "raw_stream is null");
-  CUDF_RUST_TRY
-  {
-    auto stream = rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)};
+  CUDF_RUST_TRY {
+    auto stream =
+        rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)};
     stream.synchronize();
     cudf_record_synchronized_stream(stream);
     return CUDF_SUCCESS;
@@ -69,14 +84,12 @@ cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream)
 
 /// Check if all operations on the stream have completed (non-blocking).
 /// Sets *out to 1 if ready, 0 if not.
-cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out)
-{
+cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY
-  {
-    auto stream     = cudf_stream_view_from_handle(handle);
+  CUDF_RUST_TRY {
+    auto stream = cudf_stream_view_from_handle(handle);
     cudaError_t err = cudaStreamQuery(stream.value());
     if (err == cudaSuccess) {
       *out = 1;
@@ -85,7 +98,8 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out)
       *out = 0;
 
     } else {
-      auto msg = std::string("CUDA stream query failed: ") + cudaGetErrorString(err);
+      auto msg =
+          std::string("CUDA stream query failed: ") + cudaGetErrorString(err);
       set_error(msg);
       return CUDF_ERROR_CUDA;
     }
@@ -94,16 +108,15 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out)
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void** out)
-{
+cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void **out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY
-  {
-    *out = reinterpret_cast<void*>(cudf_stream_view_from_handle(handle).value());
+  CUDF_RUST_TRY {
+    *out =
+        reinterpret_cast<void *>(cudf_stream_view_from_handle(handle).value());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
-}  // extern "C"
+} // extern "C"

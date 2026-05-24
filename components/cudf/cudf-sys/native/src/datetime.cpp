@@ -8,8 +8,9 @@
 #include <cudf/datetime.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+
+#include <memory>
 
 namespace {
 cudf_status_t to_datetime_component(cudf_datetime_component_t input,
@@ -60,13 +61,6 @@ cudf_status_t to_datetime_rounding_frequency(cudf_datetime_rounding_frequency_t 
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_datetime_extract_component(cudf_column_view_handle input,
-                                              cudf_datetime_component_t component,
-                                              cudf_column_handle* out)
-{
-  return cudf_datetime_extract_component_ex(input, component, out, nullptr);
-}
-
 cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
                                                  cudf_datetime_component_t component,
                                                  cudf_column_handle* out,
@@ -80,27 +74,21 @@ cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
   if (component_status != CUDF_SUCCESS) { return component_status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::datetime::extract_datetime_component(*view, cudf_component, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::datetime::extract_datetime_component(*view, cudf_component, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_datetime_floor(cudf_column_view_handle input,
-                                  cudf_datetime_rounding_frequency_t frequency,
-                                  cudf_column_handle* out)
-{
-  return cudf_datetime_floor_ex(input, frequency, out, nullptr);
 }
 
 cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
@@ -116,26 +104,20 @@ cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
   if (frequency_status != CUDF_SUCCESS) { return frequency_status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
-      auto result = cudf::datetime::floor_datetimes(*view, cudf_frequency, exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::datetime::floor_datetimes(*view, cudf_frequency, exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_datetime_add_calendrical_months_scalar(cudf_column_view_handle input,
-                                                          int32_t months,
-                                                          cudf_column_handle* out)
-{
-  return cudf_datetime_add_calendrical_months_scalar_ex(input, months, out, nullptr);
 }
 
 cudf_status_t cudf_datetime_add_calendrical_months_scalar_ex(cudf_column_view_handle input,
@@ -148,14 +130,18 @@ cudf_status_t cudf_datetime_add_calendrical_months_scalar_ex(cudf_column_view_ha
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::column_view*>(input);
-    cudf::numeric_scalar<int32_t> months_scalar(months, true, exec.stream, exec.mr);
-    auto result = cudf::datetime::add_calendrical_months(*view, months_scalar, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      cudf::numeric_scalar<int32_t> months_scalar(months, true, exec->stream, *exec->mr);
+      auto result =
+        cudf::datetime::add_calendrical_months(*view, months_scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

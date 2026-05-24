@@ -20,23 +20,23 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_copy(src: cudf_table_handle, out: *mut cudf_table_handle) -> cudf_status_t;
-
+    /// Deep-copy a table using strict explicit execution options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// table handle.
     pub fn cudf_table_copy_ex(
         src: cudf_table_handle,
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_copy_from_prepared_device_export(
-        table: *const cudf_interop_semantic_table_t,
-        semantic_columns: *const cudf_interop_semantic_column_t,
-        num_semantic_columns: i32,
-        bindings: *const cudf_interop_buffer_binding_t,
-        num_bindings: i32,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-
+    /// Deep-copy a prepared-device export using strict explicit execution
+    /// options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// table handle.
     pub fn cudf_table_copy_from_prepared_device_export_ex(
         table: *const cudf_interop_semantic_table_t,
         semantic_columns: *const cudf_interop_semantic_column_t,
@@ -47,15 +47,12 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_copy_from_prepared_host_export(
-        table: *const cudf_interop_semantic_table_t,
-        semantic_columns: *const cudf_interop_semantic_column_t,
-        num_semantic_columns: i32,
-        bindings: *const cudf_interop_buffer_binding_t,
-        num_bindings: i32,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-
+    /// Deep-copy a prepared-host export using strict explicit execution
+    /// options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// table handle.
     pub fn cudf_table_copy_from_prepared_host_export_ex(
         table: *const cudf_interop_semantic_table_t,
         semantic_columns: *const cudf_interop_semantic_column_t,
@@ -75,8 +72,10 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_payload_size(handle: cudf_table_handle, out: *mut usize) -> cudf_status_t;
-
+    /// Return table payload bytes using strict explicit execution options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource.
     pub fn cudf_table_payload_size_ex(
         handle: cudf_table_handle,
         options: *const cudf_exec_options_t,

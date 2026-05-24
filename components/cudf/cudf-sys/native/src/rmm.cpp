@@ -17,11 +17,15 @@
 #include <rmm/mr/statistics_resource_adaptor.hpp>
 #include <rmm/resource_ref.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace {
 void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value)
@@ -30,6 +34,36 @@ void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value)
   while (observed < value &&
          !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
   }
+}
+
+void update_peak(std::size_t& peak, std::size_t value) { peak = std::max(peak, value); }
+
+void fill_usage(cudf_memory_resource_usage_t& out,
+                std::size_t allocation_limit,
+                std::size_t current_bytes,
+                std::size_t peak_bytes,
+                std::size_t total_bytes,
+                std::size_t current_aligned_bytes,
+                std::size_t peak_aligned_bytes,
+                std::size_t total_allocations,
+                std::size_t current_allocations,
+                std::size_t peak_allocations,
+                std::size_t failed_allocation_count,
+                std::size_t largest_failed_allocation_bytes)
+{
+  out                                = {};
+  out.struct_size                    = sizeof(cudf_memory_resource_usage_t);
+  out.allocation_limit_bytes         = allocation_limit;
+  out.current_bytes                  = current_bytes;
+  out.peak_bytes                     = peak_bytes;
+  out.total_bytes                    = total_bytes;
+  out.current_aligned_bytes          = current_aligned_bytes;
+  out.peak_aligned_bytes             = peak_aligned_bytes;
+  out.total_allocations              = total_allocations;
+  out.current_allocations            = current_allocations;
+  out.peak_allocations               = peak_allocations;
+  out.failed_allocation_count        = failed_allocation_count;
+  out.largest_failed_allocation_bytes = largest_failed_allocation_bytes;
 }
 
 class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_resource {
@@ -136,16 +170,252 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
 };
 
+struct reservation_state {
+  std::uint64_t id              = 0;
+  std::size_t allocation_limit  = 0;
+  void* stream_key              = nullptr;
+  bool attached                 = true;
+  std::size_t current_bytes     = 0;
+  std::size_t peak_bytes        = 0;
+  std::size_t total_bytes       = 0;
+  std::size_t current_aligned_bytes = 0;
+  std::size_t peak_aligned_bytes    = 0;
+  std::size_t total_allocations     = 0;
+  std::size_t current_allocations   = 0;
+  std::size_t peak_allocations      = 0;
+  std::size_t failed_allocation_count = 0;
+  std::size_t largest_failed_allocation_bytes = 0;
+};
+
+class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_resource {
+ public:
+  explicit reservation_aware_resource_adaptor(rmm::mr::device_memory_resource* upstream)
+    : upstream_{rmm::device_async_resource_ref{*upstream}}
+  {
+  }
+
+  std::shared_ptr<reservation_state> attach(rmm::cuda_stream_view stream,
+                                            std::uint64_t reservation_id,
+                                            std::size_t limit_bytes,
+                                            std::string& error)
+  {
+    auto const key = stream_key(stream);
+    std::scoped_lock lock{mutex_};
+    auto const existing = reservations_by_stream_.find(key);
+    if (existing != reservations_by_stream_.end()) {
+      auto state = existing->second.lock();
+      if (state != nullptr && state->attached) {
+        error = "stream already has an attached memory reservation";
+        return {};
+      }
+      reservations_by_stream_.erase(existing);
+    }
+
+    auto state              = std::make_shared<reservation_state>();
+    state->id              = reservation_id;
+    state->allocation_limit = limit_bytes;
+    state->stream_key      = key;
+    reservations_by_stream_[key] = state;
+    return state;
+  }
+
+  void detach(std::shared_ptr<reservation_state> const& state)
+  {
+    if (state == nullptr) { return; }
+    std::scoped_lock lock{mutex_};
+    state->attached = false;
+    auto const existing = reservations_by_stream_.find(state->stream_key);
+    if (existing != reservations_by_stream_.end()) {
+      auto existing_state = existing->second.lock();
+      if (existing_state == nullptr || existing_state.get() == state.get()) {
+        reservations_by_stream_.erase(existing);
+      }
+    }
+  }
+
+  cudf_memory_resource_usage_t usage(std::shared_ptr<reservation_state> const& state)
+  {
+    cudf_memory_resource_usage_t out{};
+    if (state == nullptr) { return out; }
+    std::scoped_lock lock{mutex_};
+    fill_usage(out,
+               state->allocation_limit,
+               state->current_bytes,
+               state->peak_bytes,
+               state->total_bytes,
+               state->current_aligned_bytes,
+               state->peak_aligned_bytes,
+               state->total_allocations,
+               state->current_allocations,
+               state->peak_allocations,
+               state->failed_allocation_count,
+               state->largest_failed_allocation_bytes);
+    out.reserved[0] = state->id;
+    out.reserved[1] = state->attached ? 1 : 0;
+    return out;
+  }
+
+ private:
+  struct allocation_record {
+    std::size_t bytes = 0;
+    std::size_t aligned_bytes = 0;
+    std::shared_ptr<reservation_state> reservation;
+  };
+
+  static void* stream_key(rmm::cuda_stream_view stream)
+  {
+    return reinterpret_cast<void*>(stream.value());
+  }
+
+  void record_failed_allocation(reservation_state& state, std::size_t bytes)
+  {
+    state.failed_allocation_count += 1;
+    update_peak(state.largest_failed_allocation_bytes, bytes);
+  }
+
+  std::shared_ptr<reservation_state> reservation_for_stream(rmm::cuda_stream_view stream)
+  {
+    auto const key = stream_key(stream);
+    auto const it  = reservations_by_stream_.find(key);
+    if (it == reservations_by_stream_.end()) { return {}; }
+    auto state = it->second.lock();
+    if (state == nullptr || !state->attached) {
+      reservations_by_stream_.erase(it);
+      return {};
+    }
+    return state;
+  }
+
+  void reserve_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  {
+    if (state.current_aligned_bytes > state.allocation_limit ||
+        aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
+      record_failed_allocation(state, bytes);
+      auto const msg = std::string("Exceeded stream reservation memory limit (failed to allocate ") +
+                       rmm::detail::format_bytes(bytes) + ")";
+      RMM_FAIL(msg.c_str(), rmm::out_of_memory);
+    }
+    state.current_aligned_bytes += aligned_bytes;
+  }
+
+  void commit_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  {
+    state.current_bytes += bytes;
+    state.total_bytes += bytes;
+    state.current_allocations += 1;
+    state.total_allocations += 1;
+    update_peak(state.peak_bytes, state.current_bytes);
+    update_peak(state.peak_aligned_bytes, state.current_aligned_bytes);
+    update_peak(state.peak_allocations, state.current_allocations);
+    (void)aligned_bytes;
+  }
+
+  void rollback_reserved_allocation(reservation_state& state,
+                                    std::size_t bytes,
+                                    std::size_t aligned_bytes)
+  {
+    if (state.current_aligned_bytes >= aligned_bytes) {
+      state.current_aligned_bytes -= aligned_bytes;
+    } else {
+      state.current_aligned_bytes = 0;
+    }
+    record_failed_allocation(state, bytes);
+  }
+
+  void release_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  {
+    state.current_bytes = state.current_bytes >= bytes ? state.current_bytes - bytes : 0;
+    state.current_aligned_bytes =
+      state.current_aligned_bytes >= aligned_bytes ? state.current_aligned_bytes - aligned_bytes : 0;
+    state.current_allocations =
+      state.current_allocations > 0 ? state.current_allocations - 1 : 0;
+  }
+
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream) override
+  {
+    auto const aligned_bytes = rmm::align_up(bytes, rmm::CUDA_ALLOCATION_ALIGNMENT);
+    std::shared_ptr<reservation_state> reservation;
+    {
+      std::scoped_lock lock{mutex_};
+      reservation = reservation_for_stream(stream);
+      if (reservation != nullptr) { reserve_allocation(*reservation, bytes, aligned_bytes); }
+    }
+
+    void* ptr = nullptr;
+    try {
+      ptr = upstream_.allocate(stream, bytes);
+    } catch (...) {
+      if (reservation != nullptr) {
+        std::scoped_lock lock{mutex_};
+        rollback_reserved_allocation(*reservation, bytes, aligned_bytes);
+      }
+      throw;
+    }
+
+    if (reservation != nullptr) {
+      std::scoped_lock lock{mutex_};
+      commit_allocation(*reservation, bytes, aligned_bytes);
+      allocations_[ptr] = allocation_record{bytes, aligned_bytes, reservation};
+    }
+    return ptr;
+  }
+
+  void do_deallocate(void* ptr, std::size_t bytes, rmm::cuda_stream_view stream) noexcept override
+  {
+    allocation_record record{};
+    bool found = false;
+    {
+      std::scoped_lock lock{mutex_};
+      auto const it = allocations_.find(ptr);
+      if (it != allocations_.end()) {
+        record = std::move(it->second);
+        allocations_.erase(it);
+        found = true;
+      }
+    }
+
+    upstream_.deallocate(stream, ptr, bytes);
+
+    if (found && record.reservation != nullptr) {
+      std::scoped_lock lock{mutex_};
+      release_allocation(*record.reservation, record.bytes, record.aligned_bytes);
+    }
+  }
+
+  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  rmm::device_async_resource_ref upstream_;
+  std::mutex mutex_;
+  std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
+  std::unordered_map<void*, allocation_record> allocations_;
+};
+
 struct memory_resource_owner {
   std::shared_ptr<rmm::mr::cuda_memory_resource> upstream;
   std::shared_ptr<void> upstream_lifetime;
+  std::shared_ptr<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>> pool;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
   rmm::mr::statistics_resource_adaptor<rmm::mr::cuda_memory_resource>* stats = nullptr;
   budget_tracking_resource_adaptor* budget_tracker                         = nullptr;
+  reservation_aware_resource_adaptor* reservation_adaptor                   = nullptr;
 };
 
 struct memory_resource_handle_state {
   std::shared_ptr<memory_resource_owner> owner;
+  bool non_owning_alias = false;
+};
+
+struct device_memory_manager_state {
+  int32_t device = -1;
+  std::shared_ptr<memory_resource_owner> owner;
+};
+
+struct reservation_handle_state {
+  std::shared_ptr<device_memory_manager_state> manager;
+  std::shared_ptr<reservation_state> reservation;
 };
 
 std::mutex& memory_resource_registry_mutex()
@@ -175,6 +445,51 @@ void register_memory_resource_lifetime(std::shared_ptr<memory_resource_owner> co
 {
   std::scoped_lock lock{memory_resource_registry_mutex()};
   memory_resource_registry()[owner->mr.get()] = owner;
+}
+
+std::mutex& memory_manager_registry_mutex()
+{
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>&
+memory_manager_registry()
+{
+  static std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>> registry;
+  return registry;
+}
+
+std::shared_ptr<device_memory_manager_state> memory_manager_from_handle(
+  cudf_memory_manager_handle handle)
+{
+  std::scoped_lock lock{memory_manager_registry_mutex()};
+  for (auto const& [_, manager] : memory_manager_registry()) {
+    if (manager.get() == handle) { return manager; }
+  }
+  return {};
+}
+
+std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_device(
+  int32_t device)
+{
+  auto manager    = std::make_shared<device_memory_manager_state>();
+  manager->device = device;
+  manager->owner  = std::make_shared<memory_resource_owner>();
+
+  auto& owner    = *manager->owner;
+  owner.upstream = std::make_shared<rmm::mr::cuda_memory_resource>();
+  owner.pool =
+    std::make_shared<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(
+      owner.upstream.get(), 0);
+  auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(owner.pool.get());
+  owner.reservation_adaptor = adaptor.get();
+  owner.mr                  = std::move(adaptor);
+  register_memory_resource_lifetime(manager->owner);
+
+  std::scoped_lock current_lock{cudf_current_device_resource_mutex()};
+  rmm::mr::set_current_device_resource(owner.mr.get());
+  return manager;
 }
 }  // namespace
 
@@ -333,13 +648,14 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     cudf_status_t const status = guard.activate(device);
     if (status != CUDF_SUCCESS) { return status; }
     std::scoped_lock lock{cudf_current_device_resource_mutex()};
-    auto& owner = memory_resource_owner_from_handle(handle);
-    if (rmm::mr::get_current_device_resource() == owner.mr.get()) {
+    auto* state = static_cast<memory_resource_handle_state*>(handle);
+    auto& owner = *state->owner;
+    if (!state->non_owning_alias && rmm::mr::get_current_device_resource() == owner.mr.get()) {
       set_error(
         "cannot destroy a memory resource while it is installed as the current device resource");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    delete static_cast<memory_resource_handle_state*>(handle);
+    delete state;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -353,6 +669,141 @@ cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void*
   CUDF_RUST_TRY
   {
     *out = memory_resource_owner_from_handle(handle).mr.get();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY
+  {
+    if (device < 0) {
+      set_error("device must be >= 0");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    int32_t device_count = 0;
+    cudaError_t const count_status = cudaGetDeviceCount(&device_count);
+    if (count_status != cudaSuccess) {
+      auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(count_status);
+      set_error(msg);
+      return CUDF_ERROR_CUDA;
+    }
+    if (device >= device_count) {
+      set_error("device is outside the available CUDA device range");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    cudf_device_guard guard;
+    cudf_status_t const guard_status = guard.activate(device);
+    if (guard_status != CUDF_SUCCESS) { return guard_status; }
+
+    std::scoped_lock lock{memory_manager_registry_mutex()};
+    auto& registry = memory_manager_registry();
+    auto it        = registry.find(device);
+    if (it == registry.end()) {
+      it = registry.emplace(device, make_memory_manager_for_current_device(device)).first;
+    }
+    *out = static_cast<cudf_memory_manager_handle>(it->second.get());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
+                                           cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state             = std::make_unique<memory_resource_handle_state>();
+    state->owner           = manager_state->owner;
+    state->non_owning_alias = true;
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle manager,
+                                                     cudf_stream_handle stream,
+                                                     uint64_t reservation_id,
+                                                     size_t limit_bytes,
+                                                     cudf_reservation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("memory manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    std::string attach_error;
+    auto reservation =
+      adaptor->attach(cudf_stream_view_from_handle(stream), reservation_id, limit_bytes, attach_error);
+    if (reservation == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state         = std::make_unique<reservation_handle_state>();
+    state->manager     = std::move(manager_state);
+    state->reservation = std::move(reservation);
+    *out = static_cast<cudf_reservation_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
+                                     cudf_memory_resource_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(reservation, "reservation is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<reservation_handle_state*>(reservation);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("reservation manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = adaptor->usage(state.reservation);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation)
+{
+  CUDF_RUST_NULL_CHECK(reservation, "reservation is null");
+  CUDF_RUST_TRY
+  {
+    auto* state = static_cast<reservation_handle_state*>(reservation);
+    auto* adaptor = state->manager->owner->reservation_adaptor;
+    if (adaptor != nullptr) { adaptor->detach(state->reservation); }
+    delete state;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

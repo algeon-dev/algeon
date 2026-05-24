@@ -2,6 +2,7 @@
 #define CUDF_RUST_MEMORY_RESOURCE_H
 
 #include "error.h"
+#include "stream.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,6 +13,12 @@ extern "C" {
 
 /// Opaque handle to an owning RMM device memory resource.
 typedef void* cudf_memory_resource_handle;
+
+/// Opaque handle to the process-local memory manager for one CUDA device.
+typedef void* cudf_memory_manager_handle;
+
+/// Opaque handle to one stream-bound memory reservation.
+typedef void* cudf_reservation_handle;
 
 enum { CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS = 8 };
 
@@ -85,6 +92,45 @@ cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_h
 /// `cudf_memory_resource_create_budget_tracking`.
 cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
                                          cudf_memory_resource_usage_t* out);
+
+/// Resolve the process-local reservation-aware memory manager for `device`.
+///
+/// The manager owns one device-level reservation-aware adaptor backed by one
+/// shared physical pool. The adaptor is installed as the CUDA device's current
+/// RMM resource when the manager is first created; subsequent calls return the
+/// same manager without replacing the current resource.
+cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out);
+
+/// Create a memory-resource handle alias for a device memory manager.
+///
+/// The returned handle points at the manager's long-lived device-level adaptor
+/// and can be passed through `cudf_exec_options_t::mr`. Destroying this handle
+/// releases only the handle alias; the manager and its current-resource
+/// installation remain alive for the process.
+cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
+                                           cudf_memory_resource_handle* out);
+
+/// Attach a hard live-byte reservation to `stream` for this manager.
+///
+/// Allocations routed through the manager's resource are charged to the
+/// reservation currently attached to the allocation stream. Deallocation
+/// releases the allocation identity that created the pointer, even after the
+/// reservation has detached from the stream.
+cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle manager,
+                                                     cudf_stream_handle stream,
+                                                     uint64_t reservation_id,
+                                                     size_t limit_bytes,
+                                                     cudf_reservation_handle* out);
+
+/// Read usage counters for a live reservation handle.
+cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
+                                     cudf_memory_resource_usage_t* out);
+
+/// Detach a reservation from its stream and destroy the reservation handle.
+///
+/// Retained allocations remain associated with the detached reservation for
+/// accounting until those pointers are deallocated.
+cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation);
 
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///

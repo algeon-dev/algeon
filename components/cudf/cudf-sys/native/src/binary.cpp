@@ -9,8 +9,9 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+
+#include <memory>
 
 namespace {
 cudf_status_t to_binary_operator(cudf_binary_operator_t input, cudf::binary_operator* out)
@@ -25,15 +26,6 @@ cudf_status_t to_binary_operator(cudf_binary_operator_t input, cudf::binary_oper
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
-                                       cudf_column_view_handle rhs,
-                                       cudf_binary_operator_t op,
-                                       cudf_data_type_handle output_type,
-                                       cudf_column_handle* out)
-{
-  return cudf_binary_operation_vv_ex(lhs, rhs, op, output_type, out, nullptr);
-}
-
 cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
                                           cudf_column_view_handle rhs,
                                           cudf_binary_operator_t op,
@@ -51,8 +43,8 @@ cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* lhs_view = static_cast<cudf::column_view*>(lhs);
@@ -60,22 +52,14 @@ cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
     auto* dtype    = static_cast<cudf::data_type*>(output_type);
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::binary_operation(*lhs_view, *rhs_view, cudf_op, *dtype, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::binary_operation(*lhs_view, *rhs_view, cudf_op, *dtype, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
-                                       cudf_scalar_handle rhs,
-                                       cudf_binary_operator_t op,
-                                       cudf_data_type_handle output_type,
-                                       cudf_column_handle* out)
-{
-  return cudf_binary_operation_vs_ex(lhs, rhs, op, output_type, out, nullptr);
 }
 
 cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
@@ -95,8 +79,8 @@ cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* lhs_view   = static_cast<cudf::column_view*>(lhs);
@@ -104,22 +88,14 @@ cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
     auto* dtype      = static_cast<cudf::data_type*>(output_type);
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::binary_operation(*lhs_view, rhs_scalar, cudf_op, *dtype, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::binary_operation(*lhs_view, rhs_scalar, cudf_op, *dtype, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
-                                       cudf_column_view_handle rhs,
-                                       cudf_binary_operator_t op,
-                                       cudf_data_type_handle output_type,
-                                       cudf_column_handle* out)
-{
-  return cudf_binary_operation_sv_ex(lhs, rhs, op, output_type, out, nullptr);
 }
 
 cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
@@ -139,8 +115,8 @@ cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto& lhs_scalar = cudf_scalar_from_handle(lhs);
@@ -148,9 +124,10 @@ cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
     auto* dtype      = static_cast<cudf::data_type*>(output_type);
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::binary_operation(lhs_scalar, *rhs_view, cudf_op, *dtype, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::binary_operation(lhs_scalar, *rhs_view, cudf_op, *dtype, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

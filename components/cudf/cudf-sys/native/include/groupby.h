@@ -68,7 +68,7 @@ void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle 
 /// validate Rust-side foreign-contract classification.
 void cudf_test_groupby_fail_next_negative_total_columns();
 
-/// Perform a groupby aggregation.
+/// Perform a groupby aggregation with explicit execution context.
 ///
 /// @param keys           Table view of grouping key columns.
 /// @param values         Array of column view handles for value columns.
@@ -86,23 +86,9 @@ void cudf_test_groupby_fail_next_negative_total_columns();
 ///                        total is zero, `*out_values` is NULL. Caller must
 ///                        free each column and then the array with cudf_free_column_array.
 /// @param out_total_columns  Output: total number of result columns. Set to 0 on failure.
-cudf_status_t cudf_groupby_aggregate(cudf_table_view_handle keys,
-                                     const cudf_column_view_handle* values,
-                                     const cudf_aggregation_handle* aggregations,
-                                     const int32_t* agg_counts,
-                                     int32_t num_requests,
-                                     int32_t num_aggregations,
-                                     cudf_null_policy_t keys_null_policy,
-                                     cudf_table_handle* out_keys,
-                                     cudf_column_handle** out_values,
-                                     int32_t* out_total_columns);
-
-/// Groupby aggregate with explicit execution context.
-///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned keys table
-/// and every returned result column.
+/// `options` must name an explicit valid device and non-NULL stream/MR.
+/// `options->mr` must outlive the returned keys table and every returned
+/// result column.
 cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         const cudf_column_view_handle* values,
                                         const cudf_aggregation_handle* aggregations,
@@ -115,24 +101,14 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         int32_t* out_total_columns,
                                         const cudf_exec_options_t* options);
 
-/// Perform a grouped prefix scan.
+/// Perform a grouped prefix scan with explicit execution context.
 ///
 /// The output has one result column per requested aggregation. If
 /// `keys_are_sorted` is non-zero, the grouped scan is constructed with cuDF's
 /// sorted-key contract and assumes ascending key columns with nulls after.
-cudf_status_t cudf_groupby_scan(cudf_table_view_handle keys,
-                                const cudf_column_view_handle* values,
-                                const cudf_groupby_scan_aggregation_handle* aggregations,
-                                const int32_t* agg_counts,
-                                int32_t num_requests,
-                                int32_t num_aggregations,
-                                cudf_null_policy_t keys_null_policy,
-                                int32_t keys_are_sorted,
-                                cudf_table_handle* out_keys,
-                                cudf_column_handle** out_values,
-                                int32_t* out_total_columns);
-
-/// Grouped prefix scan with explicit execution context.
+/// `options` must name an explicit valid device and non-NULL stream/MR.
+/// `options->mr` must outlive the returned keys table and every returned
+/// result column.
 cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
                                    const cudf_column_view_handle* values,
                                    const cudf_groupby_scan_aggregation_handle* aggregations,
@@ -146,7 +122,7 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
                                    int32_t* out_total_columns,
                                    const cudf_exec_options_t* options);
 
-/// Perform a per-group row shift.
+/// Perform a per-group row shift with explicit execution context.
 ///
 /// Each value column is shifted by the corresponding `offsets[i]` positions
 /// within each group, and indeterminate output positions take `fill_values[i]`.
@@ -163,22 +139,8 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
 ///
 /// If `keys_are_sorted` is non-zero, the caller asserts that the key columns
 /// are ascending with nulls after, matching cuDF's pre-sorted key contract.
-cudf_status_t cudf_groupby_shift(cudf_table_view_handle keys,
-                                 const cudf_column_view_handle* values,
-                                 const int32_t* offsets,
-                                 const cudf_scalar_handle* fill_values,
-                                 int32_t num_value_columns,
-                                 cudf_null_policy_t keys_null_policy,
-                                 int32_t keys_are_sorted,
-                                 cudf_table_handle* out_keys,
-                                 cudf_table_handle* out_values);
-
-/// Grouped shift with explicit execution context.
-///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned keys and
-/// values tables.
+/// `options` must name an explicit valid device and non-NULL stream/MR.
+/// `options->mr` must outlive the returned keys and values tables.
 cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
                                     const cudf_column_view_handle* values,
                                     const int32_t* offsets,
