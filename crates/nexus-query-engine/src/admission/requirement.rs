@@ -22,7 +22,7 @@ use crate::{
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,
     error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateFunction, Expr, alias_wrapped_column},
+    expr::{AggregateFunction, alias_wrapped_column},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
         query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
@@ -3056,85 +3056,8 @@ fn composed_consumer_bound_with_peak_terms(
     }
     let mut used_occurrences = HashSet::with_capacity(outputs.len());
     let root = consumer_plan.root_id();
-    let mut root_bound = match &consumer_plan.root_node().kind {
-        PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Aggregate(_) => {
-            composed_consumer_branch_bound(consumer_plan, root, &outputs, &mut used_occurrences, owner_terms)?
-        },
-        PlanNode::Union(union) => {
-            let mut total_rows = 0_u64;
-            let mut branch_peak_bytes = 0_u64;
-            let mut branch_terms = Vec::new();
-            let mut peak_owner_term_ids = Vec::new();
-            let mut dominated_owner_term_ids = Vec::new();
-            for input in &union.inputs {
-                let branch = composed_consumer_branch_bound(
-                    consumer_plan,
-                    *input,
-                    &outputs,
-                    &mut used_occurrences,
-                    owner_terms,
-                )?;
-                total_rows = checked_consumer_add(total_rows, branch.rows, "consumer_union_rows_overflow")?;
-                branch_peak_bytes = checked_consumer_add(
-                    branch_peak_bytes,
-                    branch.additional_peak_bytes,
-                    "consumer_union_branch_peak_overflow",
-                )?;
-                peak_owner_term_ids.extend(branch.peak_owner_term_ids);
-                dominated_owner_term_ids.extend(branch.dominated_owner_term_ids);
-                branch_terms.extend(branch.owner_terms);
-            }
-            let union_output = bounded_consumer_frame_bytes(total_rows, consumer_plan.root_node().output_schema())?;
-            let union_output_term = consumer_owner_term(
-                root,
-                OwnerTermRole::ConsumerOutput,
-                AllocationClass::ActivePhase,
-                union_output,
-                consumer_plan,
-            )?;
-            branch_terms.push(union_output_term);
-            let union_output_term_id = branch_terms.last().expect("union output term inserted").id.clone();
-            // Union branches are materialized sequentially and their retained
-            // outputs coexist until the union output is formed.
-            // `branch_peak_bytes` already captures that additive lifetime;
-            // retain the corresponding owner identities below.
-            let mut final_owned_term_ids = Vec::new();
-            peak_owner_term_ids.push(union_output_term_id.clone());
-            final_owned_term_ids.push(union_output_term_id);
-            ComposedConsumerBranchBound {
-                rows: total_rows,
-                schema: consumer_plan.root_node().output_schema().clone(),
-                final_owned_bytes: union_output,
-                additional_peak_bytes: checked_consumer_add(
-                    branch_peak_bytes,
-                    union_output,
-                    "consumer_union_output_overflow",
-                )?,
-                owner_terms: branch_terms,
-                peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
-                peak_owner_term_ids,
-                dominated_owner_term_ids,
-                final_owned_term_ids,
-                allocation_state: AttemptReservationConsumerState::Bounded,
-                consumed_occurrences: Vec::new(),
-            }
-        },
-        PlanNode::Join(join) => {
-            composed_consumer_join_peak_bytes(consumer_plan, root, join, &outputs, &mut used_occurrences, owner_terms)?
-        },
-        PlanNode::Sort(sort) => {
-            composed_consumer_sort_peak_bytes(consumer_plan, root, sort, &outputs, &mut used_occurrences, owner_terms)?
-        },
-        PlanNode::Limit(limit) => composed_consumer_limit_peak_bytes(
-            consumer_plan,
-            root,
-            limit,
-            &outputs,
-            &mut used_occurrences,
-            owner_terms,
-        )?,
-        _ => return Err(composed_schedule_error("consumer_topology_unmodeled", None)),
-    };
+    let mut root_bound =
+        composed_consumer_branch_bound(consumer_plan, root, &outputs, &mut used_occurrences, owner_terms)?;
     match root_bound.allocation_state {
         AttemptReservationConsumerState::Passthrough => {
             if root_bound.additional_peak_bytes != 0
@@ -3197,9 +3120,6 @@ fn composed_consumer_branch_bound(
                         .with_fact("producer_row_count_upper_bound", output.row_count_upper_bound)
                         .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
                     }
-                    // The source handle is retained by the producer schedule, not
-                    // allocated by the consumer. Its exact typed bytes are therefore
-                    // intentionally excluded from this branch's additional phase.
                     Ok(ComposedConsumerBranchBound {
                         rows: output.row_count_upper_bound,
                         schema: source.schema.clone(),
@@ -3215,16 +3135,13 @@ fn composed_consumer_branch_bound(
                     })
                 },
                 SourceNode::LocalParquet(source) => {
-                    let source_term = owner_terms
-                        .iter()
-                        .filter(|term| {
-                            matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
-                                && term.id.role == OwnerTermRole::SourceStage
-                                && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
-                                && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
-                        })
-                        .collect::<Vec<_>>();
-                    let [source_term] = source_term.as_slice() else {
+                    let source_term = owner_terms.iter().find(|term| {
+                        matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
+                            && term.id.role == OwnerTermRole::SourceStage
+                            && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
+                            && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
+                    });
+                    let Some(source_term) = source_term else {
                         return Err(composed_schedule_error("consumer_local_source_owner_missing", None)
                             .with_fact("node_id", node_id));
                     };
@@ -3242,26 +3159,23 @@ fn composed_consumer_branch_bound(
                     Ok(ComposedConsumerBranchBound {
                         rows,
                         schema: source.output_schema().clone(),
-                        final_owned_bytes: source_term.bytes(),
-                        additional_peak_bytes: source_term.bytes(),
+                        final_owned_bytes: source_term.bytes.get(),
+                        additional_peak_bytes: source_term.bytes.get(),
                         owner_terms: Vec::new(),
-                        peak_owner_term_groups: vec![vec![source_term.id().clone()]],
-                        peak_owner_term_ids: vec![source_term.id().clone()],
+                        peak_owner_term_groups: vec![vec![source_term.id.clone()]],
+                        peak_owner_term_ids: vec![source_term.id.clone()],
                         dominated_owner_term_ids: Vec::new(),
-                        final_owned_term_ids: vec![source_term.id().clone()],
+                        final_owned_term_ids: vec![source_term.id.clone()],
                         allocation_state: AttemptReservationConsumerState::Bounded,
                         consumed_occurrences: Vec::new(),
                     })
                 },
-                SourceNode::LiteralBatch(_) => Err(composed_schedule_error("consumer_non_graph_source", None)),
+                _ => Err(composed_schedule_error("consumer_source_kind_unmodeled", None)),
             }
         },
         PlanNode::Filter(filter) => {
             let input = composed_consumer_branch_bound(plan, filter.input, outputs, used_occurrences, owner_terms)?;
             let output_bytes = bounded_consumer_frame_bytes(input.rows, node.output_schema())?;
-            // cuDF filter materializes the selected frame while a Boolean
-            // predicate mask is live. Size the mask through the same typed
-            // frame-bound primitive rather than treating it as host metadata.
             let predicate_mask_bytes = bounded_consumer_boolean_mask_bytes(input.rows)?;
             let stage_bytes = checked_consumer_add(
                 checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_filter_output_overflow")?,
@@ -3328,11 +3242,8 @@ fn composed_consumer_branch_bound(
             let mut materializes_output = false;
             for output in &projection.outputs {
                 let Some(column) = alias_wrapped_column(&output.expr) else {
-                    if alias_wrapped_literal(&output.expr) {
-                        materializes_output = true;
-                        continue;
-                    }
-                    return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None));
+                    materializes_output = true;
+                    continue;
                 };
                 if !selected_columns.insert(column.name()) {
                     return Err(composed_schedule_error("consumer_projection_source_column_reused", None)
@@ -3374,7 +3285,7 @@ fn composed_consumer_branch_bound(
                             .cloned(),
                     );
                 } else {
-                    dominated_owner_term_ids.push(output_term_id.clone());
+                    dominated_owner_term_ids.extend([output_term_id.clone()]);
                 }
                 let mut owner_terms = input.owner_terms;
                 owner_terms.push(output_term);
@@ -3392,9 +3303,6 @@ fn composed_consumer_branch_bound(
                     consumed_occurrences: Vec::new(),
                 });
             }
-            // Column selection and rename retain their input columns. The
-            // executor takes the same zero-copy path, so the projection owns
-            // neither a fresh frame nor a duplicate of branch-owned data.
             Ok(ComposedConsumerBranchBound {
                 rows: input.rows,
                 schema: node.output_schema().clone(),
@@ -3412,16 +3320,69 @@ fn composed_consumer_branch_bound(
         PlanNode::Aggregate(aggregate) => {
             composed_consumer_aggregate_peak_bytes(plan, node_id, aggregate, outputs, used_occurrences, owner_terms)
         },
+        PlanNode::Join(join) => {
+            composed_consumer_join_peak_bytes(plan, node_id, join, outputs, used_occurrences, owner_terms)
+        },
+        PlanNode::Union(union) => {
+            composed_consumer_union_peak_bytes(plan, node_id, union, outputs, used_occurrences, owner_terms)
+        },
+        PlanNode::Sort(sort) => {
+            composed_consumer_sort_peak_bytes(plan, node_id, sort, outputs, used_occurrences, owner_terms)
+        },
+        PlanNode::Limit(limit) => {
+            composed_consumer_limit_peak_bytes(plan, node_id, limit, outputs, used_occurrences, owner_terms)
+        },
         _ => Err(composed_schedule_error("consumer_branch_topology_unmodeled", None)),
     }
 }
 
-fn alias_wrapped_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Alias { expr, .. } => alias_wrapped_literal(expr),
-        Expr::Literal(_) => true,
-        _ => false,
+fn composed_consumer_union_peak_bytes(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    union: &crate::plan::UnionNode,
+    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
+    used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
+) -> Result<ComposedConsumerBranchBound> {
+    let mut total_rows = 0_u64;
+    let mut branch_peak_bytes = 0_u64;
+    let mut branch_terms = Vec::new();
+    let mut peak_owner_term_ids = Vec::new();
+    let mut dominated_owner_term_ids = Vec::new();
+    for input in &union.inputs {
+        let branch = composed_consumer_branch_bound(plan, *input, outputs, used_occurrences, owner_terms)?;
+        total_rows = checked_consumer_add(total_rows, branch.rows, "consumer_union_rows_overflow")?;
+        branch_peak_bytes = checked_consumer_add(
+            branch_peak_bytes,
+            branch.additional_peak_bytes,
+            "consumer_union_branch_peak_overflow",
+        )?;
+        peak_owner_term_ids.extend(branch.peak_owner_term_ids);
+        dominated_owner_term_ids.extend(branch.dominated_owner_term_ids);
+        branch_terms.extend(branch.owner_terms);
     }
+    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let union_output = bounded_consumer_frame_bytes(total_rows, node.output_schema())?;
+    let union_output_term =
+        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, union_output, plan)?;
+    branch_terms.push(union_output_term);
+    let union_output_term_id = branch_terms.last().expect("union output term inserted").id.clone();
+    let mut final_owned_term_ids = Vec::new();
+    peak_owner_term_ids.push(union_output_term_id.clone());
+    final_owned_term_ids.push(union_output_term_id);
+    Ok(ComposedConsumerBranchBound {
+        rows: total_rows,
+        schema: node.output_schema().clone(),
+        final_owned_bytes: union_output,
+        additional_peak_bytes: checked_consumer_add(branch_peak_bytes, union_output, "consumer_union_output_overflow")?,
+        owner_terms: branch_terms,
+        peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
+        peak_owner_term_ids,
+        dominated_owner_term_ids,
+        final_owned_term_ids,
+        allocation_state: AttemptReservationConsumerState::Bounded,
+        consumed_occurrences: Vec::new(),
+    })
 }
 
 fn composed_consumer_aggregate_peak_bytes(
@@ -3432,22 +3393,22 @@ fn composed_consumer_aggregate_peak_bytes(
     used_occurrences: &mut HashSet<String>,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
-    if !aggregate.spec.group_exprs.is_empty() || !aggregate_owner_state_is_supported(aggregate) {
+    if !aggregate_owner_state_is_supported(aggregate) {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
     }
 
     let input = composed_consumer_branch_bound(plan, aggregate.input, outputs, used_occurrences, owner_terms)?;
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema();
-    let mut aggregate_terms = aggregate_owner_terms_for_shapes(
-        plan,
-        node_id,
-        aggregate,
-        output_schema,
-        [crate::exec::PartialAggregateShape::Global],
-        1,
-    )
-    .map_err(|_| composed_schedule_error("consumer_aggregate_owner_terms_unavailable", None))?;
+    let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input.rows };
+    let partial_shape = if aggregate.spec.group_exprs.is_empty() {
+        crate::exec::PartialAggregateShape::Global
+    } else {
+        crate::exec::PartialAggregateShape::Grouped { input_rows: input.rows }
+    };
+    let mut aggregate_terms =
+        aggregate_owner_terms_for_shapes(plan, node_id, aggregate, output_schema, [partial_shape], output_rows)
+            .map_err(|_| composed_schedule_error("consumer_aggregate_owner_terms_unavailable", None))?;
     let output_term = aggregate_terms.pop().expect("aggregate owner helper emits its output term");
     let partial_term = aggregate_terms.pop().expect("aggregate owner helper emits its partial-state term");
     let partial_bytes = partial_term.bytes();
@@ -3474,7 +3435,7 @@ fn composed_consumer_aggregate_peak_bytes(
     let mut terms = input.owner_terms;
     terms.extend([partial_term, output_term]);
     Ok(ComposedConsumerBranchBound {
-        rows: 1,
+        rows: output_rows,
         schema: output_schema.clone(),
         final_owned_bytes: output_bytes,
         additional_peak_bytes: input.additional_peak_bytes.max(stage_peak),
@@ -3488,6 +3449,16 @@ fn composed_consumer_aggregate_peak_bytes(
     })
 }
 
+fn is_attested_sort_scope(plan: &QueryPlan) -> bool {
+    plan.nodes().iter().any(|node| match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::GpuResident(gpu) => is_attested_graph_result_bounded_consumer_plan(plan, &gpu.input_name),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
 fn composed_consumer_sort_peak_bytes(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -3496,74 +3467,97 @@ fn composed_consumer_sort_peak_bytes(
     used_occurrences: &mut HashSet<String>,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
-    let graph_result_input_names = plan
-        .nodes()
-        .iter()
-        .filter(|node| !plan.unreachable_node_ids().contains(&node.id))
-        .filter_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::GpuResident(source) => Some(source.input_name.as_str()),
-                _ => None,
-            },
-            _ => None,
+    let input = composed_consumer_branch_bound(plan, sort.input, outputs, used_occurrences, owner_terms)?;
+    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_schema = node.output_schema().clone();
+    if is_attested_sort_scope(plan) {
+        let scope = canonical_execution_scope_fingerprint(plan);
+        let sort_terms = [
+            OwnerTermRole::SortKeyInput,
+            OwnerTermRole::SortKeyOutput,
+            OwnerTermRole::SortSequence,
+            OwnerTermRole::SortTemporaryWorkspace,
+            OwnerTermRole::SortRetainedOrder,
+            OwnerTermRole::SortOutputFrame,
+            OwnerTermRole::SortOutputNullMask,
+        ]
+        .into_iter()
+        .map(|role| OwnerTermId {
+            owner: OwnerId::Sort(node_id),
+            role,
+            occurrence: OccurrenceId::PlanLocal(node_id),
+            execution_scope_fingerprint: scope.clone(),
         })
         .collect::<Vec<_>>();
-    let [graph_result_input_name] = graph_result_input_names.as_slice() else {
-        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
-    };
-    if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
-        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
+        let final_owned_term_ids = sort_terms
+            .iter()
+            .filter(|term_id| {
+                matches!(
+                    term_id.role,
+                    OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask
+                )
+            })
+            .cloned()
+            .collect();
+        let mut dominated_owner_term_ids = input.dominated_owner_term_ids;
+        dominated_owner_term_ids.extend(
+            input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
+        );
+        let mut peak_owner_term_ids = input.final_owned_term_ids.clone();
+        peak_owner_term_ids.extend(sort_terms);
+        return Ok(ComposedConsumerBranchBound {
+            rows: input.rows,
+            schema: output_schema,
+            final_owned_bytes: 0,
+            additional_peak_bytes: 0,
+            owner_terms: input.owner_terms,
+            peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
+            peak_owner_term_ids,
+            dominated_owner_term_ids,
+            final_owned_term_ids,
+            allocation_state: AttemptReservationConsumerState::Bounded,
+            consumed_occurrences: Vec::new(),
+        });
     }
-    let input = composed_consumer_branch_bound(plan, sort.input, outputs, used_occurrences, owner_terms)?;
-    let scope = canonical_execution_scope_fingerprint(plan);
-    let sort_terms = [
-        OwnerTermRole::SortKeyInput,
-        OwnerTermRole::SortKeyOutput,
-        OwnerTermRole::SortSequence,
-        OwnerTermRole::SortTemporaryWorkspace,
-        OwnerTermRole::SortRetainedOrder,
-        OwnerTermRole::SortOutputFrame,
-        OwnerTermRole::SortOutputNullMask,
-    ]
-    .into_iter()
-    .map(|role| OwnerTermId {
-        owner: OwnerId::Sort(node_id),
-        role,
-        occurrence: OccurrenceId::PlanLocal(node_id),
-        execution_scope_fingerprint: scope.clone(),
-    })
-    .collect::<Vec<_>>();
-    let final_owned_term_ids = sort_terms
-        .iter()
-        .filter(|term_id| {
-            matches!(
-                term_id.role,
-                OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask
-            )
-        })
-        .cloned()
-        .collect();
-    let output_schema = plan
-        .node(node_id)
-        .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
-        .output_schema()
-        .clone();
-    let mut dominated_owner_term_ids = input.dominated_owner_term_ids;
-    dominated_owner_term_ids.extend(
-        input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
-    );
-    let mut peak_owner_term_ids = input.final_owned_term_ids.clone();
-    peak_owner_term_ids.extend(sort_terms);
+
+    let output_bytes = bounded_consumer_frame_bytes(input.rows, &output_schema)?;
+    let workspace_bytes = output_bytes.saturating_mul(2);
+    let stage_bytes = checked_consumer_add(
+        checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_sort_output_overflow")?,
+        workspace_bytes,
+        "consumer_sort_workspace_overflow",
+    )?;
+    let sort_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes.saturating_add(workspace_bytes),
+        plan,
+    )?;
+    let sort_term_id = sort_term.id.clone();
+    let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+    let mut dominated_owner_term_ids = input.dominated_owner_term_ids.clone();
+    if stage_bytes >= input.additional_peak_bytes {
+        peak_owner_term_ids = input.final_owned_term_ids.clone();
+        peak_owner_term_ids.push(sort_term_id.clone());
+        dominated_owner_term_ids.extend(
+            input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
+        );
+    } else {
+        dominated_owner_term_ids.push(sort_term_id.clone());
+    }
+    let mut terms = input.owner_terms;
+    terms.push(sort_term);
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: output_schema,
-        final_owned_bytes: 0,
-        additional_peak_bytes: 0,
-        owner_terms: input.owner_terms,
+        final_owned_bytes: output_bytes,
+        additional_peak_bytes: input.additional_peak_bytes.max(stage_bytes),
+        owner_terms: terms,
         peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
         peak_owner_term_ids,
         dominated_owner_term_ids,
-        final_owned_term_ids,
+        final_owned_term_ids: vec![sort_term_id],
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
@@ -3577,38 +3571,9 @@ fn composed_consumer_limit_peak_bytes(
     used_occurrences: &mut HashSet<String>,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
-    let PlanNode::Sort(sort) =
-        &plan.node(limit.input).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?.kind
-    else {
-        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
-    };
-    let sort_bound =
-        composed_consumer_sort_peak_bytes(plan, limit.input, sort, outputs, used_occurrences, owner_terms)?;
-    let scope = canonical_execution_scope_fingerprint(plan);
-    let limit_terms = [
-        OwnerTermRole::LimitGatherMap,
-        OwnerTermRole::LimitNativeWorkspace,
-        OwnerTermRole::LimitOutputFrame,
-        OwnerTermRole::LimitOutputNullMask,
-    ]
-    .into_iter()
-    .map(|role| OwnerTermId {
-        owner: OwnerId::Limit(node_id),
-        role,
-        occurrence: OccurrenceId::PlanLocal(node_id),
-        execution_scope_fingerprint: scope.clone(),
-    })
-    .collect::<Vec<_>>();
-    let final_owned_term_ids = limit_terms
-        .iter()
-        .filter(|term_id| matches!(term_id.role, OwnerTermRole::LimitOutputFrame | OwnerTermRole::LimitOutputNullMask))
-        .cloned()
-        .collect::<Vec<_>>();
-    let output_schema = plan
-        .node(node_id)
-        .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
-        .output_schema()
-        .clone();
+    let input = composed_consumer_branch_bound(plan, limit.input, outputs, used_occurrences, owner_terms)?;
+    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_schema = node.output_schema().clone();
     let fetch_usize =
         limit.spec.fetch.ok_or_else(|| composed_schedule_error("consumer_limit_fetch_unbounded", None))?;
     let skip =
@@ -3620,25 +3585,81 @@ fn composed_consumer_limit_peak_bytes(
         .skip
         .checked_add(fetch_usize)
         .ok_or_else(|| composed_schedule_error("consumer_limit_skip_fetch_overflow", None))?;
-    let group_a = sort_bound.peak_owner_term_ids.clone();
-    let mut group_b = sort_bound
-        .final_owned_term_ids
-        .iter()
-        .filter(|term_id| matches!(term_id.role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask))
-        .cloned()
+    let output_rows = input.rows.saturating_sub(skip).min(fetch);
+
+    if is_attested_sort_scope(plan) {
+        let scope = canonical_execution_scope_fingerprint(plan);
+        let limit_terms = [
+            OwnerTermRole::LimitGatherMap,
+            OwnerTermRole::LimitNativeWorkspace,
+            OwnerTermRole::LimitOutputFrame,
+            OwnerTermRole::LimitOutputNullMask,
+        ]
+        .into_iter()
+        .map(|role| OwnerTermId {
+            owner: OwnerId::Limit(node_id),
+            role,
+            occurrence: OccurrenceId::PlanLocal(node_id),
+            execution_scope_fingerprint: scope.clone(),
+        })
         .collect::<Vec<_>>();
-    group_b.extend(limit_terms.clone());
-    let peak_owner_term_ids = group_a.clone();
+        let final_owned_term_ids = limit_terms
+            .iter()
+            .filter(|term_id| matches!(term_id.role, OwnerTermRole::LimitOutputFrame | OwnerTermRole::LimitOutputNullMask))
+            .cloned()
+            .collect::<Vec<_>>();
+        let group_a = input.peak_owner_term_ids.clone();
+        let mut group_b = input
+            .final_owned_term_ids
+            .iter()
+            .filter(|term_id| matches!(term_id.role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask))
+            .cloned()
+            .collect::<Vec<_>>();
+        group_b.extend(limit_terms.clone());
+        let peak_owner_term_ids = group_a.clone();
+        return Ok(ComposedConsumerBranchBound {
+            rows: output_rows,
+            schema: output_schema,
+            final_owned_bytes: 0,
+            additional_peak_bytes: 0,
+            owner_terms: input.owner_terms,
+            peak_owner_term_groups: vec![group_a, group_b],
+            peak_owner_term_ids,
+            dominated_owner_term_ids: input.dominated_owner_term_ids,
+            final_owned_term_ids,
+            allocation_state: AttemptReservationConsumerState::Bounded,
+            consumed_occurrences: Vec::new(),
+        });
+    }
+
+    let output_bytes = bounded_consumer_frame_bytes(output_rows, &output_schema)?;
+    let stage_bytes = checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_limit_output_overflow")?;
+    let limit_term =
+        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let limit_term_id = limit_term.id.clone();
+    let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+    let mut dominated_owner_term_ids = input.dominated_owner_term_ids.clone();
+    if stage_bytes >= input.additional_peak_bytes {
+        peak_owner_term_ids = input.final_owned_term_ids.clone();
+        peak_owner_term_ids.push(limit_term_id.clone());
+        dominated_owner_term_ids.extend(
+            input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
+        );
+    } else {
+        dominated_owner_term_ids.push(limit_term_id.clone());
+    }
+    let mut terms = input.owner_terms;
+    terms.push(limit_term);
     Ok(ComposedConsumerBranchBound {
-        rows: sort_bound.rows.saturating_sub(skip).min(fetch),
+        rows: output_rows,
         schema: output_schema,
-        final_owned_bytes: 0,
-        additional_peak_bytes: 0,
-        owner_terms: sort_bound.owner_terms,
-        peak_owner_term_groups: vec![group_a, group_b],
+        final_owned_bytes: output_bytes,
+        additional_peak_bytes: input.additional_peak_bytes.max(stage_bytes),
+        owner_terms: terms,
+        peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
         peak_owner_term_ids,
-        dominated_owner_term_ids: sort_bound.dominated_owner_term_ids,
-        final_owned_term_ids,
+        dominated_owner_term_ids,
+        final_owned_term_ids: vec![limit_term_id],
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
@@ -3652,7 +3673,10 @@ fn composed_consumer_join_peak_bytes(
     used_occurrences: &mut HashSet<String>,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
-    if join.spec.join_type != JoinType::Inner || join.spec.residual_predicate.is_some() || join.spec.keys.is_empty() {
+    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left)
+        || join.spec.residual_predicate.is_some()
+        || join.spec.keys.is_empty()
+    {
         return Err(composed_schedule_error("consumer_join_topology_unmodeled", None));
     }
     let left = composed_consumer_branch_bound(plan, join.inputs[0], outputs, used_occurrences, owner_terms)?;
@@ -3676,10 +3700,17 @@ fn composed_consumer_join_peak_bytes(
         };
         non_nullable_fixed_width_cudf_type_id(&probe.schema, probe_key.name())?;
     }
-    let output_rows = left
-        .rows
-        .checked_mul(right.rows)
-        .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?;
+    let output_rows = match join.spec.join_type {
+        JoinType::Inner => left
+            .rows
+            .checked_mul(right.rows)
+            .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
+        JoinType::Left => left
+            .rows
+            .checked_mul(right.rows.max(1))
+            .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
+        _ => return Err(composed_schedule_error("consumer_join_topology_unmodeled", None)),
+    };
     let output_rows_usize = usize::try_from(output_rows)
         .map_err(|_| composed_schedule_error("consumer_join_output_rows_exceed_usize", None))?;
     let hash_table_bytes =
@@ -3698,7 +3729,8 @@ fn composed_consumer_join_peak_bytes(
         .map_err(|_| composed_schedule_error("consumer_join_pair_indices_preflight_unavailable", None))?;
     let pair_indices_bytes = u64::try_from(pair_indices_bytes)
         .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?;
-    let output_bytes = bounded_consumer_frame_bytes(output_rows, plan.root_node().output_schema())?;
+    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_bytes = bounded_consumer_frame_bytes(output_rows, node.output_schema())?;
     let build_selected_bytes =
         bounded_selected_join_input_bytes(&build.schema, build.rows, join, join.spec.build_side)?;
     let probe_selected_bytes =
@@ -3761,7 +3793,7 @@ fn composed_consumer_join_peak_bytes(
     let final_owned_term_id = owner_terms.last().expect("join output term inserted").id.clone();
     Ok(ComposedConsumerBranchBound {
         rows: output_rows,
-        schema: plan.root_node().output_schema().clone(),
+        schema: node.output_schema().clone(),
         final_owned_bytes: output_bytes,
         additional_peak_bytes: peak,
         owner_terms,
@@ -3829,9 +3861,6 @@ fn non_nullable_fixed_width_cudf_type_id(schema: &SchemaRef, field_name: &str) -
     let field = schema
         .field_with_name(field_name)
         .map_err(|_| composed_schedule_error("consumer_join_key_missing", None).with_fact("column", field_name))?;
-    if field.is_nullable() {
-        return Err(composed_schedule_error("consumer_join_nullable_key", None).with_fact("column", field_name));
-    }
     arrow_fixed_width_cudf_type_id(field.data_type()).ok_or_else(|| {
         composed_schedule_error("consumer_join_variable_width_key", None).with_fact("column", field_name)
     })
@@ -3839,6 +3868,7 @@ fn non_nullable_fixed_width_cudf_type_id(schema: &SchemaRef, field_name: &str) -
 
 fn arrow_fixed_width_cudf_type_id(data_type: &DataType) -> Option<cudf::TypeId> {
     Some(match data_type {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => cudf::TypeId::String,
         DataType::Boolean => cudf::TypeId::Bool8,
         DataType::Int8 => cudf::TypeId::Int8,
         DataType::Int16 => cudf::TypeId::Int16,
@@ -3977,32 +4007,38 @@ fn cugraph_side_input_columns(plan: &QueryPlan) -> Result<Vec<crate::exec::JoinO
 }
 
 fn fixed_width_consumer_output_column(data_type: &DataType) -> Option<crate::exec::JoinOutputColumnUpperBoundInput> {
-    matches!(
-        data_type,
+    match data_type {
         DataType::Boolean
-            | DataType::Int8
-            | DataType::UInt8
-            | DataType::Int16
-            | DataType::UInt16
-            | DataType::Int32
-            | DataType::UInt32
-            | DataType::Int64
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, None)
-            | DataType::Duration(_)
-            | DataType::Decimal128(_, _)
-    )
-    .then(|| crate::exec::JoinOutputColumnUpperBoundInput {
-        data_type: data_type.clone(),
-        input_max_string_length_bytes: None,
-        input_total_string_bytes: None,
-    })
+        | DataType::Int8
+        | DataType::UInt8
+        | DataType::Int16
+        | DataType::UInt16
+        | DataType::Int32
+        | DataType::UInt32
+        | DataType::Int64
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Date32
+        | DataType::Date64
+        | DataType::Time32(_)
+        | DataType::Time64(_)
+        | DataType::Timestamp(_, None)
+        | DataType::Duration(_)
+        | DataType::Decimal128(_, _) => Some(crate::exec::JoinOutputColumnUpperBoundInput {
+            data_type: data_type.clone(),
+            input_max_string_length_bytes: None,
+            input_total_string_bytes: None,
+        }),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            Some(crate::exec::JoinOutputColumnUpperBoundInput {
+                data_type: data_type.clone(),
+                input_max_string_length_bytes: Some(256),
+                input_total_string_bytes: None,
+            })
+        },
+        _ => None,
+    }
 }
 
 fn checked_consumer_add(left: u64, right: u64, reason: &'static str) -> Result<u64> {

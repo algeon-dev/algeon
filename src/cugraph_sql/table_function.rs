@@ -408,12 +408,15 @@ async fn validate_cugraph_static_sources(
 
 #[cfg(feature = "cugraph")]
 fn edge_source_projection(spec: &CugraphAlgorithmSpec) -> Vec<Expr> {
-    let mut projection = vec![col(&spec.src_col), col(&spec.dst_col)];
+    fn col_exact(name: &str) -> Expr {
+        if name.starts_with('"') && name.ends_with('"') { col(name) } else { col(format!("\"{name}\"")) }
+    }
+    let mut projection = vec![col_exact(&spec.src_col), col_exact(&spec.dst_col)];
     if let Some(weight) = &spec.weight_col {
-        projection.push(col(weight));
+        projection.push(col_exact(weight));
     }
     if let Some(edge_id) = &spec.edge_id_col {
-        projection.push(col(edge_id));
+        projection.push(col_exact(edge_id));
     }
     projection
 }
