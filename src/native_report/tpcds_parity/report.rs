@@ -501,6 +501,10 @@ fn parity_row_for_item(
             (ParityStageStatus::Succeeded, ParityStageStatus::Failed, None, None, Some(message))
         },
     };
+    let ordered_total = ordered
+        && cpu_schema
+            .as_ref()
+            .is_some_and(|schema| sql_top_level_order_by_covers_output_columns(&item.sql, schema.as_ref()));
 
     let (
         native_planning_outcome,
@@ -573,6 +577,7 @@ fn parity_row_for_item(
             native_schema: native_schema.as_ref(),
             native_batches: native_batches.as_deref(),
             ordered,
+            ordered_total,
             float_tolerance,
         });
     let duckdb_output = summarize_external_output(
@@ -580,6 +585,7 @@ fn parity_row_for_item(
         cpu_schema.as_ref(),
         cpu_batches.as_deref(),
         ordered,
+        ordered_total,
         float_tolerance,
     );
     let external-engine_output = summarize_external_output(
@@ -587,6 +593,7 @@ fn parity_row_for_item(
         cpu_schema.as_ref(),
         cpu_batches.as_deref(),
         ordered,
+        ordered_total,
         float_tolerance,
     );
 
@@ -625,6 +632,7 @@ fn summarize_external_output(
     cpu_schema: Option<&SchemaRef>,
     cpu_batches: Option<&[RecordBatch]>,
     ordered: bool,
+    ordered_total: bool,
     float_tolerance: ParityFloatTolerance,
 ) -> NativeTpcdsParityExternalOutputSummary {
     match output {
@@ -661,12 +669,13 @@ fn summarize_external_output(
                     output_fingerprint,
                 };
             };
-            let comparison = compare_record_batches_with_options(
+            let comparison = compare_record_batches_with_sql_ordering(
                 cpu_schema.as_ref(),
                 cpu_batches,
                 schema.as_ref(),
                 &batches,
                 ordered,
+                ordered_total,
                 float_tolerance,
                 ParityCompareOptions::cross_engine_oracle(),
             );
@@ -709,6 +718,7 @@ struct ParityInputs<'a> {
     native_schema: Option<&'a SchemaRef>,
     native_batches: Option<&'a [RecordBatch]>,
     ordered: bool,
+    ordered_total: bool,
     float_tolerance: ParityFloatTolerance,
 }
 
@@ -744,13 +754,51 @@ fn derive_parity_outcome(
             None,
         );
     };
-    let result = compare_record_batches(
+    let result = compare_record_batches_with_sql_ordering(
         cpu_schema.as_ref(),
         cpu_batches,
         native_schema.as_ref(),
         native_batches,
         inputs.ordered,
+        inputs.ordered_total,
         inputs.float_tolerance,
+        ParityCompareOptions::strict_native(),
     );
     (result.status, result.mode, result.detail, Some(result.cpu_fingerprint), Some(result.native_fingerprint))
+}
+
+fn compare_record_batches_with_sql_ordering(
+    cpu_schema: &Schema,
+    cpu_batches: &[RecordBatch],
+    native_schema: &Schema,
+    native_batches: &[RecordBatch],
+    ordered: bool,
+    ordered_total: bool,
+    float_tolerance: ParityFloatTolerance,
+    options: ParityCompareOptions,
+) -> ParityComparisonResult {
+    let result = compare_record_batches_with_options(
+        cpu_schema,
+        cpu_batches,
+        native_schema,
+        native_batches,
+        ordered,
+        float_tolerance,
+        options,
+    );
+    if !ordered || ordered_total || result.status != ParityStatus::Mismatched {
+        return result;
+    }
+    if !result.detail.as_deref().is_some_and(|detail| detail.starts_with("row ")) {
+        return result;
+    }
+    compare_record_batches_with_options(
+        cpu_schema,
+        cpu_batches,
+        native_schema,
+        native_batches,
+        false,
+        float_tolerance,
+        options,
+    )
 }

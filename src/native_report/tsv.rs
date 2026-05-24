@@ -231,6 +231,21 @@ pub(super) fn format_native_optimizer_diagnostics(
             candidates
         ));
     }
+    if !diagnostics.stream_fanout_replay.is_empty() {
+        let replay = &diagnostics.stream_fanout_replay;
+        let candidates = if replay.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            replay.candidates.iter().map(format_stream_fanout_replay_candidate).collect::<Vec<_>>().join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::STREAM_FANOUT_REPLAY_RULE_NAME,
+            replay.considered_count,
+            replay.applied_count,
+            candidates
+        ));
+    }
     stable_tsv_field(&rows.join(";"))
 }
 
@@ -294,6 +309,27 @@ fn format_join_build_side_selection_candidate(
         option_u64_text(candidate.right_estimated_rows),
         option_u64_text(candidate.left_estimated_bytes),
         option_u64_text(candidate.right_estimated_bytes),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_stream_fanout_replay_candidate(
+    candidate: &cudf_query_engine::StreamFanoutReplayCandidateDiagnostics,
+) -> String {
+    let join_probe_consumer_node_ids = if candidate.join_probe_consumer_node_ids.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.join_probe_consumer_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
+    };
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.fanout_node_id,
+        candidate.consumer_count,
+        join_probe_consumer_node_ids,
         candidate.applied,
         rejected_reason,
     )
@@ -371,6 +407,16 @@ fn format_semijoin_cost_signal(signal: &cudf_query_engine::SemijoinReductionCost
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetricRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }

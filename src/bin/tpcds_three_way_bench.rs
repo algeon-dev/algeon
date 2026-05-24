@@ -46,7 +46,7 @@ const TSV_HEADER: &str = concat!(
     "\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts",
     "\tsource_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed",
     "\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\tpartitioned_join_count",
-    "\tjoin_partitioning_status\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
+    "\tjoin_partitioning_status\taggregate_strategy_rows\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
 );
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
@@ -389,6 +389,7 @@ fn row_fields(
         metric_field(metrics, |metrics| metrics.one_shot_join_count),
         metrics.map_or_else(|| "not_run".to_string(), partitioned_join_count_text),
         metrics.map_or_else(|| "not_run".to_string(), join_partitioning_status),
+        metrics.map_or_else(|| "not_run".to_string(), format_aggregate_strategy_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_join_strategy_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_task_operator_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_task_runtime_rows),
@@ -675,6 +676,15 @@ fn format_join_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> Stri
         return "none".to_string();
     }
     let mut rows = metrics.join_strategy_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn format_aggregate_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.aggregate_strategy_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.aggregate_strategy_rows.iter().collect::<Vec<_>>();
     rows.sort_by_key(|row| row.to_stable_kv_row());
     rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }

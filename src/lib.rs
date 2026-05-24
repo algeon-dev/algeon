@@ -102,10 +102,10 @@ pub use native_report::{
     NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NATIVE_TPCDS_PARITY_TSV_HEADER,
-    NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
-    NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-    NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,
+    NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
+    NativeDataFusionExecutionReport, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadInput,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+    NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeGraphRuntimeMetricRow,
@@ -115,7 +115,7 @@ pub use native_report::{
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,
-    compare_record_batches, sql_has_top_level_order_by,
+    compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,

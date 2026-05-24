@@ -182,6 +182,12 @@ async fn triage_query(
     let gpu_post_rule_plan = ctx_gpu_post.sql(query.sql).await?.create_physical_plan().await?;
     let gpu_post_rule_text = displayable(gpu_post_rule_plan.as_ref()).indent(true).to_string();
     fs::write(dir.join("physical_plan.gpu.postRule.txt"), &gpu_post_rule_text)?;
+    let post_rule_native_plans = collect_native_exec_plans(gpu_post_rule_plan.as_ref());
+    fs::write(dir.join("native_ir.gpu.postRule.txt"), format_post_rule_native_ir(&post_rule_native_plans))?;
+    fs::write(
+        dir.join("compiled_pipeline.gpu.postRule.txt"),
+        format_post_rule_compiled_pipelines(&post_rule_native_plans),
+    )?;
 
     fs::write(dir.join("SUMMARY.md"), render_query_summary(query, &lowering))?;
 
@@ -202,6 +208,24 @@ async fn dump_engine_plans(ctx: &SessionContext, sql: &str) -> Result<(String, S
     let physical_plan: Arc<dyn ExecutionPlan> = df.create_physical_plan().await?;
     let physical_text = displayable(physical_plan.as_ref()).indent(true).to_string();
     Ok((unopt_logical, opt_logical, physical_text))
+}
+
+fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&cudf_query_engine::QueryPlan> {
+    let mut plans = Vec::new();
+    collect_native_exec_plans_inner(plan, &mut plans);
+    plans
+}
+
+fn collect_native_exec_plans_inner<'a>(plan: &'a dyn ExecutionPlan, plans: &mut Vec<&'a cudf_query_engine::QueryPlan>) {
+    if let Some(native) = plan.as_any().downcast_ref::<datafusion_cudf::NativeCudfExec>() {
+        plans.push(native.native_plan());
+    }
+    if let Some(native) = plan.as_any().downcast_ref::<datafusion_cudf::NativeCudfComposedExec>() {
+        plans.push(native.native_plan());
+    }
+    for child in plan.children() {
+        collect_native_exec_plans_inner(child.as_ref(), plans);
+    }
 }
 
 fn describe_session_config(config: &SessionConfig) -> String {
@@ -245,6 +269,36 @@ fn format_native_ir(lowering: &datafusion_cudf::NativeLoweringResult) -> String 
     }
     for (index, plan) in lowering.plans.iter().enumerate() {
         out.push_str(&format!("native_plan[{index}]=\n{plan}\n\n"));
+    }
+    out
+}
+
+fn format_post_rule_native_ir(plans: &[&cudf_query_engine::QueryPlan]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
+    if plans.is_empty() {
+        out.push_str("native_ir=<none: post-rule plan has no NativeCudfExec or NativeCudfComposedExec>\n");
+    }
+    for (index, plan) in plans.iter().enumerate() {
+        out.push_str(&format!("native_plan[{index}]=\n{plan}\n\n"));
+    }
+    out
+}
+
+fn format_post_rule_compiled_pipelines(plans: &[&cudf_query_engine::QueryPlan]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
+    if plans.is_empty() {
+        out.push_str("compiled_pipeline=<none: post-rule plan has no NativeCudfExec or NativeCudfComposedExec>\n");
+    }
+    for (index, plan) in plans.iter().enumerate() {
+        let analysis = plan.capability_analysis();
+        match cudf_query_engine::compile_pipeline(plan, &analysis) {
+            Ok(pipeline) => out.push_str(&format!("compiled_pipeline[{index}]=\n{}\n", pipeline.debug_render())),
+            Err(error) => {
+                out.push_str(&format!("compiled_pipeline[{index}]=<compile failed: {error}>\n\n"));
+            },
+        }
     }
     out
 }
@@ -293,6 +347,10 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str("| physical_plan.gpu.preRule.txt | GPU session physical plan WITHOUT `CudfNativePhysicalOptimizerRule` (the input the rule sees) |\n");
     out.push_str("| physical_plan.gpu.postRule.txt | GPU session physical plan WITH the rule (NativeCudfExec wrappers visible) |\n");
     out.push_str("| native_ir.gpu.txt | lowered `cudf_query_engine::QueryPlan` per rewritten candidate |\n");
+    out.push_str(
+        "| native_ir.gpu.postRule.txt | optimized native IR extracted from post-rule `NativeCudfExec` wrappers |\n",
+    );
+    out.push_str("| compiled_pipeline.gpu.postRule.txt | compiled strict/adaptive-neutral pipeline for each optimized post-rule native IR |\n");
     out.push_str(
         "| planning_report.gpu.txt | `PlanningReport` outcomes (rewritten / rejected with FallbackReason code) |\n\n",
     );

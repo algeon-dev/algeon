@@ -107,6 +107,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "one_shot_join_materialization_bytes",
     "one_shot_join_output_bytes",
     "join_gather_map_bytes",
+    "native_aggregate_strategy_rows",
     "native_join_strategy_rows",
     "source_metadata_load_time",
     "source_read_queue_wait_time",
@@ -210,6 +211,7 @@ pub(crate) struct NativeCudfMetrics {
     one_shot_join_materialization_bytes: Count,
     one_shot_join_output_bytes: Count,
     join_gather_map_bytes: Count,
+    native_aggregate_strategy_rows: Count,
     source_metadata_load_time: Time,
     source_read_queue_wait_time: Time,
     source_cache_lookup_time: Time,
@@ -224,6 +226,7 @@ pub(crate) struct NativeCudfMetrics {
 
 impl NativeCudfMetrics {
     pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        let native_aggregate_strategy_rows = summary_counter(metrics, "native_aggregate_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
@@ -359,6 +362,7 @@ impl NativeCudfMetrics {
             ),
             one_shot_join_output_bytes: summary_counter(metrics, "one_shot_join_output_bytes", partition),
             join_gather_map_bytes: summary_counter(metrics, "join_gather_map_bytes", partition),
+            native_aggregate_strategy_rows,
             source_metadata_load_time: summary_timer(metrics, "source_metadata_load_time", partition),
             source_read_queue_wait_time: summary_timer(metrics, "source_read_queue_wait_time", partition),
             source_cache_lookup_time: summary_timer(metrics, "source_cache_lookup_time", partition),
@@ -468,6 +472,7 @@ impl NativeCudfMetrics {
         self.record_graph_runtime_rows(metrics);
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
+        self.record_aggregate_strategy_rows(metrics);
         self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
@@ -643,6 +648,146 @@ impl NativeCudfMetrics {
         }
     }
 
+    fn record_aggregate_strategy_rows(&self, metrics: &QueryMetrics) {
+        for decision in &metrics.aggregate_strategy_decisions {
+            let facts = &decision.facts;
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("node_id", decision.node_id.clone())
+                .with_new_label("selected_strategy", aggregate_fact(facts, "selected_strategy"))
+                .with_new_label("execution_stage", aggregate_fact(facts, "execution_stage"))
+                .with_new_label("memory_mode", aggregate_fact(facts, "memory_mode"))
+                .with_new_label("group_key_count", aggregate_fact(facts, "group_key_count"))
+                .with_new_label("group_key_exprs", aggregate_fact(facts, "group_key_exprs"))
+                .with_new_label("group_key_dtypes", aggregate_fact(facts, "group_key_dtypes"))
+                .with_new_label("aggregate_functions", aggregate_fact(facts, "aggregate_functions"))
+                .with_new_label("aggregate_filter_count", aggregate_fact(facts, "aggregate_filter_count"))
+                .with_new_label("distinct_aggregate_count", aggregate_fact(facts, "distinct_aggregate_count"))
+                .with_new_label("input_rows", aggregate_fact(facts, "input_rows"))
+                .with_new_label("output_group_count", aggregate_fact(facts, "output_group_count"))
+                .with_new_label("reduction_ratio_ppm", aggregate_fact(facts, "reduction_ratio_ppm"))
+                .with_new_label("chunk_row_count", aggregate_fact(facts, "chunk_row_count"))
+                .with_new_label("chunk_count", aggregate_fact(facts, "chunk_count"))
+                .with_new_label("partial_aggregate_count", aggregate_fact(facts, "partial_aggregate_count"))
+                .with_new_label("source_adjacent_partial", aggregate_fact(facts, "source_adjacent_partial"))
+                .with_new_label("source_chunk_row_group_count", aggregate_fact(facts, "source_chunk_row_group_count"))
+                .with_new_label(
+                    "source_chunk_reads_all_row_groups",
+                    aggregate_fact(facts, "source_chunk_reads_all_row_groups"),
+                )
+                .with_new_label("source_chunk_known_row_count", aggregate_fact(facts, "source_chunk_known_row_count"))
+                .with_new_label(
+                    "source_chunk_estimated_source_read_bytes",
+                    aggregate_fact(facts, "source_chunk_estimated_source_read_bytes"),
+                )
+                .with_new_label(
+                    "source_chunk_size_estimate_based",
+                    aggregate_fact(facts, "source_chunk_size_estimate_based"),
+                )
+                .with_new_label(
+                    "source_adjacent_partition_strategy",
+                    aggregate_fact(facts, "source_adjacent_partition_strategy"),
+                )
+                .with_new_label(
+                    "source_adjacent_partition_count",
+                    aggregate_fact(facts, "source_adjacent_partition_count"),
+                )
+                .with_new_label(
+                    "source_adjacent_non_empty_partition_count",
+                    aggregate_fact(facts, "source_adjacent_non_empty_partition_count"),
+                )
+                .with_new_label(
+                    "source_adjacent_partition_key_count",
+                    aggregate_fact(facts, "source_adjacent_partition_key_count"),
+                )
+                .with_new_label(
+                    "source_adjacent_max_partition_fan_in",
+                    aggregate_fact(facts, "source_adjacent_max_partition_fan_in"),
+                )
+                .with_new_label(
+                    "partitioned_merge_partition_count",
+                    aggregate_fact(facts, "partitioned_merge_partition_count"),
+                )
+                .with_new_label(
+                    "partitioned_merge_non_empty_partition_count",
+                    aggregate_fact(facts, "partitioned_merge_non_empty_partition_count"),
+                )
+                .with_new_label(
+                    "partitioned_merge_max_partition_fan_in",
+                    aggregate_fact(facts, "partitioned_merge_max_partition_fan_in"),
+                )
+                .with_new_label("selection_elapsed_ns", aggregate_fact(facts, "selection_elapsed_ns"))
+                .with_new_label("encode_elapsed_ns", aggregate_fact(facts, "encode_elapsed_ns"))
+                .with_new_label("groupby_elapsed_ns", aggregate_fact(facts, "groupby_elapsed_ns"))
+                .with_new_label("decode_elapsed_ns", aggregate_fact(facts, "decode_elapsed_ns"))
+                .with_new_label("strategy_operator_elapsed_ns", aggregate_fact(facts, "strategy_operator_elapsed_ns"))
+                .with_new_label(
+                    "encoded_key_partial_cost_model",
+                    aggregate_fact(facts, "encoded_key_partial_cost_model"),
+                )
+                .with_new_label(
+                    "encoded_key_partial_cost_model_status",
+                    aggregate_fact(facts, "encoded_key_partial_cost_model_status"),
+                )
+                .with_new_label(
+                    "encoded_key_partial_selection_reason",
+                    aggregate_fact(facts, "encoded_key_partial_selection_reason"),
+                )
+                .with_new_label(
+                    "encoded_key_partial_reduction_ratio_threshold_ppm",
+                    aggregate_fact(facts, "encoded_key_partial_reduction_ratio_threshold_ppm"),
+                )
+                .with_new_label(
+                    "encoded_key_partial_prior_reduction_ratio_ppm",
+                    aggregate_fact(facts, "encoded_key_partial_prior_reduction_ratio_ppm"),
+                )
+                .with_new_label(
+                    "encoded_key_partial_prior_strategy",
+                    aggregate_fact(facts, "encoded_key_partial_prior_strategy"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_rejected_reason",
+                    aggregate_fact(facts, "prepared_sort_groupby_rejected_reason"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_contract_status",
+                    aggregate_fact(facts, "prepared_sort_groupby_contract_status"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_required_contract",
+                    aggregate_fact(facts, "prepared_sort_groupby_required_contract"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_cost_model",
+                    aggregate_fact(facts, "prepared_sort_groupby_cost_model"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_cost_model_status",
+                    aggregate_fact(facts, "prepared_sort_groupby_cost_model_status"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_selection_reason",
+                    aggregate_fact(facts, "prepared_sort_groupby_selection_reason"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_num_groups",
+                    aggregate_fact(facts, "prepared_sort_groupby_num_groups"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_grouped_key_output_bytes",
+                    aggregate_fact(facts, "prepared_sort_groupby_grouped_key_output_bytes"),
+                )
+                .with_new_label(
+                    "prepared_sort_groupby_max_group_size",
+                    aggregate_fact(facts, "prepared_sort_groupby_max_group_size"),
+                )
+                .with_new_label("rejected_candidate_strategies", aggregate_fact(facts, "rejected_candidate_strategies"))
+                .global_counter("native_aggregate_strategy_rows")
+                .add(1);
+            self.native_aggregate_strategy_rows.add(1);
+        }
+    }
+
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
         // These counters record which boundary policy was selected for this native query execution,
         // not rows or bytes crossing that boundary.
@@ -685,6 +830,10 @@ struct JoinRuntimeCounters {
 
 fn optional_fact(facts: Option<&BTreeMap<String, String>>, key: &str) -> String {
     facts.and_then(|facts| facts.get(key).cloned()).unwrap_or_else(|| "none".to_string())
+}
+
+fn aggregate_fact(facts: &BTreeMap<String, String>, key: &str) -> String {
+    facts.get(key).cloned().unwrap_or_else(|| "none".to_string())
 }
 
 fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
