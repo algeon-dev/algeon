@@ -144,7 +144,7 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
             .iter()
             .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
             .count(),
-        2
+        1
     );
     assert_eq!(
         metrics
@@ -156,7 +156,7 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
                     && event.memory_boundary == "compiled_aggregate_output"
             })
             .count(),
-        2
+        1
     );
     assert_granted_reservation_trace(
         metrics,
@@ -169,7 +169,10 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
             (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
+            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::HashTable, "join_hash_table"),
@@ -177,8 +180,15 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
             (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
+            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
+            (ReservationKind::ChunkOperator, "compiled_aggregate_string_length_sizing"),
+            (ReservationKind::ChunkOperator, "compiled_aggregate_string_length_sizing"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
+            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "compiled_aggregate"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),

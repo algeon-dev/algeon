@@ -165,6 +165,7 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
                         | "final_aggregate_merge"
                         | "final_aggregate_projection"
                         | "post_aggregate_projection"
+                        | "source_adjacent_partitioned_partial_aggregate"
                 ),
                 "DataFrame expression event should record its execution boundary: {event:?}"
             );
@@ -174,7 +175,10 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             );
         },
         "cudf_query_engine.aggregate.execute_partial" => {
-            assert_eq!(event.boundary, "chunk_operator");
+            assert!(matches!(
+                event.boundary.as_str(),
+                "chunk_operator" | "source_adjacent_partitioned_partial_aggregate"
+            ));
             assert_budget_event_high_water(event, event.output_bytes.or(event.retained_bytes));
             assert_eq!(
                 event.unresolved_contract.as_deref(),

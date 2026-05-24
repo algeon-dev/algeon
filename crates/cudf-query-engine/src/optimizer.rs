@@ -9,6 +9,7 @@ mod semijoin_reduction;
 mod join_build_side;
 mod join_filter_reassociation;
 mod outer_join_null_rejection;
+mod stream_fanout_replay;
 
 pub use join_build_side::{
     JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics,
@@ -29,6 +30,10 @@ pub use semijoin_reduction::{
     SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
     SemijoinReductionResult, optimize_semijoin_reduction,
 };
+pub use stream_fanout_replay::{
+    STREAM_FANOUT_REPLAY_RULE_NAME, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
+    StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason,
+};
 
 use crate::plan::QueryPlan;
 
@@ -43,6 +48,8 @@ pub struct NativeOptimizerOptions {
     pub join_filter_reassociation: JoinFilterReassociationOptions,
     /// Options for choosing smaller hash-join build sides.
     pub join_build_side_selection: JoinBuildSideSelectionOptions,
+    /// Options for replaying shared stream probe-input subtrees.
+    pub stream_fanout_replay: StreamFanoutReplayOptions,
 }
 
 impl NativeOptimizerOptions {
@@ -53,6 +60,7 @@ impl NativeOptimizerOptions {
             outer_join_null_rejection: OuterJoinNullRejectionOptions::disabled(),
             join_filter_reassociation: JoinFilterReassociationOptions::disabled(),
             join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+            stream_fanout_replay: StreamFanoutReplayOptions::disabled(),
         }
     }
 }
@@ -102,6 +110,8 @@ pub struct NativeOptimizerDiagnostics {
     pub join_filter_reassociation: JoinFilterReassociationDiagnostics,
     /// Diagnostics from the join build-side selection pass.
     pub join_build_side_selection: JoinBuildSideSelectionDiagnostics,
+    /// Diagnostics from the stream fanout replay pass.
+    pub stream_fanout_replay: StreamFanoutReplayDiagnostics,
 }
 
 impl NativeOptimizerDiagnostics {
@@ -111,6 +121,7 @@ impl NativeOptimizerDiagnostics {
             && self.outer_join_null_rejection.is_empty()
             && self.join_filter_reassociation.is_empty()
             && self.join_build_side_selection.is_empty()
+            && self.stream_fanout_replay.is_empty()
     }
 
     /// Merges diagnostics from another optimizer invocation into this one.
@@ -119,6 +130,7 @@ impl NativeOptimizerDiagnostics {
         self.outer_join_null_rejection.merge(other.outer_join_null_rejection);
         self.join_filter_reassociation.merge(other.join_filter_reassociation);
         self.join_build_side_selection.merge(other.join_build_side_selection);
+        self.stream_fanout_replay.merge(other.stream_fanout_replay);
     }
 }
 
@@ -137,10 +149,13 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         join_filter_reassociation_result.plan,
         &options.join_build_side_selection,
     );
+    let stream_fanout_replay_result =
+        stream_fanout_replay::optimize_stream_fanout_replay(join_build_side_result.plan, &options.stream_fanout_replay);
     let change = if semijoin_result.change.changed()
         || null_rejection_result.change.changed()
         || join_filter_reassociation_result.change.changed()
         || join_build_side_result.change.changed()
+        || stream_fanout_replay_result.change.changed()
     {
         NativeOptimizerChange::Changed
     } else {
@@ -148,12 +163,13 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
     };
     NativeOptimizerResult {
         change,
-        plan: join_build_side_result.plan,
+        plan: stream_fanout_replay_result.plan,
         diagnostics: NativeOptimizerDiagnostics {
             semijoin_reduction: semijoin_result.diagnostics,
             outer_join_null_rejection: null_rejection_result.diagnostics,
             join_filter_reassociation: join_filter_reassociation_result.diagnostics,
             join_build_side_selection: join_build_side_result.diagnostics,
+            stream_fanout_replay: stream_fanout_replay_result.diagnostics,
         },
     }
 }

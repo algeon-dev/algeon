@@ -2,8 +2,8 @@ use cudf_query_engine::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
     JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionOptions, NativeOptimizerChange, NativeOptimizerOptions,
     OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME,
-    SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionOptions,
-    SemijoinReductionRejectedReason, optimize_query_plan,
+    STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionAdmissionMode, SemijoinReductionCostSignal,
+    SemijoinReductionOptions, SemijoinReductionRejectedReason, StreamFanoutReplayOptions, optimize_query_plan,
 };
 
 use super::*;
@@ -96,6 +96,40 @@ fn join_filter_reassociation_options_and_rule_name_are_stable() {
     assert_eq!(JOIN_FILTER_REASSOCIATION_RULE_NAME, "join_filter_reassociation");
     assert!(cudf_query_engine::JoinFilterReassociationOptions::default().enabled);
     assert!(!cudf_query_engine::JoinFilterReassociationOptions::disabled().enabled);
+}
+
+#[test]
+fn stream_fanout_replay_options_and_rule_name_are_stable() {
+    assert_eq!(STREAM_FANOUT_REPLAY_RULE_NAME, "stream_fanout_replay");
+    assert!(StreamFanoutReplayOptions::default().enabled);
+    assert!(!StreamFanoutReplayOptions::disabled().enabled);
+}
+
+#[test]
+fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
+    let plan = shared_projected_probe_fanout_plan();
+    let original_node_count = plan.node_count();
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.stream_fanout_replay.considered_count, 1);
+    assert_eq!(result.diagnostics.stream_fanout_replay.applied_count, 1);
+    let candidate = &result.diagnostics.stream_fanout_replay.candidates[0];
+    assert!(candidate.applied);
+    assert_eq!(candidate.consumer_count, 2);
+    assert_eq!(candidate.rejected_reason, None);
+    assert!(result.plan.node_count() > original_node_count);
+    assert_eq!(max_direct_join_probe_consumer_count(&result.plan), 1);
+}
+
+#[test]
+fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
+    let plan = shared_projected_probe_fanout_plan();
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled());
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
+    assert!(result.diagnostics.stream_fanout_replay.is_empty());
 }
 
 #[test]
@@ -861,6 +895,59 @@ fn inner_join_filter_over_projected_inner_join_plan() -> cudf_query_engine::Quer
     builder.finish_gpu_resident(filtered)
 }
 
+fn shared_projected_probe_fanout_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(gpu_source("fact", &["key", "qty"]));
+    let prefix_dim = builder.add_source(gpu_source("prefix_dim", &["key"]));
+    let prefix = builder.add_join(
+        fact,
+        prefix_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+        ])
+        .with_build_side(JoinSide::Right),
+        schema(&["key", "qty"]),
+    );
+    let projected = builder.add_projection(
+        prefix,
+        vec![
+            ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("qty"), Field::new("qty", DataType::Int32, false)),
+        ],
+    );
+    let first_dim = builder.add_source(gpu_source("first_dim", &["key"]));
+    let second_dim = builder.add_source(gpu_source("second_dim", &["key"]));
+    let first = builder.add_join(
+        projected,
+        first_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(left_projection(&["key", "qty"]))
+        .with_build_side(JoinSide::Right),
+        schema(&["key", "qty"]),
+    );
+    let second = builder.add_join(
+        projected,
+        second_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(left_projection(&["key", "qty"]))
+        .with_build_side(JoinSide::Right),
+        schema(&["key", "qty"]),
+    );
+    let union = builder.add_union(vec![first, second], schema(&["key", "qty"]));
+    builder.finish_gpu_resident(union)
+}
+
 fn gpu_source(name: &str, fields: &[&str]) -> SourceNode {
     SourceNode::GpuResident(GpuResidentSource::new(name, schema(fields)))
 }
@@ -876,6 +963,21 @@ fn schema(fields: &[&str]) -> Arc<Schema> {
 
 fn left_projection(fields: &[&str]) -> Vec<JoinOutputColumn> {
     fields.iter().map(|name| JoinOutputColumn::left(ColumnRef::input(0, *name, *name), *name)).collect()
+}
+
+fn max_direct_join_probe_consumer_count(plan: &cudf_query_engine::QueryPlan) -> usize {
+    let mut counts = std::collections::BTreeMap::<cudf_query_engine::NodeId, usize>::new();
+    for node in plan.nodes() {
+        let PlanNode::Join(join) = &node.kind else {
+            continue;
+        };
+        let probe_input = match join.spec.build_side {
+            JoinSide::Left => join.inputs[1],
+            JoinSide::Right => join.inputs[0],
+        };
+        *counts.entry(probe_input).or_default() += 1;
+    }
+    counts.into_values().max().unwrap_or(0)
 }
 
 fn assert_source_input(plan: &cudf_query_engine::QueryPlan, node_id: cudf_query_engine::NodeId, name: &str) {

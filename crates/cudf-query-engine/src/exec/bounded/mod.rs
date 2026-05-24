@@ -51,8 +51,6 @@ use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;
 
-const SOURCE_ADJACENT_AGGREGATE_MAX_ROW_GROUPS_PER_CHUNK: usize = 128;
-
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -133,18 +131,10 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
-    if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
-        return SourceChunkPlanningPolicy::new(None, usize::MAX);
-    }
-    let mut policy = SourceChunkPlanningPolicy::for_source_task(
+    SourceChunkPlanningPolicy::for_source_task(
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
-    );
-    if bounded.has_source_adjacent_stages() {
-        policy.max_row_groups_per_chunk =
-            policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_AGGREGATE_MAX_ROW_GROUPS_PER_CHUNK);
-    }
-    policy
+    )
 }
 
 fn execute_bounded_aggregate_to_frame(
@@ -184,10 +174,30 @@ fn execute_bounded_aggregate_to_frame(
             metrics,
         );
     }
+    if should_execute_partitioned_source_adjacent_grouped_aggregate(bounded, &chunk_plan) {
+        return execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
+            context,
+            bounded,
+            &chunk_plan.chunks,
+            reservations,
+            metrics,
+        );
+    }
 
     let partials =
         execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
     execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)
+}
+
+fn should_execute_partitioned_source_adjacent_grouped_aggregate(
+    bounded: &BoundedPlan<'_>,
+    chunk_plan: &SourceChunkPlan,
+) -> bool {
+    bounded.has_source_adjacent_stages()
+        && !bounded.aggregate.0.spec.group_exprs.is_empty()
+        && !aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
+        && bounded.aggregate.0.spec.grouping_sets.is_none()
+        && chunk_plan.chunks.len() > 1
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {

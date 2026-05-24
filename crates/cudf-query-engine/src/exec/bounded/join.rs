@@ -17,9 +17,10 @@ pub(in crate::exec::bounded) use compiled::{
 use hash::{
     BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
     execute_bounded_root_hash_join_build_from_resident_frame, execute_bounded_root_hash_join_materialize,
-    execute_bounded_root_hash_join_probe_chunk_from_resident_frame, execute_bounded_root_hash_join_probe_from_frame,
-    execute_bounded_root_hash_join_probe_from_resident_frame, release_bounded_root_hash_join_build_state,
-    release_bounded_root_hash_join_probe_state,
+    execute_bounded_root_hash_join_materialize_preserving_stream,
+    execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame,
+    execute_bounded_root_hash_join_probe_from_frame, execute_bounded_root_hash_join_probe_from_resident_frame,
+    release_bounded_root_hash_join_build_state, release_bounded_root_hash_join_probe_state,
 };
 pub(super) use leaf::{
     BoundedJoinLeafLocalParquetSourceStream, execute_bounded_join_leaf_source,

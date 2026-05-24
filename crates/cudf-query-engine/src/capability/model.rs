@@ -742,6 +742,8 @@ pub struct CapabilityAnalysis {
     pub invariants: Vec<SubgraphInvariant>,
     /// Flattened reservation requirements used by reports and compiled gates.
     pub requirements: Vec<ReservationRequirement>,
+    /// Node-local aggregate strategy capability facts.
+    pub aggregate_strategies: Vec<AggregateStrategyCapability>,
     /// Strict root-join compiled-envelope admission.
     pub root_join_admission: CapabilityDecision,
     /// Strict single-join post-root compiled-envelope admission.

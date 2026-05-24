@@ -360,6 +360,130 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-empty-join-stddev");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    let left_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Float64, true)]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("i_item_id", DataType::Int32, false),
+        Field::new("i_item_desc", DataType::Utf8, false),
+        Field::new("s_state", DataType::Utf8, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Float64Array::from(vec![Some(10.0), Some(20.0), Some(30.0)])),
+        ],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![99])),
+            Arc::new(Int32Array::from(vec![7])),
+            Arc::new(StringArray::from(vec!["no-match-item"])),
+            Arc::new(StringArray::from(vec!["ZZ"])),
+        ],
+    )
+    .unwrap();
+    write_batch_with_row_group_size(Arc::clone(&left_schema), &left_path, &left_batch, 1);
+    DataFrame::from_record_batch(&runtime, &right_batch).unwrap().write_parquet(&right_path).unwrap();
+
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("i_item_id", DataType::Int32, false),
+        Field::new("i_item_desc", DataType::Utf8, false),
+        Field::new("s_state", DataType::Utf8, false),
+        Field::new("v", DataType::Float64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("i_item_id", DataType::Int32, false),
+        Field::new("i_item_desc", DataType::Utf8, false),
+        Field::new("s_state", DataType::Utf8, false),
+        Field::new("count_v", DataType::Int64, false),
+        Field::new("avg_v", DataType::Float64, true),
+        Field::new("stdev_v", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["k".to_string(), "v".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["k".to_string(), "i_item_id".to_string(), "i_item_desc".to_string(), "s_state".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "k", "k"),
+                cudf_query_engine::ColumnRef::input(1, "k", "k"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "i_item_id", "i_item_id"), "i_item_id"),
+            JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "i_item_desc", "i_item_desc"),
+                "i_item_desc",
+            ),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "s_state", "s_state"), "s_state"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("i_item_id"), Expr::column("i_item_desc"), Expr::column("s_state")],
+            vec![
+                AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "count_v"),
+                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v"),
+            ],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 128 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(
+        metrics.reservation_events.iter().any(|event| event.memory_boundary == "join_output_stream_chunk"),
+        "empty join stream should materialize a schema-correct zero-row join output"
+    );
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema(), aggregate_schema);
+    assert_eq!(batch.num_rows(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn write_stddev_input_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -377,6 +501,14 @@ fn write_stddev_input_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schem
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
+}
+
+fn write_batch_with_row_group_size(schema: Arc<Schema>, path: &Path, batch: &RecordBatch, rows_per_group: usize) {
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(batch).unwrap();
+    writer.close().unwrap();
 }
 
 fn write_f64_parquet(runtime: &cudf::Runtime, schema: &Arc<Schema>, path: &Path, values: Vec<Option<f64>>) {

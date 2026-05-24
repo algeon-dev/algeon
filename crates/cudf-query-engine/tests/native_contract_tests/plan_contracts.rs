@@ -62,6 +62,251 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 }
 
 #[test]
+fn aggregate_strategy_capability_selects_encoded_key_partial_after_contract_proof() {
+    let input_schema = Schema::new(vec![
+        Field::new("returnflag", DataType::Utf8, true),
+        Field::new("linestatus", DataType::Utf8, true),
+        Field::new("quantity", DataType::Int64, false),
+    ]);
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("returnflag"), Expr::column("linestatus")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "sum_qty")],
+    );
+
+    let decision = aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::Partial);
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::EncodedKeyPartial);
+    assert_eq!(decision.facts.get("selected_strategy").map(String::as_str), Some("encoded_key_partial"));
+    assert_eq!(decision.facts.get("execution_stage").map(String::as_str), Some("partial"));
+    assert_eq!(decision.facts.get("group_key_dtypes").map(String::as_str), Some("Utf8,Utf8"));
+    assert_eq!(decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str), Some("none"));
+    assert_eq!(decision.facts.get("encoded_key_partial_contract_status").map(String::as_str), Some("available"));
+    assert_eq!(
+        decision.facts.get("partitioned_merge_rejected_reason").map(String::as_str),
+        Some("partitioned_merge_requires_final_merge_stage")
+    );
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_runtime_cardinality_evidence")
+    );
+    assert_eq!(decision.facts.get("prepared_sort_groupby_contract_status").map(String::as_str), Some("available"));
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("pending_runtime_evidence")
+    );
+    assert_eq!(
+        decision.rejected_candidate_summary(),
+        "prepared_sort_groupby:prepared_sort_groupby_requires_runtime_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage() {
+    let input_schema = Schema::new(vec![
+        Field::new("returnflag", DataType::Utf8, true),
+        Field::new("linestatus", DataType::Utf8, true),
+        Field::new("sum_qty", DataType::Int64, true),
+    ]);
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("returnflag"), Expr::column("linestatus")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "sum_qty")],
+    );
+
+    let decision =
+        aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::FinalMerge);
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PartitionedMerge);
+    assert_eq!(decision.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
+    assert_eq!(decision.facts.get("execution_stage").map(String::as_str), Some("final_merge"));
+    assert_eq!(decision.facts.get("partitioned_merge_rejected_reason").map(String::as_str), Some("none"));
+    assert_eq!(decision.facts.get("partitioned_merge_contract_status").map(String::as_str), Some("available"));
+    assert_eq!(
+        decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_requires_partial_stage")
+    );
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_partial_stage")
+    );
+    assert_eq!(
+        decision.rejected_candidate_summary(),
+        "encoded_key_partial:encoded_key_partial_requires_partial_stage;prepared_sort_groupby:prepared_sort_groupby_requires_partial_stage"
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_analysis_records_grouped_aggregate_without_node_rejection() {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("returnflag", DataType::Utf8, true),
+        Field::new("quantity", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("returnflag", DataType::Utf8, true),
+        Field::new("sum_qty", DataType::Int64, true),
+    ]));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("returnflag")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "sum_qty")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("lineitem", Arc::clone(&input_schema))));
+    let aggregate_id = builder.add_aggregate(source, aggregate, aggregate_schema);
+    let plan = builder.finish_gpu_resident(aggregate_id);
+    let analysis = plan.capability_analysis();
+
+    let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
+    assert_eq!(node.executable, CapabilityDecision::Satisfied);
+    assert_eq!(analysis.aggregate_strategies.len(), 1);
+    let strategy = &analysis.aggregate_strategies[0];
+    assert_eq!(strategy.node_id, aggregate_id);
+    assert_eq!(strategy.stage, AggregateExecutionStage::Partial);
+    assert_eq!(strategy.decision.selected_strategy, AggregateExecutionStrategy::EncodedKeyPartial);
+    assert_eq!(strategy.decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str), Some("none"));
+    assert_eq!(
+        strategy.decision.facts.get("encoded_key_partial_contract_status").map(String::as_str),
+        Some("available")
+    );
+    assert_eq!(
+        strategy.decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_runtime_cardinality_evidence")
+    );
+
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .expect("modeled aggregate capability should produce a strict contract report");
+    assert!(report.gate_rows().iter().any(|row| {
+        row.required_contract == "aggregate_contract" && row.contract_status == ContractStatus::Modeled
+    }));
+    assert!(
+        report.gate_rows().iter().all(|row| row.contract_status != ContractStatus::RejectedByCapability),
+        "optimized strategy candidate rejections are local strategy facts, not strict capability failures"
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally() {
+    let input_schema =
+        Schema::new(vec![Field::new("key", DataType::Int32, false), Field::new("value", DataType::Int64, false)]);
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+
+    let decision = aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::Partial);
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_requires_string_group_key")
+    );
+    assert_eq!(
+        decision.facts.get("rejected_candidate_strategies").map(String::as_str),
+        Some(
+            "encoded_key_partial:encoded_key_partial_requires_string_group_key;prepared_sort_groupby:prepared_sort_groupby_requires_runtime_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+        )
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_locally() {
+    let input_schema = Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+        Field::new("include", DataType::Boolean, true),
+    ]);
+    let filtered = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")
+                .with_filter(Some(Expr::column("include"))),
+        ],
+    );
+    let distinct = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
+        ],
+    );
+
+    let filtered_decision =
+        aggregate_strategy_capability_decision(&filtered, &input_schema, AggregateExecutionStage::Partial);
+    let distinct_decision =
+        aggregate_strategy_capability_decision(&distinct, &input_schema, AggregateExecutionStage::Partial);
+
+    assert_eq!(filtered_decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        filtered_decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_aggregate_filter_unsupported")
+    );
+    assert_eq!(distinct_decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        distinct_decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_distinct_aggregate_unsupported")
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_rejects_optimized_candidates_by_stage() {
+    let input_schema =
+        Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+
+    let decision = aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::Single);
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_requires_partial_stage")
+    );
+    assert_eq!(
+        decision.facts.get("partitioned_merge_rejected_reason").map(String::as_str),
+        Some("partitioned_merge_requires_final_merge_stage")
+    );
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_partial_stage")
+    );
+}
+
+#[test]
+fn aggregate_strategy_capability_rejects_partitioned_merge_for_unsupported_final_merge_shapes() {
+    let input_schema =
+        Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
+    let scalar = AggregateSpec::new(
+        vec![],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+    let distinct = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values").with_distinct(true),
+        ],
+    );
+    let stddev = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("value"), "stddev_value")],
+    );
+
+    for (spec, reason) in [
+        (&scalar, "partitioned_merge_requires_grouped_aggregate"),
+        (&distinct, "partitioned_merge_distinct_aggregate_unsupported"),
+        (&stddev, "partitioned_merge_stddev_samp_unsupported"),
+    ] {
+        let decision = aggregate_strategy_capability_decision(spec, &input_schema, AggregateExecutionStage::FinalMerge);
+        assert_ne!(decision.selected_strategy, AggregateExecutionStrategy::PartitionedMerge);
+        assert_eq!(decision.facts.get("partitioned_merge_rejected_reason").map(String::as_str), Some(reason));
+        assert_eq!(
+            decision.facts.get("partitioned_merge_contract_status").map(String::as_str),
+            Some("blocked_by_shape_or_stage")
+        );
+    }
+}
+
+#[test]
 fn native_plan_can_represent_offset_only_limit() {
     let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();

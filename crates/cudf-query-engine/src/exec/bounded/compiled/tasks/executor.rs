@@ -291,12 +291,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            Ok(CompiledGpuResource::frame_stream_payload(map_filter_resident_frame_stream(
-                                self.context,
-                                node_id,
-                                stream,
-                                filter.clone(),
-                            )))
+                            let stream =
+                                map_filter_resident_frame_stream(self.context, node_id, stream, filter.clone());
+                            if self.resource_has_multiple_consumers(output) {
+                                Ok(CompiledGpuResource::frame_stream(
+                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                                ))
+                            } else {
+                                Ok(CompiledGpuResource::frame_stream_payload(stream))
+                            }
                         },
                     }
                 } else {
@@ -360,12 +363,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            Ok(CompiledGpuResource::frame_stream_payload(map_projection_resident_frame_stream(
-                                self.context,
-                                node_id,
-                                stream,
-                                projection.clone(),
-                            )))
+                            let stream =
+                                map_projection_resident_frame_stream(self.context, node_id, stream, projection.clone());
+                            if self.resource_has_multiple_consumers(output) {
+                                Ok(CompiledGpuResource::frame_stream(
+                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                                ))
+                            } else {
+                                Ok(CompiledGpuResource::frame_stream_payload(stream))
+                            }
                         },
                     }
                 } else {
@@ -1202,6 +1208,16 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             else {
                 return false;
             };
+            if resource.consumers().len() > 1 {
+                return resource.consumers().iter().all(|consumer| {
+                    self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
+                        |consumer_task| {
+                            consumer_task.kind() == PipelineTaskKind::JoinProbe
+                                && self.join_probe_task_can_consume_frame_stream(consumer_task)
+                        },
+                    )
+                });
+            }
             let [consumer] = resource.consumers() else {
                 return false;
             };

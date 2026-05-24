@@ -36,7 +36,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
     let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3), Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(limit);
 
     let context = ExecutionContext::builder()
@@ -56,6 +56,25 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.partial_aggregate_count, 2);
     assert_eq!(metrics.final_merge_attempts, 1);
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .any(|event| { event.memory_boundary == "source_adjacent_partitioned_partial_aggregate_output" })
+    );
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .any(|event| { event.memory_boundary == "partitioned_final_aggregate_merge_output" })
+    );
+    let final_strategy = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge"))
+        .expect("AVG final merge should record a strategy row");
+    assert_eq!(final_strategy.node_id, aggregate.to_string());
+    assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.finalize_avg", 3);
@@ -63,6 +82,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
+    assert_eq!(batch.schema(), aggregated_schema);
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 2, 1]);
     assert_eq!(float64_array(batch, 1).values().as_ref(), &[300.0, 150.0, 20.0]);
@@ -608,6 +628,35 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups:
     let plan = builder.finish_with_host_sink(sort);
 
     let result = execute_query_plan(context, &plan).unwrap();
+    let metrics = result.metrics();
+    if metrics.phase_c_memory_control_policy.as_str() == "bounded" {
+        let partial_strategy_rows = metrics
+            .aggregate_strategy_decisions
+            .iter()
+            .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+            .collect::<Vec<_>>();
+        assert!(
+            partial_strategy_rows.len() > 1,
+            "bounded high-cardinality fixture should produce multiple partial aggregate strategy rows"
+        );
+        assert!(partial_strategy_rows.iter().all(|decision| {
+            decision.node_id == aggregate.to_string()
+                && decision.facts.get("selected_strategy").map(String::as_str) == Some("libcudf_groupby")
+                && decision.facts.get("source_adjacent_partial").map(String::as_str) == Some("false")
+                && decision.facts.get("source_chunk_row_group_count").map(String::as_str) == Some("1")
+                && decision.facts.get("encode_elapsed_ns").map(String::as_str) == Some("0")
+                && decision.facts.get("decode_elapsed_ns").map(String::as_str) == Some("0")
+        }));
+        assert_eq!(
+            partial_strategy_rows[0].facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+            Some("encoded_key_partial_cost_model_no_prior_cardinality_evidence")
+        );
+        assert!(partial_strategy_rows[1..].iter().all(|decision| {
+            decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str)
+                == Some("encoded_key_partial_cost_model_high_cardinality")
+                && decision.facts.contains_key("encoded_key_partial_prior_reduction_ratio_ppm")
+        }));
+    }
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

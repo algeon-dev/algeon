@@ -24,6 +24,7 @@ use crate::{
 };
 
 mod admission;
+mod aggregate;
 mod edge;
 mod entry;
 mod expr;
@@ -35,6 +36,11 @@ mod node;
 mod requirements;
 mod shape;
 
+pub(crate) use aggregate::analyze_aggregate_strategies;
+pub use aggregate::{
+    AggregateExecutionStage, AggregateExecutionStrategy, AggregateStrategyCandidateRejection,
+    AggregateStrategyCapability, AggregateStrategyCapabilityDecision, aggregate_strategy_capability_decision,
+};
 pub use entry::analyze_query_capabilities;
 pub(crate) use join::{
     JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,

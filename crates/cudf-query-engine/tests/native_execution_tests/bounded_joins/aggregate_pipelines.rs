@@ -67,7 +67,7 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.partial_aggregate_count, 0);
+    assert_eq!(metrics.partial_aggregate_count, 1);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     let join_metrics =
@@ -83,8 +83,11 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
             (ReservationKind::HashTable, "join_hash_table"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
+            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
+            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::FinalSort, "final_sort"),
             (ReservationKind::FinalSort, "final_sort"),
@@ -310,7 +313,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             .iter()
             .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
             .count(),
-        2
+        1
     );
     assert_eq!(
         metrics
@@ -322,7 +325,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
                     && event.memory_boundary == "compiled_aggregate_output"
             })
             .count(),
-        2
+        1
     );
     assert_granted_reservation_trace(
         metrics,
@@ -333,10 +336,13 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             (ReservationKind::HashTable, "join_hash_table"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
+            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
             (ReservationKind::OperatorOutput, "compiled_projection"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
+            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "compiled_projection"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),

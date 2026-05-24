@@ -714,28 +714,133 @@ fn stream_join_leaf_source_chunks_serial_from<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let grow_source_to_observed = stream.stages.is_empty();
     for chunk in chunks {
-        context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_stream")?;
-        let outputs = read_join_leaf_source_chunk_with_retry(
+        stream_join_leaf_source_chunk_with_consumer_retry(
             context,
-            &stream.source,
-            reservations,
-            metrics,
-            stream.node_id,
+            stream,
             chunk.clone(),
             1,
-            stream.max_attempts,
-            stream.min_retry_chunk_row_groups,
-            grow_source_to_observed,
+            reservations,
+            metrics,
+            consume,
         )?;
-        for (frame, reservation) in outputs {
-            let input = ResidentGpuFrame { frame, reservation };
-            let output = apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics)?;
-            consume(output, reservations, metrics)?;
-        }
     }
     Ok(())
+}
+
+fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: SourceChunk,
+    attempt: usize,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    consume: &mut F,
+) -> Result<()>
+where
+    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+{
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_stream")?;
+    let grow_source_to_observed = stream.stages.is_empty();
+    let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
+        context,
+        &stream.source,
+        reservations,
+        metrics,
+        stream.node_id,
+        &chunk,
+        attempt,
+        stream.max_attempts,
+        grow_source_to_observed,
+    ) {
+        Ok(output) => output,
+        Err(error) if is_retryable_chunk_error(&error) => {
+            return retry_join_leaf_source_stream_chunk_after_error(
+                context,
+                stream,
+                chunk,
+                error,
+                attempt,
+                reservations,
+                metrics,
+                consume,
+            );
+        },
+        Err(error) => return Err(error),
+    };
+    let input = ResidentGpuFrame { frame, reservation };
+    let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
+        Ok(output) => output,
+        Err(error) if is_retryable_chunk_error(&error) => {
+            return retry_join_leaf_source_stream_chunk_after_error(
+                context,
+                stream,
+                chunk,
+                error,
+                attempt,
+                reservations,
+                metrics,
+                consume,
+            );
+        },
+        Err(error) => return Err(error),
+    };
+    match consume(output, reservations, metrics) {
+        Ok(()) => Ok(()),
+        Err(error) if is_retryable_chunk_error(&error) => retry_join_leaf_source_stream_chunk_after_error(
+            context,
+            stream,
+            chunk,
+            error,
+            attempt,
+            reservations,
+            metrics,
+            consume,
+        ),
+        Err(error) => Err(error),
+    }
+}
+
+fn retry_join_leaf_source_stream_chunk_after_error<F>(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: SourceChunk,
+    error: QueryError,
+    attempt: usize,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    consume: &mut F,
+) -> Result<()>
+where
+    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+{
+    record_chunk_retry_error(&error, metrics);
+    if attempt < stream.max_attempts
+        && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
+    {
+        metrics.record_source_chunk_retry();
+        stream_join_leaf_source_chunk_with_consumer_retry(
+            context,
+            stream,
+            left,
+            attempt + 1,
+            reservations,
+            metrics,
+            consume,
+        )?;
+        stream_join_leaf_source_chunk_with_consumer_retry(
+            context,
+            stream,
+            right,
+            attempt + 1,
+            reservations,
+            metrics,
+            consume,
+        )?;
+        return Ok(());
+    }
+
+    Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
 }
 
 fn stream_join_leaf_source_chunks_with_scheduler<F>(
@@ -849,6 +954,17 @@ where
         let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
         let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
             Ok(output) => output,
+            Err(error) if is_retryable_chunk_error(&error) => {
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                return stream_join_leaf_source_chunks_serial_from(
+                    context,
+                    stream,
+                    &stream.chunks[index..],
+                    reservations,
+                    metrics,
+                    consume,
+                );
+            },
             Err(error) => {
                 abandon_join_leaf_reads(pending, reservations, metrics);
                 return Err(error);
@@ -856,6 +972,16 @@ where
         };
         if let Err(error) = consume(output, reservations, metrics) {
             abandon_join_leaf_reads(pending, reservations, metrics);
+            if is_retryable_chunk_error(&error) {
+                return stream_join_leaf_source_chunks_serial_from(
+                    context,
+                    stream,
+                    &stream.chunks[index..],
+                    reservations,
+                    metrics,
+                    consume,
+                );
+            }
             return Err(error);
         }
 

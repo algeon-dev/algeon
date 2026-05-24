@@ -25,9 +25,10 @@ use cudf_query_engine::{
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
     StrictBoundedExecutionMode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     capability::{
-        CapabilityDecision, ContractQuality, ContractStatus, EdgeConsumer, EdgeContractKind, InputRole, NodeOperator,
-        OrderingRequirement, RequiredProperty, ReservationRequirementScope, ResidualRequirement, ResultSinkKind,
-        ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability, SubgraphInvariantKind,
+        AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, ContractQuality, ContractStatus,
+        EdgeConsumer, EdgeContractKind, InputRole, NodeOperator, OrderingRequirement, RequiredProperty,
+        ReservationRequirementScope, ResidualRequirement, ResultSinkKind, ScheduleConstraint, SharedProducerIdentity,
+        SourceFormatCapability, SubgraphInvariantKind, aggregate_strategy_capability_decision,
     },
     contract_report::StrictBoundedContractReport,
     cudf_dtype_from_arrow_type,

@@ -191,15 +191,21 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     };
     let overrides = execution_overrides(context);
 
-    let output_size = match node.spec.join_type {
+    let output_size_result = match node.spec.join_type {
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
             unreachable!("validated above")
         },
-    }
-    .map_err(|error| join_index_error(error, node))?;
+    };
+    let output_size = match output_size_result {
+        Ok(output_size) => output_size,
+        Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(join_index_error(error, node));
+        },
+    };
     let gather_map_reservation_bytes = build
         .hash_join
         .hash_join()
@@ -214,7 +220,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
             .with_fact("join_type", node.spec.join_type)
             .with_fact("build_side", build.build_side)
         })?;
-    let gather_map_reservation = reservations.try_reserve(
+    let gather_map_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::GatherMap,
             "join_gather_map",
@@ -223,8 +229,14 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
             node_id,
         ),
         metrics,
-    )?;
-    let indices = match node.spec.join_type {
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let indices_result = match node.spec.join_type {
         JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
             &probe.frame,
             probe_keys,
@@ -246,15 +258,28 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
         JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
             unreachable!("validated above")
         },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.bounded.join.gather_map_bytes",
-            "failed to observe bounded native join gather-map memory",
-            error,
-        )
-    })?;
+    };
+    let indices = match indices_result {
+        Ok(indices) => indices,
+        Err(error) => {
+            reservations.release(gather_map_reservation, metrics);
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(join_index_error(error, node));
+        },
+    };
+    let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.gather_map_bytes",
+                "failed to observe bounded native join gather-map memory",
+                error,
+            ));
+        },
+    };
     Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes })
 }
 
@@ -354,7 +379,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
     Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes })
 }
 
-pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_from_resident_frame(
+pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &JoinNode,
@@ -362,7 +387,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_from_
     input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
+) -> Result<Vec<ResidentGpuFrame>> {
     validate_root_hash_join(node)?;
     let probe_columns = match build.probe_side {
         JoinSide::Left => &build.left_columns,
@@ -449,7 +474,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_from_
         )
     })?;
 
-    materialize_bounded_root_hash_join_probe_chunk(
+    materialize_bounded_root_hash_join_probe_stream(
         context,
         node_id,
         node,
@@ -490,6 +515,41 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     )?;
     release_bounded_root_hash_join_build_state(build, reservations, metrics);
     Ok(output)
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_preserving_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    state: BoundedRootHashJoinProbeState,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<ResidentGpuFrame>> {
+    validate_root_hash_join(node)?;
+    let timer = state.build.timer;
+    let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes } = state;
+    match materialize_bounded_root_hash_join_probe_stream(
+        context,
+        node_id,
+        node,
+        &build,
+        probe,
+        indices,
+        gather_map_reservation,
+        gather_map_bytes,
+        timer,
+        reservations,
+        metrics,
+    ) {
+        Ok(outputs) => {
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+            Ok(outputs)
+        },
+        Err(error) => {
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+            Err(error)
+        },
+    }
 }
 
 pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(
@@ -579,6 +639,11 @@ fn materialize_bounded_root_hash_join_probe_chunk(
                 reservations,
                 &error,
             );
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
             return Err(error);
         },
     };
@@ -600,6 +665,11 @@ fn materialize_bounded_root_hash_join_probe_chunk(
                 reservations,
                 &error,
             );
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
             return Err(error);
         },
     };
@@ -610,7 +680,7 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         left_output_bytes.saturating_add(right_output_bytes),
     );
     let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
-    let mut output_reservation = reservations.try_reserve(
+    let mut output_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_output",
@@ -619,8 +689,18 @@ fn materialize_bounded_root_hash_join_probe_chunk(
             node_id,
         ),
         metrics,
-    )?;
-    let output = materialize_join_output_projection(
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
+            return Err(error);
+        },
+    };
+    let output = match materialize_join_output_projection(
         &left.frame,
         &right.frame,
         &left_indices,
@@ -628,11 +708,34 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
+            return Err(error);
+        },
+    };
     metrics.operator_time += timer.elapsed();
 
     let output_rows = output.num_rows() as u64;
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            reservations.release(output_reservation, metrics);
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
+            return Err(error);
+        },
+    };
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
     {
@@ -680,6 +783,484 @@ fn materialize_bounded_root_hash_join_probe_chunk(
     drop(probe);
 
     Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+fn materialize_bounded_root_hash_join_probe_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: BoundedJoinSideFrame,
+    indices: cudf::DataFrameHashJoinPairIndices,
+    gather_map_reservation: ActiveReservation,
+    gather_map_bytes: u64,
+    timer: Instant,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<ResidentGpuFrame>> {
+    let overrides = execution_overrides(context);
+    let build_side = build.build_side;
+    let probe_side = build.probe_side;
+    let hash_table_bytes = build.hash_table_bytes;
+    let (left, right) = match build_side {
+        JoinSide::Left => (&build.build, &probe),
+        JoinSide::Right => (&probe, &build.build),
+    };
+    let original_left_rows = left.rows;
+    let original_right_rows = right.rows;
+    let left_bytes = left.bytes;
+    let right_bytes = right.bytes;
+    let build_bytes = side_metric(build_side, left_bytes, right_bytes);
+    let probe_bytes = side_metric(probe_side, left_bytes, right_bytes);
+    let (left_indices, right_indices) = if build.left_indices_from_probe {
+        (indices.probe().clone(), indices.build().clone())
+    } else {
+        (indices.build().clone(), indices.probe().clone())
+    };
+    let output_rows = indices.build().len() as u64;
+    let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
+    let left_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
+        &left.frame,
+        output_rows,
+        &left_projection,
+        JoinSide::Left,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
+            return Err(error);
+        },
+    };
+    let right_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
+        &right.frame,
+        output_rows,
+        &right_projection,
+        JoinSide::Right,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(left_indices);
+            drop(right_indices);
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            drop(probe);
+            return Err(error);
+        },
+    };
+    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let mut outputs = Vec::new();
+    let mut cumulative_output_reservation_bytes = 0u64;
+    let mut cumulative_output_bytes = 0u64;
+    let mut emitted_rows = 0u64;
+    let mut offset = 0usize;
+    let output_len = indices.build().len();
+    if output_len == 0 {
+        match materialize_bounded_root_hash_join_index_slice(
+            context,
+            node_id,
+            node,
+            left,
+            right,
+            &left_indices,
+            &right_indices,
+            0,
+            0,
+            &overrides,
+            reservations,
+            metrics,
+        ) {
+            Ok(slice_outputs) => {
+                for output in slice_outputs {
+                    cumulative_output_reservation_bytes =
+                        cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+                    cumulative_output_bytes = cumulative_output_bytes.saturating_add(output.output_bytes);
+                    outputs.push(output.frame);
+                }
+            },
+            Err(error) => {
+                drop(left_indices);
+                drop(right_indices);
+                drop(indices);
+                reservations.release(gather_map_reservation, metrics);
+                drop(probe);
+                return Err(error);
+            },
+        }
+    }
+    while offset < output_len {
+        let remaining_rows = u64::try_from(output_len - offset).unwrap_or(u64::MAX);
+        let remaining_output_reservation_bytes =
+            proportional_join_stream_bytes(output_reservation_bytes, remaining_rows, output_rows);
+        let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(context, reservations);
+        let chunk_rows = reusable_hash_join_stream_chunk_rows(
+            remaining_rows,
+            remaining_output_reservation_bytes,
+            chunk_target_bytes,
+        );
+        let take = chunk_rows.min(output_len - offset);
+        match materialize_bounded_root_hash_join_index_slice(
+            context,
+            node_id,
+            node,
+            left,
+            right,
+            &left_indices,
+            &right_indices,
+            offset,
+            take,
+            &overrides,
+            reservations,
+            metrics,
+        ) {
+            Ok(slice_outputs) => {
+                for output in slice_outputs {
+                    cumulative_output_reservation_bytes =
+                        cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+                    cumulative_output_bytes = cumulative_output_bytes.saturating_add(output.output_bytes);
+                    emitted_rows = emitted_rows.saturating_add(output.output_rows);
+                    outputs.push(output.frame);
+                }
+                offset += take;
+            },
+            Err(error) => {
+                release_root_hash_join_stream_outputs(outputs, reservations, metrics);
+                drop(left_indices);
+                drop(right_indices);
+                drop(indices);
+                reservations.release(gather_map_reservation, metrics);
+                drop(probe);
+                return Err(error);
+            },
+        }
+    }
+    metrics.operator_time += timer.elapsed();
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_reusable_hash_join".to_string(),
+            key_count: node.spec.keys.len(),
+            residual_predicate: false,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: side_metric(build_side, original_left_rows, original_right_rows),
+            build_bytes,
+            probe_rows: side_metric(probe_side, original_left_rows, original_right_rows),
+            probe_bytes,
+            hash_table_bytes,
+            filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
+            gather_map_bytes,
+            output_reservation_bytes: cumulative_output_reservation_bytes,
+            output_rows: emitted_rows,
+            output_bytes: cumulative_output_bytes,
+        },
+    ));
+    drop(left_indices);
+    drop(right_indices);
+    drop(indices);
+    reservations.release(gather_map_reservation, metrics);
+    drop(probe);
+    Ok(outputs)
+}
+
+struct RootHashJoinStreamChunkOutput {
+    frame: ResidentGpuFrame,
+    output_reservation_bytes: u64,
+    output_bytes: u64,
+    output_rows: u64,
+}
+
+fn materialize_bounded_root_hash_join_index_slice(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: &BoundedJoinSideFrame,
+    right: &BoundedJoinSideFrame,
+    left_indices: &cudf::DataFrameJoinIndices,
+    right_indices: &cudf::DataFrameJoinIndices,
+    offset: usize,
+    len: usize,
+    overrides: &ExecutionOverrides<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<RootHashJoinStreamChunkOutput>> {
+    match materialize_bounded_root_hash_join_index_slice_once(
+        context,
+        node_id,
+        node,
+        left,
+        right,
+        left_indices,
+        right_indices,
+        offset,
+        len,
+        overrides,
+        reservations,
+        metrics,
+    ) {
+        Ok(output) => Ok(vec![output]),
+        Err(error) if len > 1 && is_retryable_join_stream_slice_error(&error) => {
+            record_join_stream_slice_retry_error(&error, metrics);
+            let left_len = len / 2;
+            let right_len = len - left_len;
+            let mut outputs = materialize_bounded_root_hash_join_index_slice(
+                context,
+                node_id,
+                node,
+                left,
+                right,
+                left_indices,
+                right_indices,
+                offset,
+                left_len,
+                overrides,
+                reservations,
+                metrics,
+            )?;
+            match materialize_bounded_root_hash_join_index_slice(
+                context,
+                node_id,
+                node,
+                left,
+                right,
+                left_indices,
+                right_indices,
+                offset + left_len,
+                right_len,
+                overrides,
+                reservations,
+                metrics,
+            ) {
+                Ok(mut right_outputs) => {
+                    outputs.append(&mut right_outputs);
+                    Ok(outputs)
+                },
+                Err(error) => {
+                    release_root_hash_join_stream_outputs(
+                        outputs.into_iter().map(|output| output.frame).collect(),
+                        reservations,
+                        metrics,
+                    );
+                    Err(error)
+                },
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn materialize_bounded_root_hash_join_index_slice_once(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: &BoundedJoinSideFrame,
+    right: &BoundedJoinSideFrame,
+    left_indices: &cudf::DataFrameJoinIndices,
+    right_indices: &cudf::DataFrameJoinIndices,
+    offset: usize,
+    len: usize,
+    overrides: &ExecutionOverrides<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<RootHashJoinStreamChunkOutput> {
+    let slice_gather_map_bytes = cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(len)
+        .map(|bytes| bytes as u64)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.reusable_hash_stream_slice_reservation",
+                "failed to size reusable hash join stream gather-map slices",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+        })?;
+    let slice_gather_map_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map_stream_slice",
+            slice_gather_map_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let left_slice = match left_indices.indices().slice(offset, len) {
+        Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
+        Err(error) => {
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.reusable_hash_stream_left_indices",
+                "failed to slice reusable hash join left gather map",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type));
+        },
+    };
+    let right_slice = match right_indices.indices().slice(offset, len) {
+        Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
+        Err(error) => {
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.reusable_hash_stream_right_indices",
+                "failed to slice reusable hash join right gather map",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type));
+        },
+    };
+    let expected_output_rows = len as u64;
+    let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
+    let left_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
+        &left.frame,
+        expected_output_rows,
+        &left_projection,
+        JoinSide::Left,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let right_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
+        &right.frame,
+        expected_output_rows,
+        &right_projection,
+        JoinSide::Right,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let mut output_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_output_stream_chunk",
+            output_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output = match materialize_join_output_projection(
+        &left.frame,
+        &right.frame,
+        &left_slice,
+        &right_slice,
+        overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let output_rows = output.num_rows() as u64;
+    debug_assert_eq!(output_rows, expected_output_rows);
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            reservations.release(output_reservation, metrics);
+            reservations.release(slice_gather_map_reservation, metrics);
+            return Err(error);
+        },
+    };
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        reservations.release(output_reservation, metrics);
+        reservations.release(slice_gather_map_reservation, metrics);
+        return Err(error);
+    }
+    reservations.release(slice_gather_map_reservation, metrics);
+    Ok(RootHashJoinStreamChunkOutput {
+        frame: ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation },
+        output_reservation_bytes,
+        output_bytes,
+        output_rows,
+    })
+}
+
+fn is_retryable_join_stream_slice_error(error: &QueryError) -> bool {
+    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+}
+
+fn record_join_stream_slice_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+    match error.code() {
+        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
+        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
+        _ => {},
+    }
+}
+
+fn reusable_hash_join_stream_chunk_rows(output_rows: u64, output_reservation_bytes: u64, target_bytes: u64) -> usize {
+    if output_rows == 0 || output_reservation_bytes <= target_bytes {
+        return usize::try_from(output_rows.max(1)).unwrap_or(usize::MAX);
+    }
+    let rows = target_bytes.saturating_mul(output_rows).checked_div(output_reservation_bytes).unwrap_or(1).max(1);
+    usize::try_from(rows).unwrap_or(usize::MAX)
+}
+
+fn proportional_join_stream_bytes(total_bytes: u64, rows: u64, total_rows: u64) -> u64 {
+    if total_rows == 0 {
+        return total_bytes;
+    }
+    ((u128::from(total_bytes) * u128::from(rows)).div_ceil(u128::from(total_rows))).min(u128::from(u64::MAX)) as u64
+}
+
+fn reusable_hash_join_stream_target_output_bytes(context: &ExecutionContext, reservations: &ReservationTracker) -> u64 {
+    const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
+    const MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
+    let policy_target = match context.memory_control_policy() {
+        crate::runtime::MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
+            (device_budget_bytes / 8).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
+        },
+        _ => MAX_TARGET_BYTES,
+    };
+    let live_target = reservations.remaining_bytes().saturating_div(16);
+    if live_target == 0 { policy_target } else { policy_target.min(live_target) }
+}
+
+fn release_root_hash_join_stream_outputs(
+    mut outputs: Vec<ResidentGpuFrame>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(output) = outputs.pop() {
+        reservations.release(output.reservation, metrics);
+        drop(output.frame);
+    }
 }
 
 fn validate_root_hash_join(node: &JoinNode) -> Result<()> {

@@ -80,9 +80,9 @@ pub use expr::{
     GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{
-    BoundaryMetrics, BudgetedExecutionEvent, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics,
-    JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
-    OperatorMetrics, QueryMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
+    AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, GraphAlgorithmRuntimeMetrics,
+    JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction,
+    MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use optimizer::{
@@ -93,10 +93,12 @@ pub use optimizer::{
     NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
     OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics, OuterJoinNullRejectionDiagnostics,
     OuterJoinNullRejectionOptions, OuterJoinNullRejectionRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME,
-    SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
-    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
-    SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
-    SemijoinReductionResult, optimize_query_plan, optimize_semijoin_reduction,
+    STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode,
+    SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal,
+    SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions,
+    SemijoinReductionRejectedReason, SemijoinReductionResult, StreamFanoutReplayCandidateDiagnostics,
+    StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason, optimize_query_plan,
+    optimize_semijoin_reduction,
 };
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
