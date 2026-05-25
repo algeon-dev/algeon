@@ -88,6 +88,29 @@ AWS_DEFAULT_REGION="us-east-1"
 AWS_REGION="us-east-1"
 
 # ---------------------------------------------------------------------------
+# cuGraph SQL DSL
+#
+# DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED
+#   true exposes the cugraph_* table functions plus metadata UDTFs. The image
+#   must be built with cugraph support; set false to ship one artifact but keep
+#   the SQL surface hidden at runtime.
+#
+# DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS
+#   Optional allowlist by SQL function name, e.g. cugraph_pagerank,cugraph_bfs.
+#
+# DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED
+# DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER
+# DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY
+#   Optional defaults for graph construction. Policy values:
+#   python_cugraph | raw_libcugraph
+# ---------------------------------------------------------------------------
+CUGRAPH_ENABLED="${DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED:-true}"
+CUGRAPH_ALGORITHMS="${DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS:-}"
+CUGRAPH_DIRECTED="${DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED:-}"
+CUGRAPH_RENUMBER="${DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER:-}"
+CUGRAPH_CONSTRUCTION_POLICY="${DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY:-}"
+
+# ---------------------------------------------------------------------------
 # Build the docker run command
 # ---------------------------------------------------------------------------
 ARGS=(
@@ -115,6 +138,9 @@ ARGS=(
     -e "DATAFUSION_CUDF_ICEBERG_WAREHOUSE=${ICEBERG_WAREHOUSE}"
     -e "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
     -e "AWS_REGION=${AWS_REGION}"
+
+    # cuGraph SQL DSL
+    -e "DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED=${CUGRAPH_ENABLED}"
 )
 
 # Pre-load specific tables only when ICEBERG_TABLES is non-empty.
@@ -122,6 +148,13 @@ ARGS=(
 
 # Glue catalog account ID only when explicitly set.
 [[ -n "${ICEBERG_GLUE_CATALOG_ID}" ]] && ARGS+=(-e "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID=${ICEBERG_GLUE_CATALOG_ID}")
+
+# Optional cuGraph defaults.
+[[ -n "${CUGRAPH_ALGORITHMS}" ]] && ARGS+=(-e "DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS=${CUGRAPH_ALGORITHMS}")
+[[ -n "${CUGRAPH_DIRECTED}" ]] && ARGS+=(-e "DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED=${CUGRAPH_DIRECTED}")
+[[ -n "${CUGRAPH_RENUMBER}" ]] && ARGS+=(-e "DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER=${CUGRAPH_RENUMBER}")
+[[ -n "${CUGRAPH_CONSTRUCTION_POLICY}" ]] && \
+    ARGS+=(-e "DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY=${CUGRAPH_CONSTRUCTION_POLICY}")
 
 # AWS credentials — forward from host environment (short-lived STS tokens).
 [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && ARGS+=(-e "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}")

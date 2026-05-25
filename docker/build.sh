@@ -23,7 +23,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
-FEATURES="server,iceberg,cugraph"
+TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+FEATURES="${FEATURES:-server,iceberg,cugraph}"
 
 cd "$REPO_ROOT"
 
@@ -32,7 +33,7 @@ cargo build --release \
     --features "$FEATURES" \
     --bin datafusion_cudf_server
 
-BINARY="$REPO_ROOT/target/release/datafusion_cudf_server"
+BINARY="$TARGET_ROOT/release/datafusion_cudf_server"
 
 echo "==> Staging artifacts into $DIST_DIR ..."
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
@@ -57,7 +58,7 @@ done
 
 # Fallback: newest libcudf_rust.so under the release build dir
 if [[ -z "$CUDF_RUST_SO" ]]; then
-    CUDF_RUST_SO=$(find "$REPO_ROOT/target/release/build" \
+    CUDF_RUST_SO=$(find "$TARGET_ROOT/release/build" \
         -name "libcudf_rust.so" -path "*/cudf-sys-*/out/lib/*" 2>/dev/null \
         | head -1)
 fi

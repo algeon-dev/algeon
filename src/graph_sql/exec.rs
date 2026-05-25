@@ -57,6 +57,7 @@ pub struct CugraphAlgoExec {
     edge_source: Arc<dyn ExecutionPlan>,
     projection: Option<Vec<usize>>,
     limit: Option<usize>,
+    native_execution_config: NativeCudfExecutionConfig,
     edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     gpu_result_input_name: String,
     metrics: ExecutionPlanMetricsSet,
@@ -69,6 +70,7 @@ impl CugraphAlgoExec {
         edge_source: Arc<dyn ExecutionPlan>,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
+        native_execution_config: NativeCudfExecutionConfig,
     ) -> Result<Self> {
         let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         Self::try_new_with_gpu_result_input_name(
@@ -76,6 +78,7 @@ impl CugraphAlgoExec {
             edge_source,
             projection,
             limit,
+            native_execution_config,
             format!("__datafusion_cudf_cugraph_result_{id}"),
         )
     }
@@ -85,6 +88,7 @@ impl CugraphAlgoExec {
         edge_source: Arc<dyn ExecutionPlan>,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
+        native_execution_config: NativeCudfExecutionConfig,
         gpu_result_input_name: String,
     ) -> Result<Self> {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
@@ -94,6 +98,7 @@ impl CugraphAlgoExec {
             edge_source,
             projection,
             limit,
+            native_execution_config,
             edge_source_canonical_facts,
             gpu_result_input_name,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -164,13 +169,14 @@ impl DisplayAs for CugraphAlgoExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, construction_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, construction_policy={}, memory_control_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 self.spec.algorithm,
                 self.spec.table_name,
                 self.spec.src_col,
                 self.spec.dst_col,
                 self.spec.weight_col.as_deref().unwrap_or("<none>"),
                 self.spec.graph_options.construction_policy.as_str(),
+                self.native_execution_config.memory_control_policy(),
                 self.edge_normalize_inserted(),
                 self.gpu_result_input_name,
             ),
@@ -181,6 +187,7 @@ impl DisplayAs for CugraphAlgoExec {
                 writeln!(f, "dst_col={}", self.spec.dst_col)?;
                 writeln!(f, "weight_col={}", self.spec.weight_col.as_deref().unwrap_or("<none>"))?;
                 writeln!(f, "construction_policy={}", self.spec.graph_options.construction_policy.as_str())?;
+                writeln!(f, "memory_control_policy={}", self.native_execution_config.memory_control_policy())?;
                 writeln!(f, "edge_normalize_inserted={}", self.edge_normalize_inserted())?;
                 writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
                 writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)
@@ -221,6 +228,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             Arc::clone(&children[0]),
             self.projection.clone(),
             self.limit,
+            self.native_execution_config.clone(),
             self.gpu_result_input_name.clone(),
         )?))
     }
@@ -242,9 +250,10 @@ impl ExecutionPlan for CugraphAlgoExec {
         let projection = self.projection.clone();
         let limit = self.limit;
         let edge_normalize_inserted = self.edge_normalize_inserted();
+        let default_execution_config = self.native_execution_config.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
-            let execution_config = edge_execution_config(edge_source.as_ref());
+            let execution_config = edge_execution_config(edge_source.as_ref(), &default_execution_config);
             let context_lease = execution_config.execution_context().map_err(|error| {
                 DataFusionError::from(
                     error
@@ -294,14 +303,17 @@ fn projected_schema(schema: &SchemaRef, projection: Option<&Vec<usize>>) -> Resu
     Ok(Arc::new(Schema::new(fields)))
 }
 
-fn edge_execution_config(plan: &dyn ExecutionPlan) -> NativeCudfExecutionConfig {
+fn edge_execution_config(
+    plan: &dyn ExecutionPlan,
+    default_execution_config: &NativeCudfExecutionConfig,
+) -> NativeCudfExecutionConfig {
     if let Some(native) = as_native_cudf_exec(plan) {
         return native.execution_config().clone();
     }
     if let Some(native) = as_native_cudf_composed_exec(plan) {
         return native.execution_config().clone();
     }
-    NativeCudfExecutionConfig::bounded_auto_sized()
+    default_execution_config.clone()
 }
 
 fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {

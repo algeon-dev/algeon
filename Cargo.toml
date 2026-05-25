@@ -46,6 +46,7 @@ server = [
     "dep:tracing-subscriber",
     "dep:uuid",
 ]
+server-cugraph = ["server", "cugraph"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -88,6 +89,10 @@ sha2 = "0.11"
 
 [[bin]]
 name = "datafusion_cudf_server"
+required-features = ["server"]
+
+[[bin]]
+name = "flight_sql_cugraph_smoke"
 required-features = ["server"]
 
 [[bin]]
@@ -156,6 +161,10 @@ required-features = ["server"]
 [[test]]
 name = "server_flight_sql_tests"
 required-features = ["server"]
+
+[[test]]
+name = "server_cugraph_dsl_tests"
+required-features = ["server", "cugraph"]
 
 [[test]]
 name = "server_iceberg_smoke_tests"
