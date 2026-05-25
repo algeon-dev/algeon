@@ -7,6 +7,7 @@ use cudf_query_engine::MemoryControlPolicy;
 use tonic::transport::Server;
 
 mod admission;
+pub mod auth;
 mod cancel;
 pub mod config;
 pub mod diagnostics;
@@ -14,6 +15,7 @@ pub mod error;
 mod flight;
 mod session;
 
+pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfig, TokenStore};
 #[cfg(feature = "cugraph")]
 pub use config::CugraphServerConfig;
 pub use config::{
@@ -21,11 +23,11 @@ pub use config::{
     DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
     DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
     DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
-    DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
-    DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV, DATAFUSION_CUDF_SERVER_LOG_ENV,
-    DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV, DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
+    DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
+    DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
+    DATAFUSION_CUDF_SERVER_LOG_ENV, DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV,
+    DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
     DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV, DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
     ServerSessionProfile,
@@ -50,12 +52,15 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     log_server_config_snapshot(&config);
     warn_if_testing_profile_active(&config);
     let ctx = Arc::new(session::build_session_context(&config).await?);
+    let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
+    log_auth_mode_snapshot(&config.auth.mode);
     let service = flight::DatafusionCudfFlightSqlService::new(
         ctx,
         config.native_optimizer_config.clone(),
         config.session_profile,
         config.max_in_flight,
         config.statement_ticket_ttl,
+        auth_interceptor,
     );
     let admission = Arc::clone(service.admission());
     let cancellations = Arc::clone(service.cancellations());
@@ -281,6 +286,31 @@ fn option_display(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
 
+/// Emit a one-shot startup line summarizing the configured auth mode,
+/// and a WARN when [`auth::AuthMode::Disabled`] is selected so operators
+/// see in the log that the server is wide open.
+fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
+    match mode {
+        auth::AuthMode::Disabled => {
+            tracing::warn!(
+                auth_mode = "disabled",
+                "datafusion-cudf Flight SQL server starting with auth DISABLED. \
+                 Every RPC will be accepted. This is unsafe to expose outside \
+                 a trusted network. Configure [auth] in the server TOML config \
+                 to enable Basic+Bearer authentication."
+            );
+        },
+        auth::AuthMode::BasicBearer { users, token_ttl_secs } => {
+            tracing::info!(
+                auth_mode = "basic_bearer",
+                user_count = users.len(),
+                token_ttl_secs = *token_ttl_secs,
+                "datafusion-cudf Flight SQL server starting with Basic+Bearer auth"
+            );
+        },
+    }
+}
+
 /// Emit a one-shot startup warning when the operator selected the
 /// [`ServerSessionProfile::CpuFallback`] profile against an Iceberg
 /// deployment.
@@ -358,6 +388,7 @@ mod tests {
             statement_ticket_ttl: std::time::Duration::from_secs(60),
             native_optimizer_config: CudfOptimizerConfig::default(),
             session_profile: profile,
+            auth: auth::AuthConfig::default(),
             #[cfg(feature = "iceberg")]
             iceberg: None,
             #[cfg(feature = "cugraph")]
