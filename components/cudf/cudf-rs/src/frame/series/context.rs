@@ -683,6 +683,7 @@ impl Series {
             ttv.table(),
             &requests,
             NullPolicy::Exclude,
+            false,
             &output_domain,
             &exec_options,
             operation,

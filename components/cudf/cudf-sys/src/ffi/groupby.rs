@@ -25,6 +25,37 @@ extern "C" {
 
     pub fn cudf_groupby_scan_aggregation_destroy(handle: *mut c_void);
 
+    pub fn cudf_prepared_groupby_create_ex(
+        keys: cudf_table_view_handle,
+        keys_null_policy: cudf_null_policy_t,
+        keys_are_sorted: i32,
+        out: *mut *mut c_void,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_prepared_groupby_destroy(handle: *mut c_void);
+
+    pub fn cudf_prepared_groupby_prepare_groups_ex(
+        groupby: *mut c_void,
+        out_num_groups: *mut i64,
+        out_grouped_key_output_bytes: *mut usize,
+        out_max_group_size: *mut i64,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_prepared_groupby_aggregate_ex(
+        groupby: *mut c_void,
+        values: *const cudf_column_view_handle,
+        aggregations: *const *mut c_void,
+        agg_counts: *const i32,
+        num_requests: i32,
+        num_aggregations: i32,
+        out_keys: *mut cudf_table_handle,
+        out_values: *mut *mut cudf_column_handle,
+        out_total_columns: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     /// Groupby aggregate with explicit execution context.
     ///
     /// `options` must name an explicit valid device and non-null stream/MR.
@@ -38,6 +69,21 @@ extern "C" {
         num_requests: i32,
         num_aggregations: i32,
         keys_null_policy: cudf_null_policy_t,
+        out_keys: *mut cudf_table_handle,
+        out_values: *mut *mut cudf_column_handle,
+        out_total_columns: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_groupby_aggregate_with_keys_are_sorted_ex(
+        keys: cudf_table_view_handle,
+        values: *const cudf_column_view_handle,
+        aggregations: *const *mut c_void,
+        agg_counts: *const i32,
+        num_requests: i32,
+        num_aggregations: i32,
+        keys_null_policy: cudf_null_policy_t,
+        keys_are_sorted: i32,
         out_keys: *mut cudf_table_handle,
         out_values: *mut *mut cudf_column_handle,
         out_total_columns: *mut i32,

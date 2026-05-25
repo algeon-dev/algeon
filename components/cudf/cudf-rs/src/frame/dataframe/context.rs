@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
     DataFrameFilteredJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
@@ -7,7 +9,8 @@ use super::{
 };
 use crate::{
     Expr, JoinType, Result,
-    frame::series::Series,
+    core::column::position_sequence_in_domain,
+    frame::{factorization::Codebook, series::Series},
     ops::{
         ast::AstExpression,
         join::{MergeOptions, SizedConditionalPairJoinType},
@@ -63,6 +66,63 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         T: Into<WithColumnExpr>,
     {
         self.df.with_columns_in_context(exprs, self.ctx, "dataframe::with_execution::with_columns")
+    }
+
+    /// Add a zero-based Int32 row-position column using the borrowed execution override.
+    pub fn with_position_column(&self, output_name: &str) -> Result<DataFrame> {
+        let operation = "dataframe::with_execution::with_position_column";
+        let output_domain = self.ctx.resolve_output_domain(self.df.execution_domain())?;
+        let row_ids = Series::from_column(position_sequence_in_domain(self.df.num_rows(), &output_domain, operation)?)
+            .map_err(|e| e.reanchor(operation).with_column(output_name.to_string()))?;
+        self.df.with_column_in_domain(output_name, row_ids, output_domain, operation).map_err(|e| e.reanchor(operation))
+    }
+
+    /// Add an encoded integer-code column using a reusable codebook and the borrowed execution override.
+    pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<DataFrame> {
+        let encoded = codebook
+            .encode_in(
+                &self
+                    .df
+                    .series(input_column)
+                    .map_err(|e| e.reanchor("dataframe::with_execution::with_encoded_column"))?,
+                self.ctx,
+            )
+            .map_err(|e| {
+                e.reanchor("dataframe::with_execution::with_encoded_column").with_column(input_column.to_string())
+            })?;
+        let output_domain = Arc::clone(encoded.as_series().as_column().execution_domain());
+        self.df
+            .with_column_in_domain(
+                output_name,
+                encoded,
+                output_domain,
+                "dataframe::with_execution::with_encoded_column",
+            )
+            .map_err(|e| e.reanchor("dataframe::with_execution::with_encoded_column"))
+    }
+
+    /// Add a decoded value column from integer codes using the borrowed execution override.
+    pub fn with_decoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<DataFrame> {
+        let decoded = codebook
+            .decode_series_in(
+                &self
+                    .df
+                    .series(input_column)
+                    .map_err(|e| e.reanchor("dataframe::with_execution::with_decoded_column"))?,
+                self.ctx,
+            )
+            .map_err(|e| {
+                e.reanchor("dataframe::with_execution::with_decoded_column").with_column(input_column.to_string())
+            })?;
+        let output_domain = Arc::clone(decoded.as_column().execution_domain());
+        self.df
+            .with_column_in_domain(
+                output_name,
+                decoded,
+                output_domain,
+                "dataframe::with_execution::with_decoded_column",
+            )
+            .map_err(|e| e.reanchor("dataframe::with_execution::with_decoded_column"))
     }
 
     /// Sort using the borrowed execution override.

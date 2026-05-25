@@ -1,12 +1,15 @@
 //! High-level DataFrame groupby API.
 
-use std::sync::Arc;
+use std::{os::raw::c_void, ptr, ptr::NonNull, sync::Arc};
 
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
 
 use super::{
-    agg::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate_impl},
+    agg::{
+        AggregationRequest, GroupByAgg, NullPolicy, PreparedGroupBy, PreparedGroupByFacts, groupby_aggregate_impl,
+        groupby_aggregate_impl_with_prepared, prepared_groupby_facts_raw,
+    },
     errors::unsupported_groupby_validation_error,
     output::take_groupby_result_columns_for_output,
     shift::{GroupByShiftRequest, groupby_shift_impl},
@@ -14,7 +17,7 @@ use super::{
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorKind, Result},
         scalar::Scalar,
     },
     frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
@@ -27,6 +30,7 @@ use crate::{
 
 const GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
     "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable";
+const PREPARED_GROUPBY_RETAINED_STATE_CONTRACT_GAP: &str = "libcudf_prepared_groupby_retained_state_memory_unavailable";
 const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_META_INLINE_CAPACITY: usize = 8;
 const GROUPBY_RESULT_NAME_INLINE_CAPACITY: usize = 8;
@@ -124,8 +128,15 @@ impl AggSpec {
 /// Options for the high-level groupby operation.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct GroupByOptions {
+    /// Include null key rows as their own groups. Defaults to `false`, which
+    /// excludes rows containing null group keys.
     #[builder(default)]
     include_null_keys: bool,
+    /// Assert that every key column is already sorted ascending with nulls
+    /// after non-null values. Defaults to `false`; setting this incorrectly
+    /// violates cuDF's sorted-key groupby contract.
+    #[builder(default)]
+    keys_are_sorted: bool,
 }
 
 impl Default for GroupByOptions {
@@ -137,6 +148,10 @@ impl Default for GroupByOptions {
 impl GroupByOptions {
     pub(crate) fn null_policy(&self) -> NullPolicy {
         if self.include_null_keys { NullPolicy::Include } else { NullPolicy::Exclude }
+    }
+
+    pub(crate) fn keys_are_sorted(&self) -> bool {
+        self.keys_are_sorted
     }
 }
 
@@ -157,6 +172,205 @@ pub struct GroupBy<'a> {
 pub struct GroupByExecutionScope<'a, 'ctx, 'handles> {
     groupby: GroupBy<'a>,
     ctx: &'ctx ExecutionOverrides<'handles>,
+}
+
+/// Owned high-level prepared groupby state for a DataFrame.
+///
+/// The value retains the input [`DataFrame`] so the key columns borrowed by
+/// the underlying cuDF groupby handle remain alive. Preparing this value calls
+/// cuDF's sort-backed `get_groups` path; callers should treat it as an
+/// explicit `prepared_sort_groupby` strategy, not as a free diagnostic probe.
+pub struct PreparedDataFrameGroupBy {
+    df: DataFrame,
+    keys: Vec<String>,
+    options: GroupByOptions,
+    handle: NonNull<c_void>,
+    keys_domain: Arc<ExecutionDomain>,
+    prepared_facts: PreparedGroupByFacts,
+}
+
+impl PreparedDataFrameGroupBy {
+    /// Facts observed when this prepared groupby handle was created.
+    pub fn prepared_facts(&self) -> PreparedGroupByFacts {
+        self.prepared_facts
+    }
+
+    /// Re-run cuDF grouping preparation and return direct grouped-key facts.
+    pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
+        prepared_groupby_facts_raw(
+            self.handle.as_ptr(),
+            &self.keys_domain,
+            "groupby::PreparedDataFrameGroupBy::prepare_groups",
+        )
+    }
+
+    /// Execute aggregation requests through this prepared groupby handle.
+    pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
+        let ctx = ExecutionOverrides::new();
+        self.agg_impl_with_groupby_error_mapper(specs, &ctx, "groupby::PreparedDataFrameGroupBy::agg", |error| error)
+    }
+
+    /// Execute aggregation requests through this prepared groupby handle with a
+    /// hard execution-budget token.
+    pub fn agg_with_budget(
+        &self,
+        specs: &[AggSpec],
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+        let operation = "groupby::PreparedDataFrameGroupBy::agg_with_budget";
+        let ctx = token.execution_overrides();
+        let output = self
+            .agg_impl_with_groupby_error_mapper(specs, &ctx, operation, |error| {
+                annotate_groupby_budget_execution_error(error, token, operation)
+            })
+            .map_err(|error| error.reanchor_if_needed(operation))?;
+        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let output_rows = output.num_rows();
+        let facts = self.prepared_facts();
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output_rows)
+            .with_unresolved_contract(GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP)
+            .with_context_facts([
+                ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
+                ("prepared_groupby_num_groups", facts.num_groups.to_string()),
+                ("prepared_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string()),
+                ("prepared_groupby_max_group_size", facts.max_group_size.to_string()),
+            ]);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
+    fn agg_impl_with_groupby_error_mapper<F>(
+        &self,
+        specs: &[AggSpec],
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+        map_groupby_error: F,
+    ) -> Result<DataFrame>
+    where
+        F: FnOnce(Error) -> Error,
+    {
+        use crate::internal::{
+            hash::{FastHashMap, fast_hash_map_with_capacity},
+            resolve::resolve_column_names,
+        };
+
+        require_non_empty_group_keys(self.keys.len(), operation)?;
+
+        if specs.is_empty() {
+            return Err(unsupported_groupby_validation_error(
+                operation,
+                "at least one aggregation spec is required",
+                "empty_agg_specs",
+                "provide at least one AggSpec or use a shortcut like .sum([...])",
+            ));
+        }
+
+        let columns = self.df.columns_map();
+        let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            self.keys.iter().map(|s| s.as_str()).collect();
+        let _key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        drop(key_refs);
+
+        for spec in specs {
+            if !columns.contains_key(spec.column.as_str()) {
+                return Err(missing_column_error(operation, &spec.column));
+            }
+        }
+
+        let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
+        let mut request_meta: SmallVec<[(usize, Vec<GroupByAgg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            SmallVec::new();
+        let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
+
+        let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
+        let mut view_idx_to_group_idx: FastHashMap<usize, usize> = fast_hash_map_with_capacity(specs.len());
+        let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
+
+        for spec in specs {
+            let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
+                idx
+            } else {
+                let arc_col =
+                    columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
+                let idx = value_views.len();
+                value_views.push(arc_col.view()?);
+                col_name_to_view_idx.insert(spec.column.clone(), idx);
+                idx
+            };
+
+            let group_idx = if let Some(&idx) = view_idx_to_group_idx.get(&view_idx) {
+                idx
+            } else {
+                let idx = request_meta.len();
+                request_meta.push((view_idx, Vec::new()));
+                view_idx_to_group_idx.insert(view_idx, idx);
+                idx
+            };
+
+            let agg_idx_within_group = request_meta[group_idx].1.len();
+            request_meta[group_idx].1.push(spec.agg.clone());
+            output_order.push((group_idx, agg_idx_within_group));
+
+            result_names.push(spec.resolved_output_name());
+        }
+
+        let agg_slices: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
+            request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
+
+        let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
+            .iter()
+            .enumerate()
+            .map(|(i, (view_idx, _))| AggregationRequest {
+                values: &value_views[*view_idx],
+                aggregations: &agg_slices[i],
+            })
+            .collect();
+
+        let execution = ResolvedExecution::many(
+            &self.keys_domain,
+            requests.iter().map(|request| request.values.execution_domain()),
+            &ctx,
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+
+        let gb_result = groupby_aggregate_impl_with_prepared(
+            self.handle.as_ptr(),
+            &requests,
+            self.options.null_policy(),
+            self.options.keys_are_sorted(),
+            &output_domain,
+            execution.exec_options(),
+            operation,
+        )
+        .map_err(map_groupby_error)?;
+
+        let grouped_results: Vec<Vec<Option<Column>>> =
+            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
+        let all_result_cols = take_groupby_result_columns_for_output(grouped_results, &output_order, operation)?;
+
+        let result_keys_cols = gb_result.keys.into_columns()?;
+
+        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
+        final_cols.extend(result_keys_cols);
+        final_cols.extend(all_result_cols);
+
+        let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + result_names.len());
+        schema_names.extend(self.keys.iter().cloned());
+        schema_names.extend(result_names);
+
+        DataFrame::new(schema_names, final_cols)
+    }
+}
+
+impl Drop for PreparedDataFrameGroupBy {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_prepared_groupby_destroy(self.handle.as_ptr()) };
+    }
 }
 
 impl<'a> GroupBy<'a> {
@@ -189,6 +403,53 @@ impl<'a> GroupBy<'a> {
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         let output_domain = Arc::clone(self.df.execution_domain());
         self.agg_impl(specs, output_domain, "groupby::GroupBy::agg")
+    }
+
+    /// Prepare reusable grouping state and return cuDF-reported cardinality.
+    ///
+    /// This runs cuDF's grouping preparation for this DataFrame's key columns
+    /// and returns only direct facts from that operation. It does not estimate
+    /// temporary workspace or retained groupby-state memory.
+    pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
+        let ctx = ExecutionOverrides::new();
+        self.prepare_groups_impl(&ctx, "groupby::GroupBy::prepare_groups")
+    }
+
+    /// Build explicit prepared sort-groupby state under a hard execution
+    /// budget.
+    ///
+    /// This is a reusable execution strategy object, not a transparent
+    /// diagnostic probe: construction calls cuDF's `get_groups({})` path to
+    /// initialize sort-backed grouping state and records exact grouped-key
+    /// output facts. The grouped-key output is released before this returns;
+    /// retained internal prepared-state bytes are not exposed by libcudf and
+    /// are recorded as an unresolved lower-level contract in the report.
+    pub fn prepare_sort_groupby_with_budget(
+        &self,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<PreparedDataFrameGroupBy>> {
+        let operation = "groupby::GroupBy::prepare_sort_groupby_with_budget";
+        let ctx = token.execution_overrides();
+        let prepared = self
+            .prepare_sort_groupby_impl(&ctx, operation)
+            .map_err(|error| annotate_groupby_budget_execution_error(error, token, operation))?;
+        let facts = prepared.prepared_facts();
+        let report = token
+            .reservation_enforced_report()
+            .with_output_rows(facts.num_groups)
+            .with_unresolved_contract(PREPARED_GROUPBY_RETAINED_STATE_CONTRACT_GAP)
+            .with_context_facts([
+                ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
+                ("prepared_groupby_num_groups", facts.num_groups.to_string()),
+                ("prepared_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string()),
+                ("prepared_groupby_max_group_size", facts.max_group_size.to_string()),
+                (
+                    "prepared_groupby_memory_facts_status",
+                    "grouped_key_output_only_retained_state_unavailable".to_string(),
+                ),
+            ]);
+
+        Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
 
     /// Execute the groupby with a hard execution-budget token.
@@ -231,8 +492,104 @@ impl<'a> GroupBy<'a> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(specs, output_domain, "groupby::GroupBy::with_execution::agg")
     }
+    /// Prepare reusable grouping state using a borrowed per-operation
+    /// execution override.
+    pub(crate) fn prepare_groups_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<PreparedGroupByFacts> {
+        self.prepare_groups_impl(ctx, "groupby::GroupBy::with_execution::prepare_groups")
+    }
     pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
+    }
+    pub(crate) fn __debug_prepare_groups_in_context(
+        &self,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<PreparedGroupByFacts> {
+        self.prepare_groups_in_context(ctx)
+    }
+
+    fn prepare_groups_impl(
+        &self,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<PreparedGroupByFacts> {
+        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
+
+        require_non_empty_group_keys(self.keys.len(), operation)?;
+
+        let columns = self.df.columns_map();
+        let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            self.keys.iter().map(|s| s.as_str()).collect();
+        let key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        drop(key_refs);
+
+        let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
+        let prepared = if self.options.keys_are_sorted() {
+            PreparedGroupBy::new_sorted_in(keys_table.table(), self.options.null_policy(), ctx)
+        } else {
+            PreparedGroupBy::new_in(keys_table.table(), self.options.null_policy(), ctx)
+        }?;
+        prepared.prepare_groups()
+    }
+
+    fn prepare_sort_groupby_impl(
+        &self,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<PreparedDataFrameGroupBy> {
+        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
+
+        require_non_empty_group_keys(self.keys.len(), operation)?;
+
+        let retained_df = self.df.clone();
+        let (handle, keys_domain) = {
+            let columns = retained_df.columns_map();
+            let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+                self.keys.iter().map(|s| s.as_str()).collect();
+            let key_indices = resolve_column_names(columns, &key_refs, operation)?;
+            drop(key_refs);
+
+            let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
+            let execution = ResolvedExecution::unary(keys_table.table().execution_domain(), ctx, operation)?;
+            let mut handle = ptr::null_mut();
+            error::check_status_in_with_details(
+                unsafe {
+                    cudf_sys::cudf_prepared_groupby_create_ex(
+                        keys_table.table().raw_handle(),
+                        self.options.null_policy().to_raw(),
+                        i32::from(self.options.keys_are_sorted()),
+                        &mut handle,
+                        execution.exec_options(),
+                    )
+                },
+                operation,
+                [
+                    ("null_policy", (self.options.null_policy() as i32).to_string()),
+                    ("keys_are_sorted", self.options.keys_are_sorted().to_string()),
+                    ("execution_authority", "retained_dataframe_keys".to_string()),
+                ],
+            )?;
+            (
+                error::require_non_null(handle, operation, "prepared dataframe groupby")?,
+                Arc::clone(execution.output_domain()),
+            )
+        };
+
+        let prepared_facts = match prepared_groupby_facts_raw(handle.as_ptr(), &keys_domain, operation) {
+            Ok(facts) => facts,
+            Err(error) => {
+                unsafe { cudf_sys::cudf_prepared_groupby_destroy(handle.as_ptr()) };
+                return Err(error);
+            },
+        };
+
+        Ok(PreparedDataFrameGroupBy {
+            df: retained_df,
+            keys: self.keys.clone(),
+            options: self.options.clone(),
+            handle,
+            keys_domain,
+            prepared_facts,
+        })
     }
 
     fn agg_impl(
@@ -342,6 +699,7 @@ impl<'a> GroupBy<'a> {
             keys_table.table(),
             &requests,
             self.options.null_policy(),
+            self.options.keys_are_sorted(),
             &output_domain,
             execution.exec_options(),
             operation,
@@ -599,6 +957,12 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     /// Execute the groupby with the given aggregation specifications.
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         self.groupby.agg_in_context(specs, self.ctx)
+    }
+
+    /// Prepare reusable grouping state and return cuDF-reported cardinality
+    /// using this scope's execution override.
+    pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
+        self.groupby.prepare_groups_in_context(self.ctx)
     }
 
     /// Apply a per-group row shift using this scope's execution override.

@@ -204,12 +204,23 @@ fn execute_probe(
     validate_unique_keys: bool,
     operation: &'static str,
 ) -> Result<Column> {
-    let meta = validate_probe_inputs(input, keys, values, operation)?;
     let ctx = ExecutionOverrides::new();
+    execute_probe_with_context(input, keys, values, validate_unique_keys, &ctx, operation)
+}
+
+fn execute_probe_with_context(
+    input: &ColumnView<'_>,
+    keys: &ColumnView<'_>,
+    values: &ColumnView<'_>,
+    validate_unique_keys: bool,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<Column> {
+    let meta = validate_probe_inputs(input, keys, values, operation)?;
     let execution = ResolvedExecution::many(
         input.execution_domain(),
         [keys.execution_domain(), values.execution_domain()],
-        &ctx,
+        ctx,
         operation,
     )
     .map_err(|e| meta.decorate(e, operation))?;
@@ -349,6 +360,16 @@ pub(crate) fn probe_prevalidated(
     operation: &'static str,
 ) -> Result<Column> {
     execute_probe(input, keys, values, false, operation)
+}
+
+pub(crate) fn probe_prevalidated_in(
+    input: &ColumnView<'_>,
+    keys: &ColumnView<'_>,
+    values: &ColumnView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<Column> {
+    execute_probe_with_context(input, keys, values, false, ctx, operation)
 }
 
 /// An owned reusable lookup mapping for repeated probes.

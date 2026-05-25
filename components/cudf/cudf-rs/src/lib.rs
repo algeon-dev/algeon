@@ -207,7 +207,10 @@ pub use frame::{
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{
-    groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions, ShiftSpec},
+    groupby::{
+        AggSpec, GroupBy, GroupByAgg, GroupByOptions, PreparedDataFrameGroupBy, PreparedGroupBy, PreparedGroupByFacts,
+        ShiftSpec,
+    },
     join::{JoinType, MergeOptions},
     lookup::LookupTable,
     reduction::ReduceAgg,

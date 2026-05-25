@@ -456,6 +456,29 @@ pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &C
     )
 }
 
+/// Conditionally select elements from two columns using an explicit execution override.
+pub fn copy_if_else_in(
+    lhs: &ColumnView<'_>,
+    rhs: &ColumnView<'_>,
+    boolean_mask: &ColumnView<'_>,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<Column> {
+    let execution = ResolvedExecution::many(
+        lhs.execution_domain(),
+        [rhs.execution_domain(), boolean_mask.execution_domain()],
+        ctx,
+        "copying::copy_if_else_in",
+    )?;
+    copy_if_else_impl(
+        lhs,
+        rhs,
+        boolean_mask,
+        execution.output_domain(),
+        execution.exec_options(),
+        "copying::copy_if_else_in",
+    )
+}
+
 // ---------------------------------------------------------------------------
 // shift
 // ---------------------------------------------------------------------------
