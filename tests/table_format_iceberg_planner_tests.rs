@@ -75,7 +75,7 @@ fn no_delete_local_parquet_iceberg_tasks_produce_native_admissible_scan_plan() {
 }
 
 #[test]
-fn no_delete_s3_parquet_iceberg_tasks_are_direct_native_admissible() {
+fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_host_buffer_fetch() {
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("23456".to_string()),
         Some("aws_glue".to_string()),
@@ -89,11 +89,13 @@ fn no_delete_s3_parquet_iceberg_tasks_are_direct_native_admissible() {
 
     assert!(plan.is_native_admissible());
     assert_eq!(plan.data_files[0].read_capability, TableFormatReadCapability::ObjectStore { scheme: "s3".to_string() });
-    assert!(plan.unsupported_features.is_empty());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.native_source_read_capability, "object_store:s3");
-    assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Eligible);
+    assert_eq!(diagnostics.admitted_native_source_file_count, 1);
+    assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Rejected);
+    assert!(diagnostics.rejected_feature_list.is_empty());
 }
 
 #[test]
@@ -129,7 +131,7 @@ fn delete_files_are_preserved_and_reject_native_admission() {
 }
 
 #[test]
-fn object_store_and_non_parquet_data_files_are_rejected_with_structured_reasons() {
+fn non_parquet_object_store_data_files_are_rejected_with_structured_reasons() {
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("24680".to_string()),
         Some("aws_glue".to_string()),

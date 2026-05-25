@@ -118,16 +118,18 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             source_cache_inserts: 30,
             source_cache_insert_skipped: 31,
             source_cache_retained_bytes: 32,
-            row_groups_planned: 33,
-            row_groups_committed: 34,
-            partial_aggregate_count: 35,
-            partial_aggregate_input_rows: 36,
-            partial_aggregate_rows: 37,
-            partial_aggregate_retained_bytes: 38,
-            final_merge_attempts: 39,
-            final_merge_levels: 40,
-            final_merge_max_fan_in: 41,
-            retry_count: 42,
+            source_fetch_bytes: 33,
+            source_fetch_count: 34,
+            row_groups_planned: 35,
+            row_groups_committed: 36,
+            partial_aggregate_count: 37,
+            partial_aggregate_input_rows: 38,
+            partial_aggregate_rows: 39,
+            partial_aggregate_retained_bytes: 40,
+            final_merge_attempts: 41,
+            final_merge_levels: 42,
+            final_merge_max_fan_in: 43,
+            retry_count: 44,
             retry_resource_exhausted_count: 43,
             retry_reservation_failure_count: 44,
             adaptive_retry_count: 45,
@@ -245,17 +247,25 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 join_output_rows: 4,
                 join_output_bytes: 8192,
             }],
+            host_fetch_budget_wait_time_ns: Some(5_000_000),
+            source_fetch_concurrency_wait_time_ns: Some(6_000_000),
+            source_fetch_time_ns: Some(7_000_000),
+            source_decode_time_ns: Some(8_000_000),
         },
         timing_metrics: NativeTpchTimingMetrics {
             parquet_read_time_ms: Some(1.0),
             source_read_time_ms: Some(2.0),
             source_read_queue_wait_time_ms: Some(3.0),
             source_cache_lookup_time_ms: Some(4.0),
-            operator_time_ms: Some(5.0),
-            chunk_operator_time_ms: Some(6.0),
-            final_merge_time_ms: Some(7.0),
-            final_sort_time_ms: Some(8.0),
-            materialization_time_ms: Some(9.0),
+            host_fetch_budget_wait_time_ms: Some(5.0),
+            source_fetch_concurrency_wait_time_ms: Some(6.0),
+            source_fetch_time_ms: Some(7.0),
+            source_decode_time_ms: Some(8.0),
+            operator_time_ms: Some(9.0),
+            chunk_operator_time_ms: Some(10.0),
+            final_merge_time_ms: Some(11.0),
+            final_sort_time_ms: Some(12.0),
+            materialization_time_ms: Some(13.0),
         },
     };
     let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
@@ -267,9 +277,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
-    assert!(text.contains(
-        "\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t"
-    ));
     assert!(text.contains("\t64\t65\t66\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
@@ -280,18 +287,22 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class")], "source");
     assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class_bytes")], "64");
     assert_eq!(fields[header_index(&header_fields, "runtime_operator_class")], "materialization");
-    assert_eq!(fields[header_index(&header_fields, "runtime_operator_class_ms")], "9.000");
+    assert_eq!(fields[header_index(&header_fields, "runtime_operator_class_ms")], "13.000");
     assert_eq!(fields[header_index(&header_fields, "source_predicate_pushdown_status")], "reader_pushdown");
     assert_eq!(fields[header_index(&header_fields, "partitioned_join_count")], "0");
     assert_eq!(fields[header_index(&header_fields, "join_partitioning_status")], "not_partitioned");
     assert_eq!(fields[header_index(&header_fields, "aggregate_merge_status")], "thresholded");
+    assert_eq!(fields[header_index(&header_fields, "source_fetch_bytes")], "33");
+    assert_eq!(fields[header_index(&header_fields, "source_fetch_count")], "34");
+    assert_eq!(fields[header_index(&header_fields, "row_groups_planned")], "35");
+    assert_eq!(fields[header_index(&header_fields, "row_groups_committed")], "36");
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
             .contains("operator_class=source,task_count=3,max_task_reservation_bytes=64")
     );
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
-            .contains("operator_class=final_merge,task_count=39")
+            .contains("operator_class=final_merge,task_count=41")
     );
     assert!(
         fields[header_index(&header_fields, "aggregate_strategy_rows")]
@@ -314,7 +325,11 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             .contains("prepared_sort_groupby_num_groups=unknown")
     );
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
-    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));
+    assert!(
+        text.contains(
+            "\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"
+        )
+    );
 }
 
 #[test]

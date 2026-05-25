@@ -14,7 +14,7 @@ use native_iceberg_tpch_benchmark::{
     native_iceberg_smoke_report::{
         IcebergNativeSmokeReportRow, ObjectStoreStagingMode, ObjectStoreStagingStatus, ObjectStoreStagingSummary,
     },
-    set_iteration_report_elapsed_ms, validate_full_sf1_direct_s3_gate_for_config,
+    set_iteration_report_elapsed_ms, validate_full_sf1_staged_s3_gate_for_config,
 };
 
 #[test]
@@ -117,7 +117,7 @@ fn benchmark_report_tsv_exposes_runtime_timing_and_parity_fields() {
 }
 
 #[test]
-fn full_sf1_direct_s3_gate_passes_for_all_queries_with_direct_native_parity() {
+fn full_sf1_staged_s3_gate_passes_for_all_queries_with_staged_native_parity() {
     let query_ids = datafusion_cudf::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "xdr-int"),
@@ -127,10 +127,10 @@ fn full_sf1_direct_s3_gate_passes_for_all_queries_with_direct_native_parity() {
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let report = IcebergTpchBenchmarkReport {
-        rows: datafusion_cudf::TPCH_QUERIES.iter().map(|query| direct_s3_matched_row(query.id)).collect(),
+        rows: datafusion_cudf::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect(),
     };
 
-    let summary = validate_full_sf1_direct_s3_gate_for_config(&report, &config).unwrap().unwrap();
+    let summary = validate_full_sf1_staged_s3_gate_for_config(&report, &config).unwrap().unwrap();
 
     assert_eq!(summary.query_count, datafusion_cudf::TPCH_QUERIES.len());
     assert_eq!(summary.measured_iterations, 1);
@@ -140,7 +140,7 @@ fn full_sf1_direct_s3_gate_passes_for_all_queries_with_direct_native_parity() {
 }
 
 #[test]
-fn full_sf1_direct_s3_gate_fails_on_staged_or_unmatched_rows() {
+fn full_sf1_staged_s3_gate_fails_on_direct_or_unmatched_rows() {
     let query_ids = datafusion_cudf::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "xdr-int"),
@@ -149,19 +149,19 @@ fn full_sf1_direct_s3_gate_fails_on_staged_or_unmatched_rows() {
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let mut rows =
-        datafusion_cudf::TPCH_QUERIES.iter().map(|query| direct_s3_matched_row(query.id)).collect::<Vec<_>>();
-    rows[0].smoke_row.staging_summary.status = ObjectStoreStagingStatus::StagedLocal;
+        datafusion_cudf::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
+    rows[0].smoke_row.staging_summary.status = ObjectStoreStagingStatus::DirectNative;
     rows[1].smoke_row.parity_status = ParityStatus::Mismatched;
     let report = IcebergTpchBenchmarkReport { rows };
 
-    let error = validate_full_sf1_direct_s3_gate_for_config(&report, &config).unwrap_err().to_string();
+    let error = validate_full_sf1_staged_s3_gate_for_config(&report, &config).unwrap_err().to_string();
 
-    assert!(error.contains("q01:object_store_staging_status=staged_local"));
+    assert!(error.contains("q01:object_store_staging_status=direct_s3_native"));
     assert!(error.contains("q02:parity_status=mismatched"));
 }
 
 #[test]
-fn full_sf1_direct_s3_gate_reports_timeout_failures_separately() {
+fn full_sf1_staged_s3_gate_reports_timeout_failures_separately() {
     let query_ids = datafusion_cudf::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "xdr-int"),
@@ -170,30 +170,30 @@ fn full_sf1_direct_s3_gate_reports_timeout_failures_separately() {
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let mut rows =
-        datafusion_cudf::TPCH_QUERIES.iter().map(|query| direct_s3_matched_row(query.id)).collect::<Vec<_>>();
-    rows[0].timeout_category = Some(BenchmarkTimeoutCategory::NativeDirectS3Runtime);
+        datafusion_cudf::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
+    rows[0].timeout_category = Some(BenchmarkTimeoutCategory::NativeRuntime);
     rows[0].smoke_row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
     rows[0].smoke_row.parity_status = ParityStatus::NativeFailed;
     let report = IcebergTpchBenchmarkReport { rows };
 
-    let error = validate_full_sf1_direct_s3_gate_for_config(&report, &config).unwrap_err().to_string();
+    let error = validate_full_sf1_staged_s3_gate_for_config(&report, &config).unwrap_err().to_string();
 
-    assert!(error.contains("full SF1 direct-S3 gate timeout failures=q01:native_direct_s3_runtime_timeout"));
+    assert!(error.contains("full SF1 staged-S3 gate timeout failures=q01:native_runtime_timeout"));
     assert!(error.contains("semantic_failures=q01:native_runtime_outcome=failed,q01:parity_status=native_failed"));
 }
 
 #[test]
-fn full_sf1_direct_s3_gate_does_not_apply_to_default_subset() {
+fn full_sf1_staged_s3_gate_does_not_apply_to_default_subset() {
     let env = HashMap::from([("AWS_PROFILE", "xdr-int"), ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
-    let report = IcebergTpchBenchmarkReport { rows: vec![direct_s3_matched_row("q01")] };
+    let report = IcebergTpchBenchmarkReport { rows: vec![staged_s3_matched_row("q01")] };
 
-    assert!(validate_full_sf1_direct_s3_gate_for_config(&report, &config).unwrap().is_none());
+    assert!(validate_full_sf1_staged_s3_gate_for_config(&report, &config).unwrap().is_none());
 }
 
 #[test]
 fn timeout_enabled_rows_share_iteration_elapsed_observation() {
-    let mut rows = vec![direct_s3_matched_row("q01"), direct_s3_matched_row("q02"), direct_s3_matched_row("q03")];
+    let mut rows = vec![staged_s3_matched_row("q01"), staged_s3_matched_row("q02"), staged_s3_matched_row("q03")];
     rows[0].report_elapsed_ms = 11;
     rows[1].report_elapsed_ms = 22;
     rows[2].report_elapsed_ms = 33;
@@ -205,20 +205,24 @@ fn timeout_enabled_rows_share_iteration_elapsed_observation() {
     assert_eq!(rows[2].report_elapsed_ms, 777);
 }
 
-fn direct_s3_matched_row(query_id: &str) -> IcebergTpchBenchmarkRow {
+fn staged_s3_matched_row(query_id: &str) -> IcebergTpchBenchmarkRow {
     let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
         .with_snapshot_id("123")
         .with_catalog_type("glue")
         .with_data_file(
             TableFormatDataFile::new(
                 "s3-data-0001",
-                "s3://bucket/table/data-0001.parquet",
+                "/tmp/staged-data-0001.parquet",
                 TableFormatDataFileFormat::Parquet,
-                TableFormatReadCapability::object_store("s3"),
+                TableFormatReadCapability::local_file_system(),
             )
             .with_size_bytes(1024)
             .with_row_count(7),
         );
+    let mut staging_summary =
+        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Required, ObjectStoreStagingStatus::StagedLocal);
+    staging_summary.staged_data_file_count = 1;
+    staging_summary.staged_bytes = 1024;
     let mut smoke_row = IcebergNativeSmokeReportRow::new(
         query_id.to_string(),
         "glue_s3".to_string(),
@@ -230,7 +234,7 @@ fn direct_s3_matched_row(query_id: &str) -> IcebergTpchBenchmarkRow {
         None,
         NativeDataFusionPostNativeExecutionPath::Native,
         None,
-        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::DirectNative),
+        staging_summary,
         "aws_profile_env".to_string(),
     );
     smoke_row.native_runtime_started = true;

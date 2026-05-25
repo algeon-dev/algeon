@@ -211,13 +211,24 @@ impl TableFormatReadCapability {
         matches!(self, Self::LocalFileSystem)
     }
 
-    /// Whether this capability can be represented by direct native Parquet reads.
-    pub fn is_direct_native_parquet_capable(&self) -> bool {
+    /// Whether this capability can be represented by native Parquet source reads.
+    ///
+    /// Object-store S3 reads use the `SourceFetch + SourceDecode` host-buffer
+    /// pipeline, not direct path-based device reads.
+    pub fn is_native_parquet_capable(&self) -> bool {
         match self {
             Self::LocalFileSystem => true,
-            Self::ObjectStore { scheme } => scheme.eq_ignore_ascii_case("s3"),
+            Self::ObjectStore { scheme } => scheme == "s3",
             Self::Unsupported { .. } => false,
         }
+    }
+
+    /// Whether this capability can be represented by direct native Parquet reads.
+    ///
+    /// Object-store paths require credentialed staging or a host-buffer fetch
+    /// pipeline before bounded native execution can safely read them.
+    pub fn is_direct_native_parquet_capable(&self) -> bool {
+        matches!(self, Self::LocalFileSystem)
     }
 }
 
@@ -490,6 +501,11 @@ impl TableFormatDataFile {
     /// Whether the file can be represented by direct native Parquet reads.
     pub fn is_direct_native_parquet_representable(&self) -> bool {
         self.format == TableFormatDataFileFormat::Parquet && self.read_capability.is_direct_native_parquet_capable()
+    }
+
+    /// Whether the file can be represented by native Parquet source reads.
+    pub fn is_native_parquet_representable(&self) -> bool {
+        self.format == TableFormatDataFileFormat::Parquet && self.read_capability.is_native_parquet_capable()
     }
 
     /// Whether the file can be represented as a local native Parquet source.
@@ -870,13 +886,15 @@ impl TableFormatScanPlan {
 
     /// All-or-nothing native-admission predicate for the current scan plan.
     ///
-    /// A plan is admissible only when it has at least one direct native Parquet
-    /// data file, no delete files, and no retained unsupported features.
+    /// A plan is admissible only when it has at least one native-readable
+    /// Parquet data file, no delete files, and no retained unsupported
+    /// features. Object-store S3 files are native-readable through the
+    /// host-buffer source pipeline, not through direct device reads.
     pub fn is_native_admissible(&self) -> bool {
         self.delete_files.is_empty()
             && self.unsupported_features.is_empty()
             && !self.data_files.is_empty()
-            && self.data_files.iter().all(TableFormatDataFile::is_direct_native_parquet_representable)
+            && self.data_files.iter().all(TableFormatDataFile::is_native_parquet_representable)
     }
 
     /// Number of source files native lowering may consume.
@@ -898,7 +916,9 @@ impl TableFormatScanPlan {
 
     /// Direct device-read disposition derived from native admissibility.
     pub fn direct_device_read_disposition(&self) -> TableFormatDirectDeviceReadDisposition {
-        if self.is_native_admissible() {
+        if self.is_native_admissible()
+            && self.data_files.iter().all(TableFormatDataFile::is_direct_native_parquet_representable)
+        {
             TableFormatDirectDeviceReadDisposition::Eligible
         } else {
             TableFormatDirectDeviceReadDisposition::Rejected

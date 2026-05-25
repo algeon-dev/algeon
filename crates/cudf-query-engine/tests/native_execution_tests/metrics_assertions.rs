@@ -222,7 +222,7 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             );
         },
         "cudf_query_engine.local_parquet_chunk.zero_column_count" => {
-            assert_eq!(event.boundary, "source_chunk_read");
+            assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "source_chunk_prefetch"));
             assert_eq!(
                 event.unresolved_contract.as_deref(),
                 Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")

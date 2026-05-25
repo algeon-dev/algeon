@@ -48,12 +48,13 @@ pub use native::{
 
 /// DataFusion-facing native optimizer configuration.
 ///
-/// Defaults are conservative: GPU is preferred but not mandatory, native
-/// execution is unbounded, and query-engine optimizer options use their own
-/// defaults. The native [`ExecutionContext`](cudf_query_engine::ExecutionContext)
-/// is still built lazily at execution time through
-/// [`NativeCudfExecutionConfig`], so allocator and memory-control validation
-/// fail at the DataFusion/native boundary rather than during rule construction.
+/// Defaults are production-oriented: GPU is preferred but not mandatory,
+/// native execution uses an auto-sized bounded profile, and query-engine
+/// optimizer options use their own defaults. The native
+/// [`ExecutionContext`](cudf_query_engine::ExecutionContext) is still built
+/// lazily at execution time through [`NativeCudfExecutionConfig`], so allocator
+/// and memory-control validation fail at the DataFusion/native boundary rather
+/// than during rule construction.
 #[derive(Debug, Clone)]
 pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
@@ -65,7 +66,7 @@ impl Default for CudfOptimizerConfig {
     fn default() -> Self {
         Self {
             fallback_policy: GpuFallbackPolicy::default(),
-            native_execution_config: NativeCudfExecutionConfig::unbounded(),
+            native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
             native_optimizer_options: cudf_query_engine::NativeOptimizerOptions::default(),
         }
     }

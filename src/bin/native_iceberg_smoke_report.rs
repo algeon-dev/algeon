@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     error::Error as StdError,
-    fmt,
+    fmt, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -24,11 +24,12 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, FallbackReason,
-    GpuFallbackPolicy, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode, ParityComparisonMode, ParityFloatTolerance,
-    ParityStatus, TPCH_QUERIES, TPCH_TABLES, TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition,
-    TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics, TableFormatScanPlan,
-    TableFormatScanRequest, TableFormatUnsupportedFeatureCode, compare_record_batches,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode,
+    ParityComparisonMode, ParityFloatTolerance, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES,
+    TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatPlanner, TableFormatReadCapability,
+    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
+    compare_record_batches,
     iceberg::{
         AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
         CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, CUDF_ICEBERG_GLUE_DATABASE_ENV, CUDF_ICEBERG_GLUE_TABLE_ENV,
@@ -47,8 +48,8 @@ use object_store::aws::AmazonS3Builder;
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 4;
-const REPORT_HEADER: &str = "query_id\tfixture_mode\tcatalog_type\ttable_ident\tsql\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_delete_file_count\tplanned_bytes\tadmitted_native_source_file_count\trejected_feature_list\tnative_source_read_capability\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_reason_code\tpost_native_execution_path\tcpu_arrow_reader_fallback\tnative_runtime_started\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\texpected_count\tnative_count_value\tcpu_runtime_started\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tparity_status\tparity_detail\tcredential_source";
+const REPORT_SCHEMA_VERSION: u32 = 5;
+const REPORT_HEADER: &str = "query_id\tfixture_mode\tcatalog_type\ttable_ident\tsql\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_delete_file_count\tplanned_bytes\tadmitted_native_source_file_count\trejected_feature_list\tnative_source_read_capability\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_reason_code\tpost_native_execution_path\tcpu_arrow_reader_fallback\tnative_runtime_started\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\texpected_count\tnative_count_value\tcpu_runtime_started\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tparity_status\tparity_detail\tcredential_source";
 
 const FIXTURE_MODE_ENV: &str = "CUDF_ICEBERG_SMOKE_FIXTURE_MODE";
 const LOCAL_METADATA_LOCATION_ENV: &str = "CUDF_ICEBERG_METADATA_LOCATION";
@@ -56,7 +57,11 @@ const LOCAL_TABLE_IDENT_ENV: &str = "CUDF_ICEBERG_TABLE_IDENT";
 const TABLE_ALIAS_ENV: &str = "CUDF_ICEBERG_TABLE_ALIAS";
 const QUERY_ENV: &str = "CUDF_ICEBERG_SMOKE_QUERY";
 const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_SMOKE_QUERY_IDS";
+const TPCDS_QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS";
+const CUSTOM_WORKLOAD_ENV: &str = "CUDF_ICEBERG_CUSTOM_WORKLOAD";
+const CUSTOM_QUERY_FILE_ENV: &str = "CUDF_ICEBERG_CUSTOM_QUERY_FILE";
 const TPCH_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCH_SCALE_FACTOR";
+const TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
 const DEFAULT_TPCH_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 const DEFAULT_SMOKE_GLUE_CATALOG_NAME: &str = "glue";
@@ -65,7 +70,6 @@ const DEFAULT_SMOKE_GLUE_TABLE: &str = "tpch_sf1_lineitem";
 const DEFAULT_SMOKE_GLUE_WAREHOUSE: &str = "s3://example-warehouse/demo_db/";
 const DEFAULT_SMOKE_GLUE_CATALOG_ID: &str = "123456789012";
 const DEFAULT_SMOKE_GLUE_REGION: &str = "us-east-1";
-
 #[tokio::main]
 async fn main() {
     match run_from_env().await {
@@ -82,8 +86,14 @@ pub(crate) async fn run_from_env() -> SmokeResult<IcebergNativeSmokeReport> {
 }
 
 pub(crate) async fn run_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
+    if config.custom_query_file.is_some() {
+        return run_custom_subset_report(config).await;
+    }
     if !config.tpch_query_ids.is_empty() {
         return run_tpch_subset_report(config).await;
+    }
+    if !config.tpcds_query_ids.is_empty() {
+        return run_tpcds_subset_report(config).await;
     }
     eprintln!(
         "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
@@ -206,6 +216,190 @@ async fn run_tpch_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult
     Ok(IcebergNativeSmokeReport { rows })
 }
 
+async fn run_tpcds_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
+    let IcebergNativeSmokeFixture::GlueS3 { .. } = &config.fixture else {
+        return Err(smoke_error("TPC-DS Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3"));
+    };
+
+    let catalog_type = config.fixture.catalog_type().to_string();
+    let staging_records = Arc::new(Mutex::new(Vec::new()));
+    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-tpcds-stage-").tempdir()?);
+    let (ctx, native_rule) = native_session_context();
+
+    for table_name in TPCDS_TABLES {
+        let table_fixture =
+            config.fixture.with_glue_table(tpcds_glue_table_name(table_name, &config.tpcds_scale_factor))?;
+        eprintln!(
+            "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+            table_fixture.mode_code(),
+            table_fixture.table_ident_display(),
+            table_fixture.credential_source(),
+        );
+        let table = load_iceberg_table(&table_fixture).await?;
+        eprintln!(
+            "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+            table_fixture.mode_code(),
+            table_fixture.table_ident_display(),
+        );
+        let logical_schema = iceberg_table_arrow_schema(&table)?;
+        let file_io = table.file_io().clone();
+        let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.clone());
+        let staging_planner = Arc::new(StagingTableFormatPlanner::new(
+            planner,
+            file_io,
+            config.object_store_staging,
+            Arc::clone(&staging_tempdir),
+            Arc::clone(&staging_records),
+            (*table_name).to_string(),
+        ));
+        let provider = Arc::new(
+            CudfIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
+                .with_catalog_type(catalog_type.clone()),
+        );
+        ctx.register_table(*table_name, provider)?;
+    }
+
+    let mut rows = Vec::new();
+    for query_id in &config.tpcds_query_ids {
+        clear_staging_records(&staging_records);
+        let query = TPCDS_QUERIES
+            .iter()
+            .find(|query| query.id == query_id)
+            .ok_or_else(|| smoke_error(format!("unknown TPC-DS query id {query_id:?}")))?;
+        let row = run_query_with_registered_native_tables(
+            query.id.to_string(),
+            config.fixture.mode_code().to_string(),
+            catalog_type.clone(),
+            config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor),
+            query.sql.to_string(),
+            &ctx,
+            native_rule.as_ref(),
+            Arc::clone(&staging_records),
+            true,
+            config.fixture.credential_source().to_string(),
+        )
+        .await?;
+        rows.push(row);
+    }
+    Ok(IcebergNativeSmokeReport { rows })
+}
+
+async fn run_custom_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
+    let IcebergNativeSmokeFixture::GlueS3 { .. } = &config.fixture else {
+        return Err(smoke_error("custom Iceberg SQL probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3"));
+    };
+    let workload = config
+        .custom_workload
+        .ok_or_else(|| smoke_error(format!("{CUSTOM_WORKLOAD_ENV} is required with {CUSTOM_QUERY_FILE_ENV}")))?;
+    let query_file =
+        config.custom_query_file.as_ref().ok_or_else(|| smoke_error(format!("{CUSTOM_QUERY_FILE_ENV} is required")))?;
+    let probes = load_custom_query_manifest(query_file)?;
+
+    let catalog_type = config.fixture.catalog_type().to_string();
+    let staging_records = Arc::new(Mutex::new(Vec::new()));
+    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-custom-stage-").tempdir()?);
+    let (ctx, native_rule) = native_session_context();
+
+    match workload {
+        CustomWorkload::Tpch => {
+            for table_name in TPCH_TABLES {
+                let table_fixture =
+                    config.fixture.with_glue_table(tpch_glue_table_name(table_name, &config.tpch_scale_factor))?;
+                register_custom_probe_table(
+                    &ctx,
+                    &table_fixture,
+                    table_name,
+                    &catalog_type,
+                    config.object_store_staging,
+                    Arc::clone(&staging_tempdir),
+                    Arc::clone(&staging_records),
+                )
+                .await?;
+            }
+        },
+        CustomWorkload::Tpcds => {
+            for table_name in TPCDS_TABLES {
+                let table_fixture =
+                    config.fixture.with_glue_table(tpcds_glue_table_name(table_name, &config.tpcds_scale_factor))?;
+                register_custom_probe_table(
+                    &ctx,
+                    &table_fixture,
+                    table_name,
+                    &catalog_type,
+                    config.object_store_staging,
+                    Arc::clone(&staging_tempdir),
+                    Arc::clone(&staging_records),
+                )
+                .await?;
+            }
+        },
+    }
+
+    let table_ident = match workload {
+        CustomWorkload::Tpch => config.fixture.tpch_all_tables_ident_display(&config.tpch_scale_factor),
+        CustomWorkload::Tpcds => config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor),
+    };
+    let mut rows = Vec::new();
+    for probe in probes {
+        clear_staging_records(&staging_records);
+        let row = run_query_with_registered_native_tables(
+            probe.id,
+            config.fixture.mode_code().to_string(),
+            catalog_type.clone(),
+            table_ident.clone(),
+            probe.sql,
+            &ctx,
+            native_rule.as_ref(),
+            Arc::clone(&staging_records),
+            true,
+            config.fixture.credential_source().to_string(),
+        )
+        .await?;
+        rows.push(row);
+    }
+    Ok(IcebergNativeSmokeReport { rows })
+}
+
+async fn register_custom_probe_table(
+    ctx: &SessionContext,
+    table_fixture: &IcebergNativeSmokeFixture,
+    table_name: &str,
+    catalog_type: &str,
+    object_store_staging: ObjectStoreStagingMode,
+    staging_tempdir: Arc<tempfile::TempDir>,
+    staging_records: Arc<Mutex<Vec<StagingRecord>>>,
+) -> SmokeResult<()> {
+    eprintln!(
+        "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+        table_fixture.mode_code(),
+        table_fixture.table_ident_display(),
+        table_fixture.credential_source(),
+    );
+    let table = load_iceberg_table(table_fixture).await?;
+    eprintln!(
+        "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+        table_fixture.mode_code(),
+        table_fixture.table_ident_display(),
+    );
+    let logical_schema = iceberg_table_arrow_schema(&table)?;
+    let file_io = table.file_io().clone();
+    let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.to_string());
+    let staging_planner = Arc::new(StagingTableFormatPlanner::new(
+        planner,
+        file_io,
+        object_store_staging,
+        staging_tempdir,
+        staging_records,
+        table_name.to_string(),
+    ));
+    let provider = Arc::new(
+        CudfIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
+            .with_catalog_type(catalog_type.to_string()),
+    );
+    ctx.register_table(table_name, provider)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IcebergNativeSmokeConfig {
     pub query_id: String,
@@ -215,6 +409,10 @@ pub(crate) struct IcebergNativeSmokeConfig {
     pub object_store_staging: ObjectStoreStagingMode,
     pub tpch_query_ids: Vec<String>,
     pub tpch_scale_factor: String,
+    pub tpcds_query_ids: Vec<String>,
+    pub tpcds_scale_factor: String,
+    pub custom_workload: Option<CustomWorkload>,
+    pub custom_query_file: Option<PathBuf>,
 }
 
 impl IcebergNativeSmokeConfig {
@@ -280,13 +478,27 @@ impl IcebergNativeSmokeConfig {
         };
         let table_alias = get(TABLE_ALIAS_ENV).unwrap_or_else(|| fixture.default_table_alias());
         let query_env = get(QUERY_ENV);
+        let custom_query_file = get(CUSTOM_QUERY_FILE_ENV).filter(|value| !value.trim().is_empty()).map(PathBuf::from);
+        let custom_workload = get(CUSTOM_WORKLOAD_ENV)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| CustomWorkload::from_env_value(&value))
+            .transpose()?;
         let sql = query_env.clone().unwrap_or_else(|| format!("select count(*) as row_count from {table_alias}"));
-        let object_store_staging = ObjectStoreStagingMode::from_env_value(get(OBJECT_STORE_STAGING_ENV).as_deref())?;
+        let object_store_staging = match get(OBJECT_STORE_STAGING_ENV) {
+            Some(value) => ObjectStoreStagingMode::from_env_value(Some(value.as_str()))?,
+            None if matches!(fixture, IcebergNativeSmokeFixture::GlueS3 { .. }) => ObjectStoreStagingMode::Required,
+            None => ObjectStoreStagingMode::Auto,
+        };
         let tpch_scale_factor =
             normalize_tpch_scale_factor(get(TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|| "sf1".to_string()).as_str())?;
+        let tpcds_scale_factor =
+            normalize_tpcds_scale_factor(get(TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|| "sf1".to_string()).as_str())?;
+        let tpcds_query_ids_env = get(TPCDS_QUERY_IDS_ENV);
         let tpch_query_ids = match get(QUERY_IDS_ENV) {
             Some(value) => parse_query_ids(&value)?,
             None if query_env.is_none()
+                && tpcds_query_ids_env.is_none()
+                && custom_query_file.is_none()
                 && !explicit_glue_table
                 && matches!(fixture, IcebergNativeSmokeFixture::GlueS3 { .. }) =>
             {
@@ -294,6 +506,27 @@ impl IcebergNativeSmokeConfig {
             },
             None => Vec::new(),
         };
+        let tpcds_query_ids = match tpcds_query_ids_env {
+            Some(value) => parse_tpcds_query_ids(&value)?,
+            None => Vec::new(),
+        };
+        if !tpch_query_ids.is_empty() && !tpcds_query_ids.is_empty() {
+            return Err(smoke_error(format!("{QUERY_IDS_ENV} and {TPCDS_QUERY_IDS_ENV} are mutually exclusive")));
+        }
+        let mode_count = usize::from(!tpch_query_ids.is_empty())
+            + usize::from(!tpcds_query_ids.is_empty())
+            + usize::from(custom_query_file.is_some());
+        if mode_count > 1 {
+            return Err(smoke_error(format!(
+                "{QUERY_IDS_ENV}, {TPCDS_QUERY_IDS_ENV}, and {CUSTOM_QUERY_FILE_ENV} are mutually exclusive"
+            )));
+        }
+        if custom_query_file.is_some() && custom_workload.is_none() {
+            return Err(smoke_error(format!("{CUSTOM_WORKLOAD_ENV} is required with {CUSTOM_QUERY_FILE_ENV}")));
+        }
+        if custom_query_file.is_none() && custom_workload.is_some() {
+            return Err(smoke_error(format!("{CUSTOM_QUERY_FILE_ENV} is required with {CUSTOM_WORKLOAD_ENV}")));
+        }
         Ok(Self {
             query_id: "iceberg_smoke".to_string(),
             table_alias,
@@ -302,7 +535,27 @@ impl IcebergNativeSmokeConfig {
             object_store_staging,
             tpch_query_ids,
             tpch_scale_factor,
+            tpcds_query_ids,
+            tpcds_scale_factor,
+            custom_workload,
+            custom_query_file,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CustomWorkload {
+    Tpch,
+    Tpcds,
+}
+
+impl CustomWorkload {
+    fn from_env_value(value: &str) -> SmokeResult<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tpch" | "tpc-h" => Ok(Self::Tpch),
+            "tpcds" | "tpc-ds" => Ok(Self::Tpcds),
+            other => Err(smoke_error(format!("unsupported {CUSTOM_WORKLOAD_ENV}={other}; expected tpch or tpcds"))),
+        }
     }
 }
 
@@ -414,10 +667,21 @@ impl IcebergNativeSmokeFixture {
             Self::LocalMetadata { table_ident, .. } => table_ident.join("."),
         }
     }
+
+    pub(crate) fn tpcds_all_tables_ident_display(&self, scale_factor: &str) -> String {
+        match self {
+            Self::GlueS3 { database, .. } => format!("{database}_tpcds_{scale_factor}_all_tables"),
+            Self::LocalMetadata { table_ident, .. } => table_ident.join("."),
+        }
+    }
 }
 
 pub(crate) fn tpch_glue_table_name(table_name: &str, scale_factor: &str) -> String {
     format!("tpch_{scale_factor}_{table_name}")
+}
+
+pub(crate) fn tpcds_glue_table_name(table_name: &str, scale_factor: &str) -> String {
+    format!("tpcds_{scale_factor}_{table_name}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -450,6 +714,12 @@ pub(crate) struct IcebergNativeSmokeReportRow {
     pub native_runtime_elapsed_ms: Option<u128>,
     pub native_output_rows: Option<usize>,
     pub native_output_batches: Option<usize>,
+    pub source_fetch_bytes: usize,
+    pub source_fetch_count: usize,
+    pub host_fetch_budget_wait_time_ns: Option<usize>,
+    pub source_fetch_concurrency_wait_time_ns: Option<usize>,
+    pub source_fetch_time_ns: Option<usize>,
+    pub source_decode_time_ns: Option<usize>,
     pub expected_count: Option<u64>,
     pub native_count_value: Option<u64>,
     pub cpu_runtime_started: bool,
@@ -497,6 +767,12 @@ impl IcebergNativeSmokeReportRow {
             native_runtime_elapsed_ms: None,
             native_output_rows: None,
             native_output_batches: None,
+            source_fetch_bytes: 0,
+            source_fetch_count: 0,
+            host_fetch_budget_wait_time_ns: None,
+            source_fetch_concurrency_wait_time_ns: None,
+            source_fetch_time_ns: None,
+            source_decode_time_ns: None,
             expected_count,
             native_count_value: None,
             cpu_runtime_started: false,
@@ -511,6 +787,15 @@ impl IcebergNativeSmokeReportRow {
             parity_detail: None,
             credential_source,
         }
+    }
+
+    pub(crate) fn record_native_metrics(&mut self, metrics: NativeDataFusionExecutionMetrics) {
+        self.source_fetch_bytes = metrics.source_fetch_bytes;
+        self.source_fetch_count = metrics.source_fetch_count;
+        self.host_fetch_budget_wait_time_ns = metrics.host_fetch_budget_wait_time_ns;
+        self.source_fetch_concurrency_wait_time_ns = metrics.source_fetch_concurrency_wait_time_ns;
+        self.source_fetch_time_ns = metrics.source_fetch_time_ns;
+        self.source_decode_time_ns = metrics.source_decode_time_ns;
     }
 
     pub(crate) fn finalize_count_parity_if_needed(&mut self) {
@@ -571,6 +856,12 @@ impl IcebergNativeSmokeReportRow {
             optional_u128(self.native_runtime_elapsed_ms),
             optional_usize(self.native_output_rows),
             optional_usize(self.native_output_batches),
+            self.source_fetch_bytes.to_string(),
+            self.source_fetch_count.to_string(),
+            optional_duration_ms_text(self.host_fetch_budget_wait_time_ns),
+            optional_duration_ms_text(self.source_fetch_concurrency_wait_time_ns),
+            optional_duration_ms_text(self.source_fetch_time_ns),
+            optional_duration_ms_text(self.source_decode_time_ns),
             optional_u64(self.expected_count),
             optional_u64(self.native_count_value),
             self.cpu_runtime_started.to_string(),
@@ -783,13 +1074,13 @@ async fn run_query_with_registered_native_tables(
     if should_execute_native {
         row.native_runtime_started = true;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=native_direct_s3_runtime_start query_id={} native_source_read_capability={} direct_device_read_disposition={}",
+            "[native_iceberg_smoke_report] phase=native_runtime_start query_id={} native_source_read_capability={} direct_device_read_disposition={}",
             row.query_id,
             empty_as_none(&row.diagnostics.native_source_read_capability),
             row.diagnostics.direct_device_read_disposition.code(),
         );
         let started = Instant::now();
-        match collect(physical_plan, task_ctx.into()).await {
+        match collect(Arc::clone(&physical_plan), task_ctx.into()).await {
             Ok(batches) => {
                 row.native_runtime_elapsed_ms = Some(started.elapsed().as_millis());
                 row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Succeeded;
@@ -798,7 +1089,7 @@ async fn run_query_with_registered_native_tables(
                 row.native_count_value = count_value_from_batches(&batches);
                 native_batches = Some(batches);
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=native_direct_s3_runtime_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
+                    "[native_iceberg_smoke_report] phase=native_runtime_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
                     row.query_id,
                     row.native_runtime_outcome.as_str(),
                     row.native_runtime_elapsed_ms.unwrap_or(0),
@@ -811,13 +1102,16 @@ async fn run_query_with_registered_native_tables(
                 row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
                 row.parity_detail = Some(stable_tsv_field(&error.to_string()));
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=native_direct_s3_runtime_finish query_id={} outcome={} elapsed_ms={} error={}",
+                    "[native_iceberg_smoke_report] phase=native_runtime_finish query_id={} outcome={} elapsed_ms={} error={}",
                     row.query_id,
                     row.native_runtime_outcome.as_str(),
                     row.native_runtime_elapsed_ms.unwrap_or(0),
                     stable_tsv_field(&error.to_string()),
                 );
             },
+        }
+        if let Some(metrics) = physical_plan.metrics() {
+            row.record_native_metrics(NativeDataFusionExecutionMetrics::from_metrics(&metrics));
         }
     }
 
@@ -906,9 +1200,10 @@ async fn run_query_with_registered_native_tables(
 }
 
 fn native_session_context() -> (SessionContext, Arc<CudfNativePhysicalOptimizerRule>) {
+    let execution_config = NativeCudfExecutionConfig::bounded_auto_sized()
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded),
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(execution_config),
     ));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(smoke_session_config())
@@ -967,7 +1262,8 @@ fn scan_plan_has_stageable_object_store_data_files(scan_plan: &TableFormatScanPl
 fn scan_plan_has_direct_native_object_store_data_files(scan_plan: &TableFormatScanPlan) -> bool {
     scan_plan.data_files.iter().any(|file| {
         file.format == TableFormatDataFileFormat::Parquet
-            && matches!(&file.read_capability, TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3")
+            && matches!(file.read_capability, TableFormatReadCapability::ObjectStore { .. })
+            && file.read_capability.is_native_parquet_capable()
             && !scan_plan.unsupported_features.iter().any(|feature| {
                 feature.code == TableFormatUnsupportedFeatureCode::IcebergObjectStoreReadUnsupported
                     && feature.file_id.as_deref() == Some(file.id.as_str())
@@ -1323,10 +1619,75 @@ fn parse_query_ids(value: &str) -> SmokeResult<Vec<String>> {
     Ok(query_ids.into_iter().map(str::to_string).collect())
 }
 
+fn parse_tpcds_query_ids(value: &str) -> SmokeResult<Vec<String>> {
+    let query_ids = value.split(',').map(str::trim).filter(|query_id| !query_id.is_empty()).collect::<Vec<_>>();
+    let known = TPCDS_QUERIES.iter().map(|query| query.id).collect::<BTreeSet<_>>();
+    for query_id in &query_ids {
+        if !known.contains(query_id) {
+            return Err(smoke_error(format!("unknown TPC-DS query id {query_id:?} in {TPCDS_QUERY_IDS_ENV}")));
+        }
+    }
+    Ok(query_ids.into_iter().map(str::to_string).collect())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomQueryProbe {
+    id: String,
+    sql: String,
+}
+
+fn load_custom_query_manifest(path: &Path) -> SmokeResult<Vec<CustomQueryProbe>> {
+    let contents = fs::read_to_string(path)?;
+    let value: serde_json::Value = serde_json::from_str(&contents)?;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| smoke_error(format!("custom query manifest {} must be a JSON array", path.display())))?;
+    let mut probes = Vec::new();
+    let mut ids = BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let object = entry.as_object().ok_or_else(|| {
+            smoke_error(format!("custom query manifest entry {index} in {} must be an object", path.display()))
+        })?;
+        let id = object
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| smoke_error(format!("custom query manifest entry {index} is missing non-empty id")))?;
+        if !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+            return Err(smoke_error(format!(
+                "custom query id {id:?} may only contain ASCII letters, digits, '_' or '-'"
+            )));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(smoke_error(format!("duplicate custom query id {id:?} in {}", path.display())));
+        }
+        let sql = object
+            .get("sql")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|sql| !sql.is_empty())
+            .ok_or_else(|| smoke_error(format!("custom query manifest entry {id:?} is missing non-empty sql")))?;
+        probes.push(CustomQueryProbe { id: id.to_string(), sql: sql.to_string() });
+    }
+    if probes.is_empty() {
+        return Err(smoke_error(format!("custom query manifest {} did not define any probes", path.display())));
+    }
+    Ok(probes)
+}
+
 fn normalize_tpch_scale_factor(value: &str) -> SmokeResult<String> {
+    normalize_workload_scale_factor(value, TPCH_SCALE_FACTOR_ENV)
+}
+
+fn normalize_tpcds_scale_factor(value: &str) -> SmokeResult<String> {
+    normalize_workload_scale_factor(value, TPCDS_SCALE_FACTOR_ENV)
+}
+
+fn normalize_workload_scale_factor(value: &str, env_name: &str) -> SmokeResult<String> {
     let scale = value.trim().trim_start_matches("SF").trim_start_matches("sf");
     if scale.is_empty() || !scale.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(smoke_error(format!("unsupported {TPCH_SCALE_FACTOR_ENV}={value}; expected sf1, sf10, or sf100")));
+        return Err(smoke_error(format!("unsupported {env_name}={value}; expected sf1, sf10, or sf100")));
     }
     Ok(format!("sf{scale}"))
 }
@@ -1350,6 +1711,10 @@ fn optional_usize(value: Option<usize>) -> String {
 
 fn optional_u128(value: Option<u128>) -> String {
     value.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string())
+}
+
+fn optional_duration_ms_text(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| format!("{:.3}", value as f64 / 1_000_000.0))
 }
 
 fn list_or_none(values: &[String]) -> String {

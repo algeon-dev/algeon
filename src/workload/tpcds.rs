@@ -150,13 +150,16 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 /// limits are planning targets; positive-value validation happens when the
 /// native execution context is built.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
-    let device_budget_bytes =
-        optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).unwrap_or_else(default_tpcds_device_budget_bytes);
-    let max_source_chunk_bytes =
-        optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV).unwrap_or(64 * 1024 * 1024);
-    let max_row_groups_per_chunk = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV).unwrap_or(1);
-    let max_retry_attempts = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV).unwrap_or(3);
-    let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV).unwrap_or(1);
+    let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV)
+        .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
+    let max_source_chunk_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)
+        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    let max_row_groups_per_chunk = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)
+        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    let max_retry_attempts = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV)
+        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)
+        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded(
             device_budget_bytes,
@@ -166,32 +169,6 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
             min_retry_chunk_row_groups,
         ),
     )
-}
-
-/// Default device budget for the TPC-DS native optimizer when
-/// `CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES` is unset. Queries `nvidia-smi` for
-/// the primary GPU's total memory and reserves 500 MiB of headroom for
-/// libcudf/driver overhead. Falls back to 256 MiB if `nvidia-smi` is missing,
-/// fails, or returns an unexpected payload.
-fn default_tpcds_device_budget_bytes() -> u64 {
-    const FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
-    const HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
-    let output = match std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits", "--id=0"])
-        .output()
-    {
-        Ok(output) if output.status.success() => output.stdout,
-        _ => return FALLBACK_BYTES,
-    };
-    let total_mib: u64 = match std::str::from_utf8(&output).ok().and_then(|s| s.trim().lines().next()) {
-        Some(line) => match line.trim().parse() {
-            Ok(value) => value,
-            Err(_) => return FALLBACK_BYTES,
-        },
-        None => return FALLBACK_BYTES,
-    };
-    let total_bytes = total_mib.saturating_mul(1024 * 1024);
-    total_bytes.checked_sub(HEADROOM_BYTES).filter(|&v| v > 0).unwrap_or(FALLBACK_BYTES)
 }
 
 fn optional_env_u64(name: &'static str) -> Option<u64> {

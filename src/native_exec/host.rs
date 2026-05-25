@@ -158,12 +158,12 @@ impl ExecutionPlan for NativeCudfExec {
         let output = futures::stream::once(async move {
             // Context construction is the configuration/validation phase. Failures here happen
             // before the native query starts.
-            let context = execution_config
+            let context_lease = execution_config
                 .execution_context()
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
             // Once native execution starts there is no CPU fallback; errors are surfaced with stable
             // facts by `native_query_runtime_error`.
-            let result = execute_query_plan(&context, &plan).map_err(|error| {
+            let result = execute_query_plan(context_lease.context(), &plan).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
                     "datafusion_cudf.native_exec.execute",
                     "native cudf query execution failed",

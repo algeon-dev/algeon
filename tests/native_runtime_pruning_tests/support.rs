@@ -70,6 +70,8 @@ pub(super) fn native_datafusion_config() -> NativeCudfExecutionConfig {
 }
 
 pub(super) fn unbounded_native_datafusion_config() -> NativeCudfExecutionConfig {
+    // These pruning tests cover legacy whole-plan execution without bounded
+    // source chunking, so the unbounded config is intentional.
     NativeCudfExecutionConfig::unbounded().with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 

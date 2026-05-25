@@ -123,10 +123,16 @@ pub use plan::{
 };
 pub use runtime::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
-    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
-    ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId,
-    ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
-    SourceSchedulerPolicy,
+    BuildMaterializationBoundary, DEFAULT_GDS_LOCAL_MOUNT_ROOT, DEFAULT_GDS_MAX_CONCURRENT_OPS,
+    DEFAULT_GDS_MIN_CHUNK_BYTES, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
+    ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, GdsAvailabilityStatus, GdsDriverProbeStatus,
+    KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, MemoryControlPolicy, MemoryReservationRequest,
+    MemoryResourcePolicy, MemorySpaceId, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
+    ProbeExecutionBoundary, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+    QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts, ServiceStreamPool,
+    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
+    SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy, StreamLease, TenantId,
+    TenantQueryContext, TenantQueueDepth, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,

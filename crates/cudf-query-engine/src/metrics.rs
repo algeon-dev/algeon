@@ -360,6 +360,18 @@ pub struct QueryMetrics {
     pub source_read_queue_wait_time: Duration,
     /// Time spent looking up source cache entries.
     pub source_cache_lookup_time: Duration,
+    /// Object-store bytes fetched into host buffers.
+    pub source_fetch_bytes: u64,
+    /// Count of object-store SourceFetch operations.
+    pub source_fetch_count: u64,
+    /// Time spent waiting for host-buffer byte budget.
+    pub host_fetch_budget_wait_time: Duration,
+    /// Time spent waiting for object-store SourceFetch concurrency permits.
+    pub source_fetch_concurrency_wait_time: Duration,
+    /// Time spent fetching object-store bytes into host buffers.
+    pub source_fetch_time: Duration,
+    /// Time spent decoding host-buffer Parquet bytes into device frames.
+    pub source_decode_time: Duration,
     /// Time spent inside Parquet read calls.
     pub parquet_read_time: Duration,
     /// Time spent in source-read orchestration.
@@ -777,6 +789,28 @@ impl QueryMetrics {
         self.source_cache_lookup_time += elapsed;
     }
 
+    /// Records one object-store SourceFetch payload.
+    pub fn record_source_fetch(&mut self, bytes: u64, elapsed: Duration) {
+        self.source_fetch_count = self.source_fetch_count.saturating_add(1);
+        self.source_fetch_bytes = self.source_fetch_bytes.saturating_add(bytes);
+        self.source_fetch_time += elapsed;
+    }
+
+    /// Adds time spent waiting on host-buffer byte budget.
+    pub fn record_host_fetch_budget_wait(&mut self, elapsed: Duration) {
+        self.host_fetch_budget_wait_time += elapsed;
+    }
+
+    /// Adds time spent waiting on the SourceFetch concurrency gate.
+    pub fn record_source_fetch_concurrency_wait(&mut self, elapsed: Duration) {
+        self.source_fetch_concurrency_wait_time += elapsed;
+    }
+
+    /// Adds time spent decoding host-buffer Parquet bytes.
+    pub fn record_source_decode_time(&mut self, elapsed: Duration) {
+        self.source_decode_time += elapsed;
+    }
+
     /// Updates the peak retained source-cache bytes.
     pub fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
         self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(retained_bytes);
@@ -1023,6 +1057,12 @@ impl QueryMetrics {
         self.source_metadata_load_time += other.source_metadata_load_time;
         self.source_read_queue_wait_time += other.source_read_queue_wait_time;
         self.source_cache_lookup_time += other.source_cache_lookup_time;
+        self.source_fetch_bytes = self.source_fetch_bytes.saturating_add(other.source_fetch_bytes);
+        self.source_fetch_count = self.source_fetch_count.saturating_add(other.source_fetch_count);
+        self.host_fetch_budget_wait_time += other.host_fetch_budget_wait_time;
+        self.source_fetch_concurrency_wait_time += other.source_fetch_concurrency_wait_time;
+        self.source_fetch_time += other.source_fetch_time;
+        self.source_decode_time += other.source_decode_time;
         self.parquet_read_time += other.parquet_read_time;
         self.source_read_time += other.source_read_time;
         self.operator_time += other.operator_time;

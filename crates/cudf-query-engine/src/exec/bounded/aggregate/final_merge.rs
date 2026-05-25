@@ -1,7 +1,25 @@
 use std::time::Duration;
 
 use super::*;
-use crate::capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision};
+use crate::{
+    SortExpr, SortSpec,
+    capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
+};
+
+struct PartitionedFinalMergeTopK<'a> {
+    sort: SortNode,
+    limit: &'a LimitNode,
+    keep_rows: usize,
+}
+
+#[derive(Default)]
+struct PartitionedFinalMergeTopKStats {
+    enabled: bool,
+    keep_rows: usize,
+    input_rows: u64,
+    output_rows: u64,
+    partition_count: usize,
+}
 
 pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
     context: &ExecutionContext,
@@ -294,6 +312,8 @@ fn execute_partitioned_final_aggregate_merge(
     let final_aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
     let key_columns = final_aggregate.key_columns;
     let input_rows = partials.iter().map(|partial| partial.frame.num_rows() as u64).sum::<u64>();
+    let topk = partitioned_final_merge_topk_candidate(bounded)?;
+    let mut topk_stats = PartitionedFinalMergeTopKStats::default();
     let mut pending = partials;
     let mut partition_inputs = (0..partition_count).map(|_| Vec::new()).collect::<Vec<Vec<CommittedPartial>>>();
 
@@ -337,8 +357,16 @@ fn execute_partitioned_final_aggregate_merge(
         }
         non_empty_partition_count += 1;
         max_partition_fan_in = max_partition_fan_in.max(inputs.len());
-        let merged =
-            execute_partitioned_final_merge_group(context, bounded, partition_index, inputs, reservations, metrics)?;
+        let merged = execute_partitioned_final_merge_group(
+            context,
+            bounded,
+            partition_index,
+            inputs,
+            topk.as_ref(),
+            &mut topk_stats,
+            reservations,
+            metrics,
+        )?;
         merged_partitions.push(merged);
     }
     if merged_partitions.is_empty() {
@@ -369,6 +397,7 @@ fn execute_partitioned_final_aggregate_merge(
         partition_count,
         non_empty_partition_count,
         max_partition_fan_in,
+        &topk_stats,
         elapsed,
         metrics,
     );
@@ -564,6 +593,8 @@ fn execute_partitioned_final_merge_group(
     bounded: &BoundedPlan<'_>,
     partition_index: usize,
     inputs: Vec<CommittedPartial>,
+    topk: Option<&PartitionedFinalMergeTopK<'_>>,
+    topk_stats: &mut PartitionedFinalMergeTopKStats,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
@@ -608,9 +639,20 @@ fn execute_partitioned_final_merge_group(
         reservations,
         metrics,
     );
+    drop(token);
     release_partials_reverse(reservations, inputs, metrics);
     reservations.release(merge_reservation, metrics);
     let frame = result?;
+    let frame = apply_partitioned_final_merge_topk(
+        context,
+        bounded,
+        partition_index,
+        frame,
+        topk,
+        topk_stats,
+        reservations,
+        metrics,
+    )?;
     let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
     let output_reservation = reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
@@ -622,6 +664,108 @@ fn execute_partitioned_final_merge_group(
         metrics,
     )?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+fn partitioned_final_merge_topk_candidate<'a>(
+    bounded: &'a BoundedPlan<'a>,
+) -> Result<Option<PartitionedFinalMergeTopK<'a>>> {
+    let Some(sort) = bounded.sort else {
+        return Ok(None);
+    };
+    let Some((_, limit)) = bounded.limit else {
+        return Ok(None);
+    };
+    if limit.spec.skip != 0 || aggregate_spec_has_global_final_state(&bounded.aggregate.0.spec) {
+        return Ok(None);
+    }
+    let Some(sort) = partitioned_final_merge_topk_sort(bounded, sort)? else {
+        return Ok(None);
+    };
+    let keep_rows = topk_candidate_rows(limit.spec)?;
+    if keep_rows == 0 {
+        return Ok(None);
+    }
+    Ok(Some(PartitionedFinalMergeTopK { sort, limit, keep_rows }))
+}
+
+fn partitioned_final_merge_topk_sort(bounded: &BoundedPlan<'_>, sort: &SortNode) -> Result<Option<SortNode>> {
+    if bounded.post_aggregate_stages.iter().any(|stage| matches!(stage, BoundedUnaryStage::Filter { .. })) {
+        return Ok(None);
+    }
+    let mut expressions = Vec::with_capacity(sort.spec.expressions.len());
+    for sort_expr in &sort.spec.expressions {
+        let mut column = lower_column_expr(&sort_expr.expr, "cudf_query_engine.final_merge.topk_sort")?;
+        for stage in bounded.post_aggregate_stages.iter().rev() {
+            let Some(mapped) = project_topk_sort_column_through_stage(stage, column.as_str())? else {
+                return Ok(None);
+            };
+            column = mapped;
+        }
+        if bounded.aggregate.1.field_with_name(column.as_str()).is_err() {
+            return Ok(None);
+        }
+        expressions.push(SortExpr::new(Expr::column(column), sort_expr.descending, sort_expr.nulls_first));
+    }
+    Ok(Some(SortNode { input: sort.input, spec: SortSpec::new(expressions) }))
+}
+
+fn project_topk_sort_column_through_stage(stage: &BoundedUnaryStage<'_>, column: &str) -> Result<Option<String>> {
+    match stage {
+        BoundedUnaryStage::Filter { .. } => Ok(None),
+        BoundedUnaryStage::Projection { node, .. } => {
+            let Some(output) = node.outputs.iter().find(|output| output.field.name() == column) else {
+                return Ok(None);
+            };
+            lower_column_expr(&output.expr, "cudf_query_engine.final_merge.topk_projection").map(Some)
+        },
+    }
+}
+
+fn apply_partitioned_final_merge_topk(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    partition_index: usize,
+    frame: GpuDataFrame,
+    topk: Option<&PartitionedFinalMergeTopK<'_>>,
+    topk_stats: &mut PartitionedFinalMergeTopKStats,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let Some(topk) = topk else {
+        return Ok(frame);
+    };
+    topk_stats.enabled = true;
+    topk_stats.keep_rows = topk.keep_rows;
+    topk_stats.partition_count += 1;
+    topk_stats.input_rows = topk_stats.input_rows.saturating_add(frame.num_rows() as u64);
+
+    let input_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let input_reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::FinalSort, input_bytes, reservations.budget())
+            .with_memory_boundary("partitioned_final_aggregate_topk_input")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("partitioned_final_merge_topk")
+            .with_compiled_task_id(partitioned_final_merge_task_id(
+                bounded.aggregate_id,
+                format!("topk_input.partition{partition_index}"),
+            )),
+        metrics,
+    )?;
+    let input = CommittedPartial { frame, reservation: input_reservation };
+    let output = execute_final_sort_node_with_retry(
+        context,
+        bounded.aggregate_id,
+        &topk.sort,
+        Some(topk.limit),
+        input,
+        reservations,
+        metrics,
+    )
+    .map_err(|error| error.with_fact_if_absent("partitioned_final_merge_topk_partition", partition_index))?;
+    topk_stats.output_rows = topk_stats.output_rows.saturating_add(output.frame.num_rows() as u64);
+    let output_frame = output.frame;
+    reservations.release(output.reservation, metrics);
+    Ok(output_frame)
 }
 
 fn merge_partitioned_final_aggregate_partials(
@@ -785,6 +929,7 @@ fn record_partitioned_final_merge_strategy(
     partition_count: usize,
     non_empty_partition_count: usize,
     max_partition_fan_in: usize,
+    topk_stats: &PartitionedFinalMergeTopKStats,
     elapsed: Duration,
     metrics: &mut QueryMetrics,
 ) {
@@ -796,6 +941,14 @@ fn record_partitioned_final_merge_strategy(
     decision.facts.insert("partitioned_merge_partition_count", partition_count.to_string());
     decision.facts.insert("partitioned_merge_non_empty_partition_count", non_empty_partition_count.to_string());
     decision.facts.insert("partitioned_merge_max_partition_fan_in", max_partition_fan_in.to_string());
+    decision.facts.insert("partitioned_merge_topk_pruned", topk_stats.enabled.to_string());
+    decision.facts.insert(
+        "partitioned_merge_topk_keep_rows",
+        if topk_stats.enabled { topk_stats.keep_rows.to_string() } else { "none".to_string() },
+    );
+    decision.facts.insert("partitioned_merge_topk_partition_count", topk_stats.partition_count.to_string());
+    decision.facts.insert("partitioned_merge_topk_input_rows", topk_stats.input_rows.to_string());
+    decision.facts.insert("partitioned_merge_topk_output_rows", topk_stats.output_rows.to_string());
     record_grouped_aggregate_strategy_decision(
         metrics,
         Some(bounded.aggregate_id.to_string()),

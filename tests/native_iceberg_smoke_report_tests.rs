@@ -5,13 +5,13 @@ mod native_iceberg_smoke_report;
 use std::collections::HashMap;
 
 use datafusion_cudf::{
-    NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, TableFormat, TableFormatDataFile,
-    TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode,
+    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+    TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
 };
 use native_iceberg_smoke_report::{
-    IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, ObjectStoreStagingMode, ObjectStoreStagingStatus,
-    ObjectStoreStagingSummary, StagedObjectStoreDataFile,
+    CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, ObjectStoreStagingMode,
+    ObjectStoreStagingStatus, ObjectStoreStagingSummary, StagedObjectStoreDataFile,
 };
 
 #[test]
@@ -30,9 +30,13 @@ fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_
     assert_eq!(config.table_alias, "tpch_sf1_lineitem");
     assert_eq!(config.sql, "select count(*) as row_count from tpch_sf1_lineitem");
     assert_eq!(config.fixture.credential_source(), "aws_profile_env");
-    assert_eq!(config.object_store_staging, ObjectStoreStagingMode::Auto);
+    assert_eq!(config.object_store_staging, ObjectStoreStagingMode::Required);
     assert_eq!(config.tpch_query_ids, vec!["q01", "q03", "q06", "q10"]);
     assert_eq!(config.tpch_scale_factor, "sf1");
+    assert!(config.tpcds_query_ids.is_empty());
+    assert_eq!(config.tpcds_scale_factor, "sf1");
+    assert_eq!(config.custom_workload, None);
+    assert_eq!(config.custom_query_file, None);
     assert_eq!(
         native_iceberg_smoke_report::tpch_glue_table_name("orders", &config.tpch_scale_factor),
         "tpch_sf1_orders"
@@ -55,6 +59,7 @@ fn local_metadata_mode_requires_metadata_location_and_parses_table_ident() {
     assert_eq!(table_ident, &vec!["local_db".to_string(), "local_table".to_string()]);
     assert_eq!(config.table_alias, "local_table");
     assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
 }
 
 #[test]
@@ -67,8 +72,79 @@ fn explicit_glue_table_keeps_single_table_count_smoke_by_default() {
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
     assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
     assert_eq!(config.table_alias, "tpch_sf1_lineitem");
     assert_eq!(config.sql, "select count(*) as row_count from tpch_sf1_lineitem");
+}
+
+#[test]
+fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
+    let env = HashMap::from([
+        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("CUDF_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert_eq!(config.tpcds_query_ids, vec!["q03", "q42"]);
+    assert_eq!(config.tpcds_scale_factor, "sf10");
+    assert_eq!(config.custom_workload, None);
+    assert_eq!(config.custom_query_file, None);
+    assert_eq!(
+        native_iceberg_smoke_report::tpcds_glue_table_name("store_sales", &config.tpcds_scale_factor),
+        "tpcds_sf10_store_sales"
+    );
+    assert_eq!(
+        config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor),
+        "demo_db_tpcds_sf10_all_tables"
+    );
+}
+
+#[test]
+fn tpch_and_tpcds_query_sets_are_mutually_exclusive() {
+    let env = HashMap::from([
+        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("CUDF_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03"),
+    ]);
+    let error = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string()))
+        .expect_err("mixed workload query ids should fail");
+
+    assert!(error.to_string().contains("mutually exclusive"));
+}
+
+#[test]
+fn custom_query_file_selects_all_table_custom_mode() {
+    let env = HashMap::from([
+        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("CUDF_ICEBERG_CUSTOM_WORKLOAD", "tpcds"),
+        ("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
+    assert_eq!(config.custom_workload, Some(CustomWorkload::Tpcds));
+    assert_eq!(config.custom_query_file.as_deref(), Some(std::path::Path::new("docs/bench/custom_tpcds_probe.json")));
+}
+
+#[test]
+fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins() {
+    let missing_workload = HashMap::from([("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json")]);
+    let error =
+        IcebergNativeSmokeConfig::from_env_get(|name| missing_workload.get(name).map(|value| value.to_string()))
+            .expect_err("custom query file without workload should fail");
+    assert!(error.to_string().contains("CUDF_ICEBERG_CUSTOM_WORKLOAD"));
+
+    let mixed = HashMap::from([
+        ("CUDF_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("CUDF_ICEBERG_CUSTOM_WORKLOAD", "tpch"),
+        ("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpch_probe.json"),
+    ]);
+    let error = IcebergNativeSmokeConfig::from_env_get(|name| mixed.get(name).map(|value| value.to_string()))
+        .expect_err("custom query file and built-in query ids should fail");
+    assert!(error.to_string().contains("mutually exclusive"));
 }
 
 #[test]
@@ -163,11 +239,20 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     row.native_output_rows = Some(1);
     row.native_output_batches = Some(1);
     row.native_count_value = Some(7);
+    row.record_native_metrics(NativeDataFusionExecutionMetrics {
+        source_fetch_bytes: 1024,
+        source_fetch_count: 2,
+        host_fetch_budget_wait_time_ns: Some(5_000_000),
+        source_fetch_concurrency_wait_time_ns: Some(6_000_000),
+        source_fetch_time_ns: Some(7_250_000),
+        source_decode_time_ns: Some(8_500_000),
+        ..Default::default()
+    });
     row.finalize_count_parity_if_needed();
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=4\n"));
+    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=5\n"));
     assert!(tsv.contains("\tnative_source_read_capability\t"));
     assert!(tsv.contains("\tdirect_device_read_disposition\t"));
     assert!(tsv.contains("\tobject_store_staging_mode\t"));
@@ -179,15 +264,25 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert!(tsv.contains("\tcpu_output_fingerprint\t"));
     assert!(tsv.contains("\tcomparison_mode\t"));
     assert!(tsv.contains("\tparity_status\t"));
+    assert!(tsv.contains("\tsource_fetch_bytes\tsource_fetch_count\t"));
+    assert!(tsv.contains("\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\t"));
+    assert_eq!(tsv_field(&tsv, "source_fetch_bytes"), "1024");
+    assert_eq!(tsv_field(&tsv, "source_fetch_count"), "2");
+    assert_eq!(tsv_field(&tsv, "host_fetch_budget_wait_time_ms"), "5.000");
+    assert_eq!(tsv_field(&tsv, "source_fetch_concurrency_wait_time_ms"), "6.000");
+    assert_eq!(tsv_field(&tsv, "source_fetch_time_ms"), "7.250");
+    assert_eq!(tsv_field(&tsv, "source_decode_time_ms"), "8.500");
     assert!(
         tsv.contains("\tlocal_file_system\teligible\tauto\tnot_needed\t0\t0\taccepted_replaced\tnone\tnative\tfalse\ttrue\tsucceeded\t")
     );
-    assert!(tsv.contains("\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnot_applicable\tmatched\t"));
+    assert_eq!(tsv_field(&tsv, "cpu_runtime_started"), "false");
+    assert_eq!(tsv_field(&tsv, "cpu_runtime_outcome"), "not_started");
+    assert_eq!(tsv_field(&tsv, "comparison_mode"), "not_applicable");
     assert!(tsv.contains("\tmatched\t"));
 }
 
 #[test]
-fn report_tsv_can_prove_direct_s3_native_read_without_staging() {
+fn report_tsv_records_direct_s3_as_host_buffer_native_without_staging() {
     let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
         .with_snapshot_id("123")
         .with_catalog_type("aws_glue")
@@ -211,13 +306,13 @@ fn report_tsv_can_prove_direct_s3_native_read_without_staging() {
         None,
         NativeDataFusionPostNativeExecutionPath::Native,
         None,
-        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::DirectNative),
+        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Disabled, ObjectStoreStagingStatus::DirectNative),
         "aws_profile_env".to_string(),
     );
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.contains("\tobject_store:s3\teligible\tauto\tdirect_s3_native\t0\t0\taccepted_replaced\t"));
+    assert!(tsv.contains("\tobject_store:s3\trejected\tdisabled\tdirect_s3_native\t0\t0\taccepted_replaced\tnone\t"));
     assert!(!tsv.contains("staged_local"));
 }
 
@@ -245,4 +340,13 @@ fn direct_s3_scan_plan_produces_cpu_baseline_listing_url_without_staging() {
     assert_eq!(urls.len(), 1);
     assert_eq!(urls[0].as_str(), "s3://bucket/table/data-0001.parquet");
     assert_eq!(urls[0].object_store().as_str(), "s3://bucket/");
+}
+
+fn tsv_field<'a>(tsv: &'a str, column: &str) -> &'a str {
+    let mut lines = tsv.lines();
+    let _schema_version = lines.next().expect("schema version line");
+    let header = lines.next().expect("header line").split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("data row").split('\t').collect::<Vec<_>>();
+    let index = header.iter().position(|field| *field == column).expect("column present");
+    row[index]
 }

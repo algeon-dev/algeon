@@ -6,12 +6,12 @@
 
 #![deny(missing_docs)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use cudf_query_engine::{
     AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode,
-    SourceSchedulerPolicy,
+    GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
+    ServiceStreamPool, SourceSchedulerPolicy, TenantQueryContext,
 };
 
 use crate::error::Error;
@@ -30,14 +30,57 @@ pub struct NativeCudfExecutionConfig {
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
+    service_stream_pool: Option<ServiceStreamPool>,
+    service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
+    query_service_handle: Option<Arc<QueryHandle>>,
+}
+
+/// Native execution context plus any service leases that must outlive execution.
+#[derive(Debug)]
+pub(crate) struct NativeCudfExecutionContext {
+    context: ExecutionContext,
+    _tenant_context: Option<TenantQueryContext>,
+}
+
+impl NativeCudfExecutionContext {
+    fn standalone(context: ExecutionContext) -> Self {
+        Self { context, _tenant_context: None }
+    }
+
+    fn tenant_bound(tenant_context: TenantQueryContext) -> Self {
+        let context = tenant_context.context().clone();
+        Self { context, _tenant_context: Some(tenant_context) }
+    }
+
+    pub(crate) fn context(&self) -> &ExecutionContext {
+        &self.context
+    }
 }
 
 impl NativeCudfExecutionConfig {
+    /// Fallback bounded device budget, in bytes, used when auto-sizing cannot
+    /// read the primary GPU's total memory.
+    pub const AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
+    /// Device-memory headroom, in bytes, reserved for libcudf and driver
+    /// overhead when deriving a bounded budget from `nvidia-smi`.
+    pub const AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
+    /// Default bounded source chunk byte target used by
+    /// [`Self::bounded_auto_sized`].
+    pub const DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
+    /// Default bounded source row-group target used by
+    /// [`Self::bounded_auto_sized`].
+    pub const DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
+    /// Default bounded retry-attempt cap used by [`Self::bounded_auto_sized`].
+    pub const DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS: usize = 3;
+    /// Default bounded retry floor, in row groups, used by
+    /// [`Self::bounded_auto_sized`].
+    pub const DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
+
     /// Use the default allocator policy with no native bounded-memory execution controls.
     pub fn unbounded() -> Self {
         Self {
@@ -47,12 +90,45 @@ impl NativeCudfExecutionConfig {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            service_stream_pool: None,
+            service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            query_service_handle: None,
         }
+    }
+
+    /// Use default runtime allocator construction with an auto-sized bounded
+    /// memory-control profile.
+    ///
+    /// The device budget is `nvidia-smi --query-gpu=memory.total --id=0`
+    /// minus [`Self::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES`]. If `nvidia-smi`
+    /// is unavailable, fails, or returns an unexpected payload, the budget
+    /// falls back to [`Self::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES`]. Source
+    /// chunking uses a 64 MiB byte target, one row group per chunk, three retry
+    /// attempts, and one row group as the retry floor.
+    pub fn bounded_auto_sized() -> Self {
+        Self::bounded(
+            Self::auto_sized_device_budget_bytes(),
+            Self::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+            Self::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+            Self::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            Self::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+        )
+    }
+
+    /// Returns the auto-sized bounded device budget in bytes.
+    ///
+    /// The value is derived from the primary GPU's reported total memory minus
+    /// 500 MiB of libcudf/driver headroom. A 256 MiB fallback keeps bounded
+    /// report and service defaults constructible on hosts without `nvidia-smi`
+    /// or without a visible GPU.
+    pub fn auto_sized_device_budget_bytes() -> u64 {
+        static AUTO_SIZED_DEVICE_BUDGET_BYTES: OnceLock<u64> = OnceLock::new();
+        *AUTO_SIZED_DEVICE_BUDGET_BYTES.get_or_init(detect_auto_sized_device_budget_bytes)
     }
 
     /// Use default runtime allocator construction with bounded native memory-control settings.
@@ -83,11 +159,14 @@ impl NativeCudfExecutionConfig {
             },
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            service_stream_pool: None,
+            service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            query_service_handle: None,
         }
     }
 
@@ -140,6 +219,20 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Use a caller-owned service stream pool for bounded source-read workers.
+    pub fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
+        self.service_stream_pool = Some(service_stream_pool);
+        self
+    }
+
+    /// Set the size of the default process-global service stream pool.
+    ///
+    /// Ignored when a pool is supplied with [`Self::with_service_stream_pool`].
+    pub fn with_service_stream_pool_size(mut self, pool_size: usize) -> Self {
+        self.service_stream_pool_size = Some(pool_size);
+        self
+    }
+
     /// Attach a cooperative cancellation flag observed by native execution.
     pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
@@ -177,6 +270,23 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Execute through an admitted multi-tenant query-service handle.
+    ///
+    /// The handle supplies the service-owned CUDA stream pool, source-fetch
+    /// gates, deployment IO capability, and tenant device-budget slice used by
+    /// native execution. The handle must remain unfinished until every plan
+    /// node built from this config has completed execution; dropping the final
+    /// handle releases the service admission slot.
+    pub fn with_query_service_handle(mut self, handle: Arc<QueryHandle>) -> Self {
+        self.memory_resource_policy = MemoryResourcePolicy::ExternalRuntime;
+        self.memory_control_policy = handle.memory_control_policy();
+        self.boundary_policy = handle.boundary_policy();
+        self.source_scheduler_policy = handle.source_scheduler_policy();
+        self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
+        self.query_service_handle = Some(handle);
+        self
+    }
+
     /// Memory-control policy copied into the lazily built native context.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
@@ -204,7 +314,17 @@ impl NativeCudfExecutionConfig {
 
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
-    pub(crate) fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
+    pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
+        if let Some(handle) = &self.query_service_handle {
+            return handle.acquire_context().map(NativeCudfExecutionContext::tenant_bound).map_err(|error| {
+                Error::from_native(
+                    "datafusion_cudf.native_exec.context",
+                    "failed to acquire query service native cudf execution context",
+                    error,
+                )
+            });
+        }
+
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
             .with_memory_control_policy(self.memory_control_policy)
@@ -212,6 +332,12 @@ impl NativeCudfExecutionConfig {
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
+        if let Some(pool) = &self.service_stream_pool {
+            builder = builder.with_service_stream_pool(pool.clone());
+        }
+        if let Some(pool_size) = self.service_stream_pool_size {
+            builder = builder.with_service_stream_pool_size(pool_size);
+        }
         if let Some(runtime) = &self.runtime {
             builder = builder.with_shared_runtime(Arc::clone(runtime));
         }
@@ -227,7 +353,7 @@ impl NativeCudfExecutionConfig {
         if let Some(memory_history) = &self.adaptive_memory_history {
             builder = builder.with_adaptive_memory_history(Arc::clone(memory_history));
         }
-        builder.build().map_err(|error| {
+        builder.build().map(NativeCudfExecutionContext::standalone).map_err(|error| {
             Error::from_native(
                 "datafusion_cudf.native_exec.context",
                 "failed to build native cudf execution context",
@@ -235,4 +361,26 @@ impl NativeCudfExecutionConfig {
             )
         })
     }
+}
+
+fn detect_auto_sized_device_budget_bytes() -> u64 {
+    let output = match std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits", "--id=0"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+    };
+    let total_mib: u64 = match std::str::from_utf8(&output).ok().and_then(|value| value.trim().lines().next()) {
+        Some(line) => match line.trim().parse() {
+            Ok(value) => value,
+            Err(_) => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+        },
+        None => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+    };
+    let total_bytes = total_mib.saturating_mul(1024 * 1024);
+    total_bytes
+        .checked_sub(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES)
+        .filter(|value| *value > 0)
+        .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
 }

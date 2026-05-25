@@ -218,14 +218,15 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let output = futures::stream::once(async move {
             // Build one native context for all producer fragments and the consumer so device-resident
             // handles are compatible across the composed execution.
-            let context = execution_config
+            let context_lease = execution_config
                 .execution_context()
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
+            let context = context_lease.context();
             let mut input_map = GpuResidentInputMap::new();
             for child in gpu_inputs {
                 let (input_name, handle) = execute_gpu_resident_producer_with_context(
                     child.as_ref(),
-                    &context,
+                    context,
                     partition,
                     Arc::clone(&task_context),
                 )
@@ -235,7 +236,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
 
             // The consumer query starts after all GPU-resident producer handles are registered. No
             // CPU fallback is attempted after this point.
-            let result = execute_query_plan_with_gpu_inputs(&context, &plan, &input_map).map_err(|error| {
+            let result = execute_query_plan_with_gpu_inputs(context, &plan, &input_map).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
                     "datafusion_cudf.native_composed.execute",
                     "native cudf composed query execution failed",

@@ -27,7 +27,7 @@ enum ScheduledLocalParquetReadState {
     Running {
         reservation: Box<ActiveReservation>,
         handle: JoinHandle<ScheduledLocalParquetReadResult>,
-        context: Box<ExecutionContext>,
+        source_read_lease: Box<crate::runtime::SourceReadStreamLease>,
         source: Box<LocalParquetSource>,
         attempt: usize,
         max_attempts: usize,
@@ -59,8 +59,8 @@ impl ScheduledLocalParquetRead {
         max_attempts: usize,
     ) -> Result<Self> {
         let thread_chunk = chunk.clone();
-        let worker_context = context.clone_for_source_read_worker()?;
-        let thread_context = worker_context.clone();
+        let source_read_lease = context.acquire_source_read_lease()?;
+        let thread_context = source_read_lease.context().clone();
         let thread_source = source.clone();
         let handle = thread::spawn(move || {
             let mut metrics = QueryMetrics::default();
@@ -89,7 +89,7 @@ impl ScheduledLocalParquetRead {
             state: ScheduledLocalParquetReadState::Running {
                 reservation: Box::new(reservation),
                 handle,
-                context: Box::new(worker_context),
+                source_read_lease: Box::new(source_read_lease),
                 source: Box::new(source),
                 attempt,
                 max_attempts,
@@ -128,9 +128,14 @@ impl ScheduledLocalParquetRead {
         let ScheduledLocalParquetRead { chunk, state, budget_boundary, prefetch: _ } = self;
         let (mut reservation, handle, retry_context) = match state {
             ScheduledLocalParquetReadState::Ready(output) => return Ok(*output),
-            ScheduledLocalParquetReadState::Running { reservation, handle, context, source, attempt, max_attempts } => {
-                (*reservation, handle, Some((*context, *source, attempt, max_attempts)))
-            },
+            ScheduledLocalParquetReadState::Running {
+                reservation,
+                handle,
+                source_read_lease,
+                source,
+                attempt,
+                max_attempts,
+            } => (*reservation, handle, Some((*source_read_lease, *source, attempt, max_attempts))),
         };
         let wait_timer = Instant::now();
         let result = handle.join().map_err(|_panic| {
@@ -149,9 +154,9 @@ impl ScheduledLocalParquetRead {
         match result.frame {
             Ok(frame) => Ok(ScheduledLocalParquetReadOutput { chunk, frame, reservation, observed_bytes: 0 }),
             Err(error) => {
-                if let Some((context, source, attempt, max_attempts)) = retry_context
+                if let Some((source_read_lease, source, attempt, max_attempts)) = retry_context
                     && let Some(frame) = try_finish_scheduled_source_read_with_corrected_budget(
-                        &context,
+                        source_read_lease.context(),
                         &source,
                         &chunk,
                         &mut reservation,

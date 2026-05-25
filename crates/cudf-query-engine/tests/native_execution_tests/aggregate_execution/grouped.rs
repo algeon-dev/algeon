@@ -540,8 +540,8 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
 }
 
 #[test]
-fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_row_balanced_partitions() {
-    let dir = unique_temp_dir("cudf-query-engine-bounded-source-adjacent-large-string-row-balanced");
+fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_partitions() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-adjacent-large-string-group-key");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_nullable_string_grouped_aggregate_parquet(&path);
@@ -597,18 +597,24 @@ fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_row_balance
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert!(
-        metrics.partial_aggregate_count > 5,
-        "large estimated source-adjacent string input should keep the bounded row-balanced partitioner"
-    );
+    assert!(metrics.partial_aggregate_count > 0);
     let partial_strategy = metrics
         .aggregate_strategy_decisions
         .iter()
         .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
         .expect("row-balanced partial strategy row");
-    assert_eq!(
-        partial_strategy.facts.get("source_adjacent_partition_strategy").map(String::as_str),
-        Some("row_balanced")
+    assert_eq!(partial_strategy.facts.get("source_adjacent_partition_strategy").map(String::as_str), Some("group_key"));
+    assert!(
+        metrics.aggregate_strategy_decisions.iter().all(|decision| {
+            decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) != Some("group_key")
+                || decision
+                    .facts
+                    .get("source_adjacent_max_partition_fan_in")
+                    .and_then(|fan_in| fan_in.parse::<u64>().ok())
+                    .is_some_and(|fan_in| fan_in <= 64)
+                || decision.facts.get("selected_strategy").map(String::as_str) != Some("prepared_sort_groupby")
+        }),
+        "high-fan-in group-key source-adjacent string aggregates must not use prepared sort groupby"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -624,6 +630,96 @@ fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_row_balance
             (Some("segment-beta-long".to_string()), Some(60), 60),
         ]
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-partitioned-final-merge-topk");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_high_cardinality_url_count_parquet(&path);
+
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false)]));
+    let aggregated_schema =
+        Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false), Field::new("c", DataType::Int64, false)]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["URL".to_string()],
+    );
+    let projection = vec![Expr::column("URL")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("URL")],
+        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("URL"), "c")],
+    );
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("c"), true, false),
+        SortExpr::new(Expr::column("URL"), false, false),
+    ]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
+    let aggregate_projection = builder.add_projection(
+        aggregate,
+        projection_outputs(vec![Expr::column("URL"), Expr::column("c")], Arc::clone(&aggregated_schema)),
+    );
+    let sort = builder.add_sort(aggregate_projection, sort, Arc::clone(&aggregated_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let final_strategy = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge"))
+        .expect("partitioned final merge should record strategy facts");
+    assert_eq!(final_strategy.node_id, aggregate.to_string());
+    assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
+    assert_eq!(final_strategy.facts.get("partitioned_merge_topk_pruned").map(String::as_str), Some("true"));
+    assert_eq!(final_strategy.facts.get("partitioned_merge_topk_keep_rows").map(String::as_str), Some("2"));
+    let topk_input_rows = final_strategy
+        .facts
+        .get("partitioned_merge_topk_input_rows")
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("top-k input row fact");
+    let topk_output_rows = final_strategy
+        .facts
+        .get("partitioned_merge_topk_output_rows")
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("top-k output row fact");
+    assert!(
+        topk_output_rows < topk_input_rows,
+        "partition-local TopK should reduce high-cardinality final aggregate output before concat"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "partitioned_final_aggregate_topk_input"
+            && event.action == MemoryReservationEventAction::Reserve
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("url-039"), Some("url-038")]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[40, 39]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -777,6 +873,21 @@ fn bounded_native_query_decodes_encoded_string_partials_before_final_merge() {
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_high_cardinality_url_count_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false)]));
+    let mut urls = Vec::new();
+    for group in 0..40 {
+        urls.extend(std::iter::repeat_n(format!("url-{group:03}"), group + 1));
+    }
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(urls))]).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(64)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
 }
 
 fn grouped_string_rows(frame: &DataFrame) -> Vec<(Option<String>, Option<i64>, i32)> {

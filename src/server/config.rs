@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 use super::error::{Result, ServerError};
-use crate::{CudfOptimizerConfig, NativeCudfExecutionConfig};
+use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
 
 pub const DATAFUSION_CUDF_SERVER_BIND_ENV: &str = "DATAFUSION_CUDF_SERVER_BIND";
 pub const DATAFUSION_CUDF_SERVER_LOG_ENV: &str = "DATAFUSION_CUDF_SERVER_LOG";
@@ -209,7 +209,7 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
     let max_row_groups = values.optional_usize(DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?;
 
     let execution_config = match (device_budget, max_source_chunk, max_row_groups) {
-        (None, None, None) => NativeCudfExecutionConfig::unbounded(),
+        (None, None, None) => NativeCudfExecutionConfig::bounded_auto_sized(),
         (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
             if device_budget == 0 {
                 return Err(ServerError::invalid_config(
@@ -239,7 +239,7 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
         },
     };
 
-    Ok(CudfOptimizerConfig::default().with_native_execution_config(execution_config))
+    Ok(CudfOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
 }
 
 #[cfg(feature = "iceberg")]

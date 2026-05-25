@@ -112,6 +112,12 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "source_metadata_load_time",
     "source_read_queue_wait_time",
     "source_cache_lookup_time",
+    "source_fetch_bytes",
+    "source_fetch_count",
+    "host_fetch_budget_wait_time",
+    "source_fetch_concurrency_wait_time",
+    "source_fetch_time",
+    "source_decode_time",
     "parquet_read_time",
     "source_read_time",
     "operator_time",
@@ -215,6 +221,12 @@ pub(crate) struct NativeCudfMetrics {
     source_metadata_load_time: Time,
     source_read_queue_wait_time: Time,
     source_cache_lookup_time: Time,
+    source_fetch_bytes: Count,
+    source_fetch_count: Count,
+    host_fetch_budget_wait_time: Time,
+    source_fetch_concurrency_wait_time: Time,
+    source_fetch_time: Time,
+    source_decode_time: Time,
     parquet_read_time: Time,
     source_read_time: Time,
     operator_time: Time,
@@ -366,6 +378,12 @@ impl NativeCudfMetrics {
             source_metadata_load_time: summary_timer(metrics, "source_metadata_load_time", partition),
             source_read_queue_wait_time: summary_timer(metrics, "source_read_queue_wait_time", partition),
             source_cache_lookup_time: summary_timer(metrics, "source_cache_lookup_time", partition),
+            source_fetch_bytes: summary_counter(metrics, "source_fetch_bytes", partition),
+            source_fetch_count: summary_counter(metrics, "source_fetch_count", partition),
+            host_fetch_budget_wait_time: summary_timer(metrics, "host_fetch_budget_wait_time", partition),
+            source_fetch_concurrency_wait_time: summary_timer(metrics, "source_fetch_concurrency_wait_time", partition),
+            source_fetch_time: summary_timer(metrics, "source_fetch_time", partition),
+            source_decode_time: summary_timer(metrics, "source_decode_time", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
             operator_time: summary_timer(metrics, "operator_time", partition),
@@ -477,6 +495,12 @@ impl NativeCudfMetrics {
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
         self.source_cache_lookup_time.add_duration(metrics.source_cache_lookup_time);
+        self.source_fetch_bytes.add(count(metrics.source_fetch_bytes));
+        self.source_fetch_count.add(count(metrics.source_fetch_count));
+        self.host_fetch_budget_wait_time.add_duration(metrics.host_fetch_budget_wait_time);
+        self.source_fetch_concurrency_wait_time.add_duration(metrics.source_fetch_concurrency_wait_time);
+        self.source_fetch_time.add_duration(metrics.source_fetch_time);
+        self.source_decode_time.add_duration(metrics.source_decode_time);
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);
         self.operator_time.add_duration(metrics.operator_time);

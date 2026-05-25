@@ -347,7 +347,7 @@ fn table_format_scan_plan_rejection(plan: &TableFormatScanPlan) -> FallbackReaso
     if plan.data_files.iter().any(|file| file.format != TableFormatDataFileFormat::Parquet) {
         return FallbackReason::IcebergNonParquetDataFile;
     }
-    if plan.data_files.iter().any(|file| !file.read_capability.is_direct_native_parquet_capable()) {
+    if plan.data_files.iter().any(|file| !file.read_capability.is_native_parquet_capable()) {
         return FallbackReason::IcebergObjectStoreReadUnsupported;
     }
     FallbackReason::TableFormatUnsupported
@@ -559,7 +559,7 @@ fn table_format_local_parquet_file(
     if file.format != TableFormatDataFileFormat::Parquet {
         return Err(FallbackReason::IcebergNonParquetDataFile);
     }
-    if !file.read_capability.is_direct_native_parquet_capable() {
+    if !file.read_capability.is_native_parquet_capable() {
         return Err(FallbackReason::IcebergObjectStoreReadUnsupported);
     }
     let stable_id = format!("table-format:{}:{}", scan_plan.format.code(), file.id);
@@ -635,9 +635,9 @@ fn table_format_native_parquet_file(
         TableFormatReadCapability::LocalFileSystem => {
             Ok(NativeLocalParquetFile::new(table_format_local_path(location)))
         },
-        TableFormatReadCapability::ObjectStore { scheme } if scheme.eq_ignore_ascii_case("s3") => {
-            NativeLocalParquetFile::object_store_uri(location.to_string())
-                .map_err(|_reason| FallbackReason::IcebergObjectStoreReadUnsupported)
+        TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3" => {
+            NativeLocalParquetFile::object_store_uri(location)
+                .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)
         },
         TableFormatReadCapability::ObjectStore { .. } | TableFormatReadCapability::Unsupported { .. } => {
             Err(FallbackReason::IcebergObjectStoreReadUnsupported)
