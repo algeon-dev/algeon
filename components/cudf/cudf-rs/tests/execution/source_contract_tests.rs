@@ -123,6 +123,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_free_column_array", "pure lifecycle for returned handle arrays"),
     ("cudf_groupby_scan_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_groupby_scan_aggregation_destroy", "pure lifecycle"),
+    ("cudf_prepared_groupby_destroy", "pure lifecycle"),
     ("cudf_hash_join_destroy", "provenance-bound lifecycle"),
     ("cudf_hash_join_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_io_free_column_names", "pure lifecycle for IO metadata"),
@@ -355,7 +356,10 @@ fn strings_helpers_require_explicit_execution_options() {
 fn groupby_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
-        "cudf_sys::cudf_groupby_aggregate_ex",
+        "cudf_sys::cudf_groupby_aggregate_with_keys_are_sorted_ex",
+        "cudf_sys::cudf_prepared_groupby_create_ex",
+        "cudf_sys::cudf_prepared_groupby_prepare_groups_ex",
+        "cudf_sys::cudf_prepared_groupby_aggregate_ex",
         "cudf_sys::cudf_groupby_scan_ex",
     ] {
         assert!(GROUPBY_AGG_RS.contains(required), "groupby aggregation helpers must retain `{required}`");
@@ -369,6 +373,9 @@ fn groupby_helpers_require_explicit_execution_options() {
         "Option<&cudf_sys::cudf_exec_options_t>",
         "match exec_options",
         "cudf_sys::cudf_groupby_aggregate(",
+        "cudf_sys::cudf_prepared_groupby_create(",
+        "cudf_sys::cudf_prepared_groupby_prepare_groups(",
+        "cudf_sys::cudf_prepared_groupby_aggregate(",
         "cudf_sys::cudf_groupby_scan(",
         "execution_context_provided",
     ] {

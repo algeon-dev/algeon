@@ -627,6 +627,60 @@ fn test_codebook_decode_returns_decoded_values() {
 }
 
 #[test]
+fn test_codebook_decode_preserves_null_codes_as_null_values() {
+    let keys = crate::common::series("key", &["alpha", "beta"]).unwrap();
+    let codebook = Codebook::from_keys(keys).unwrap();
+    let codes = crate::common::nullable_series::<i32>("code", &[1, 0, 0, 1], &[true, false, true, false]).unwrap();
+
+    let decoded = codebook.decode_series(&codes).unwrap();
+
+    assert_eq!(
+        decoded.to_optional_strings().unwrap(),
+        vec![Some("beta".to_string()), None, Some("alpha".to_string()), None]
+    );
+}
+
+#[test]
+fn test_codebook_encode_and_decode_in_use_borrowed_context_domain() {
+    let _event_observation = crate::common::lock_event_observation();
+    let key_runtime = sample_runtime();
+    let input_runtime = sample_runtime();
+    let ctx_runtime = sample_runtime();
+    let keys = key_runtime.series(&["alpha", "beta"]).unwrap();
+    let codebook = Codebook::from_keys(keys).unwrap();
+    let values = input_runtime.series(&["beta", "alpha", "missing"]).unwrap();
+    let value_placement = values.placement();
+    let ctx =
+        ExecutionOverrides::new().with_stream(ctx_runtime.stream()).with_memory_resource(ctx_runtime.memory_resource());
+    let expected_stream = ctx_runtime.stream().testing_raw_handle_value();
+    let expected_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
+
+    crate::common::reset_dependency_observation();
+    reset_exec_observation();
+    let encoded = codebook.encode_in(&values, &ctx).unwrap();
+    let encoded_placement = encoded.placement();
+
+    assert_eq!(encoded.to_optional_vec::<i32>().unwrap(), vec![Some(1), Some(0), None]);
+    assert_eq!(encoded_placement.device, value_placement.device);
+    assert_eq!(encoded_placement.workflow_id, value_placement.workflow_id);
+    assert_ne!(encoded_placement.bundle_id, value_placement.bundle_id);
+    assert_eq!(encoded_placement.stream_debug, expected_stream);
+    assert_eq!(encoded_placement.memory_resource_debug, expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_exec_observation();
+    let decoded = codebook.decode_in(&encoded, &ctx).unwrap();
+    let decoded_placement = decoded.placement();
+
+    assert_eq!(decoded.to_optional_strings().unwrap(), vec![Some("beta".to_string()), Some("alpha".to_string()), None]);
+    assert_eq!(decoded_placement.stream_debug, expected_stream);
+    assert_eq!(decoded_placement.memory_resource_debug, expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+}
+
+#[test]
 fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -697,6 +751,10 @@ fn test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null
 
     assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a"]);
     assert_eq!(factorized.row_codes().to_optional_vec::<i32>().unwrap(), vec![Some(0), None, Some(1), Some(0), None]);
+    assert_eq!(
+        factorized.decode().unwrap().to_optional_strings().unwrap(),
+        vec![Some("b".to_string()), None, Some("a".to_string()), Some("b".to_string()), None]
+    );
 }
 
 #[test]
