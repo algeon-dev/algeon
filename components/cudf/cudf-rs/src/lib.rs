@@ -169,6 +169,7 @@
 
 pub mod core;
 pub mod frame;
+pub mod hash;
 pub mod interop;
 // Internal helpers — not part of the public API.
 pub(crate) mod internal;
