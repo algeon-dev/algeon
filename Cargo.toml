@@ -129,6 +129,10 @@ required-features = ["cugraph"]
 name = "refresh_cugraph_oracle"
 required-features = ["cugraph"]
 
+[[example]]
+name = "iceberg_limit_smoke"
+required-features = ["iceberg"]
+
 [[test]]
 name = "table_format_iceberg_planner_tests"
 required-features = ["iceberg"]

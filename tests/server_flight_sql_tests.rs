@@ -2,11 +2,12 @@
 
 use std::{net::TcpListener, time::Duration};
 
-use arrow::array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt32Array, UnionArray};
+use arrow::array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt32Array, UInt8Array, UnionArray};
 use arrow_flight::{
     error::FlightError,
     sql::{
-        CommandGetDbSchemas, CommandGetTables, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
+        CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
+        CommandGetPrimaryKeys, CommandGetTables, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
         SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
         SqlSupportedUnions, client::FlightSqlServiceClient,
     },
@@ -458,12 +459,218 @@ async fn flight_sql_get_table_types_returns_table_and_view() {
     assert_eq!(types, vec!["TABLE".to_string(), "VIEW".to_string()]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_statement_round_trip_executes_select() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let mut prepared = client.prepare("select 1 as one".to_string(), None).await.unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 1, "dataset_schema must reflect projected columns");
+
+    // Execute twice to confirm the prepared handle is not consumed.
+    for expected_iteration in 0..2 {
+        let flight_info = prepared.execute().await.unwrap();
+        let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+        let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), 1, "iteration {expected_iteration} should return one batch");
+        assert_eq!(int_value(batches[0].column(0)), Some(1));
+    }
+    prepared.close().await.unwrap();
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_statement_rejects_transaction_id() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
+    let error = client.prepare("select 1".to_string(), Some(txn_id)).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::Unimplemented);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_statement_close_is_idempotent_via_raw_action() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    // Send a Close action for a handle that was never created. The server
+    // must treat this as a no-op (Ok) rather than UNIMPLEMENTED or an error.
+    use arrow_flight::sql::{ActionClosePreparedStatementRequest, ProstMessageExt};
+    use prost::Message;
+    let action_body =
+        ActionClosePreparedStatementRequest { prepared_statement_handle: prost::bytes::Bytes::from_static(b"ghost") };
+    let action = arrow_flight::Action {
+        r#type: "ClosePreparedStatement".to_string(),
+        body: action_body.as_any().encode_to_vec().into(),
+    };
+    let mut stream = client.do_action(action).await.unwrap();
+    while stream.message().await.unwrap().is_some() {}
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_statement_invalid_sql_fails_at_create() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.prepare("select from where".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    // Logical planning failures map through datafusion_error_to_status; the
+    // exact code is engine-defined but must not be OK / UNIMPLEMENTED.
+    assert_ne!(status.code(), Code::Ok);
+    assert_ne!(status.code(), Code::Unimplemented);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let cmd = CommandGetPrimaryKeys {
+        catalog: None,
+        db_schema: None,
+        table: "any_table".to_string(),
+    };
+    let flight_info = client.get_primary_keys(cmd).await.unwrap();
+    let (schema, batches) = collect_metadata_schema_and_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 0, "primary keys must be empty for DataFusion catalog");
+    let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    assert_eq!(
+        field_names,
+        vec!["catalog_name", "db_schema_name", "table_name", "column_name", "key_name", "key_sequence"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_foreign_keys_rpcs_return_empty_with_shared_schema() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let imported_info = client
+        .get_imported_keys(CommandGetImportedKeys { catalog: None, db_schema: None, table: "t".to_string() })
+        .await
+        .unwrap();
+    let exported_info = client
+        .get_exported_keys(CommandGetExportedKeys { catalog: None, db_schema: None, table: "t".to_string() })
+        .await
+        .unwrap();
+    let xref_info = client
+        .get_cross_reference(CommandGetCrossReference {
+            pk_catalog: None,
+            pk_db_schema: None,
+            pk_table: "p".to_string(),
+            fk_catalog: None,
+            fk_db_schema: None,
+            fk_table: "f".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let (imported_schema, imported) = collect_metadata_schema_and_batches(&mut client, &imported_info).await;
+    let (exported_schema, exported) = collect_metadata_schema_and_batches(&mut client, &exported_info).await;
+    let (xref_schema, xref) = collect_metadata_schema_and_batches(&mut client, &xref_info).await;
+
+    server.abort();
+
+    let expected_names = vec![
+        "pk_catalog_name",
+        "pk_db_schema_name",
+        "pk_table_name",
+        "pk_column_name",
+        "fk_catalog_name",
+        "fk_db_schema_name",
+        "fk_table_name",
+        "fk_column_name",
+        "key_sequence",
+        "fk_key_name",
+        "pk_key_name",
+        "update_rule",
+        "delete_rule",
+    ];
+    for (label, schema, batches) in [
+        ("imported", &imported_schema, &imported),
+        ("exported", &exported_schema, &exported),
+        ("cross_reference", &xref_schema, &xref),
+    ] {
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 0, "{label} keys must be empty");
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, expected_names, "{label} keys schema mismatch");
+        let update_rule = schema.field_with_name("update_rule").unwrap();
+        assert_eq!(update_rule.data_type(), &arrow::datatypes::DataType::UInt8, "{label} update_rule must be UInt8");
+    }
+    // Reference the UInt8Array import to keep it warning-free even when batches are empty.
+    let _ = UInt8Array::from(Vec::<u8>::new());
+}
+
+fn unwrap_flight_status(error: FlightError) -> tonic::Status {
+    match error {
+        FlightError::Tonic(status) => *status,
+        other => panic!("expected tonic Status, got {other:?}"),
+    }
+}
+
 async fn collect_metadata_batches(
     client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
     flight_info: &arrow_flight::FlightInfo,
 ) -> Vec<arrow::record_batch::RecordBatch> {
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
+}
+
+/// Like `collect_metadata_batches`, but also returns the stream's schema
+/// extracted from the IPC schema-header message. `try_collect::<Vec<_>>`
+/// drops the schema and yields only RecordBatch payloads, so for empty-
+/// result metadata RPCs (`get_primary_keys`, foreign-key RPCs) the batch
+/// vector is empty and the schema would otherwise be unreachable.
+async fn collect_metadata_schema_and_batches(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    flight_info: &arrow_flight::FlightInfo,
+) -> (arrow::datatypes::SchemaRef, Vec<arrow::record_batch::RecordBatch>) {
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let mut stream = client.do_get(ticket).await.unwrap();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.try_next().await.unwrap() {
+        batches.push(batch);
+    }
+    let schema = stream.schema().cloned().expect("metadata stream must expose a schema");
+    (schema, batches)
 }
 
 fn collect_name_and_type(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(String, String)> {

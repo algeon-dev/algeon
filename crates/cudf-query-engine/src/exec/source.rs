@@ -138,6 +138,14 @@ fn read_local_parquet_source_uncached(
     source: &LocalParquetSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if source.scan_limit == Some(0) {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, 0)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    }
+
     if source.is_zero_column_count_source() {
         return read_zero_column_count_source(context, source, metrics);
     }
@@ -265,7 +273,7 @@ fn start_object_store_file_fetches(
 ) -> Result<()> {
     while pending.len() < max_in_flight && *next_file_index < source.files.len() {
         let file_index = *next_file_index;
-        let fetch = start_object_store_parquet_file_fetch(context, &source.files[file_index])?;
+        let fetch = start_object_store_parquet_file_fetch(context, &source.files[file_index], None)?;
         pending.push_back((file_index, fetch));
         *next_file_index += 1;
     }
@@ -348,6 +356,14 @@ pub(super) fn read_local_parquet_chunk(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("cudf_query_engine.local_parquet_chunk.read")?;
+    if chunk.scan_limit_rows == Some(0) {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    }
+
     if chunk.zero_column_count {
         let row_count = chunk.known_row_count.ok_or_else(|| {
             QueryError::new(
@@ -400,7 +416,7 @@ pub(super) fn read_local_parquet_chunk(
         })?;
     let read_timer = Instant::now();
     let outcome = if matches!(chunk.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
-        read_object_store_parquet_chunk(context, chunk, &cudf_source, &cudf_chunk, &token, metrics)?
+        read_object_store_parquet_chunk(context, source, chunk, &cudf_source, &cudf_chunk, &token, metrics)?
     } else {
         DataFrame::read_parquet_source_chunk_with_budget(
             context.runtime(),
@@ -432,6 +448,31 @@ pub(super) fn read_local_parquet_chunk(
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
+}
+
+fn empty_local_parquet_execution_frame(context: &ExecutionContext, source: &LocalParquetSource) -> Result<DataFrame> {
+    let schema = local_parquet_execution_frame_schema(source)?;
+    let columns = schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect();
+    let batch = arrow::record_batch::RecordBatch::try_new_with_options(
+        std::sync::Arc::clone(&schema),
+        columns,
+        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(0)),
+    )
+    .map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "cudf_query_engine.local_parquet_source.empty_scan_limit",
+            "failed to construct zero-row local parquet source batch",
+        )
+        .with_source(error)
+    })?;
+    DataFrame::from_record_batch(context.runtime(), &batch).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.empty_scan_limit",
+            "failed to upload zero-row local parquet source batch",
+            error,
+        )
+    })
 }
 
 fn apply_source_scan_limit_to_frame(

@@ -48,7 +48,7 @@ use datafusion::{
             HashJoinExec, NestedLoopJoinExec, PartitionMode,
             utils::{ColumnIndex, JoinFilter},
         },
-        limit::LocalLimitExec,
+        limit::{GlobalLimitExec, LocalLimitExec},
         projection::{ProjectionExec, ProjectionExpr},
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},

@@ -20,9 +20,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LiteralBatchSource as NativeLiteralBatchSource,
-    NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
+    Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LimitSpec as NativeLimitSpec,
+    LiteralBatchSource as NativeLiteralBatchSource, NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput,
+    QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 use datafusion::{
     datasource::memory::MemorySourceConfig, physical_expr::expressions::Column, physical_plan::ExecutionPlan,
@@ -216,8 +216,19 @@ fn lower_native_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
+    lower_native_input_with_scan_limit(input, builder, required_output_fields, None)
+}
+
+pub(super) fn lower_native_input_with_scan_limit(
+    input: &NormalizedNativeInput<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_fields: &RequiredFields,
+    source_scan_limit: Option<usize>,
+) -> Result<LoweredNativeInput, FallbackReason> {
     match input {
-        NormalizedNativeInput::Source(source) => source::lower_source_input(source, builder, required_output_fields),
+        NormalizedNativeInput::Source(source) => {
+            source::lower_source_input(source, builder, required_output_fields, source_scan_limit)
+        },
         NormalizedNativeInput::GpuResidentSource(source) => {
             lower_gpu_resident_source_input(source, builder, required_output_fields)
         },
@@ -229,7 +240,9 @@ fn lower_native_input(
             unary::lower_projection_input(projection, builder, required_output_fields)
         },
         NormalizedNativeInput::Limit(limit) => {
-            let input = lower_native_input(&limit.input, builder, required_output_fields)?;
+            let pushed_scan_limit = source_scan_limit_through_limit(limit.spec, source_scan_limit);
+            let input =
+                lower_native_input_with_scan_limit(&limit.input, builder, required_output_fields, pushed_scan_limit)?;
             let node = builder.add_limit(input.node, limit.spec, Arc::clone(&input.schema));
             Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
         },
@@ -245,6 +258,28 @@ fn lower_native_input(
         },
         NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
     }
+}
+
+pub(super) fn source_scan_limit_from_limit_spec(limit: Option<NativeLimitSpec>) -> Option<usize> {
+    let limit = limit?;
+    let fetch = limit.fetch?;
+    if fetch == 0 {
+        return Some(0);
+    }
+    limit.skip.checked_add(fetch)
+}
+
+fn source_scan_limit_through_limit(limit: NativeLimitSpec, downstream_scan_limit: Option<usize>) -> Option<usize> {
+    let effective_fetch = match (limit.fetch, downstream_scan_limit) {
+        (Some(fetch), Some(downstream)) => fetch.min(downstream),
+        (Some(fetch), None) => fetch,
+        (None, Some(downstream)) => downstream,
+        (None, None) => return None,
+    };
+    if effective_fetch == 0 {
+        return Some(0);
+    }
+    limit.skip.checked_add(effective_fetch)
 }
 
 fn lower_literal_source_input(

@@ -50,10 +50,17 @@ pub(super) fn lower_source_input(
     source: &NormalizedNativeSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    pushed_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let NormalizedNativeScan::LocalParquet(source_exec) = source.scan else {
         let scan_exec = source.table_format_scan_exec().ok_or(FallbackReason::TableFormatUnsupported)?;
-        return lower_table_format_source_input(scan_exec, source.filter, builder, required_output_fields);
+        return lower_table_format_source_input(
+            scan_exec,
+            source.filter,
+            builder,
+            required_output_fields,
+            pushed_scan_limit,
+        );
     };
     let filter = source.filter;
     let (file_scan, parquet_source) =
@@ -106,7 +113,11 @@ pub(super) fn lower_source_input(
     )
     .with_partition_columns(column_requirements.partition_columns.clone())
     .with_missing_columns(column_requirements.missing_columns.clone())
-    .with_scan_limit(file_scan.limit);
+    .with_scan_limit(if filter.is_none() {
+        combine_scan_limits(file_scan.limit, pushed_scan_limit)
+    } else {
+        file_scan.limit
+    });
     let mut reader_pushdown_covers_filter = false;
     if let Some(predicate) = source_reader_pushdown_predicate(
         parquet_source,
@@ -225,6 +236,7 @@ fn lower_table_format_source_input(
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    pushed_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
     validate_table_format_scan_plan(scan_plan)?;
@@ -237,7 +249,8 @@ fn lower_table_format_source_input(
     let source_output_schema = table_format_source_output_schema(&requirements, &table_format_file_schema(scan_plan));
     validate_schema(Arc::clone(&source_output_schema))?;
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
-    let source_scan_limit = if filter.is_none() { scan_plan.scan_limit } else { None };
+    let source_scan_limit =
+        if filter.is_none() { combine_scan_limits(scan_plan.scan_limit, pushed_scan_limit) } else { None };
     let native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&source_output_schema),
@@ -287,6 +300,14 @@ fn lower_table_format_source_input(
         }
     } else {
         Ok(scan_output)
+    }
+}
+
+fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(limit), None) | (None, Some(limit)) => Some(limit),
+        (None, None) => None,
     }
 }
 

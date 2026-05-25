@@ -183,6 +183,12 @@ impl PredicateDisposition {
 }
 
 /// Disposition of byte-range file entries.
+///
+/// This describes the planning-time representation of file entries, not the
+/// runtime fetch strategy. When a source carries a `scan_limit` and points at
+/// remote object-store URIs, the host-buffer reader transparently switches to
+/// footer-first ranged GETs even though entries remain represented as
+/// `FullFiles` here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ByteRangeDisposition {
     /// Source entries describe whole files.

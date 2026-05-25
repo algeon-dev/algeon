@@ -4,18 +4,25 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::datatypes::Schema;
+use arrow::{
+    array::{Int32Array, StringArray, UInt8Array},
+    datatypes::{DataType, Field, Schema},
+    ipc::writer::IpcWriteOptions,
+};
 use arrow_flight::{
-    FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, Ticket,
+    FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket,
     encode::FlightDataEncoderBuilder,
     error::FlightError,
     flight_service_server::FlightService,
     sql::{
-        ActionCancelQueryRequest, ActionCancelQueryResult, CommandGetCatalogs, CommandGetDbSchemas, CommandGetSqlInfo,
-        CommandGetTableTypes, CommandGetTables, CommandPreparedStatementQuery, CommandStatementQuery,
-        ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity,
-        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
-        SqlSupportedUnions, SqlTransactionIsolationLevel, SupportedSqlGrammar, TicketStatementQuery,
+        ActionCancelQueryRequest, ActionCancelQueryResult, ActionClosePreparedStatementRequest,
+        ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs,
+        CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
+        CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTableTypes, CommandGetTables,
+        CommandPreparedStatementQuery, CommandStatementQuery, ProstMessageExt, SqlInfo, SqlNullOrdering,
+        SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency,
+        SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions, SqlTransactionIsolationLevel,
+        SupportedSqlGrammar, TicketStatementQuery,
         metadata::{GetDbSchemasBuilder, GetTablesBuilder, SqlInfoDataBuilder},
         server::FlightSqlService,
     },
@@ -46,6 +53,14 @@ const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-cudf-query-id";
+
+/// Hard cap on live prepared-statement handles across all connections.
+/// Bounds the worst case for clients that leak handles by disconnecting
+/// without calling `ClosePreparedStatement`. Sized for DataGrip-class
+/// clients (a few hundred concurrent handles); raise when a real workload
+/// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` rather than
+/// silently evicting another connection's prepared statement.
+const MAX_PREPARED_STATEMENTS: usize = 1024;
 const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
@@ -59,6 +74,14 @@ pub struct DatafusionCudfFlightSqlService {
     admission: Arc<QueryAdmission>,
     cancellations: Arc<QueryCancellation>,
     tickets: Arc<DashMap<String, StatementTicket>>,
+    /// Map of prepared-statement handle → SQL text. Populated by
+    /// `do_action_create_prepared_statement` and removed by
+    /// `do_action_close_prepared_statement` (or replaced when the same
+    /// handle is reused). The handle is an opaque UUID and is distinct
+    /// from the per-execution `query_id` issued at `get_flight_info_*`
+    /// time; one prepared statement can be executed multiple times,
+    /// each producing a fresh `query_id` / Flight ticket.
+    prepared_statements: Arc<DashMap<String, String>>,
     statement_ticket_ttl: Duration,
     /// Parent token that every per-statement token is derived from. Cancelled
     /// by [`crate::server::serve`] on SIGINT/SIGTERM so any statement that
@@ -79,6 +102,19 @@ pub struct DatafusionCudfFlightSqlService {
 struct QueryPlanning {
     ctx: SessionContext,
     native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+}
+
+/// Selects which Flight SQL ticket envelope to attach to the
+/// `FlightInfo` returned for a statement. `Statement` matches the
+/// `get_flight_info_statement` path; `PreparedStatement` matches the
+/// `get_flight_info_prepared_statement` path. The payload bytes — the
+/// per-execution `query_id` — are identical in both cases; only the
+/// outer protobuf `Any` type URL differs, so the right `do_get_*`
+/// dispatch branch fires.
+#[derive(Clone, Copy)]
+enum StatementTicketKind {
+    Statement,
+    PreparedStatement,
 }
 
 #[derive(Debug)]
@@ -107,6 +143,7 @@ impl DatafusionCudfFlightSqlService {
             admission: Arc::new(QueryAdmission::new(max_in_flight).expect("validated server admission limit")),
             cancellations: Arc::default(),
             tickets: Arc::default(),
+            prepared_statements: Arc::default(),
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
             auth,
@@ -153,6 +190,7 @@ impl DatafusionCudfFlightSqlService {
         descriptor: FlightDescriptor,
         started_at: Instant,
         permit: OwnedSemaphorePermit,
+        ticket_kind: StatementTicketKind,
     ) -> Result<FlightInfo, Status> {
         // Observe the server-wide shutdown token so a slow planning call here
         // does not keep tonic's graceful drain waiting. There is no per-query
@@ -180,8 +218,27 @@ impl DatafusionCudfFlightSqlService {
         };
         let schema = logical_plan.schema().as_arrow().clone();
 
-        let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
-        let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket.as_any().encode_to_vec().into() });
+        // Both ticket variants carry the per-execution `query_id` UTF-8 bytes
+        // in their handle field. For `CommandPreparedStatementQuery` this is a
+        // deliberate reuse of the `prepared_statement_handle` slot to multiplex
+        // the execution key — the protobuf field is documented as the stable
+        // handle from `ActionCreatePreparedStatementResult`, but Flight SQL
+        // does not constrain its contents, and `do_get_prepared_statement`
+        // reads it back as the execution key. The persistent prepared-statement
+        // handle lives in `self.prepared_statements`; it is *not* carried on
+        // the ticket because `do_get` does not need it again.
+        let ticket_payload = match ticket_kind {
+            StatementTicketKind::Statement => {
+                let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
+                ticket.as_any().encode_to_vec().into()
+            },
+            StatementTicketKind::PreparedStatement => {
+                let ticket =
+                    CommandPreparedStatementQuery { prepared_statement_handle: query_id.as_bytes().to_vec().into() };
+                ticket.as_any().encode_to_vec().into()
+            },
+        };
+        let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket_payload });
         let info = FlightInfo::new()
             .try_with_schema(&schema)
             .map_err(arrow_error_to_status)?
@@ -414,13 +471,25 @@ impl DatafusionCudfFlightSqlService {
         };
         let any = arrow_flight::sql::Any::decode(&*ticket.ticket)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let Some(statement_ticket) =
+        // The ticket may be either a `TicketStatementQuery` (issued by
+        // `get_flight_info_statement`) or a `CommandPreparedStatementQuery`
+        // (issued by `get_flight_info_prepared_statement`). Both encode the
+        // per-execution `query_id` UTF-8 bytes in their handle field; once
+        // extracted, the cancellation path is identical.
+        let query_id_bytes = if let Some(statement_ticket) =
             any.unpack::<TicketStatementQuery>().map_err(|error| Status::invalid_argument(error.to_string()))?
-        else {
+        {
+            statement_ticket.statement_handle
+        } else if let Some(prepared_ticket) = any
+            .unpack::<CommandPreparedStatementQuery>()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?
+        {
+            prepared_ticket.prepared_statement_handle
+        } else {
             return Ok(false);
         };
-        let query_id = std::str::from_utf8(&statement_ticket.statement_handle)
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let query_id =
+            std::str::from_utf8(&query_id_bytes).map_err(|error| Status::invalid_argument(error.to_string()))?;
         if let Some((_, ticket)) = self.tickets.remove(query_id) {
             ticket.native_cancellation.cancel();
             tracing::info!(query_id, outcome = "cancelled", phase = "ticket", "cancelled Flight SQL statement ticket");
@@ -475,7 +544,14 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             );
         }
         let info = match self
-            .statement_flight_info(query_id.clone(), sql, request.into_inner(), planning_started_at, permit)
+            .statement_flight_info(
+                query_id.clone(),
+                sql,
+                request.into_inner(),
+                planning_started_at,
+                permit,
+                StatementTicketKind::Statement,
+            )
             .await
         {
             Ok(info) => info,
@@ -540,6 +616,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandGetCatalogs,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         // `CommandGetCatalogs` is a unit message; the builder produces a
         // static schema, and we echo the (Copy) command back as the ticket.
@@ -550,8 +627,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_catalogs(
         &self,
         query: CommandGetCatalogs,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let mut builder = query.into_builder();
         for name in self.ctx.catalog_names() {
             builder.append(name);
@@ -566,6 +644,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandGetDbSchemas,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         let schema = GetDbSchemasBuilder::from(query.clone()).schema();
         Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
@@ -574,8 +653,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_schemas(
         &self,
         query: CommandGetDbSchemas,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let mut builder = GetDbSchemasBuilder::from(query);
         for catalog_name in self.ctx.catalog_names() {
             let Some(catalog) = self.ctx.catalog(&catalog_name) else {
@@ -595,6 +675,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandGetTables,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         let schema = GetTablesBuilder::from(query.clone()).schema();
         Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
@@ -603,8 +684,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_tables(
         &self,
         query: CommandGetTables,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let include_schema = query.include_schema;
         let mut builder = GetTablesBuilder::from(query);
         let empty_schema = Schema::empty();
@@ -668,6 +750,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandGetTableTypes,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         let schema = flight_sql_table_types_schema();
         Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
@@ -676,28 +759,226 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_table_types(
         &self,
         _query: CommandGetTableTypes,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let batch = build_table_types_batch().map_err(arrow_error_to_status)?;
         Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
     }
 
+    async fn do_action_create_prepared_statement(
+        &self,
+        query: ActionCreatePreparedStatementRequest,
+        request: Request<arrow_flight::Action>,
+    ) -> Result<ActionCreatePreparedStatementResult, Status> {
+        self.check_auth(&request)?;
+        if query.transaction_id.is_some() {
+            return Err(Status::unimplemented("Flight SQL transactions are not supported"));
+        }
+        if self.prepared_statements.len() >= MAX_PREPARED_STATEMENTS {
+            return Err(Status::resource_exhausted(format!(
+                "too many live prepared statements (limit {MAX_PREPARED_STATEMENTS})"
+            )));
+        }
+        let sql = query.query;
+        // Plan logically to derive the result-set schema the client needs
+        // up-front. This does *not* run the physical optimizer rule and does
+        // not consume an admission permit — the real plan / admission /
+        // ticket happen later in `get_flight_info_prepared_statement` when
+        // the client actually executes this prepared statement.
+        let state = self.ctx.state();
+        let logical_plan = tokio::select! {
+            result = state.create_logical_plan(&sql) => result.map_err(datafusion_error_to_status)?,
+            _ = self.shutdown_token.cancelled() => {
+                return Err(Status::cancelled("server shutting down"));
+            }
+        };
+        let dataset_schema = logical_plan.schema().as_arrow().clone();
+        let dataset_schema_ipc =
+            schema_to_ipc_bytes(&dataset_schema).map_err(|error| Status::internal(error.to_string()))?;
+
+        let handle = Uuid::new_v4().hyphenated().to_string();
+        self.prepared_statements.insert(handle.clone(), sql);
+        tracing::info!(
+            prepared_statement_handle = handle.as_str(),
+            "created Flight SQL prepared statement"
+        );
+
+        Ok(ActionCreatePreparedStatementResult {
+            prepared_statement_handle: handle.into_bytes().into(),
+            dataset_schema: dataset_schema_ipc,
+            parameter_schema: prost::bytes::Bytes::new(),
+        })
+    }
+
+    async fn do_action_close_prepared_statement(
+        &self,
+        query: ActionClosePreparedStatementRequest,
+        request: Request<arrow_flight::Action>,
+    ) -> Result<(), Status> {
+        self.check_auth(&request)?;
+        let handle = std::str::from_utf8(&query.prepared_statement_handle)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        // Closing an unknown handle is not an error: arrow-flight clients
+        // may retry close, and the handle may have been swept by a prior
+        // close on the same connection. Trace-log the no-op so client
+        // lifecycle bugs (e.g. double-close, close-after-eviction) are
+        // observable without breaking the idempotent contract.
+        if self.prepared_statements.remove(handle).is_none() {
+            tracing::trace!(
+                prepared_statement_handle = handle,
+                "close of unknown or already-closed prepared statement (no-op)"
+            );
+        }
+        Ok(())
+    }
+
     async fn get_flight_info_prepared_statement(
         &self,
-        _query: CommandPreparedStatementQuery,
+        query: CommandPreparedStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         self.check_auth(&request)?;
-        Err(Status::unimplemented("prepared statement execution is not implemented"))
+        let handle = std::str::from_utf8(&query.prepared_statement_handle)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?
+            .to_string();
+        let sql = self
+            .prepared_statements
+            .get(&handle)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| Status::not_found(format!("unknown prepared statement handle: {handle}")))?;
+
+        let query_id = Uuid::new_v4().hyphenated().to_string();
+        let planning_started_at = Instant::now();
+        tracing::info!(query_id, sql, prepared_statement_handle = handle.as_str(), "planning Flight SQL prepared statement");
+        let queued_at = Instant::now();
+        let permit = match self.acquire_statement_permit(&query_id).await {
+            Ok(permit) => permit,
+            Err(status) => {
+                log_statement_status(&query_id, "admission", queued_at, &status);
+                return Err(status);
+            },
+        };
+        let info = match self
+            .statement_flight_info(
+                query_id.clone(),
+                sql,
+                request.into_inner(),
+                planning_started_at,
+                permit,
+                StatementTicketKind::PreparedStatement,
+            )
+            .await
+        {
+            Ok(info) => info,
+            Err(status) => {
+                let status = status_with_query_id(status, &query_id);
+                log_statement_status(&query_id, "planning", planning_started_at, &status);
+                return Err(status);
+            },
+        };
+        Ok(Response::new(info))
     }
 
     async fn do_get_prepared_statement(
         &self,
-        _query: CommandPreparedStatementQuery,
+        query: CommandPreparedStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        Err(Status::unimplemented("prepared statement execution is not implemented"))
+        let query_id = std::str::from_utf8(&query.prepared_statement_handle)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?
+            .to_string();
+        self.execute_ticket(query_id).await
+    }
+
+    async fn get_flight_info_primary_keys(
+        &self,
+        query: CommandGetPrimaryKeys,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
+        let descriptor = request.into_inner();
+        let schema = flight_sql_primary_keys_schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_primary_keys(
+        &self,
+        _query: CommandGetPrimaryKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
+        // DataFusion's catalog does not carry primary-key constraints, so the
+        // response is always an empty batch with the Flight SQL standard
+        // schema. This lets clients (DataGrip, the Arrow Flight SQL JDBC
+        // driver, ADBC) complete introspection without a UNIMPLEMENTED RPC
+        // failure tearing down the session.
+        let batch = empty_primary_keys_batch().map_err(arrow_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+    }
+
+    async fn get_flight_info_exported_keys(
+        &self,
+        query: CommandGetExportedKeys,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
+        let descriptor = request.into_inner();
+        let schema = flight_sql_foreign_keys_schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_exported_keys(
+        &self,
+        _query: CommandGetExportedKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
+        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+    }
+
+    async fn get_flight_info_imported_keys(
+        &self,
+        query: CommandGetImportedKeys,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
+        let descriptor = request.into_inner();
+        let schema = flight_sql_foreign_keys_schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_imported_keys(
+        &self,
+        _query: CommandGetImportedKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
+        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+    }
+
+    async fn get_flight_info_cross_reference(
+        &self,
+        query: CommandGetCrossReference,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
+        let descriptor = request.into_inner();
+        let schema = flight_sql_foreign_keys_schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_cross_reference(
+        &self,
+        _query: CommandGetCrossReference,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
+        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
     }
 
     async fn do_action_cancel_query(
@@ -795,6 +1076,16 @@ fn arrow_error_to_status(error: arrow::error::ArrowError) -> Status {
     Status::internal(error.to_string())
 }
 
+/// Serialize an Arrow `Schema` into the IPC-encapsulated form that Flight SQL
+/// uses for `ActionCreatePreparedStatementResult.dataset_schema` and
+/// `parameter_schema`. Returns the `prost::bytes::Bytes` payload ready to drop
+/// into the proto message.
+fn schema_to_ipc_bytes(schema: &Schema) -> Result<prost::bytes::Bytes, arrow::error::ArrowError> {
+    let options = IpcWriteOptions::default();
+    let IpcMessage(bytes) = IpcMessage::try_from(SchemaAsIpc::new(schema, &options))?;
+    Ok(bytes)
+}
+
 fn arrow_flight_error_to_status(error: arrow_flight::error::FlightError) -> Status {
     Status::from(error)
 }
@@ -823,6 +1114,91 @@ fn flight_sql_table_types_schema() -> Arc<Schema> {
     SCHEMA
         .get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)])))
         .clone()
+}
+
+/// Schema for `CommandGetPrimaryKeys` responses. Pinned to the columns
+/// specified by the Flight SQL protobuf documentation
+/// (`catalog_name`, `db_schema_name`, `table_name`, `column_name`,
+/// `key_name`, `key_sequence`). DataFusion does not model primary-key
+/// constraints, so the response is always an empty batch — but it must
+/// still carry this exact schema or arrow-flight clients refuse it.
+fn flight_sql_primary_keys_schema() -> Arc<Schema> {
+    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            Arc::new(Schema::new(vec![
+                Field::new("catalog_name", DataType::Utf8, true),
+                Field::new("db_schema_name", DataType::Utf8, true),
+                Field::new("table_name", DataType::Utf8, false),
+                Field::new("column_name", DataType::Utf8, false),
+                Field::new("key_name", DataType::Utf8, true),
+                Field::new("key_sequence", DataType::Int32, false),
+            ]))
+        })
+        .clone()
+}
+
+/// Schema for `CommandGetImportedKeys` / `CommandGetExportedKeys` /
+/// `CommandGetCrossReference` responses. The three RPCs share this 13-column
+/// foreign-key descriptor schema per the Flight SQL protobuf spec. DataFusion
+/// does not model foreign-key constraints, so the body is always empty — but
+/// the schema must still match exactly or arrow-flight clients refuse it.
+fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
+    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            Arc::new(Schema::new(vec![
+                Field::new("pk_catalog_name", DataType::Utf8, true),
+                Field::new("pk_db_schema_name", DataType::Utf8, true),
+                Field::new("pk_table_name", DataType::Utf8, false),
+                Field::new("pk_column_name", DataType::Utf8, false),
+                Field::new("fk_catalog_name", DataType::Utf8, true),
+                Field::new("fk_db_schema_name", DataType::Utf8, true),
+                Field::new("fk_table_name", DataType::Utf8, false),
+                Field::new("fk_column_name", DataType::Utf8, false),
+                Field::new("key_sequence", DataType::Int32, false),
+                Field::new("fk_key_name", DataType::Utf8, true),
+                Field::new("pk_key_name", DataType::Utf8, true),
+                Field::new("update_rule", DataType::UInt8, false),
+                Field::new("delete_rule", DataType::UInt8, false),
+            ]))
+        })
+        .clone()
+}
+
+/// Empty-row `RecordBatch` matching [`flight_sql_foreign_keys_schema`].
+fn empty_foreign_keys_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+    let schema = flight_sql_foreign_keys_schema();
+    let columns: Vec<arrow::array::ArrayRef> = vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(Int32Array::from(Vec::<i32>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(UInt8Array::from(Vec::<u8>::new())),
+        Arc::new(UInt8Array::from(Vec::<u8>::new())),
+    ];
+    arrow::record_batch::RecordBatch::try_new(schema, columns)
+}
+
+/// Empty-row `RecordBatch` matching [`flight_sql_primary_keys_schema`].
+fn empty_primary_keys_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+    let schema = flight_sql_primary_keys_schema();
+    let columns: Vec<arrow::array::ArrayRef> = vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int32Array::from(Vec::<i32>::new())),
+    ];
+    arrow::record_batch::RecordBatch::try_new(schema, columns)
 }
 
 /// Build the single-batch response for `CommandGetTableTypes`. Asserts the

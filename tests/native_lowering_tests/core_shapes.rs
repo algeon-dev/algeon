@@ -345,6 +345,65 @@ fn phase5_sort_without_fetch_over_aggregate_lowers_without_native_limit() {
 }
 
 #[test]
+fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-root-limit-no-source-pushdown");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let sorted = aggregate_sort_plan_without_filter(parquet_scan(&path), Operator::Plus);
+    let sort = sorted.as_any().downcast_ref::<SortExec>().expect("helper returns SortExec");
+    let aggregate = Arc::clone(sort.input());
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(aggregate, 0, Some(2)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, None, "LIMIT after aggregate must not be applied before aggregate input");
+    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Limit(_)));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn nested_limit_offsets_push_enough_rows_to_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nested-limit-source-pushdown");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let inner: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 50, Some(100)));
+    let outer: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(inner, 100, Some(10)));
+
+    let result = lower_physical_plan_to_native(outer);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.scan_limit,
+        Some(150),
+        "source must keep the inner offset plus the rows needed by the outer limit"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-zero-limit-source-pushdown");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(parquet_scan(&path), 100, Some(0)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(0), "LIMIT 0 can be answered without reading source rows");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-preserving-merge");
     let path = dir.join("input.parquet");

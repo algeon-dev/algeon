@@ -1082,6 +1082,11 @@ pub(crate) struct ObjectStoreFetchResult {
     pub(crate) elapsed: Duration,
 }
 
+pub(crate) struct ObjectStoreCustomFetchResult<T> {
+    pub(crate) value: Result<T>,
+    pub(crate) elapsed: Duration,
+}
+
 struct SourceObjectStoreRegistry {
     stores: Mutex<HashMap<S3ObjectStoreKey, Arc<dyn object_store::ObjectStore>>>,
 }
@@ -1418,6 +1423,27 @@ impl ExecutionContext {
         on_result: impl FnOnce(ObjectStoreFetchResult) + Send + 'static,
     ) {
         Self::spawn_object_store_fetch_on_runtime(self.source_fetch_runtime.as_ref(), store, location, on_result)
+    }
+
+    /// Spawns a caller-provided async fetch task on the source-fetch runtime.
+    ///
+    /// The caller composes any combination of `get_range` / `get_ranges` calls
+    /// inside the future. Elapsed time covers the entire future, including any
+    /// rewrite work the caller performs inside it.
+    pub(crate) fn spawn_object_store_custom_fetch<F, Fut, T>(
+        &self,
+        future_factory: F,
+        on_result: impl FnOnce(ObjectStoreCustomFetchResult<T>) + Send + 'static,
+    ) where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.source_fetch_runtime.spawn(async move {
+            let timer = Instant::now();
+            let value = future_factory().await;
+            on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
+        });
     }
 
     /// Returns deployment-level IO capability diagnostics.
