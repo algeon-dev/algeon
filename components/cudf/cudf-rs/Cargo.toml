@@ -1,0 +1,14 @@
+[package]
+name = "cudf"
+description = "Safe Rust bindings to libcudf — GPU-accelerated DataFrames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+cudf-sys = { path = "../cudf-sys" }
+
+[dev-dependencies]
+tempfile = "3"
