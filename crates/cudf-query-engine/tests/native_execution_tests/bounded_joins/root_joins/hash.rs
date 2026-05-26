@@ -2021,6 +2021,12 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         "direct join-output aggregate should not use a single all-partials final merge"
     );
     assert!(
+        metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
+        "direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
+        metrics.partial_aggregate_count,
+        metrics.source_chunks_committed
+    );
+    assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "compiled_aggregate"),
         "direct join-output stream should not fall back to one full-frame compiled aggregate"
     );
@@ -2146,7 +2152,10 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
             .any(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
     );
     assert_eq!(metrics.filtered_join_build_count, 1);
-    assert!(metrics.partial_aggregate_count > 1);
+    assert!(
+        metrics.partial_aggregate_count > 1,
+        "filtered direct join-output aggregate should produce multiple streamed partials"
+    );
     assert!(
         metrics.final_merge_attempts > 1,
         "final_merge_attempts={}, partial_aggregate_count={}",
@@ -2158,6 +2167,12 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         "final_merge_levels={}, partial_aggregate_count={}",
         metrics.final_merge_levels,
         metrics.partial_aggregate_count
+    );
+    assert!(
+        metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
+        "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
+        metrics.partial_aggregate_count,
+        metrics.source_chunks_committed
     );
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),

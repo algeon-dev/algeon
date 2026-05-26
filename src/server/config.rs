@@ -120,27 +120,24 @@ pub enum ServerSessionProfile {
     /// `DATAFUSION_EXECUTION_*` environment variables (single underscores,
     /// matching DataFusion's `SessionConfig::from_env()` mapping).
     ///
-    /// **Testing-only when Iceberg is configured.** The Iceberg table
-    /// providers register a GPU-only `CudfTableFormatScanExec` leaf that has
-    /// no CPU Arrow reader, so this profile does **not** actually fall back
-    /// to CPU for Iceberg queries — DataFusion repartitioning will insert
-    /// `RepartitionExec` / `SortPreservingMergeExec` shapes the native rule
-    /// cannot lower, and the Phase 1 leaf guard converts those into
-    /// structured planning errors. Selecting this profile against an Iceberg
-    /// deployment is therefore only useful for regression repro and
-    /// diagnostics work; production deployments should stick to
-    /// [`ServerSessionProfile::Native`] (the default when Iceberg is
-    /// configured).
+    /// Combine with Iceberg only when this binary is built with the
+    /// `iceberg-cpu` feature. With that feature on, the dynamic catalog wraps
+    /// loaded Iceberg tables in
+    /// `iceberg_datafusion::IcebergStaticTableProvider` (real CPU Arrow
+    /// reader) instead of the GPU-only `CudfIcebergTableProvider`, and
+    /// `target_partitions` > 1 provides real CPU parallelism.
     ///
-    /// A CPU Arrow reader for Iceberg is tracked as Phase 6 of
-    /// `docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`.
-    /// Without it, multi-partition CPU execution over `CudfTableFormatScanExec`
-    /// is unreachable.
+    /// **Without `iceberg-cpu` the Iceberg pairing is testing-only.** The
+    /// catalog still hands out the GPU-only `CudfTableFormatScanExec` leaf
+    /// which has no CPU `execute()`, so plain `ORDER BY` queries hit the
+    /// Phase 1 leaf guard and fail in planning. The server emits a startup
+    /// WARN flagging this combination; the WARN goes away once `iceberg-cpu`
+    /// is compiled in.
     ///
     /// For CPU-only sessions that do not register an Iceberg catalog
-    /// (e.g., a server serving CSV / vanilla Parquet sources), this profile
-    /// is the right choice and `target_partitions` > 1 provides real CPU
-    /// parallelism.
+    /// (e.g., a server serving CSV / vanilla Parquet sources), the
+    /// `iceberg-cpu` feature is irrelevant — this profile is the right choice
+    /// regardless.
     CpuFallback,
 }
 

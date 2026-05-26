@@ -40,6 +40,89 @@ use crate::{Error, ErrorCode, Result};
 const CATALOG_BACKEND_OP: &str = "datafusion_cudf.iceberg.catalog_backend";
 
 // ---------------------------------------------------------------------------
+// Provider kind
+// ---------------------------------------------------------------------------
+
+/// Which DataFusion [`TableProvider`] implementation to wrap loaded Iceberg
+/// tables in.
+///
+/// The dynamic catalog stays neutral — the choice is decided once at server
+/// startup based on [`crate::server::config::ServerSessionProfile`] (when the
+/// server is built with both `iceberg` and `iceberg-cpu`).
+///
+/// `Gpu` wraps loaded tables in the adapter's native
+/// `CudfIcebergTableProvider` (GPU-only `CudfTableFormatScanExec` leaf).
+/// `Cpu` wraps them in upstream `iceberg-datafusion`'s
+/// `IcebergStaticTableProvider`, which provides a real CPU Arrow reader and
+/// is only available when the `iceberg-cpu` feature is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcebergProviderKind {
+    /// Native GPU planning leaf via [`crate::table_format::iceberg::CudfIcebergTableProvider`].
+    Gpu,
+    /// CPU Arrow reader via `iceberg_datafusion::IcebergStaticTableProvider`.
+    ///
+    /// Requires the `iceberg-cpu` feature. Building [`CudfIcebergSchemaProvider`]
+    /// with this variant when the feature is off returns an error at startup
+    /// rather than at first-query time.
+    Cpu,
+}
+
+impl IcebergProviderKind {
+    /// Returns a stable string label suitable for tracing.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+/// Wraps a loaded Iceberg table in the [`TableProvider`] selected by `kind`.
+///
+/// `Gpu` always succeeds (the native provider has no runtime preconditions).
+/// `Cpu` requires the `iceberg-cpu` feature; without it this returns
+/// [`ErrorCode::CudfInvalidInput`] so server startup fails loudly instead of
+/// silently downgrading.
+async fn build_table_provider(
+    table: iceberg::table::Table,
+    kind: IcebergProviderKind,
+    catalog_type: &str,
+) -> Result<Arc<dyn TableProvider>> {
+    match kind {
+        IcebergProviderKind::Gpu => Ok(Arc::new(
+            crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)?
+                .with_catalog_type(catalog_type),
+        )),
+        IcebergProviderKind::Cpu => {
+            #[cfg(feature = "iceberg-cpu")]
+            {
+                let _ = catalog_type;
+                let provider = iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table)
+                    .await
+                    .map_err(|error| {
+                        Error::new(
+                            ErrorCode::CudfDependencyFailure,
+                            CATALOG_BACKEND_OP,
+                            "failed to build iceberg-datafusion CPU table provider",
+                        )
+                        .with_source(error)
+                    })?;
+                Ok(Arc::new(provider))
+            }
+            #[cfg(not(feature = "iceberg-cpu"))]
+            {
+                let _ = (table, catalog_type);
+                Err(Error::new(
+                    ErrorCode::CudfInvalidInput,
+                    CATALOG_BACKEND_OP,
+                    "IcebergProviderKind::Cpu requires the `iceberg-cpu` feature to be enabled at build time",
+                ))
+            }
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
@@ -127,6 +210,7 @@ pub struct CudfIcebergSchemaProvider {
     known_table_names: Vec<String>,
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: String,
+    provider_kind: IcebergProviderKind,
     table_cache: RwLock<HashMap<String, Arc<dyn TableProvider>>>,
 }
 
@@ -136,12 +220,14 @@ impl CudfIcebergSchemaProvider {
         known_table_names: Vec<String>,
         backend: Arc<dyn IcebergCatalogBackend>,
         catalog_type: impl Into<String>,
+        provider_kind: IcebergProviderKind,
     ) -> Self {
         Self {
             namespace,
             known_table_names,
             backend,
             catalog_type: catalog_type.into(),
+            provider_kind,
             table_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -184,11 +270,9 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
 
         let ident = TableIdent::new(self.namespace.clone(), name.to_string());
         let table = self.backend.load_table(&ident).await.map_err(DataFusionError::from)?;
-        let provider: Arc<dyn TableProvider> = Arc::new(
-            crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)
-                .map_err(DataFusionError::from)?
-                .with_catalog_type(&self.catalog_type),
-        );
+        let provider = build_table_provider(table, self.provider_kind, &self.catalog_type)
+            .await
+            .map_err(DataFusionError::from)?;
 
         // Insert into cache; under concurrent first-access races both paths
         // produce equivalent providers — first write wins, the loser's provider
@@ -238,10 +322,11 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
 pub async fn build_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
+    provider_kind: IcebergProviderKind,
 ) -> Result<CudfIcebergCatalogProvider> {
     let catalog_type = catalog_type.into();
     let namespaces = backend.list_namespaces().await?;
-    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces).await
+    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_kind).await
 }
 
 /// Builds a [`CudfIcebergCatalogProvider`] scoped to one configured namespace.
@@ -256,15 +341,17 @@ pub async fn build_scoped_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
+    provider_kind: IcebergProviderKind,
 ) -> Result<CudfIcebergCatalogProvider> {
     let namespace = namespace_ident_from_flat_name(namespace)?;
-    build_catalog_provider_for_namespaces(backend, catalog_type.into(), vec![namespace]).await
+    build_catalog_provider_for_namespaces(backend, catalog_type.into(), vec![namespace], provider_kind).await
 }
 
 async fn build_catalog_provider_for_namespaces(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: String,
     namespaces: Vec<NamespaceIdent>,
+    provider_kind: IcebergProviderKind,
 ) -> Result<CudfIcebergCatalogProvider> {
     let mut schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>> = BTreeMap::new();
 
@@ -275,8 +362,13 @@ async fn build_catalog_provider_for_namespaces(
         let table_idents = backend.list_tables(&namespace).await?;
         let known_table_names: Vec<String> = table_idents.into_iter().map(|t| t.name).collect();
 
-        let schema_provider =
-            Arc::new(CudfIcebergSchemaProvider::new(namespace, known_table_names, Arc::clone(&backend), &catalog_type));
+        let schema_provider = Arc::new(CudfIcebergSchemaProvider::new(
+            namespace,
+            known_table_names,
+            Arc::clone(&backend),
+            &catalog_type,
+            provider_kind,
+        ));
         schemas.insert(schema_name, schema_provider);
     }
 

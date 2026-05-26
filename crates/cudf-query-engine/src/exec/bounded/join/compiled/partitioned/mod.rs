@@ -104,8 +104,8 @@ pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionConte
 
 pub(super) fn partitioned_join_target_partition_bytes(device_budget_bytes: u64) -> u64 {
     const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
-    const MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
-    (device_budget_bytes / 8).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
+    const MAX_TARGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    (device_budget_bytes / 16).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
 }
 
 pub(super) fn partitioned_join_reusable_rejected_reason(

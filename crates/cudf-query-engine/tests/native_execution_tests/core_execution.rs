@@ -651,7 +651,7 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
 }
 
 #[test]
-fn bounded_generic_local_parquet_source_scan_limit_stops_after_required_chunks() {
+fn bounded_generic_local_parquet_source_scan_limit_trims_to_required_row_group_prefix() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-source-scan-limit");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -676,8 +676,8 @@ fn bounded_generic_local_parquet_source_scan_limit_stops_after_required_chunks()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
+            max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
+            max_row_groups_per_chunk: 8,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
@@ -687,9 +687,11 @@ fn bounded_generic_local_parquet_source_scan_limit_stops_after_required_chunks()
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 2);
-    assert_eq!(metrics.source_chunks_attempted, 2);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_planned, 1);
+    assert_eq!(metrics.source_chunks_attempted, 1);
+    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.row_groups_planned, 2);
+    assert_eq!(metrics.row_groups_committed, 2);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
