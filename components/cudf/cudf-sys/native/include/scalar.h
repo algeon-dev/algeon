@@ -34,8 +34,10 @@ cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out);
 /// for the scalar's type.
 cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out);
 
-/// Get the string value of a string scalar. Returns a pointer to the string
-/// data; the caller must NOT free it. Valid until the scalar is destroyed.
+/// Get the string value of a string scalar. Returns a pointer to thread-local
+/// host storage; the caller must NOT free it.
+///
+/// The pointer remains valid until the next shim call on the same thread.
 /// `len_out` receives the byte length (not including null terminator).
 cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
                                        const char** out, int32_t* len_out);

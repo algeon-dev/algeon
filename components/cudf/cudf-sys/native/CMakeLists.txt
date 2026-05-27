@@ -92,6 +92,8 @@ add_library(
   src/binary.cpp
   src/reduction.cpp
   src/concatenate.cpp
+  src/abi_checks.cpp
+  src/c_header_smoke.c
 )
 
 target_include_directories(

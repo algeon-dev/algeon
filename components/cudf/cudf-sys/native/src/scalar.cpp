@@ -39,6 +39,7 @@ cudf_status_t cudf_scalar_create_numeric(cudf_type_id_t type_id,
                                          cudf_scalar_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_NULL_CHECK(value, "value is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     std::unique_ptr<cudf::scalar> s;
     bool valid = is_valid != 0;
@@ -89,6 +90,7 @@ cudf_status_t cudf_scalar_create_numeric(cudf_type_id_t type_id,
 cudf_status_t cudf_scalar_create_string(const char* value, int32_t is_valid,
                                         cudf_scalar_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -172,6 +174,8 @@ cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_NULL_CHECK(len_out, "len_out is null");
+  *out = nullptr;
+  *len_out = 0;
   CUDF_RUST_TRY {
     auto* s = static_cast<cudf::scalar*>(handle);
     if (s->type().id() != cudf::type_id::STRING) {
@@ -181,7 +185,8 @@ cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
     auto* str_scalar = static_cast<cudf::string_scalar*>(s);
     auto stream = cudf::get_default_stream();
     // to_string() copies from device to host.
-    // We store the result in a thread-local to keep the pointer valid.
+    // We store the result in a thread-local buffer.
+    // Returned pointer is valid until the next shim call on this thread.
     static thread_local std::string tl_string;
     tl_string = str_scalar->to_string(stream);
     *out = tl_string.c_str();

@@ -1,3 +1,4 @@
+#include "stream.h"
 #include "shim_common.h"
 
 #include <cudf/utilities/default_stream.hpp>
@@ -8,9 +9,6 @@
 #include <cuda_runtime_api.h>
 
 extern "C" {
-
-/// Opaque handle to an rmm::cuda_stream (owning).
-typedef void* cudf_stream_handle;
 
 /// Create a new CUDA stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out) {

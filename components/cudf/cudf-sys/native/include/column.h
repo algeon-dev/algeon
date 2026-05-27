@@ -77,8 +77,11 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
                                        void* host_buf, size_t buf_size);
 
-/// Copy null mask to host buffer. `host_buf` must be at least ceil(size/8) bytes.
+/// Copy null mask to host buffer. `host_buf` must be at least
+/// bitmask_allocation_size_bytes(size) bytes.
+///
 /// Returns CUDF_ERROR_NULL if column has no null mask.
+/// Returns CUDF_ERROR_INVALID_OPERATION for sliced views (offset != 0).
 cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
                                                  uint8_t* host_buf,
                                                  size_t buf_size);

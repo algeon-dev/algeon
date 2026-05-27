@@ -17,9 +17,14 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
                                 int32_t num_columns,
                                 cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   if (num_columns > 0) {
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
+  *out = nullptr;
   CUDF_RUST_TRY {
     std::vector<std::unique_ptr<cudf::column>> cols;
     cols.reserve(num_columns);
@@ -42,6 +47,7 @@ cudf_status_t cudf_table_copy(cudf_table_handle src,
                                cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto* tbl = static_cast<cudf::table*>(src);
     auto stream = cudf::get_default_stream();
