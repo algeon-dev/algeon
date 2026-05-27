@@ -1,7 +1,7 @@
 //! GPU table types: owned `Table` and borrowed `TableView`.
 
 use crate::column::{Column, ColumnView};
-use crate::error::{self, Result};
+use crate::error::{self, Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
@@ -22,7 +22,12 @@ impl Table {
     ///
     /// The columns are *moved* into the table — do not use them afterwards.
     pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
-        let num_columns = columns.len() as i32;
+        let num_columns = i32::try_from(columns.len()).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                "number of columns exceeds i32::MAX",
+            )
+        })?;
         let mut handles: Vec<*mut c_void> = columns.into_iter().map(|c| c.into_raw()).collect();
 
         let mut table_handle = ptr::null_mut();
@@ -38,7 +43,7 @@ impl Table {
                     unsafe { cudf_sys::cudf_column_destroy(h) };
                 }
             }
-            error::check_status(status)?;
+            error::check_status_in(status, "table::from_columns")?;
         }
 
         Ok(Self {
@@ -49,9 +54,10 @@ impl Table {
     /// Deep-copy this table.
     pub fn copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) },
+            "table::copy",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
         })
@@ -60,9 +66,10 @@ impl Table {
     /// Create an immutable view of this table.
     pub fn view(&self) -> Result<TableView<'_>> {
         let mut view_handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_table_view(self.handle.as_ptr(), &mut view_handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_view(self.handle.as_ptr(), &mut view_handle) },
+            "table::view",
+        )?;
         Ok(TableView {
             handle: NonNull::new(view_handle).expect("null handle on success"),
             _lifetime: PhantomData,
@@ -99,27 +106,37 @@ impl<'a> TableView<'a> {
     /// Returns the number of columns.
     pub fn num_columns(&self) -> Result<i32> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_table_view_num_columns(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_view_num_columns(self.handle.as_ptr(), &mut out) },
+            "table_view::num_columns",
+        )?;
         Ok(out)
     }
 
     /// Returns the number of rows.
     pub fn num_rows(&self) -> Result<i32> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_table_view_num_rows(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_view_num_rows(self.handle.as_ptr(), &mut out) },
+            "table_view::num_rows",
+        )?;
         Ok(out)
     }
 
     /// Get a column view by index.
     pub fn column(&self, index: i32) -> Result<ColumnView<'a>> {
+        if index < 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "table column index must be >= 0",
+            ));
+        }
+
         let mut col_handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_table_view_column(self.handle.as_ptr(), index, &mut col_handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_view_column(self.handle.as_ptr(), index, &mut col_handle) },
+            "table_view::column",
+        )?;
         Ok(unsafe { ColumnView::from_raw(col_handle) })
     }
 

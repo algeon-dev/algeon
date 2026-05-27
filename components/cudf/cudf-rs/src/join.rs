@@ -36,17 +36,24 @@ pub fn inner_join(
 ) -> Result<JoinResult> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    error::check_status(unsafe {
-        cudf_sys::cudf_inner_join(
-            left_keys.raw_handle(),
-            right_keys.raw_handle(),
-            left_payload.raw_handle(),
-            right_payload.raw_handle(),
-            null_equality as i32,
-            &mut out_left,
-            &mut out_right,
-        )
-    })?;
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_inner_join(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                left_payload.raw_handle(),
+                right_payload.raw_handle(),
+                null_equality as i32,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        "join::inner_join",
+        [(
+            "null_equality",
+            format!("{:?}", null_equality).to_lowercase(),
+        )],
+    )?;
     Ok(JoinResult {
         left: unsafe { Table::from_raw(out_left) },
         right: unsafe { Table::from_raw(out_right) },
@@ -64,17 +71,24 @@ pub fn left_join(
 ) -> Result<JoinResult> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    error::check_status(unsafe {
-        cudf_sys::cudf_left_join(
-            left_keys.raw_handle(),
-            right_keys.raw_handle(),
-            left_payload.raw_handle(),
-            right_payload.raw_handle(),
-            null_equality as i32,
-            &mut out_left,
-            &mut out_right,
-        )
-    })?;
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_left_join(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                left_payload.raw_handle(),
+                right_payload.raw_handle(),
+                null_equality as i32,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        "join::left_join",
+        [(
+            "null_equality",
+            format!("{:?}", null_equality).to_lowercase(),
+        )],
+    )?;
     Ok(JoinResult {
         left: unsafe { Table::from_raw(out_left) },
         right: unsafe { Table::from_raw(out_right) },
@@ -92,17 +106,24 @@ pub fn full_join(
 ) -> Result<JoinResult> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    error::check_status(unsafe {
-        cudf_sys::cudf_full_join(
-            left_keys.raw_handle(),
-            right_keys.raw_handle(),
-            left_payload.raw_handle(),
-            right_payload.raw_handle(),
-            null_equality as i32,
-            &mut out_left,
-            &mut out_right,
-        )
-    })?;
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_full_join(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                left_payload.raw_handle(),
+                right_payload.raw_handle(),
+                null_equality as i32,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        "join::full_join",
+        [(
+            "null_equality",
+            format!("{:?}", null_equality).to_lowercase(),
+        )],
+    )?;
     Ok(JoinResult {
         left: unsafe { Table::from_raw(out_left) },
         right: unsafe { Table::from_raw(out_right) },

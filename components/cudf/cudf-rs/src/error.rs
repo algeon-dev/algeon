@@ -294,6 +294,28 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
     Err(err)
 }
 
+pub(crate) fn check_status_in(
+    status: cudf_sys::cudf_status_t,
+    operation: &'static str,
+) -> Result<()> {
+    check_status(status).map_err(|e| e.with_operation(operation))
+}
+
+pub(crate) fn check_status_in_with<I>(
+    status: cudf_sys::cudf_status_t,
+    operation: &'static str,
+    context: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = (&'static str, String)>,
+{
+    check_status_in(status, operation).map_err(|err| {
+        context
+            .into_iter()
+            .fold(err, |acc, (k, v)| acc.with_context(k, v))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

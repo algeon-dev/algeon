@@ -208,21 +208,33 @@ pub fn count_nulls(validity: &[bool]) -> i32 {
 
 // Internal helpers for FFI handle round-tripping of DataType.
 impl DataType {
-    /// Create a C shim data_type handle from this DataType.
-    pub(crate) fn to_raw_handle(self) -> Result<*mut std::ffi::c_void> {
+    /// Create a C shim data_type handle from this DataType with operation context.
+    pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<*mut std::ffi::c_void> {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
-            error::check_status(unsafe {
-                cudf_sys::cudf_data_type_create_fixed_point(
-                    self.id.to_raw(),
-                    self.scale,
-                    &mut handle,
-                )
-            })?;
+            error::check_status_in_with(
+                unsafe {
+                    cudf_sys::cudf_data_type_create_fixed_point(
+                        self.id.to_raw(),
+                        self.scale,
+                        &mut handle,
+                    )
+                },
+                operation,
+                [
+                    ("type_id", format!("{:?}", self.id).to_lowercase()),
+                    ("scale", self.scale.to_string()),
+                ],
+            )?;
         } else {
-            error::check_status(unsafe {
-                cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle)
-            })?;
+            error::check_status_in_with(
+                unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
+                operation,
+                [
+                    ("type_id", format!("{:?}", self.id).to_lowercase()),
+                    ("scale", self.scale.to_string()),
+                ],
+            )?;
         }
         Ok(handle)
     }

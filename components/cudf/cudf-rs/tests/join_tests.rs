@@ -109,6 +109,30 @@ fn test_full_join() {
 }
 
 #[test]
+fn test_join_error_contains_operation_context() {
+    let lk = Column::from_slice(&[1i32, 2]).unwrap();
+    let rk = Column::from_slice(&[2i32, 3]).unwrap();
+
+    let lk_table = Table::from_columns(vec![lk]).unwrap();
+    let rk_table = Table::from_columns(vec![rk]).unwrap();
+
+    // Deliberately invalid payload row count for left side.
+    let lp_bad = Table::from_columns(vec![Column::from_slice(&[10i32]).unwrap()]).unwrap();
+    let rp = empty_payload();
+
+    let lkv = lk_table.view().unwrap();
+    let rkv = rk_table.view().unwrap();
+    let lpv = lp_bad.view().unwrap();
+    let rpv = rp.view().unwrap();
+
+    let err = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal)
+        .err()
+        .expect("expected error");
+    assert_eq!(err.operation(), "join::inner_join");
+    assert!(err.context().iter().any(|(k, _)| *k == "null_equality"));
+}
+
+#[test]
 fn test_inner_join_multi_column_keys() {
     // Two key columns.
     let lk0 = Column::from_slice(&[1i32, 1, 2]).unwrap();

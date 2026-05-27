@@ -17,9 +17,10 @@ impl DeviceMemoryResource {
     /// Create a CUDA (default) memory resource.
     pub fn cuda() -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_memory_resource_create_cuda(&mut handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut handle) },
+            "memory::device_memory_resource::cuda",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle)
                 .expect("cudf_memory_resource_create_cuda returned null on success"),
@@ -32,13 +33,20 @@ impl DeviceMemoryResource {
     /// - `maximum_pool_size`: maximum pool size in bytes, or 0 for unbounded.
     pub fn pool(initial_pool_size: usize, maximum_pool_size: usize) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_memory_resource_create_pool(
-                initial_pool_size,
-                maximum_pool_size,
-                &mut handle,
-            )
-        })?;
+        error::check_status_in_with(
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_pool(
+                    initial_pool_size,
+                    maximum_pool_size,
+                    &mut handle,
+                )
+            },
+            "memory::device_memory_resource::pool",
+            [
+                ("initial_pool_size", initial_pool_size.to_string()),
+                ("maximum_pool_size", maximum_pool_size.to_string()),
+            ],
+        )?;
         Ok(Self {
             handle: NonNull::new(handle)
                 .expect("cudf_memory_resource_create_pool returned null on success"),

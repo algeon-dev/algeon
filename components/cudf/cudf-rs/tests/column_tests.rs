@@ -97,6 +97,13 @@ fn test_mismatched_validity_length() {
 }
 
 #[test]
+fn test_validity_none_for_non_nullable_column() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+    assert!(view.validity().unwrap().is_none());
+}
+
+#[test]
 fn test_various_numeric_types() {
     // i8
     let col = Column::from_slice(&[1i8, -1, 127]).unwrap();

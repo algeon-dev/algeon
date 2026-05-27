@@ -77,16 +77,24 @@ pub fn read_parquet(options: &ParquetReaderOptions) -> Result<Table> {
         (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32)
     };
 
-    error::check_status(unsafe {
-        cudf_sys::cudf_io_read_parquet(
-            options.filepath.as_ptr(),
-            col_ptrs,
-            num_cols,
-            options.skip_rows,
-            options.num_rows,
-            &mut table_handle,
-        )
-    })?;
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_io_read_parquet(
+                options.filepath.as_ptr(),
+                col_ptrs,
+                num_cols,
+                options.skip_rows,
+                options.num_rows,
+                &mut table_handle,
+            )
+        },
+        "io::parquet::read_parquet",
+        [
+            ("selected_column_count", num_cols.to_string()),
+            ("skip_rows", options.skip_rows.to_string()),
+            ("num_rows", options.num_rows.to_string()),
+        ],
+    )?;
 
     Ok(unsafe { Table::from_raw(table_handle) })
 }
@@ -144,12 +152,16 @@ pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> R
         (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32)
     };
 
-    error::check_status(unsafe {
-        cudf_sys::cudf_io_write_parquet(
-            table.raw_handle(),
-            options.filepath.as_ptr(),
-            name_ptrs,
-            num_cols,
-        )
-    })
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_io_write_parquet(
+                table.raw_handle(),
+                options.filepath.as_ptr(),
+                name_ptrs,
+                num_cols,
+            )
+        },
+        "io::parquet::write_parquet",
+        [("output_column_name_count", num_cols.to_string())],
+    )
 }

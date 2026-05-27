@@ -51,14 +51,21 @@ impl CsvReaderOptions {
 /// Read a CSV file into a `Table`.
 pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
     let mut table_handle = ptr::null_mut();
-    error::check_status(unsafe {
-        cudf_sys::cudf_io_read_csv(
-            options.filepath.as_ptr(),
-            options.delimiter as std::os::raw::c_char,
-            if options.has_header { 1 } else { 0 },
-            &mut table_handle,
-        )
-    })?;
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_io_read_csv(
+                options.filepath.as_ptr(),
+                options.delimiter as std::os::raw::c_char,
+                if options.has_header { 1 } else { 0 },
+                &mut table_handle,
+            )
+        },
+        "io::csv::read_csv",
+        [
+            ("delimiter_char", (options.delimiter as char).to_string()),
+            ("has_header", options.has_header.to_string()),
+        ],
+    )?;
     Ok(unsafe { Table::from_raw(table_handle) })
 }
 
@@ -131,14 +138,22 @@ pub fn write_csv(table: &TableView<'_>, options: &CsvWriterOptions) -> Result<()
         (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32)
     };
 
-    error::check_status(unsafe {
-        cudf_sys::cudf_io_write_csv(
-            table.raw_handle(),
-            options.filepath.as_ptr(),
-            name_ptrs,
-            num_cols,
-            options.delimiter as std::os::raw::c_char,
-            if options.include_header { 1 } else { 0 },
-        )
-    })
+    error::check_status_in_with(
+        unsafe {
+            cudf_sys::cudf_io_write_csv(
+                table.raw_handle(),
+                options.filepath.as_ptr(),
+                name_ptrs,
+                num_cols,
+                options.delimiter as std::os::raw::c_char,
+                if options.include_header { 1 } else { 0 },
+            )
+        },
+        "io::csv::write_csv",
+        [
+            ("num_column_names", num_cols.to_string()),
+            ("delimiter_char", (options.delimiter as char).to_string()),
+            ("include_header", options.include_header.to_string()),
+        ],
+    )
 }

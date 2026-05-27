@@ -1,7 +1,7 @@
 //! GPU-accelerated reduction and scan operations.
 
 use crate::column::{Column, ColumnView};
-use crate::error::{self, Result};
+use crate::error::{self, Error, ErrorKind, Result};
 use crate::scalar::Scalar;
 use crate::types::DataType;
 use std::os::raw::c_void;
@@ -51,59 +51,100 @@ pub enum NullPolicy {
     Include = 1,
 }
 
+fn reduce_agg_name(agg: &ReduceAggregation) -> &'static str {
+    match agg {
+        ReduceAggregation::Sum => "sum",
+        ReduceAggregation::Min => "min",
+        ReduceAggregation::Max => "max",
+        ReduceAggregation::Product => "product",
+        ReduceAggregation::Mean => "mean",
+        ReduceAggregation::Median => "median",
+        ReduceAggregation::Any => "any",
+        ReduceAggregation::All => "all",
+        ReduceAggregation::Variance { .. } => "variance",
+        ReduceAggregation::Std { .. } => "std",
+    }
+}
+
 /// Create a C-side reduce aggregation handle.
 unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_void> {
     let mut handle = ptr::null_mut();
     match agg {
         ReduceAggregation::Sum => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                0, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(0, &mut handle),
+                "reduction::create_reduce_agg_handle(sum)",
+            )?;
         }
         ReduceAggregation::Min => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                1, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(1, &mut handle),
+                "reduction::create_reduce_agg_handle(min)",
+            )?;
         }
         ReduceAggregation::Max => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                2, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(2, &mut handle),
+                "reduction::create_reduce_agg_handle(max)",
+            )?;
         }
         ReduceAggregation::Product => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                3, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(3, &mut handle),
+                "reduction::create_reduce_agg_handle(product)",
+            )?;
         }
         ReduceAggregation::Mean => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                4, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(4, &mut handle),
+                "reduction::create_reduce_agg_handle(mean)",
+            )?;
         }
         ReduceAggregation::Median => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                5, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(5, &mut handle),
+                "reduction::create_reduce_agg_handle(median)",
+            )?;
         }
         ReduceAggregation::Any => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                6, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(6, &mut handle),
+                "reduction::create_reduce_agg_handle(any)",
+            )?;
         }
         ReduceAggregation::All => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create(
-                7, &mut handle,
-            ))?;
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create(7, &mut handle),
+                "reduction::create_reduce_agg_handle(all)",
+            )?;
         }
         ReduceAggregation::Variance { ddof } => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create_variance(
-                *ddof, &mut handle,
-            ))?;
+            if *ddof < 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    "ddof must be >= 0",
+                )
+                .with_operation("reduction::create_reduce_agg_handle(variance)")
+                .with_context("ddof", ddof.to_string()));
+            }
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create_variance(*ddof, &mut handle),
+                "reduction::create_reduce_agg_handle(variance)",
+            )?;
         }
         ReduceAggregation::Std { ddof } => {
-            error::check_status(cudf_sys::cudf_reduce_aggregation_create_std(
-                *ddof, &mut handle,
-            ))?;
+            if *ddof < 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    "ddof must be >= 0",
+                )
+                .with_operation("reduction::create_reduce_agg_handle(std)")
+                .with_context("ddof", ddof.to_string()));
+            }
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create_std(*ddof, &mut handle),
+                "reduction::create_reduce_agg_handle(std)",
+            )?;
         }
     }
     Ok(handle)
@@ -118,9 +159,11 @@ unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
         ScanAggregation::Max => 2,
         ScanAggregation::Product => 3,
     };
-    error::check_status(cudf_sys::cudf_scan_aggregation_create(
-        kind, &mut handle,
-    ))?;
+    error::check_status_in_with(
+        cudf_sys::cudf_scan_aggregation_create(kind, &mut handle),
+        "reduction::create_scan_agg_handle",
+        [("scan_aggregation", format!("{:?}", agg).to_lowercase())],
+    )?;
     Ok(handle)
 }
 
@@ -131,7 +174,7 @@ pub fn reduce(
     output_type: &DataType,
 ) -> Result<Scalar> {
     let agg_handle = unsafe { create_reduce_agg_handle(agg)? };
-    let dtype_handle = output_type.to_raw_handle()?;
+    let dtype_handle = output_type.to_raw_handle_for("reduction::reduce")?;
 
     let mut out = ptr::null_mut();
     let status = unsafe {
@@ -143,7 +186,17 @@ pub fn reduce(
         cudf_sys::cudf_data_type_destroy(dtype_handle);
     }
 
-    error::check_status(status)?;
+    error::check_status_in_with(
+        status,
+        "reduction::reduce",
+        [
+            ("aggregation", reduce_agg_name(agg).to_string()),
+            (
+                "output_type_id",
+                format!("{:?}", output_type.id()).to_lowercase(),
+            ),
+        ],
+    )?;
     Ok(unsafe { Scalar::from_raw(out) })
 }
 
@@ -169,7 +222,15 @@ pub fn scan(
 
     unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
 
-    error::check_status(status)?;
+    error::check_status_in_with(
+        status,
+        "reduction::scan",
+        [
+            ("aggregation", format!("{:?}", agg)),
+            ("scan_type", format!("{:?}", scan_type)),
+            ("null_policy", format!("{:?}", null_policy)),
+        ],
+    )?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -177,8 +238,9 @@ pub fn scan(
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
     let mut out_min = ptr::null_mut();
     let mut out_max = ptr::null_mut();
-    error::check_status(unsafe {
-        cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max)
-    })?;
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max) },
+        "reduction::minmax",
+    )?;
     Ok(unsafe { (Scalar::from_raw(out_min), Scalar::from_raw(out_max)) })
 }

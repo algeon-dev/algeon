@@ -23,7 +23,10 @@ impl CudaStream {
     /// Create a new CUDA stream.
     pub fn new() -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe { cudf_sys::cudf_stream_create(&mut handle) })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_stream_create(&mut handle) },
+            "stream::new",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("cudf_stream_create returned null on success"),
         })
@@ -31,15 +34,19 @@ impl CudaStream {
 
     /// Block the calling thread until all operations on this stream complete.
     pub fn synchronize(&self) -> Result<()> {
-        error::check_status(unsafe { cudf_sys::cudf_stream_synchronize(self.handle.as_ptr()) })
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.as_ptr()) },
+            "stream::synchronize",
+        )
     }
 
     /// Check whether all operations on this stream have completed (non-blocking).
     pub fn is_ready(&self) -> Result<bool> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_stream_is_ready(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_stream_is_ready(self.handle.as_ptr(), &mut out) },
+            "stream::is_ready",
+        )?;
         Ok(out != 0)
     }
 }
