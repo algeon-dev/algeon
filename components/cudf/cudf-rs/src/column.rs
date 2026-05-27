@@ -2,12 +2,14 @@
 
 use crate::error::{self, Error, ErrorKind, Result};
 
-fn usize_to_i32_len(len: usize, what: &'static str) -> Result<i32> {
+fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
     i32::try_from(len).map_err(|_| {
         Error::new(
             ErrorKind::InvalidOperation,
             format!("{} length exceeds i32::MAX", what),
         )
+        .with_operation(operation)
+        .with_context("len", len.to_string())
     })
 }
 use crate::types::{CudfType, DataType, TypeId};
@@ -47,7 +49,7 @@ impl Column {
     /// ```
     pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let size = usize_to_i32_len(data.len(), "data")?;
+        let size = usize_to_i32_len(data.len(), "data", "column::from_slice")?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_numeric(
@@ -74,10 +76,13 @@ impl Column {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "data and validity slices must have the same length",
-            ));
+            )
+            .with_operation("column::from_slice_nullable")
+            .with_context("data_len", data.len().to_string())
+            .with_context("validity_len", validity.len().to_string()));
         }
 
-        let size = usize_to_i32_len(data.len(), "data")?;
+        let size = usize_to_i32_len(data.len(), "data", "column::from_slice_nullable")?;
         let null_mask = crate::types::validity_to_bitmask(validity);
         let null_count = crate::types::count_nulls(validity);
 
@@ -243,18 +248,58 @@ impl<'a> ColumnView<'a> {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "column child index must be >= 0",
-            ));
+            )
+            .with_operation("column_view::child")
+            .with_context("child_index", index.to_string()));
         }
 
         let mut child_handle = ptr::null_mut();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
+            unsafe {
+                cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle)
+            },
             "column_view::child",
         )?;
         Ok(ColumnView {
             handle: NonNull::new(child_handle).expect("null handle on success"),
             _lifetime: PhantomData,
         })
+    }
+
+    /// Returns the raw device (GPU) data pointer of this column view.
+    ///
+    /// This is a zero-copy operation — no data moves between GPU and host.
+    /// The returned pointer points to device memory containing `len()` elements
+    /// of `data_type()`.
+    ///
+    /// For `STRING` columns the data pointer is null — use [`child()`](Self::child)
+    /// to access the offsets (child 0) and character data (child 1) instead.
+    ///
+    /// # Note
+    ///
+    /// For sliced column views the pointer is to the **base** of the device
+    /// buffer. Use [`offset()`](Self::offset) to compute the start of the
+    /// active region.
+    pub fn device_data_ptr(&self) -> Result<*const c_void> {
+        let mut out: *const c_void = std::ptr::null();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_data_ptr(self.handle.as_ptr(), &mut out) },
+            "column_view::device_data_ptr",
+        )?;
+        Ok(out)
+    }
+
+    /// Returns the element offset of this column view into its parent buffer.
+    ///
+    /// Returns 0 for non-sliced columns. For sliced views, the actual data
+    /// starts at `device_data_ptr() + offset * element_size`.
+    pub fn offset(&self) -> Result<i32> {
+        let mut out: i32 = 0;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_offset(self.handle.as_ptr(), &mut out) },
+            "column_view::offset",
+        )?;
+        Ok(out)
     }
 
     /// Copy the column data to a host `Vec<T>`.
@@ -265,12 +310,11 @@ impl<'a> ColumnView<'a> {
         if dt.id() != T::TYPE_ID {
             return Err(Error::new(
                 ErrorKind::TypeError,
-                format!(
-                    "Column type {:?} does not match requested type {:?}",
-                    dt.id(),
-                    T::TYPE_ID
-                ),
-            ));
+                "column type does not match requested type",
+            )
+            .with_operation("column_view::to_vec")
+            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
 
         let size = self.len()? as usize;
@@ -323,6 +367,159 @@ impl<'a> ColumnView<'a> {
             .collect();
 
         Ok(Some(validity))
+    }
+
+    /// Returns a [`DeviceSlice`] describing the active device memory region
+    /// of this column, with type validation.
+    ///
+    /// This is the safe, typed alternative to [`device_data_ptr()`](Self::device_data_ptr)
+    /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
+    /// for the column's offset — no manual pointer arithmetic needed.
+    ///
+    /// # Type checking
+    ///
+    /// Returns an error if the column's element type does not match `T::TYPE_ID`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::column::Column;
+    ///
+    /// let col = Column::from_slice(&[1i32, 2, 3, 4]).unwrap();
+    /// let view = col.view().unwrap();
+    /// let slice = view.device_slice::<i32>().unwrap();
+    ///
+    /// assert_eq!(slice.len(), 4);
+    ///
+    /// let (left, right) = slice.split_at(2);
+    /// assert_eq!(left.len(), 2);
+    /// assert_eq!(right.len(), 2);
+    /// ```
+    pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice> {
+        let dt = self.data_type()?;
+        if dt.id() != T::TYPE_ID {
+            return Err(Error::new(
+                ErrorKind::TypeError,
+                "column type does not match requested type",
+            )
+            .with_operation("column_view::device_slice")
+            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+        }
+
+        let base_ptr = self.device_data_ptr()?;
+        let offset = self.offset()? as usize;
+        let len = self.len()? as usize;
+        let elem_size = std::mem::size_of::<T>();
+
+        // Compute the offset-adjusted pointer. This encapsulates the pointer
+        // arithmetic that would otherwise leak into application code.
+        let ptr = if base_ptr.is_null() {
+            base_ptr as *mut c_void
+        } else {
+            unsafe { (base_ptr as *const u8).add(offset * elem_size) as *mut c_void }
+        };
+
+        Ok(DeviceSlice {
+            ptr,
+            len,
+            type_id: T::TYPE_ID,
+            elem_size,
+        })
+    }
+}
+
+/// An opaque descriptor of a contiguous region of GPU device memory.
+///
+/// `DeviceSlice` is a safe, typed handle that carries a device pointer, element
+/// count, and type information. It does **not** copy or dereference the pointer —
+/// device pointers are not accessible from host code, so holding one cannot cause
+/// undefined behavior.
+///
+/// Create a `DeviceSlice` from a [`ColumnView`] via
+/// [`device_slice()`](ColumnView::device_slice). Use [`split_at()`](Self::split_at)
+/// to partition it into sub-regions (e.g., source and destination vertex IDs).
+///
+/// `DeviceSlice` is `Send + Sync` because the underlying data lives on the GPU
+/// and is not host-dereferenceable.
+#[derive(Debug, Clone)]
+pub struct DeviceSlice {
+    ptr: *mut c_void,
+    len: usize,
+    type_id: TypeId,
+    elem_size: usize,
+}
+
+// Device pointers are not dereferenceable from host code, so sharing across
+// threads is safe — no host-side data race is possible.
+unsafe impl Send for DeviceSlice {}
+unsafe impl Sync for DeviceSlice {}
+
+impl DeviceSlice {
+    /// Number of elements in this device slice.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if this slice contains zero elements.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The cudf type of the elements.
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
+    /// Returns the raw device pointer.
+    ///
+    /// This pointer refers to GPU memory and cannot be dereferenced from host
+    /// code. It is intended for passing to GPU libraries (e.g., cugraph) that
+    /// accept device pointers.
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.ptr
+    }
+
+    /// Returns the size in bytes of one element.
+    pub fn elem_size(&self) -> usize {
+        self.elem_size
+    }
+
+    /// Split this slice into two at the given element index.
+    ///
+    /// Returns `(left, right)` where `left` has `mid` elements and `right`
+    /// has `len - mid` elements.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `mid > self.len`.
+    pub fn split_at(&self, mid: usize) -> (DeviceSlice, DeviceSlice) {
+        assert!(
+            mid <= self.len,
+            "split_at: mid ({mid}) > len ({})",
+            self.len
+        );
+
+        let right_ptr = if self.ptr.is_null() || self.elem_size == 0 {
+            self.ptr
+        } else {
+            unsafe { (self.ptr as *const u8).add(mid * self.elem_size) as *mut c_void }
+        };
+
+        (
+            DeviceSlice {
+                ptr: self.ptr,
+                len: mid,
+                type_id: self.type_id,
+                elem_size: self.elem_size,
+            },
+            DeviceSlice {
+                ptr: right_ptr,
+                len: self.len - mid,
+                type_id: self.type_id,
+                elem_size: self.elem_size,
+            },
+        )
     }
 }
 

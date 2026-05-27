@@ -254,6 +254,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 fn default_status_for_kind(kind: ErrorKind) -> ErrorStatus {
     match kind {
         ErrorKind::CudaError | ErrorKind::OutOfMemory => ErrorStatus::Temporary,
+        ErrorKind::FatalCudaError => ErrorStatus::Persistent,
         _ => ErrorStatus::Permanent,
     }
 }
@@ -405,6 +406,14 @@ mod tests {
         assert_eq!(
             default_status_for_kind(ErrorKind::OutOfMemory),
             ErrorStatus::Temporary
+        );
+    }
+
+    #[test]
+    fn default_status_fatal_cuda_is_persistent() {
+        assert_eq!(
+            default_status_for_kind(ErrorKind::FatalCudaError),
+            ErrorStatus::Persistent
         );
     }
 

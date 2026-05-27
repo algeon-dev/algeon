@@ -42,7 +42,8 @@ fn validate_sort_params(
                 ErrorKind::InvalidOperation,
                 format!(
                     "column_order length ({}) must equal number of keys ({})",
-                    orders.len(), expected
+                    orders.len(),
+                    expected
                 ),
             )
             .with_operation(operation)
@@ -57,7 +58,8 @@ fn validate_sort_params(
                 ErrorKind::InvalidOperation,
                 format!(
                     "null_precedence length ({}) must equal number of keys ({})",
-                    nulls.len(), expected
+                    nulls.len(),
+                    expected
                 ),
             )
             .with_operation(operation)
@@ -103,10 +105,7 @@ pub fn sort(
         "sorting::sort",
         [
             ("num_keys", num_keys.to_string()),
-            (
-                "column_order_provided",
-                column_order.is_some().to_string(),
-            ),
+            ("column_order_provided", column_order.is_some().to_string()),
             (
                 "null_precedence_provided",
                 null_precedence.is_some().to_string(),
@@ -136,10 +135,7 @@ pub fn stable_sort(
         "sorting::stable_sort",
         [
             ("num_keys", num_keys.to_string()),
-            (
-                "column_order_provided",
-                column_order.is_some().to_string(),
-            ),
+            ("column_order_provided", column_order.is_some().to_string()),
             (
                 "null_precedence_provided",
                 null_precedence.is_some().to_string(),
@@ -179,10 +175,7 @@ pub fn sort_by_key(
         "sorting::sort_by_key",
         [
             ("num_key_columns", num_key_columns.to_string()),
-            (
-                "column_order_provided",
-                column_order.is_some().to_string(),
-            ),
+            ("column_order_provided", column_order.is_some().to_string()),
             (
                 "null_precedence_provided",
                 null_precedence.is_some().to_string(),
@@ -214,10 +207,7 @@ pub fn sorted_order(
         "sorting::sorted_order",
         [
             ("num_keys", num_keys.to_string()),
-            (
-                "column_order_provided",
-                column_order.is_some().to_string(),
-            ),
+            ("column_order_provided", column_order.is_some().to_string()),
             (
                 "null_precedence_provided",
                 null_precedence.is_some().to_string(),
@@ -234,7 +224,12 @@ pub fn is_sorted(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<bool> {
     let num_keys = input.num_columns()?;
-    validate_sort_params("sorting::is_sorted", num_keys, column_order, null_precedence)?;
+    validate_sort_params(
+        "sorting::is_sorted",
+        num_keys,
+        column_order,
+        null_precedence,
+    )?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
     error::check_status_in_with(
@@ -242,10 +237,7 @@ pub fn is_sorted(
         "sorting::is_sorted",
         [
             ("num_keys", num_keys.to_string()),
-            (
-                "column_order_provided",
-                column_order.is_some().to_string(),
-            ),
+            ("column_order_provided", column_order.is_some().to_string()),
             (
                 "null_precedence_provided",
                 null_precedence.is_some().to_string(),

@@ -56,7 +56,10 @@ impl TypeId {
     /// variable-width types (String, List, Struct).
     pub fn size_in_bytes(self) -> Result<Option<i32>> {
         let mut out: i32 = 0;
-        error::check_status(unsafe { cudf_sys::cudf_type_size(self.to_raw(), &mut out) })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_type_size(self.to_raw(), &mut out) },
+            "type_id::size_in_bytes",
+        )?;
         if out == 0 {
             Ok(None)
         } else {
@@ -209,7 +212,10 @@ pub fn count_nulls(validity: &[bool]) -> i32 {
 // Internal helpers for FFI handle round-tripping of DataType.
 impl DataType {
     /// Create a C shim data_type handle from this DataType with operation context.
-    pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<*mut std::ffi::c_void> {
+    pub(crate) fn to_raw_handle_for(
+        self,
+        operation: &'static str,
+    ) -> Result<*mut std::ffi::c_void> {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
             error::check_status_in_with(

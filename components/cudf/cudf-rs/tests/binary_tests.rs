@@ -12,13 +12,9 @@ fn test_add_column_column() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::Add,
-        &DataType::new(TypeId::Int32),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
+            .unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![11, 22, 33]);
@@ -86,14 +82,10 @@ fn test_binary_operation_error_contains_operation_context() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let err = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::Add,
-        &DataType::new(TypeId::Int32),
-    )
-    .err()
-    .expect("expected error");
+    let err =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
+            .err()
+            .expect("expected error");
 
     assert_eq!(err.operation(), "binary::binary_operation_vv");
     assert!(err.context().iter().any(|(k, _)| *k == "operator"));

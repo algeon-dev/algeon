@@ -13,14 +13,20 @@ pub enum Aggregation {
     Min,
     Max,
     /// Count non-null values (if `include_nulls` is false) or all values.
-    Count { include_nulls: bool },
+    Count {
+        include_nulls: bool,
+    },
     Mean,
     Median,
     NUnique,
     /// Standard deviation with degrees-of-freedom correction.
-    Std { ddof: i32 },
+    Std {
+        ddof: i32,
+    },
     /// Variance with degrees-of-freedom correction.
-    Variance { ddof: i32 },
+    Variance {
+        ddof: i32,
+    },
 }
 
 /// A single aggregation request: which column to aggregate and how.
@@ -130,10 +136,7 @@ pub fn groupby_aggregate(
     })?;
 
     // Collect values column view handles.
-    let value_handles: Vec<*mut c_void> = requests
-        .iter()
-        .map(|r| r.values.raw_handle())
-        .collect();
+    let value_handles: Vec<*mut c_void> = requests.iter().map(|r| r.values.raw_handle()).collect();
 
     // Collect agg_counts and create aggregation handles.
     let mut agg_counts: Vec<i32> = Vec::with_capacity(requests.len());
@@ -164,13 +167,10 @@ pub fn groupby_aggregate(
         for agg in req.aggregations {
             match agg {
                 Aggregation::Std { ddof } | Aggregation::Variance { ddof } if *ddof < 0 => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        "ddof must be >= 0",
-                    )
-                    .with_operation("groupby::groupby_aggregate")
-                    .with_context("request_index", agg_counts.len().to_string())
-                    .with_context("ddof", ddof.to_string()));
+                    return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
+                        .with_operation("groupby::groupby_aggregate")
+                        .with_context("request_index", agg_counts.len().to_string())
+                        .with_context("ddof", ddof.to_string()));
                 }
                 _ => {}
             }

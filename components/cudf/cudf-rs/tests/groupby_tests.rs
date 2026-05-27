@@ -20,8 +20,7 @@ fn test_groupby_sum() {
         aggregations: &[Aggregation::Sum],
     }];
 
-    let result =
-        groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
+    let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
     // Check keys.
     let result_kv = result.keys.view().unwrap();
@@ -32,7 +31,11 @@ fn test_groupby_sum() {
     // Get sums.
     assert_eq!(result.results.len(), 1);
     assert_eq!(result.results[0].len(), 1);
-    let mut sum_vals: Vec<i64> = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
+    let mut sum_vals: Vec<i64> = result.results[0][0]
+        .view()
+        .unwrap()
+        .to_vec::<i64>()
+        .unwrap();
 
     // Sort by key for deterministic comparison.
     let mut pairs: Vec<(i32, i64)> = key_vals.drain(..).zip(sum_vals.drain(..)).collect();
@@ -55,8 +58,7 @@ fn test_groupby_multiple_aggregations() {
         aggregations: &[Aggregation::Min, Aggregation::Max],
     }];
 
-    let result =
-        groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
+    let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
     let result_kv = result.keys.view().unwrap();
     assert_eq!(result_kv.num_rows().unwrap(), 2);
@@ -66,8 +68,16 @@ fn test_groupby_multiple_aggregations() {
     assert_eq!(result.results[0].len(), 2);
 
     let keys: Vec<i32> = result_kv.column(0).unwrap().to_vec::<i32>().unwrap();
-    let mins: Vec<f64> = result.results[0][0].view().unwrap().to_vec::<f64>().unwrap();
-    let maxs: Vec<f64> = result.results[0][1].view().unwrap().to_vec::<f64>().unwrap();
+    let mins: Vec<f64> = result.results[0][0]
+        .view()
+        .unwrap()
+        .to_vec::<f64>()
+        .unwrap();
+    let maxs: Vec<f64> = result.results[0][1]
+        .view()
+        .unwrap()
+        .to_vec::<f64>()
+        .unwrap();
 
     // Build sorted pairs.
     let mut triples: Vec<(i32, f64, f64)> = keys
@@ -91,15 +101,20 @@ fn test_groupby_count() {
     let vals_view = vals_col.view().unwrap();
     let requests = [AggregationRequest {
         values: &vals_view,
-        aggregations: &[Aggregation::Count { include_nulls: false }],
+        aggregations: &[Aggregation::Count {
+            include_nulls: false,
+        }],
     }];
 
-    let result =
-        groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
+    let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
     let result_kv = result.keys.view().unwrap();
     let keys: Vec<i32> = result_kv.column(0).unwrap().to_vec::<i32>().unwrap();
-    let counts: Vec<i32> = result.results[0][0].view().unwrap().to_vec::<i32>().unwrap();
+    let counts: Vec<i32> = result.results[0][0]
+        .view()
+        .unwrap()
+        .to_vec::<i32>()
+        .unwrap();
 
     let mut pairs: Vec<(i32, i32)> = keys.into_iter().zip(counts).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -187,8 +202,7 @@ fn test_groupby_multi_column_keys() {
         aggregations: &[Aggregation::Sum],
     }];
 
-    let result =
-        groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
+    let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
     let result_kv = result.keys.view().unwrap();
     assert_eq!(result_kv.num_columns().unwrap(), 2);

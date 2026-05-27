@@ -17,18 +17,8 @@ pub struct ParquetReaderOptions {
 impl ParquetReaderOptions {
     /// Create options to read from the given file path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| {
-            crate::error::Error::new(
-                crate::error::ErrorKind::InvalidOperation,
-                "Path is not valid UTF-8",
-            )
-        })?;
-        let filepath = CString::new(path_str).map_err(|_| {
-            crate::error::Error::new(
-                crate::error::ErrorKind::InvalidOperation,
-                "Path contains interior null byte",
-            )
-        })?;
+        let filepath =
+            super::path_to_cstring(path.as_ref(), "io::parquet::parquet_reader_options")?;
         Ok(Self {
             filepath,
             columns: None,
@@ -108,18 +98,8 @@ pub struct ParquetWriterOptions {
 impl ParquetWriterOptions {
     /// Create options to write to the given file path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let path_str = path.as_ref().to_str().ok_or_else(|| {
-            crate::error::Error::new(
-                crate::error::ErrorKind::InvalidOperation,
-                "Path is not valid UTF-8",
-            )
-        })?;
-        let filepath = CString::new(path_str).map_err(|_| {
-            crate::error::Error::new(
-                crate::error::ErrorKind::InvalidOperation,
-                "Path contains interior null byte",
-            )
-        })?;
+        let filepath =
+            super::path_to_cstring(path.as_ref(), "io::parquet::parquet_writer_options")?;
         Ok(Self {
             filepath,
             column_names: None,

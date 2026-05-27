@@ -16,6 +16,11 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f9)(cudf_table_handle, cudf_table_view_handle*) = &cudf_table_view;
   void (*f10)(cudf_table_view_handle)                             = &cudf_table_view_destroy;
 
+  cudf_status_t (*f11)(cudf_column_view_handle, cudf_type_id_t, cudf_column_handle*) =
+    &cudf_dictionary_encode;
+  cudf_status_t (*f12)(cudf_table_view_handle, uint32_t, cudf_column_handle*) =
+    &cudf_hashing_murmurhash3_x86_32;
+
   (void)f1;
   (void)f2;
   (void)f3;
@@ -26,5 +31,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f8;
   (void)f9;
   (void)f10;
+  (void)f11;
+  (void)f12;
   return 0;
 }

@@ -111,9 +111,7 @@ fn test_csv_roundtrip() {
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = csv::CsvReaderOptions::new(&path)
-        .unwrap()
-        .has_header(true);
+    let read_opts = csv::CsvReaderOptions::new(&path).unwrap().has_header(true);
     let read_table = csv::read_csv(&read_opts).unwrap();
     let read_view = read_table.view().unwrap();
 
@@ -136,9 +134,7 @@ fn test_csv_custom_delimiter() {
         .delimiter(b'\t');
     csv::write_csv(&view, &write_opts).unwrap();
 
-    let read_opts = csv::CsvReaderOptions::new(&path)
-        .unwrap()
-        .delimiter(b'\t');
+    let read_opts = csv::CsvReaderOptions::new(&path).unwrap().delimiter(b'\t');
     let read_table = csv::read_csv(&read_opts).unwrap();
     assert_eq!(read_table.view().unwrap().num_rows().unwrap(), 2);
 }

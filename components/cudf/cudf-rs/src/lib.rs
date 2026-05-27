@@ -36,9 +36,11 @@
 pub mod binary;
 pub mod column;
 pub mod concatenate;
+pub mod dictionary;
 pub mod error;
 pub mod filter;
 pub mod groupby;
+pub mod hashing;
 pub mod io;
 pub mod join;
 pub mod memory;
@@ -51,7 +53,7 @@ pub mod types;
 pub mod unary;
 
 // Re-export key types at crate root for convenience.
-pub use column::{Column, ColumnView};
+pub use column::{Column, ColumnView, DeviceSlice};
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use scalar::Scalar;
 pub use stream::CudaStream;

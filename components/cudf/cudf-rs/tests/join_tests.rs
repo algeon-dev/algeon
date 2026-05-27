@@ -29,8 +29,7 @@ fn test_inner_join() {
     let rkv = rk_table.view().unwrap();
     let rpv = rp_table.view().unwrap();
 
-    let result =
-        join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
+    let result = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
     let rv = result.right.view().unwrap();
@@ -75,8 +74,7 @@ fn test_left_join() {
     let lpv = lp.view().unwrap();
     let rpv = rp.view().unwrap();
 
-    let result =
-        join::left_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
+    let result = join::left_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
     // Left join: all 3 left rows should be present.
@@ -100,8 +98,7 @@ fn test_full_join() {
     let lpv = lp.view().unwrap();
     let rpv = rp.view().unwrap();
 
-    let result =
-        join::full_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
+    let result = join::full_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
     // Full join should have 3 rows (1, 2, 3).
@@ -150,8 +147,7 @@ fn test_inner_join_multi_column_keys() {
     let lpv = lp.view().unwrap();
     let rpv = rp.view().unwrap();
 
-    let result =
-        join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
+    let result = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
     // Matches: (1,10) and (2,10) → 2 rows.

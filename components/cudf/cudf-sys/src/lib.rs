@@ -106,10 +106,7 @@ extern "C" {
         out: *mut cudf_type_id_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_data_type_scale(
-        handle: cudf_data_type_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_data_type_scale(handle: cudf_data_type_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_type_size(type_id: cudf_type_id_t, out: *mut i32) -> cudf_status_t;
 
@@ -129,10 +126,8 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_column_copy(
-        src: cudf_column_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle)
+        -> cudf_status_t;
 
     pub fn cudf_column_destroy(handle: cudf_column_handle);
 
@@ -150,10 +145,7 @@ extern "C" {
         out: *mut cudf_type_id_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_column_view_size(
-        handle: cudf_column_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_size(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_column_view_null_count(
         handle: cudf_column_view_handle,
@@ -176,6 +168,16 @@ extern "C" {
         out: *mut cudf_column_view_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_view_data_ptr(
+        handle: cudf_column_view_handle,
+        out: *mut *const c_void,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_view_offset(
+        handle: cudf_column_view_handle,
+        out: *mut i32,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_view_to_host(
         handle: cudf_column_view_handle,
         host_buf: *mut c_void,
@@ -196,10 +198,7 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_copy(
-        src: cudf_table_handle,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_table_copy(src: cudf_table_handle, out: *mut cudf_table_handle) -> cudf_status_t;
 
     pub fn cudf_table_destroy(handle: cudf_table_handle);
 
@@ -217,10 +216,8 @@ extern "C" {
         out: *mut i32,
     ) -> cudf_status_t;
 
-    pub fn cudf_table_view_num_rows(
-        handle: cudf_table_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_table_view_num_rows(handle: cudf_table_view_handle, out: *mut i32)
+        -> cudf_status_t;
 
     pub fn cudf_table_view_column(
         handle: cudf_table_view_handle,
@@ -245,20 +242,11 @@ extern "C" {
 
     pub fn cudf_scalar_destroy(handle: cudf_scalar_handle);
 
-    pub fn cudf_scalar_type(
-        handle: cudf_scalar_handle,
-        out: *mut cudf_type_id_t,
-    ) -> cudf_status_t;
+    pub fn cudf_scalar_type(handle: cudf_scalar_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
 
-    pub fn cudf_scalar_is_valid(
-        handle: cudf_scalar_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_scalar_is_valid(handle: cudf_scalar_handle, out: *mut i32) -> cudf_status_t;
 
-    pub fn cudf_scalar_value(
-        handle: cudf_scalar_handle,
-        out: *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_scalar_value(handle: cudf_scalar_handle, out: *mut c_void) -> cudf_status_t;
 
     pub fn cudf_scalar_string_value(
         handle: cudf_scalar_handle,
@@ -271,16 +259,12 @@ extern "C" {
     pub fn cudf_stream_create(out: *mut cudf_stream_handle) -> cudf_status_t;
     pub fn cudf_stream_destroy(handle: cudf_stream_handle);
     pub fn cudf_stream_synchronize(handle: cudf_stream_handle) -> cudf_status_t;
-    pub fn cudf_stream_is_ready(
-        handle: cudf_stream_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
 
     // -- Memory Resource -----------------------------------------------------
 
-    pub fn cudf_memory_resource_create_cuda(
-        out: *mut cudf_memory_resource_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle)
+        -> cudf_status_t;
 
     pub fn cudf_memory_resource_create_pool(
         initial_pool_size: usize,
@@ -379,25 +363,13 @@ extern "C" {
 
     // -- GroupBy --------------------------------------------------------------
 
-    pub fn cudf_aggregation_create(
-        kind: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_aggregation_create_count(
-        null_policy: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_aggregation_create_count(null_policy: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_aggregation_create_std(
-        ddof: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_aggregation_create_std(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_aggregation_create_variance(
-        ddof: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_aggregation_create_variance(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_aggregation_destroy(handle: *mut c_void);
 
@@ -483,27 +455,18 @@ extern "C" {
 
     // -- Reduction -----------------------------------------------------------
 
-    pub fn cudf_reduce_aggregation_create(
-        kind: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_reduce_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_reduce_aggregation_create_variance(
         ddof: i32,
         out: *mut *mut c_void,
     ) -> cudf_status_t;
 
-    pub fn cudf_reduce_aggregation_create_std(
-        ddof: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_reduce_aggregation_create_std(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_reduce_aggregation_destroy(handle: *mut c_void);
 
-    pub fn cudf_scan_aggregation_create(
-        kind: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_scan_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_scan_aggregation_destroy(handle: *mut c_void);
 
@@ -540,6 +503,55 @@ extern "C" {
         tables: *const cudf_table_view_handle,
         num_tables: i32,
         out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    // -- Dictionary ----------------------------------------------------------
+
+    pub fn cudf_dictionary_encode(
+        input: cudf_column_view_handle,
+        indices_type_id: cudf_type_id_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_dictionary_decode(
+        dict_column: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_dictionary_keys(
+        dict_column: cudf_column_view_handle,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_dictionary_indices(
+        dict_column: cudf_column_view_handle,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_dictionary_set_keys(
+        dict_column: cudf_column_view_handle,
+        keys: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_dictionary_match_dictionaries(
+        dict_columns: *const cudf_column_view_handle,
+        num_columns: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    // -- Hashing -------------------------------------------------------------
+
+    pub fn cudf_hashing_murmurhash3_x86_32(
+        input: cudf_table_view_handle,
+        seed: u32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hashing_xxhash_64(
+        input: cudf_table_view_handle,
+        seed: u64,
+        out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
     // -- Join ----------------------------------------------------------------
