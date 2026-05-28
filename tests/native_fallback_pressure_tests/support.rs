@@ -249,6 +249,20 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("adaptive_memory_history_lookup_count", 13),
         ("adaptive_memory_history_hit_count", 8),
         ("adaptive_memory_history_miss_count", 5),
+        ("dynamic_filter_produced_count", 1),
+        ("dynamic_filter_skipped_count", 1),
+        ("dynamic_filter_applied_count", 1),
+        ("dynamic_filter_row_groups_pruned", 3),
+        ("dynamic_filter_source_bytes_pruned", 4096),
+        ("dynamic_filter_reader_predicate_rows_before", 1000),
+        ("dynamic_filter_reader_predicate_rows_after", 250),
+        ("dynamic_filter_reader_predicate_rows_filtered", 750),
+        ("dynamic_filter_post_decode_rows_before", 80),
+        ("dynamic_filter_post_decode_rows_after", 25),
+        ("dynamic_filter_post_decode_rows_filtered", 55),
+        ("dynamic_filter_source_post_decode_rows_filtered", 55),
+        ("dynamic_filter_filter_post_decode_rows_filtered", 0),
+        ("dynamic_filter_join_probe_post_decode_rows_filtered", 0),
         ("hash_join_build_count", 1),
         ("filtered_join_build_count", 6),
         ("one_shot_join_count", 7),
@@ -320,6 +334,53 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .add(1);
     MetricBuilder::new(&metrics)
         .with_type(MetricType::SUMMARY)
+        .with_new_label("dynamic_filter_id", "df0")
+        .with_new_label("event", "applied")
+        .with_new_label("producer_kind", "hash_join_build")
+        .with_new_label("producer_node_id", "n2")
+        .with_new_label("consumer_kind", "local_parquet_source")
+        .with_new_label("consumer_node_id", "n1")
+        .with_new_label("consumer_lowering", "merged_reader_predicate")
+        .with_new_label("consumer_reduction_stage", "source_reader")
+        .with_new_label("filter_kind", "small_in_list")
+        .with_new_label("payload_value_count", "3")
+        .with_new_label("payload_min_i64", "10")
+        .with_new_label("payload_max_i64", "30")
+        .with_new_label("producer_rows", "none")
+        .with_new_label("skipped_reason", "none")
+        .with_new_label("selected_row_groups_before", "5")
+        .with_new_label("selected_row_groups_after", "2")
+        .with_new_label("selected_source_bytes_before", "8192")
+        .with_new_label("selected_source_bytes_after", "4096")
+        .with_new_label("row_groups_pruned", "3")
+        .with_new_label("source_bytes_pruned", "4096")
+        .global_counter("native_dynamic_filter_runtime_rows")
+        .add(1);
+    MetricBuilder::new(&metrics)
+        .with_type(MetricType::SUMMARY)
+        .with_new_label("dynamic_filter_id", "df0")
+        .with_new_label("event", "applied_post_decode")
+        .with_new_label("producer_kind", "hash_join_build")
+        .with_new_label("producer_node_id", "n2")
+        .with_new_label("consumer_kind", "local_parquet_source")
+        .with_new_label("consumer_node_id", "n1")
+        .with_new_label("consumer_lowering", "post_decode_only")
+        .with_new_label("consumer_reduction_stage", "source_post_decode")
+        .with_new_label("filter_kind", "hash_set_contains")
+        .with_new_label("payload_value_count", "3")
+        .with_new_label("payload_min_i64", "10")
+        .with_new_label("payload_max_i64", "30")
+        .with_new_label("producer_rows", "none")
+        .with_new_label("skipped_reason", "none")
+        .with_new_label("post_decode_rows_before", "80")
+        .with_new_label("post_decode_rows_after", "25")
+        .with_new_label("post_decode_rows_filtered", "55")
+        .with_new_label("row_groups_pruned", "0")
+        .with_new_label("source_bytes_pruned", "0")
+        .global_counter("native_dynamic_filter_runtime_rows")
+        .add(1);
+    MetricBuilder::new(&metrics)
+        .with_type(MetricType::SUMMARY)
         .with_new_label("node_id", "n4")
         .with_new_label("selected_strategy", "libcudf_groupby")
         .with_new_label("execution_stage", "partial")
@@ -347,27 +408,26 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("groupby_elapsed_ns", "123456789")
         .with_new_label("decode_elapsed_ns", "0")
         .with_new_label("strategy_operator_elapsed_ns", "123456789")
+        .with_new_label("aggregate_structural_key", "agg-v1-fnv64-0123456789abcdef")
+        .with_new_label("prior_cardinality_evidence_scope", "absent")
         .with_new_label("encoded_key_partial_cost_model", "prior_partial_reduction_ratio")
         .with_new_label("encoded_key_partial_cost_model_status", "rejected_by_cost_model")
         .with_new_label("encoded_key_partial_selection_reason", "no_prior_cardinality_evidence")
         .with_new_label("encoded_key_partial_reduction_ratio_threshold_ppm", "100000")
         .with_new_label("encoded_key_partial_prior_reduction_ratio_ppm", "0")
         .with_new_label("encoded_key_partial_prior_strategy", "")
-        .with_new_label(
-            "prepared_sort_groupby_rejected_reason",
-            "prepared_sort_groupby_cost_model_no_prior_cardinality_evidence",
-        )
+        .with_new_label("prepared_sort_groupby_rejected_reason", "none")
         .with_new_label("prepared_sort_groupby_contract_status", "available")
         .with_new_label("prepared_sort_groupby_required_contract", "prepared_sort_groupby_execution_contract")
         .with_new_label("prepared_sort_groupby_cost_model", "exact_grouped_key_facts_required")
-        .with_new_label("prepared_sort_groupby_cost_model_status", "rejected_by_cost_model")
-        .with_new_label("prepared_sort_groupby_selection_reason", "no_prior_cardinality_evidence")
+        .with_new_label("prepared_sort_groupby_cost_model_status", "selected_libcudf_runtime_probe")
+        .with_new_label("prepared_sort_groupby_selection_reason", "runtime_cardinality_probe_required")
         .with_new_label("prepared_sort_groupby_num_groups", "unknown")
         .with_new_label("prepared_sort_groupby_grouped_key_output_bytes", "unknown")
         .with_new_label("prepared_sort_groupby_max_group_size", "unknown")
         .with_new_label(
             "rejected_candidate_strategies",
-            "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;prepared_sort_groupby:prepared_sort_groupby_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage",
+            "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage",
         )
         .global_counter("native_aggregate_strategy_rows")
         .add(1);

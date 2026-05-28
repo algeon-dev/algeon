@@ -1,14 +1,25 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use super::*;
-use crate::exec::{
-    bounded::chunks::{
-        SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
-        source_read_budget_correction_from_error, source_read_reservation_contract,
-        try_grow_source_read_reservation_for_budget_correction, try_read_cached_local_parquet_chunk,
+use crate::{
+    dynamic_filter::{
+        DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterRoute, DynamicFilterSet,
+        apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter,
+        dynamic_filter_predicate_for_schema,
     },
-    source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk},
+    exec::{
+        bounded::chunks::{
+            SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
+            source_read_budget_correction_from_error, source_read_reservation_contract,
+            try_grow_source_read_reservation_for_budget_correction, try_read_cached_local_parquet_chunk,
+        },
+        source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk, read_local_parquet_source},
+    },
+    metrics::DynamicFilterSourceSnapshot,
 };
+
+const MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES: usize = 4096;
+const MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES: usize = 128;
 
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
@@ -16,19 +27,38 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     node_id: NodeId,
     chunks: Vec<SourceChunk>,
     stages: Vec<BoundedJoinLeafSourceStreamStage>,
+    reader_dynamic_filters: Vec<BoundedJoinLeafSourceStreamDynamicFilterStage>,
+    planning_policy: SourceChunkPlanningPolicy,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 }
 
 #[derive(Clone)]
 enum BoundedJoinLeafSourceStreamStage {
-    Filter { node_id: NodeId, node: FilterNode },
-    Projection { node_id: NodeId, node: ProjectionNode },
+    Filter {
+        node_id: NodeId,
+        node: FilterNode,
+        dynamic_filter: Option<Box<BoundedJoinLeafSourceStreamDynamicFilterStage>>,
+    },
+    Projection {
+        node_id: NodeId,
+        node: ProjectionNode,
+    },
+}
+
+#[derive(Clone)]
+struct BoundedJoinLeafSourceStreamDynamicFilterStage {
+    route: DynamicFilterRoute,
+    filter: DynamicFilter,
 }
 
 impl BoundedJoinLeafLocalParquetSourceStream {
     pub(in crate::exec::bounded) fn chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    pub(in crate::exec::bounded) fn source_node_id(&self) -> NodeId {
+        self.node_id
     }
 
     pub(in crate::exec::bounded) fn estimated_source_read_bytes(&self) -> Option<u64> {
@@ -43,18 +73,251 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         })
     }
 
+    pub(in crate::exec::bounded) fn dynamic_filter_source_snapshot(&self) -> DynamicFilterSourceSnapshot {
+        DynamicFilterSourceSnapshot {
+            row_groups: self.chunks.iter().map(|chunk| chunk.row_group_count() as u64).sum(),
+            source_bytes: self.estimated_source_read_bytes(),
+        }
+    }
+
     fn has_stages(&self) -> bool {
         !self.stages.is_empty()
     }
 
     pub(in crate::exec::bounded) fn with_filter_stage(mut self, node_id: NodeId, node: FilterNode) -> Self {
-        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node });
+        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node, dynamic_filter: None });
         self
     }
 
     pub(in crate::exec::bounded) fn with_projection_stage(mut self, node_id: NodeId, node: ProjectionNode) -> Self {
         self.stages.push(BoundedJoinLeafSourceStreamStage::Projection { node_id, node });
         self
+    }
+
+    pub(in crate::exec::bounded) fn deferred_reader_predicate_routes(
+        &self,
+        routes: &[DynamicFilterRoute],
+        filter_set: &DynamicFilterSet,
+    ) -> BTreeSet<DynamicFilterId> {
+        let routes = routes.iter().collect::<Vec<_>>();
+        deferred_large_small_in_list_reader_predicate_routes(&self.source, &routes, filter_set)
+    }
+
+    pub(in crate::exec::bounded) fn with_dynamic_filters_and_deferred_reader_predicates(
+        mut self,
+        routes: &[&DynamicFilterRoute],
+        filter_set: &DynamicFilterSet,
+        deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+    ) -> Result<Self> {
+        if routes.is_empty() {
+            return Ok(self);
+        }
+        let before = self.dynamic_filter_source_snapshot();
+        let source = apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(
+            &self.source,
+            routes,
+            filter_set,
+            |route, _filter| !deferred_reader_predicate_routes.contains(&route.id),
+        )?;
+        let chunk_plan = plan_local_parquet_source_chunks(self.node_id, &source, self.planning_policy)?;
+        let after = DynamicFilterSourceSnapshot {
+            row_groups: chunk_plan.chunks.iter().map(|chunk| chunk.row_group_count() as u64).sum(),
+            source_bytes: chunk_plan.chunks.iter().try_fold(0_u64, |total, chunk| {
+                total.checked_add(
+                    chunk
+                        .estimated_source_read_bytes
+                        .or(chunk.known_row_group_bytes)
+                        .or(chunk.estimated_chunk_bytes)
+                        .or(chunk.known_file_bytes)?,
+                )
+            }),
+        };
+        let post_decode_filters = source_post_decode_dynamic_filter_stages(
+            &source,
+            self.node_id,
+            routes,
+            filter_set,
+            before,
+            after,
+            deferred_reader_predicate_routes,
+        );
+        let reader_dynamic_filters =
+            source_reader_predicate_dynamic_filter_stages(routes, filter_set, deferred_reader_predicate_routes);
+        self.source = source;
+        self.chunks = chunk_plan.chunks;
+        self.reader_dynamic_filters.extend(reader_dynamic_filters);
+        if !post_decode_filters.is_empty() {
+            let mut stages = post_decode_filters
+                .iter()
+                .map(|(route, filter, node)| BoundedJoinLeafSourceStreamStage::Filter {
+                    node_id: route.consumer.node_id(),
+                    node: node.clone(),
+                    dynamic_filter: Some(Box::new(BoundedJoinLeafSourceStreamDynamicFilterStage {
+                        route: route.clone(),
+                        filter: filter.clone(),
+                    })),
+                })
+                .collect::<Vec<_>>();
+            stages.extend(self.stages);
+            self.stages = stages;
+        }
+        Ok(self)
+    }
+}
+
+fn source_reader_predicate_dynamic_filter_stages(
+    routes: &[&DynamicFilterRoute],
+    filter_set: &DynamicFilterSet,
+    deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+) -> Vec<BoundedJoinLeafSourceStreamDynamicFilterStage> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            if deferred_reader_predicate_routes.contains(&route.id) {
+                return None;
+            }
+            if !matches!(
+                route.consumer_lowering,
+                DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
+            ) {
+                return None;
+            }
+            let filter = filter_set.produced(route.id)?;
+            if matches!(filter, DynamicFilter::Empty | DynamicFilter::HashSetContainsI64 { .. }) {
+                return None;
+            }
+            Some(BoundedJoinLeafSourceStreamDynamicFilterStage { route: (*route).clone(), filter: filter.clone() })
+        })
+        .collect()
+}
+
+fn deferred_large_small_in_list_reader_predicate_routes(
+    source: &LocalParquetSource,
+    routes: &[&DynamicFilterRoute],
+    filter_set: &DynamicFilterSet,
+) -> BTreeSet<DynamicFilterId> {
+    let mut large_small_in_list_routes = BTreeSet::new();
+    let mut retained_reader_predicate_count = usize::from(source.reader_predicate.is_some());
+    for route in routes {
+        if !matches!(
+            route.consumer_lowering,
+            DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
+        ) {
+            continue;
+        }
+        let Some(filter) = filter_set.produced(route.id) else {
+            continue;
+        };
+        if large_small_in_list_reader_predicate_should_defer(filter) {
+            large_small_in_list_routes.insert(route.id);
+        } else if !matches!(filter, DynamicFilter::Empty | DynamicFilter::HashSetContainsI64 { .. }) {
+            retained_reader_predicate_count = retained_reader_predicate_count.saturating_add(1);
+        }
+    }
+    if retained_reader_predicate_count == 0 {
+        return BTreeSet::new();
+    }
+    large_small_in_list_routes
+}
+
+fn large_small_in_list_reader_predicate_should_defer(filter: &DynamicFilter) -> bool {
+    matches!(
+        filter,
+        DynamicFilter::SmallInListI64 {
+            values,
+            ..
+        } if values.len() > MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES
+    )
+}
+
+fn source_post_decode_dynamic_filter_stages(
+    source: &LocalParquetSource,
+    source_node_id: NodeId,
+    routes: &[&DynamicFilterRoute],
+    filter_set: &DynamicFilterSet,
+    before: DynamicFilterSourceSnapshot,
+    after: DynamicFilterSourceSnapshot,
+    deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+) -> Vec<(DynamicFilterRoute, DynamicFilter, FilterNode)> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            let filter = filter_set.produced(route.id)?;
+            if !source_dynamic_filter_requires_post_decode(
+                route,
+                filter,
+                before,
+                after,
+                deferred_reader_predicate_routes,
+            ) {
+                return None;
+            }
+            let column = route.consumer_columns.first()?;
+            let predicate = dynamic_filter_predicate_for_schema(source.schema.as_ref(), column, filter)?;
+            Some(((*route).clone(), filter.clone(), FilterNode { input: source_node_id, predicate }))
+        })
+        .collect()
+}
+
+fn source_dynamic_filter_requires_post_decode(
+    route: &DynamicFilterRoute,
+    filter: &DynamicFilter,
+    before: DynamicFilterSourceSnapshot,
+    after: DynamicFilterSourceSnapshot,
+    deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+) -> bool {
+    !matches!(filter, DynamicFilter::Empty)
+        && (deferred_reader_predicate_routes.contains(&route.id)
+            || unpruned_exact_filter_should_run_post_decode(filter, before, after)
+            || matches!(
+                route.consumer_lowering,
+                DynamicFilterConsumerLowering::PostDecodeOnly
+                    | DynamicFilterConsumerLowering::SkippedUnsupportedStaticPredicateMix
+            ))
+}
+
+fn unpruned_exact_filter_should_run_post_decode(
+    filter: &DynamicFilter,
+    before: DynamicFilterSourceSnapshot,
+    after: DynamicFilterSourceSnapshot,
+) -> bool {
+    if !dynamic_filter_source_pruning_unchanged(before, after) {
+        return false;
+    }
+    match filter {
+        DynamicFilter::HashSetContainsI64 { values, .. } => values.len() <= MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES,
+        DynamicFilter::Empty | DynamicFilter::RangeI64 { .. } | DynamicFilter::SmallInListI64 { .. } => false,
+    }
+}
+
+fn dynamic_filter_source_pruning_unchanged(
+    before: DynamicFilterSourceSnapshot,
+    after: DynamicFilterSourceSnapshot,
+) -> bool {
+    before.row_groups == after.row_groups && before.source_bytes == after.source_bytes
+}
+
+fn record_dynamic_filter_reader_predicate_rows(
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
+    chunk: &SourceChunk,
+    frame: &GpuDataFrame,
+    metrics: &mut QueryMetrics,
+) {
+    if reader_dynamic_filters.is_empty() {
+        return;
+    }
+    let rows_before = chunk.known_row_count;
+    let rows_after = Some(frame.num_rows() as u64);
+    metrics.record_dynamic_filter_reader_predicate_source_reduction(rows_before, rows_after);
+    for dynamic_filter in reader_dynamic_filters {
+        metrics.record_dynamic_filter_source_reader_predicate_rows(
+            &dynamic_filter.route,
+            &dynamic_filter.filter,
+            chunk.file_index,
+            chunk.chunk_index,
+            rows_before,
+            rows_after,
+        );
     }
 }
 
@@ -108,11 +371,8 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source)?;
-    let chunk_plan = plan_local_parquet_source_chunks(
-        node_id,
-        source,
-        join_source_chunk_planning_policy(context, has_source_adjacent_stages),
-    )?;
+    let planning_policy = join_source_chunk_planning_policy(context, has_source_adjacent_stages);
+    let chunk_plan = plan_local_parquet_source_chunks(node_id, source, planning_policy)?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
@@ -131,6 +391,8 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
         node_id,
         chunks: chunk_plan.chunks,
         stages: Vec::new(),
+        reader_dynamic_filters: Vec::new(),
+        planning_policy,
         max_attempts,
         min_retry_chunk_row_groups,
     })
@@ -219,6 +481,14 @@ fn read_join_leaf_source_stream_chunks(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
+    if stream.chunks.is_empty() {
+        let mut empty = empty_join_leaf_source_frame(context, stream, reservations, metrics)?;
+        if !stream.stages.is_empty() {
+            empty = apply_join_leaf_source_stream_stages(context, stream, empty, reservations, metrics)?;
+        }
+        return Ok(vec![(empty.frame, empty.reservation)]);
+    }
+
     let grow_source_to_observed = stream.stages.is_empty();
     let mut chunks = if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
         match read_join_leaf_source_chunks_with_scheduler(
@@ -226,6 +496,7 @@ fn read_join_leaf_source_stream_chunks(
             &stream.source,
             stream.node_id,
             &stream.chunks,
+            &stream.reader_dynamic_filters,
             reservations,
             metrics,
             stream.max_attempts,
@@ -237,6 +508,7 @@ fn read_join_leaf_source_stream_chunks(
                 &stream.source,
                 stream.node_id,
                 &stream.chunks,
+                &stream.reader_dynamic_filters,
                 reservations,
                 metrics,
                 stream.max_attempts,
@@ -251,6 +523,7 @@ fn read_join_leaf_source_stream_chunks(
             &stream.source,
             stream.node_id,
             &stream.chunks,
+            &stream.reader_dynamic_filters,
             reservations,
             metrics,
             stream.max_attempts,
@@ -285,6 +558,25 @@ fn read_join_leaf_source_stream_chunks(
     Ok(chunks)
 }
 
+fn empty_join_leaf_source_frame(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let frame = read_local_parquet_source(context, &stream.source, metrics)?;
+    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+            .with_memory_boundary("join_source_empty_output")
+            .with_node_id(stream.node_id)
+            .with_stage("join_source_empty_output")
+            .with_attempt(1, 1),
+        metrics,
+    )?;
+    Ok(ResidentGpuFrame { frame, reservation })
+}
+
 fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {
     match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } => {
@@ -298,6 +590,7 @@ fn read_join_leaf_source_chunks_serial(
     source: &LocalParquetSource,
     node_id: NodeId,
     source_chunks: &[SourceChunk],
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     max_attempts: usize,
@@ -313,6 +606,7 @@ fn read_join_leaf_source_chunks_serial(
             metrics,
             node_id,
             chunk.clone(),
+            reader_dynamic_filters,
             1,
             max_attempts,
             min_retry_chunk_row_groups,
@@ -335,6 +629,7 @@ fn read_join_leaf_source_chunk_with_retry(
     metrics: &mut QueryMetrics,
     node_id: NodeId,
     chunk: SourceChunk,
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     attempt: usize,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
@@ -347,6 +642,7 @@ fn read_join_leaf_source_chunk_with_retry(
         metrics,
         node_id,
         &chunk,
+        reader_dynamic_filters,
         attempt,
         max_attempts,
         grow_source_to_observed,
@@ -359,6 +655,7 @@ fn read_join_leaf_source_chunk_with_retry(
             metrics,
             node_id,
             chunk,
+            reader_dynamic_filters,
             error,
             attempt,
             max_attempts,
@@ -375,6 +672,7 @@ fn retry_join_leaf_source_chunk_after_error(
     metrics: &mut QueryMetrics,
     node_id: NodeId,
     chunk: SourceChunk,
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     error: QueryError,
     attempt: usize,
     max_attempts: usize,
@@ -393,6 +691,7 @@ fn retry_join_leaf_source_chunk_after_error(
             metrics,
             node_id,
             left,
+            reader_dynamic_filters,
             attempt + 1,
             max_attempts,
             min_retry_chunk_row_groups,
@@ -405,6 +704,7 @@ fn retry_join_leaf_source_chunk_after_error(
             metrics,
             node_id,
             right,
+            reader_dynamic_filters,
             attempt + 1,
             max_attempts,
             min_retry_chunk_row_groups,
@@ -422,6 +722,7 @@ fn read_join_leaf_source_chunk_attempt(
     metrics: &mut QueryMetrics,
     node_id: NodeId,
     chunk: &SourceChunk,
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     attempt: usize,
     max_attempts: usize,
     grow_source_to_observed: bool,
@@ -429,6 +730,7 @@ fn read_join_leaf_source_chunk_attempt(
     context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_chunk")?;
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+        record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &output.frame, metrics);
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         return Ok((output.frame, output.reservation));
     }
@@ -518,6 +820,7 @@ fn read_join_leaf_source_chunk_attempt(
         reservations.release(reservation, metrics);
         return Err(error);
     }
+    record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, metrics);
     metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
     Ok((frame, reservation))
 }
@@ -565,6 +868,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
     source: &LocalParquetSource,
     node_id: NodeId,
     source_chunks: &[SourceChunk],
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     max_attempts: usize,
@@ -650,6 +954,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
             release_join_source_chunks_reverse(reservations, chunks, metrics);
             return Err(error);
         }
+        record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, &output.chunk, &output.frame, metrics);
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         chunks.push((output.frame, output.reservation));
 
@@ -749,6 +1054,7 @@ where
         metrics,
         stream.node_id,
         &chunk,
+        &stream.reader_dynamic_filters,
         attempt,
         stream.max_attempts,
         grow_source_to_observed,
@@ -950,6 +1256,12 @@ where
             abandon_join_leaf_reads(pending, reservations, metrics);
             return Err(error);
         }
+        record_dynamic_filter_reader_predicate_rows(
+            &stream.reader_dynamic_filters,
+            &output.chunk,
+            &output.frame,
+            metrics,
+        );
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
         let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
@@ -1279,24 +1591,36 @@ fn apply_join_leaf_source_stream_stages(
 ) -> Result<ResidentGpuFrame> {
     for stage in &stream.stages {
         input = match stage {
-            BoundedJoinLeafSourceStreamStage::Filter { node_id, node } => execute_join_leaf_source_stream_unary(
-                context,
-                *node_id,
-                "join_source_filter",
-                "join_source_filter_output",
-                input,
-                reservations,
-                metrics,
-                |context, input, token, metrics| {
-                    execute_filter_with_budget(
-                        context,
-                        node,
-                        input,
-                        token.expect("budget token is created for join source stream filter stages"),
-                        metrics,
-                    )
-                },
-            ),
+            BoundedJoinLeafSourceStreamStage::Filter { node_id, node, dynamic_filter } => {
+                let rows_before = input.frame.num_rows() as u64;
+                let output = execute_join_leaf_source_stream_unary(
+                    context,
+                    *node_id,
+                    "join_source_filter",
+                    "join_source_filter_output",
+                    input,
+                    reservations,
+                    metrics,
+                    |context, input, token, metrics| {
+                        execute_filter_with_budget(
+                            context,
+                            node,
+                            input,
+                            token.expect("budget token is created for join source stream filter stages"),
+                            metrics,
+                        )
+                    },
+                )?;
+                if let Some(dynamic_filter) = dynamic_filter {
+                    metrics.record_dynamic_filter_source_post_decode_stage(
+                        &dynamic_filter.route,
+                        &dynamic_filter.filter,
+                        Some(rows_before),
+                        Some(output.frame.num_rows() as u64),
+                    );
+                }
+                Ok(output)
+            },
             BoundedJoinLeafSourceStreamStage::Projection { node_id, node } => execute_join_leaf_source_stream_unary(
                 context,
                 *node_id,

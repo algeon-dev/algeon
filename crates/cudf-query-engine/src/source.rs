@@ -29,7 +29,8 @@ mod diagnostics;
 use diagnostics::LocalParquetDiagnosticColumns;
 pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    ScanLimitDisposition, SchemaMappingDisposition, SourceDiagnostics, SourceFormat, ZeroColumnCountDisposition,
+    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceDiagnostics, SourceFormat,
+    ZeroColumnCountDisposition,
 };
 
 /// Synthetic output column used for Parquet plans that only need a row count.

@@ -13,6 +13,8 @@ use crate::{
     plan::ProjectionOutput,
 };
 
+const MAX_ROW_PREDICATE_IN_LIST_EXPANSION: usize = 128;
+
 #[path = "lowering/aggregate.rs"]
 mod aggregate;
 
@@ -609,6 +611,12 @@ fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr
 
 fn lower_filter_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {
     validate_in_list_literal_values(list)?;
+    if list.len() > MAX_ROW_PREDICATE_IN_LIST_EXPANSION {
+        // Large dynamic-filter keysets are post-decode filters. Keeping them as
+        // cudf InList lets cudf use its boolean-mask path instead of recursively
+        // lowering a deeply nested row-predicate OR/AND tree.
+        return lower_in_list(expr, list, negated);
+    }
     let Some((first, rest)) = list.split_first() else {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -801,5 +809,69 @@ pub(super) fn lower_column_expr(expr: &Expr, operation: &'static str) -> Result<
             "native execution requires a column expression",
         )
         .with_fact("expression", expr)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int64_literals(count: usize) -> Vec<Expr> {
+        (0..count).map(|value| Expr::literal(LiteralValue::Int64(value as i64))).collect()
+    }
+
+    #[test]
+    fn large_filter_in_list_stays_as_cudf_in_list() {
+        let predicate = Expr::in_list(Expr::column("k"), int64_literals(MAX_ROW_PREDICATE_IN_LIST_EXPANSION + 1));
+
+        let lowered = lower_filter_predicate_expr(&predicate).unwrap();
+
+        match lowered {
+            cudf::Expr::InList { values, negated, .. } => {
+                assert_eq!(values.len(), MAX_ROW_PREDICATE_IN_LIST_EXPANSION + 1);
+                assert!(!negated);
+            },
+            other => panic!("large filter IN list should not expand to row-predicate tree: {}", expr_kind(&other)),
+        }
+    }
+
+    #[test]
+    fn small_filter_in_list_can_use_row_predicate_tree() {
+        let predicate = Expr::in_list(Expr::column("k"), int64_literals(2));
+
+        let lowered = lower_filter_predicate_expr(&predicate).unwrap();
+
+        assert!(
+            matches!(lowered, cudf::Expr::BinaryOp { .. }),
+            "small filter IN list should still lower to a row-predicate-friendly tree"
+        );
+    }
+
+    fn expr_kind(expr: &cudf::Expr) -> &'static str {
+        match expr {
+            cudf::Expr::Column(_) => "column",
+            cudf::Expr::Literal(_) => "literal",
+            cudf::Expr::BinaryOp { .. } => "binary_op",
+            cudf::Expr::BinaryOpWithType { .. } => "binary_op_with_type",
+            cudf::Expr::UnaryOp { .. } => "unary_op",
+            cudf::Expr::Round { .. } => "round",
+            cudf::Expr::Cast { .. } => "cast",
+            cudf::Expr::TryCast { .. } => "try_cast",
+            cudf::Expr::IsNull(_) => "is_null",
+            cudf::Expr::IsNotNull(_) => "is_not_null",
+            cudf::Expr::Alias { .. } => "alias",
+            cudf::Expr::FillNaScalar { .. } => "fill_na_scalar",
+            cudf::Expr::FillNaExpr { .. } => "fill_na_expr",
+            cudf::Expr::FillNullPolicy { .. } => "fill_null_policy",
+            cudf::Expr::Scan { .. } => "scan",
+            cudf::Expr::Reduce { .. } => "reduce",
+            cudf::Expr::StringOp { .. } => "string_op",
+            cudf::Expr::StringConcat(_) => "string_concat",
+            cudf::Expr::DateTimeComponent { .. } => "datetime_component",
+            cudf::Expr::DateTimeFloor { .. } => "datetime_floor",
+            cudf::Expr::DateTimeOffset { .. } => "datetime_offset",
+            cudf::Expr::IfElse { .. } => "if_else",
+            cudf::Expr::InList { .. } => "in_list",
+        }
     }
 }

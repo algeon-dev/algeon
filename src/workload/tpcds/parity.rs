@@ -12,7 +12,10 @@ use datafusion::{
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use super::{TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, register_tpcds_tables};
+use super::{
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
+    register_tpcds_tables,
+};
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, NativePlanningFailure,
     NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
@@ -71,7 +74,7 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
 
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let native_state = SessionStateBuilder::new_with_default_features()
-        .with_config(session_config)
+        .with_config(native_tpcds_session_config(session_config))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let native_ctx = SessionContext::new_with_state(native_state);

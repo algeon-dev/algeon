@@ -21,6 +21,7 @@ pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 *
 pub(crate) const LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 pub(crate) const SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
 pub(crate) const SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
+pub(crate) const SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
 
 /// Node-local native join execution capability.
 ///
@@ -244,12 +245,15 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     let large_build = input.observed_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.estimated_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD);
-    let small_build = input.observed_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
-        || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
-        || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD);
+    let small_build = !large_build
+        && (input.observed_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+            || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+            || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD));
     let build_size_known =
         input.observed_build_rows.is_some() || input.estimated_build_rows.is_some() || input.build_side_bytes.is_some();
     let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
+    let small_probe =
+        !large_probe && input.probe_side_bytes.is_some_and(|bytes| bytes <= SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD);
     let single_use_without_artifact = join.spec.build_artifact_id.is_none() && input.probe_reuse_count <= 1;
     let reusable_rejected_reason = if !input.reusable_prebuild_supported {
         Some("build_key_prebuild_reservation_unsupported")
@@ -276,6 +280,20 @@ pub(crate) fn keyed_hash_join_strategy_decision(
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::ReusableHashEqui,
             facts: strategy_facts(join, input, KeyedHashJoinStrategy::ReusableHashEqui, None, None, None),
+        };
+    }
+
+    if one_shot_equi_join_supported(join) && small_build && small_probe {
+        return KeyedHashJoinStrategyDecision::Selected {
+            strategy: KeyedHashJoinStrategy::OneShotEqui,
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::OneShotEqui,
+                reusable_rejected_reason,
+                Some("small_non_reusable_join_prefers_one_shot"),
+                None,
+            ),
         };
     }
 
@@ -379,7 +397,6 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::Substring { expr, .. }
         | Expr::Like { expr, .. } => expr_requires_post_join_filter(expr),
         Expr::Concat(exprs) => exprs.iter().any(expr_requires_post_join_filter),
-        Expr::Binary { op: BinaryOp::Or, .. } => true,
         Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. } => true,
         Expr::Binary { left, right, .. } => {
             expr_requires_post_join_filter(left) || expr_requires_post_join_filter(right)
@@ -413,6 +430,7 @@ fn strategy_facts(
         ("large_keyed_hash_probe_bytes_threshold", LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD.to_string()),
         ("small_reusable_hash_build_row_threshold", SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD.to_string()),
         ("small_reusable_hash_build_bytes_threshold", SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD.to_string()),
+        ("small_one_shot_probe_bytes_threshold", SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD.to_string()),
     ]);
     if let Some(rows) = input.estimated_build_rows {
         facts.insert("estimated_build_rows", rows.to_string());

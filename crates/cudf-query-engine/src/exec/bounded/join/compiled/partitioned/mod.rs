@@ -82,14 +82,29 @@ fn partitioned_mixed_join_partition_count(
 ) -> usize {
     let byte_partitions = partitioned_join_partition_count(context, left_bytes, right_bytes);
     let row_basis = left_rows.max(right_rows).max(1);
-    let row_partitions = row_basis.saturating_add(PARTITIONED_MIXED_JOIN_TARGET_ROWS.saturating_sub(1))
-        / PARTITIONED_MIXED_JOIN_TARGET_ROWS;
+    let target_rows = partitioned_mixed_join_target_rows(context);
+    let row_partitions = row_basis.saturating_add(target_rows.saturating_sub(1)) / target_rows;
     let row_partitions = usize::try_from(row_partitions.clamp(2, PARTITIONED_MIXED_JOIN_MAX_PARTITIONS as u64))
         .unwrap_or(PARTITIONED_MIXED_JOIN_MAX_PARTITIONS);
     byte_partitions.max(row_partitions)
 }
 
-const PARTITIONED_MIXED_JOIN_TARGET_ROWS: u64 = 50_000;
+fn partitioned_mixed_join_target_rows(context: &ExecutionContext) -> u64 {
+    match context.memory_control_policy() {
+        MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
+            partitioned_mixed_join_target_rows_for_budget(device_budget_bytes)
+        },
+        _ => PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS,
+    }
+}
+
+fn partitioned_mixed_join_target_rows_for_budget(device_budget_bytes: u64) -> u64 {
+    (device_budget_bytes / (128 * 1024))
+        .clamp(PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS, PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS)
+}
+
+const PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS: u64 = 50_000;
+const PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS: u64 = 1_000_000;
 const PARTITIONED_MIXED_JOIN_MAX_PARTITIONS: usize = 1024;
 const PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS: usize = 2;
 
@@ -242,4 +257,26 @@ pub(super) fn join_keys_for_side(node: &JoinNode, side: JoinSide) -> Vec<String>
             JoinSide::Right => key.right.name().to_string(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_join_row_target_stays_conservative_for_small_budgets() {
+        assert_eq!(
+            partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024),
+            PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS
+        );
+    }
+
+    #[test]
+    fn mixed_join_row_target_scales_with_large_device_budgets() {
+        assert_eq!(partitioned_mixed_join_target_rows_for_budget(95 * 1024 * 1024 * 1024), 778_240);
+        assert_eq!(
+            partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024 * 1024),
+            PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS
+        );
+    }
 }

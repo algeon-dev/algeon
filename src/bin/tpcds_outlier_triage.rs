@@ -8,6 +8,7 @@
 //   - GPU physical plan that arrives at `CudfNativePhysicalOptimizerRule`
 //     (post-physical-opt under GPU session config, WITHOUT our rule)
 //   - GPU physical plan after our rule runs (NativeCudfExec wrappers visible)
+//   - Actual retained planning diagnostics from `CudfNativePhysicalOptimizerRule`
 //   - Lowered native IR (`cudf_query_engine::QueryPlan` per candidate) from
 //     calling `lower_physical_plan_to_native` on the pre-rule plan
 //   - The `PlanningReport` from the lowering call (rewritten / rejected
@@ -39,7 +40,7 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, TPCDS_QUERIES, TPCDS_TABLES,
     TpcdsQuery, discover_tpcds_table_layout, lower_physical_plan_to_native, tpcds_native_optimizer_config,
-    tpcds_report_session_config,
+    tpcds_native_report_session_config,
 };
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -54,12 +55,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&cfg.out_dir)?;
 
     let ctx_cpu = build_cpu_context(&cfg.root).await?;
-    let ctx_gpu_pre = build_gpu_context(&cfg.root, false).await?;
-    let ctx_gpu_post = build_gpu_context(&cfg.root, true).await?;
+    let (ctx_gpu_pre, _) = build_gpu_context(&cfg.root, false).await?;
+    let (ctx_gpu_post, gpu_native_rule) = build_gpu_context(&cfg.root, true).await?;
 
     let mut summary_rows: Vec<String> = Vec::new();
     for query in &cfg.queries {
-        match triage_query(query, &cfg.out_dir, &ctx_cpu, &ctx_gpu_pre, &ctx_gpu_post).await {
+        match triage_query(query, &cfg.out_dir, &ctx_cpu, &ctx_gpu_pre, &ctx_gpu_post, gpu_native_rule.as_ref()).await {
             Ok(summary) => summary_rows.push(summary),
             Err(error) => {
                 summary_rows.push(format!("| {} | error: {} |", query.id, error));
@@ -112,16 +113,22 @@ async fn build_cpu_context(root: &Path) -> Result<SessionContext, Box<dyn Error>
     Ok(ctx)
 }
 
-async fn build_gpu_context(root: &Path, with_native_rule: bool) -> Result<SessionContext, Box<dyn Error>> {
-    let mut builder = SessionStateBuilder::new_with_default_features().with_config(tpcds_report_session_config());
+async fn build_gpu_context(
+    root: &Path,
+    with_native_rule: bool,
+) -> Result<(SessionContext, Option<Arc<CudfNativePhysicalOptimizerRule>>), Box<dyn Error>> {
+    let mut builder =
+        SessionStateBuilder::new_with_default_features().with_config(tpcds_native_report_session_config());
+    let mut retained_rule = None;
     if with_native_rule {
         let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(tpcds_native_optimizer_config()));
+        retained_rule = Some(Arc::clone(&rule));
         builder = builder.with_cudf_native_rule(rule);
     }
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables(&ctx, root).await?;
-    Ok(ctx)
+    Ok((ctx, retained_rule))
 }
 
 async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> Result<(), Box<dyn Error>> {
@@ -155,6 +162,7 @@ async fn triage_query(
     ctx_cpu: &SessionContext,
     ctx_gpu_pre: &SessionContext,
     ctx_gpu_post: &SessionContext,
+    gpu_native_rule: Option<&Arc<CudfNativePhysicalOptimizerRule>>,
 ) -> Result<String, Box<dyn Error>> {
     let qid = query.id;
     let dir = out_root.join(qid);
@@ -180,6 +188,27 @@ async fn triage_query(
     fs::write(dir.join("planning_report.gpu.txt"), format_planning_report(&lowering))?;
 
     let gpu_post_rule_plan = ctx_gpu_post.sql(query.sql).await?.create_physical_plan().await?;
+    let retained_diagnostics = gpu_native_rule.and_then(|rule| rule.last_planning_diagnostics());
+    let retained_planning_report = retained_diagnostics
+        .as_ref()
+        .map(|diagnostics| format_planning_report_from_report(&diagnostics.report))
+        .unwrap_or_else(|| "planning_report=<none: retained native rule diagnostics unavailable>\n".to_string());
+    fs::write(dir.join("planning_report.gpu.postRule.txt"), retained_planning_report)?;
+    let native_optimizer = retained_diagnostics
+        .as_ref()
+        .map(|diagnostics| format_native_optimizer_diagnostics(&diagnostics.native_optimizer))
+        .unwrap_or_else(|| "native_optimizer=<none: retained native rule diagnostics unavailable>\n".to_string());
+    fs::write(dir.join("native_optimizer.gpu.postRule.txt"), native_optimizer)?;
+    let strict_contract =
+        retained_diagnostics.as_ref().map(format_strict_bounded_contract_diagnostics).unwrap_or_else(|| {
+            "strict_bounded_contract=<none: retained native rule diagnostics unavailable>\n".to_string()
+        });
+    fs::write(dir.join("strict_bounded_contract.gpu.postRule.txt"), strict_contract)?;
+    let adaptive_pipeline = retained_diagnostics
+        .as_ref()
+        .map(format_adaptive_pipeline_diagnostics)
+        .unwrap_or_else(|| "adaptive_pipeline=<none: retained native rule diagnostics unavailable>\n".to_string());
+    fs::write(dir.join("adaptive_pipeline.gpu.postRule.txt"), adaptive_pipeline)?;
     let gpu_post_rule_text = displayable(gpu_post_rule_plan.as_ref()).indent(true).to_string();
     fs::write(dir.join("physical_plan.gpu.postRule.txt"), &gpu_post_rule_text)?;
     let post_rule_native_plans = collect_native_exec_plans(gpu_post_rule_plan.as_ref());
@@ -303,10 +332,49 @@ fn format_post_rule_compiled_pipelines(plans: &[&cudf_query_engine::QueryPlan]) 
     out
 }
 
+fn format_native_optimizer_diagnostics(diagnostics: &cudf_query_engine::NativeOptimizerDiagnostics) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("is_empty={}\n", diagnostics.is_empty()));
+    out.push_str(&format!("{diagnostics:#?}\n"));
+    out
+}
+
+fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_cudf::NativePlanningDiagnostics) -> String {
+    let contract = &diagnostics.strict_bounded_contract;
+    let mut out = String::new();
+    out.push_str(&format!("accepted_count={}\n", contract.accepted_candidates.len()));
+    out.push_str(&format!("rejected_count={}\n", contract.rejected_candidates.len()));
+    out.push_str(&format!("{contract:#?}\n"));
+    out
+}
+
+fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_cudf::NativePlanningDiagnostics) -> String {
+    let adaptive = &diagnostics.adaptive_pipeline;
+    let rejected_count = adaptive
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.report.row().candidate_status == cudf_query_engine::AdaptiveCandidateStatus::Rejected
+        })
+        .count();
+    let mut out = String::new();
+    out.push_str(&format!("candidate_count={}\n", adaptive.candidates.len()));
+    out.push_str(&format!("rejected_count={rejected_count}\n"));
+    out.push_str(&format!("{adaptive:#?}\n"));
+    out
+}
+
 fn format_planning_report(lowering: &datafusion_cudf::NativeLoweringResult) -> String {
     let mut out = String::new();
-    out.push_str("# CandidateOutcome list (one per candidate found by the rule)\n\n");
-    for (index, outcome) in lowering.report.outcomes().iter().enumerate() {
+    out.push_str("# Lowering CandidateOutcome list (one per candidate found before execution-boundary admission)\n\n");
+    out.push_str(&format_planning_report_from_report(&lowering.report));
+    out
+}
+
+fn format_planning_report_from_report(report: &datafusion_cudf::PlanningReport) -> String {
+    let mut out = String::new();
+    out.push_str("# CandidateOutcome list\n\n");
+    for (index, outcome) in report.outcomes().iter().enumerate() {
         match outcome {
             CandidateOutcome::Rewritten { candidate } => {
                 out.push_str(&format!(
@@ -323,7 +391,7 @@ fn format_planning_report(lowering: &datafusion_cudf::NativeLoweringResult) -> S
             },
         }
     }
-    if lowering.report.outcomes().is_empty() {
+    if report.outcomes().is_empty() {
         out.push_str("(no candidates)\n");
     }
     out
@@ -346,14 +414,18 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str("| logical_plan.opt.gpu.txt | GPU `df.into_optimized_plan()` under GPU session config |\n");
     out.push_str("| physical_plan.gpu.preRule.txt | GPU session physical plan WITHOUT `CudfNativePhysicalOptimizerRule` (the input the rule sees) |\n");
     out.push_str("| physical_plan.gpu.postRule.txt | GPU session physical plan WITH the rule (NativeCudfExec wrappers visible) |\n");
+    out.push_str("| planning_report.gpu.postRule.txt | actual retained rule report after execution-boundary admission and fallback policy |\n");
+    out.push_str("| native_optimizer.gpu.postRule.txt | retained native optimizer diagnostics from the post-rule GPU physical optimizer |\n");
+    out.push_str("| strict_bounded_contract.gpu.postRule.txt | strict-bounded admission evidence retained by the post-rule optimizer |\n");
+    out.push_str(
+        "| adaptive_pipeline.gpu.postRule.txt | adaptive admission evidence retained by the post-rule optimizer |\n",
+    );
     out.push_str("| native_ir.gpu.txt | lowered `cudf_query_engine::QueryPlan` per rewritten candidate |\n");
     out.push_str(
         "| native_ir.gpu.postRule.txt | optimized native IR extracted from post-rule `NativeCudfExec` wrappers |\n",
     );
     out.push_str("| compiled_pipeline.gpu.postRule.txt | compiled strict/adaptive-neutral pipeline for each optimized post-rule native IR |\n");
-    out.push_str(
-        "| planning_report.gpu.txt | `PlanningReport` outcomes (rewritten / rejected with FallbackReason code) |\n\n",
-    );
+    out.push_str("| planning_report.gpu.txt | direct lowering outcomes before execution-boundary admission |\n\n");
 
     out.push_str("## Lowering snapshot\n\n");
     out.push_str(&format!("- candidate_count = {}\n", lowering.candidate_count()));
@@ -375,7 +447,7 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str("## Decision tree\n\n");
     out.push_str("- If `logical_plan.opt.*` diff is non-trivial → root cause in DataFusion logical optimizer (session config), not in our crates.\n");
     out.push_str("- If `physical_plan.cpu.txt` vs `physical_plan.gpu.preRule.txt` differs in **shape** (e.g. join order, agg split, repartition placement) → DataFusion physical planning is choosing differently for the GPU session config; fix in datafusion-cudf session config or align partitioning settings.\n");
-    out.push_str("- If `physical_plan.gpu.postRule.txt` shows large `DataFusion` subtrees not wrapped in `NativeCudfExec` → our rule rejected them; read `planning_report.gpu.txt` to see why (`reason=...` codes) → fix in **datafusion-cudf** (`src/native/normalize.rs`, lowering, capability) or **cudf-query-engine** (extend IR / capability admission).\n");
+    out.push_str("- If `physical_plan.gpu.postRule.txt` shows large `DataFusion` subtrees not wrapped in `NativeCudfExec` → our rule rejected them; read `planning_report.gpu.postRule.txt` and `strict_bounded_contract.gpu.postRule.txt` to see the actual post-admission reason. `planning_report.gpu.txt` is the direct lowering report before execution-boundary admission.\n");
     out.push_str("- If `physical_plan.gpu.postRule.txt` is fully native AND `native_ir.gpu.txt` looks reasonable → root cause is at execution time; combine this bundle with the runtime metrics from `tpcds_three_way_bench` (operator class breakdown, source read, materialization, peak memory) and look at **cudf-query-engine** (operator implementation, reservation) or **cudf-rs** (libcudf primitive performance / API gap).\n");
 
     out

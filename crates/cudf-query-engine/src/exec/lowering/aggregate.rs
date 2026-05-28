@@ -97,7 +97,7 @@ pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupBy
         AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
         AggregateFunction::NUnique => GroupByAgg::NUnique,
         AggregateFunction::Avg => GroupByAgg::Mean,
-        AggregateFunction::StddevSamp => unreachable!("stddev_samp uses the DataFusion-exact Welford aggregate path"),
+        AggregateFunction::StddevSamp => GroupByAgg::Std { ddof: 1 },
     }
 }
 

@@ -59,15 +59,28 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
         let known_bytes = diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
         let selected_row_groups =
             diagnostics.selected_row_groups.map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string());
+        let total_row_groups =
+            diagnostics.total_row_groups.map_or_else(|| "unknown".to_string(), |row_groups| row_groups.to_string());
+        let selected_source_bytes =
+            diagnostics.selected_source_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
+        let total_source_bytes =
+            diagnostics.total_source_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
+        let selected_rows = diagnostics.selected_rows.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
+        let total_rows = diagnostics.total_rows.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
         let _ = write!(
             output,
-            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
+            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
             diagnostics.format,
             diagnostics.direct_device_read,
             diagnostics.file_count,
             diagnostics.ranged_file_count,
             known_bytes,
             selected_row_groups,
+            total_row_groups,
+            selected_source_bytes,
+            total_source_bytes,
+            selected_rows,
+            total_rows,
             diagnostics.read_column_count,
             diagnostics.projected_output_column_count,
             diagnostics.pure_filter_column_count,
@@ -153,6 +166,16 @@ pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) 
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
+pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
 pub(super) fn format_native_optimizer_diagnostics(
     diagnostics: &cudf_query_engine::NativeOptimizerDiagnostics,
 ) -> String {
@@ -161,6 +184,26 @@ pub(super) fn format_native_optimizer_diagnostics(
     }
 
     let mut rows = Vec::new();
+    if !diagnostics.projection_simplification.is_empty() {
+        let simplification = &diagnostics.projection_simplification;
+        let candidates = if simplification.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            simplification
+                .candidates
+                .iter()
+                .map(format_projection_simplification_candidate)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::PROJECTION_SIMPLIFICATION_RULE_NAME,
+            simplification.considered_count,
+            simplification.applied_count,
+            candidates
+        ));
+    }
     if !diagnostics.semijoin_reduction.is_empty() {
         let semijoin = &diagnostics.semijoin_reduction;
         let candidates = if semijoin.candidates.is_empty() {
@@ -231,6 +274,26 @@ pub(super) fn format_native_optimizer_diagnostics(
             candidates
         ));
     }
+    if !diagnostics.dimension_derived_row_group_pruning.is_empty() {
+        let pruning = &diagnostics.dimension_derived_row_group_pruning;
+        let candidates = if pruning.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            pruning
+                .candidates
+                .iter()
+                .map(format_dimension_derived_row_group_pruning_candidate)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+            pruning.considered_count,
+            pruning.applied_count,
+            candidates
+        ));
+    }
     if !diagnostics.stream_fanout_replay.is_empty() {
         let replay = &diagnostics.stream_fanout_replay;
         let candidates = if replay.candidates.is_empty() {
@@ -246,7 +309,70 @@ pub(super) fn format_native_optimizer_diagnostics(
             candidates
         ));
     }
+    if !diagnostics.local_parquet_source_reuse.is_empty() {
+        let reuse = &diagnostics.local_parquet_source_reuse;
+        let candidates = if reuse.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            reuse.candidates.iter().map(format_local_parquet_source_reuse_candidate).collect::<Vec<_>>().join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
+            reuse.considered_count,
+            reuse.applied_count,
+            candidates
+        ));
+    }
+    if !diagnostics.shared_subplan_materialization.is_empty() {
+        let materialization = &diagnostics.shared_subplan_materialization;
+        let candidates = if materialization.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            materialization
+                .candidates
+                .iter()
+                .map(format_shared_subplan_materialization_candidate)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},candidate_count={},applied_count={},candidates={}",
+            cudf_query_engine::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+            materialization.considered_count,
+            materialization.candidate_count,
+            materialization.applied_count,
+            candidates
+        ));
+    }
+    if !diagnostics.dynamic_filter_route_discovery.is_empty() {
+        let discovery = &diagnostics.dynamic_filter_route_discovery;
+        let candidates = if discovery.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            discovery.candidates.iter().map(format_dynamic_filter_route_candidate).collect::<Vec<_>>().join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},route_count={},candidates={}",
+            cudf_query_engine::DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
+            discovery.considered_count,
+            discovery.route_count,
+            candidates
+        ));
+    }
     stable_tsv_field(&rows.join(";"))
+}
+
+fn format_projection_simplification_candidate(
+    candidate: &cudf_query_engine::ProjectionSimplificationCandidateDiagnostics,
+) -> String {
+    let replacement_node_id = candidate.replacement_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},candidate_node_id={},replacement_node_id={},applied={},rejected_reason={}",
+        candidate.rule_name, candidate.candidate_node_id, replacement_node_id, candidate.applied, rejected_reason,
+    )
 }
 
 fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinReductionCandidateDiagnostics) -> String {
@@ -314,6 +440,28 @@ fn format_join_build_side_selection_candidate(
     )
 }
 
+fn format_dimension_derived_row_group_pruning_candidate(
+    candidate: &cudf_query_engine::DimensionDerivedRowGroupPruningCandidateDiagnostics,
+) -> String {
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},candidate_node_id={},dimension_source_node_id={},target_source_node_id={},dimension_key_column={},target_key_column={},derived_min_key={},derived_max_key={},selected_row_groups_before={},selected_row_groups_after={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        candidate.dimension_source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+        candidate.target_source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+        candidate.dimension_key_column.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+        candidate.target_key_column.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+        option_i64_text(candidate.derived_min_key),
+        option_i64_text(candidate.derived_max_key),
+        option_usize_text(candidate.selected_row_groups_before),
+        option_usize_text(candidate.selected_row_groups_after),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
 fn format_stream_fanout_replay_candidate(
     candidate: &cudf_query_engine::StreamFanoutReplayCandidateDiagnostics,
 ) -> String {
@@ -331,6 +479,125 @@ fn format_stream_fanout_replay_candidate(
         candidate.consumer_count,
         join_probe_consumer_node_ids,
         candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_local_parquet_source_reuse_candidate(
+    candidate: &cudf_query_engine::LocalParquetSourceReuseCandidateDiagnostics,
+) -> String {
+    let source_node_ids = candidate.source_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+");
+    let stable_file_ids = if candidate.stable_file_ids.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.stable_file_ids.iter().map(|value| stable_tsv_field(value)).collect::<Vec<_>>().join("+")
+    };
+    let superset_read_columns = if candidate.superset_read_columns.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.superset_read_columns.iter().map(|value| stable_tsv_field(value)).collect::<Vec<_>>().join("+")
+    };
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},source_node_ids={},reuse_count={},stable_file_ids={},superset_read_columns={},branch_filter_count={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        source_node_ids,
+        candidate.reuse_count,
+        stable_file_ids,
+        superset_read_columns,
+        candidate.branch_filter_count,
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_shared_subplan_materialization_candidate(
+    candidate: &cudf_query_engine::SharedSubplanMaterializationCandidateDiagnostics,
+) -> String {
+    let aggregate_node_ids = candidate.aggregate_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+");
+    let group_exprs = if candidate.group_exprs.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.group_exprs.iter().map(|expr| stable_tsv_field(expr)).collect::<Vec<_>>().join("+")
+    };
+    let aggregate_exprs = if candidate.aggregate_exprs.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.aggregate_exprs.iter().map(|expr| stable_tsv_field(expr)).collect::<Vec<_>>().join("+")
+    };
+    let source_fingerprints = if candidate.source_fingerprints.is_empty() {
+        "none".to_string()
+    } else {
+        candidate
+            .source_fingerprints
+            .iter()
+            .map(|fingerprint| stable_tsv_field(fingerprint))
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},family_key={},aggregate_node_ids={},reuse_count={},group_exprs={},aggregate_exprs={},source_fingerprints={},exact_source_variant_count={},repeated_selected_source_bytes={},duplicate_selected_source_bytes={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.family_key,
+        aggregate_node_ids,
+        candidate.reuse_count,
+        group_exprs,
+        aggregate_exprs,
+        source_fingerprints,
+        candidate.exact_source_variant_count,
+        option_u64_text(candidate.repeated_selected_source_bytes),
+        option_u64_text(candidate.duplicate_selected_source_bytes),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_dynamic_filter_route_candidate(
+    candidate: &cudf_query_engine::DynamicFilterRouteCandidateDiagnostics,
+) -> String {
+    let dynamic_filter_id = candidate.dynamic_filter_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let producer_build_side = candidate.producer_build_side.map_or_else(|| "none".to_string(), |side| side.to_string());
+    let producer_input_node_id =
+        candidate.producer_input_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let consumer_input_node_id =
+        candidate.consumer_input_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let consumer_kind = candidate.consumer_kind.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string());
+    let consumer_node_id = candidate.consumer_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let consumer_source_node_id =
+        candidate.consumer_source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
+    let filter_kinds = if candidate.filter_kinds.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.filter_kinds.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
+    };
+    let consumer_lowering =
+        candidate.consumer_lowering.map_or_else(|| "none".to_string(), |lowering| lowering.to_string());
+    let consumer_reduction_stage =
+        candidate.consumer_reduction_stage.map_or_else(|| "none".to_string(), |stage| stage.to_string());
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},candidate_node_id={},dynamic_filter_id={},producer_build_side={},producer_input_node_id={},consumer_input_node_id={},consumer_kind={},consumer_node_id={},consumer_source_node_id={},producer_key_column={},consumer_key_column={},filter_kinds={},consumer_lowering={},consumer_reduction_stage={},selected_source_bytes={},total_source_bytes={},routed={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        dynamic_filter_id,
+        producer_build_side,
+        producer_input_node_id,
+        consumer_input_node_id,
+        consumer_kind,
+        consumer_node_id,
+        consumer_source_node_id,
+        candidate.producer_key_column.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+        candidate.consumer_key_column.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+        filter_kinds,
+        consumer_lowering,
+        consumer_reduction_stage,
+        option_u64_text(candidate.selected_source_bytes),
+        option_u64_text(candidate.total_source_bytes),
+        candidate.routed,
         rejected_reason,
     )
 }
@@ -375,6 +642,14 @@ fn format_join_filter_reassociation_candidate(
 }
 
 fn option_u64_text(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn option_i64_text(value: Option<i64>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn option_usize_text(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 

@@ -494,6 +494,179 @@ fn source_chunk_planning_expands_all_row_groups_from_parquet_metadata() {
 }
 
 #[test]
+fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predicate() {
+    let dir = unique_temp_dir("cudf-query-engine-dynamic-filter-small-in-list");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_row_group_rows(vec![2, 2, 2])],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, cudf_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = cudf_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        cudf_query_engine::DynamicFilterId::new(0),
+        cudf_query_engine::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
+    );
+
+    let rewritten =
+        cudf_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.row_group_count(), 1);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![1]);
+    assert!(matches!(rewritten.reader_predicate, Some(Expr::InList { .. })));
+    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 1);
+    assert_eq!(stats.total_row_groups, 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
+    let dir = unique_temp_dir("cudf-query-engine-dynamic-filter-empty");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_row_group_rows(vec![2, 2, 2])],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, cudf_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = cudf_query_engine::DynamicFilterSet::new();
+    filters.insert(cudf_query_engine::DynamicFilterId::new(0), cudf_query_engine::DynamicFilter::Empty);
+
+    let rewritten =
+        cudf_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 0);
+    assert_eq!(plan.row_group_count(), 0);
+    assert_eq!(rewritten.files[0].row_groups.as_deref(), Some([].as_slice()));
+    assert_eq!(rewritten.scan_limit, Some(0));
+    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 0);
+    assert_eq!(stats.total_row_groups, 3);
+    assert_eq!(stats.selected_rows, Some(0));
+    assert_eq!(stats.total_rows, Some(6));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn source_chunk_planning_preserves_explicit_empty_row_group_selection() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/empty-row-group-selection.parquet")
+                .with_row_groups(Vec::new())
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan = plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 0);
+    assert_eq!(plan.row_group_count(), 0);
+    let stats = source.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 0);
+    assert_eq!(stats.total_row_groups, 3);
+    assert_eq!(stats.selected_rows, Some(0));
+    assert_eq!(stats.total_rows, Some(6));
+}
+
+#[test]
+fn dynamic_filter_range_merges_with_static_reader_predicate() {
+    let dir = unique_temp_dir("cudf-query-engine-dynamic-filter-merged-range");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let static_predicate = Expr::binary(Expr::column("key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(1)));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_row_group_rows(vec![2, 2, 2])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_reader_predicate(static_predicate);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, cudf_query_engine::DynamicFilterConsumerLowering::MergedReaderPredicate);
+    let mut filters = cudf_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        cudf_query_engine::DynamicFilterId::new(0),
+        cudf_query_engine::DynamicFilter::RangeI64 { min: 2, max: 3 },
+    );
+
+    let rewritten =
+        cudf_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.row_group_count(), 1);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![1]);
+    let predicate = rewritten.reader_predicate.as_ref().unwrap().to_string();
+    assert!(predicate.contains("AND"));
+    assert!(predicate.contains(">= 1"));
+    assert!(predicate.contains(">= 2"));
+    assert!(predicate.contains("<= 3"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering() {
+    let dir = unique_temp_dir("cudf-query-engine-dynamic-filter-hash-set");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_row_group_rows(vec![2, 2, 2])],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, cudf_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = cudf_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        cudf_query_engine::DynamicFilterId::new(0),
+        cudf_query_engine::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
+    );
+
+    let rewritten =
+        cudf_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.row_group_count(), 1);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![1]);
+    assert_eq!(rewritten.reader_predicate, None);
+    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 1);
+    assert_eq!(stats.total_row_groups, 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn source_chunk_planning_reuses_footer_metadata_cache() {
     let dir = unique_temp_dir("cudf-query-engine-source-chunk-cache");
     let path = dir.join("input.parquet");
@@ -607,6 +780,25 @@ fn write_row_grouped_parquet(path: &Path, row_count: usize, rows_per_group: usiz
     writer.write(&batch).unwrap();
     writer.close().unwrap();
     schema
+}
+
+fn dynamic_filter_source_route(
+    source_id: cudf_query_engine::NodeId,
+    lowering: cudf_query_engine::DynamicFilterConsumerLowering,
+) -> cudf_query_engine::DynamicFilterRoute {
+    cudf_query_engine::DynamicFilterRoute::new(
+        cudf_query_engine::DynamicFilterId::new(0),
+        cudf_query_engine::DynamicFilterProducer::HashJoinBuild {
+            join_node_id: source_id,
+            build_side: JoinSide::Right,
+            build_input: source_id,
+        },
+        cudf_query_engine::DynamicFilterConsumer::LocalParquetSource { source_node_id: source_id },
+        vec!["key".to_string()],
+        vec!["key".to_string()],
+        vec![cudf_query_engine::DynamicFilterKind::Range, cudf_query_engine::DynamicFilterKind::SmallInList],
+        lowering,
+    )
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

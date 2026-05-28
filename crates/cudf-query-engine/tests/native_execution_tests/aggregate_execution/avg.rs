@@ -14,7 +14,13 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 2])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 2], vec![2 * 1024 * 1024; 2])
+                .with_row_group_rows(vec![3, 3]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "payload".to_string(), "m00".to_string()],
     );
@@ -649,12 +655,14 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups:
         }));
         assert_eq!(
             partial_strategy_rows[0].facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
-            Some("encoded_key_partial_cost_model_no_prior_cardinality_evidence")
+            Some("encoded_key_partial_cost_model_small_input")
         );
         assert!(partial_strategy_rows[1..].iter().all(|decision| {
-            decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str)
-                == Some("encoded_key_partial_cost_model_high_cardinality")
-                && decision.facts.contains_key("encoded_key_partial_prior_reduction_ratio_ppm")
+            matches!(
+                decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+                Some("encoded_key_partial_cost_model_small_input")
+                    | Some("encoded_key_partial_cost_model_high_cardinality")
+            )
         }));
     }
     let QueryOutput::HostArrow(batch) = result.output() else {

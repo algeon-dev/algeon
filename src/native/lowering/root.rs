@@ -134,6 +134,7 @@ pub(super) fn lower_slice1_plan(
         source = source.with_reader_predicate(predicate.expr);
     }
     let reader_pushdown = source.reader_predicate.is_some();
+    let selected_row_group_stats = source.diagnostics.selected_row_group_stats.clone();
     source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
@@ -143,6 +144,7 @@ pub(super) fn lower_slice1_plan(
         reader_pushdown,
         zero_column_count_safe,
     );
+    source.diagnostics.selected_row_group_stats = selected_row_group_stats;
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));

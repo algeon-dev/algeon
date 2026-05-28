@@ -45,9 +45,9 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 3);
     let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
-    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join_single_pass_probe");
     assert_eq!(join_metrics[0].join_type, "inner");
-    assert_eq!(join_metrics[1].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[1].execution_strategy, "bounded_reusable_hash_join_single_pass_probe");
     assert_eq!(join_metrics[1].join_type, "inner");
     assert_eq!(join_metrics[2].execution_strategy, "bounded_keyless_conditional_join");
     assert_eq!(join_metrics[2].join_type, "inner");

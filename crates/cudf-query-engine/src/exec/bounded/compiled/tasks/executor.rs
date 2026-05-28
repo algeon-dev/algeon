@@ -1,5 +1,7 @@
 use super::*;
 
+mod dynamic_filters;
+
 /// Compiled task interpreter for bounded GPU work.
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
@@ -9,6 +11,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     gpu_inputs: &'a GpuResidentInputMap,
     metrics: &'a mut QueryMetrics,
     reservations: ReservationTracker,
+    dynamic_filters: DynamicFilterSet,
     join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
     join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
     host_output: Option<RecordBatch>,
@@ -35,6 +38,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             gpu_inputs,
             metrics,
             reservations,
+            dynamic_filters: DynamicFilterSet::new(),
             join_builds: BTreeMap::new(),
             join_probes: BTreeMap::new(),
             host_output: None,
@@ -177,7 +181,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 SourceNode::LocalParquet(source)
                     if !self.resource_has_multiple_consumers(output)
                         && (self.task_feeds_direct_join_input(task.id())
-                            || self.task_feeds_any_join_input_through_unary_chain(task.id())) =>
+                            || self.task_feeds_any_join_input_through_unary_chain(task.id())
+                            || self.source_has_dynamic_filter_routes(node_id)) =>
                 {
                     let has_source_adjacent_stages = self.task_feeds_any_join_input_through_unary_chain(task.id());
                     let stream = plan_bounded_join_leaf_local_parquet_source_stream(
@@ -187,7 +192,10 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         has_source_adjacent_stages,
                         self.metrics,
                     )?;
-                    if has_source_adjacent_stages || stream.chunk_count() > 1 {
+                    if has_source_adjacent_stages
+                        || stream.chunk_count() > 1
+                        || self.source_has_dynamic_filter_routes(node_id)
+                    {
                         Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
                     } else {
                         materialize_bounded_join_leaf_local_parquet_source_stream(
@@ -270,7 +278,55 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 stream.with_filter_stage(node_id, filter.clone()),
                             ))
                         },
-                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_unary(
+                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                            let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, frame)?;
+                            execute_bounded_generic_unary(
+                                self.context,
+                                node_id,
+                                "compiled_filter",
+                                "compiled_filter_output",
+                                frame,
+                                &mut self.reservations,
+                                self.metrics,
+                                true,
+                                |context, input, token, metrics| {
+                                    crate::exec::operators::execute_filter_with_budget(
+                                        context,
+                                        filter,
+                                        input,
+                                        token.expect("budget token is created for compiled bounded filter stages"),
+                                        metrics,
+                                    )
+                                },
+                            )
+                            .map(CompiledGpuResource::new)
+                        },
+                        CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                            let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
+                            let stream =
+                                map_filter_resident_frame_stream(self.context, node_id, stream, filter.clone());
+                            if self.resource_has_multiple_consumers(output) {
+                                Ok(CompiledGpuResource::frame_stream(
+                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                                ))
+                            } else {
+                                Ok(CompiledGpuResource::frame_stream_payload(stream))
+                            }
+                        },
+                    }
+                } else {
+                    let input_payload = state.resource_payload(input)?;
+                    if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(
+                            stream.with_filter_stage(node_id, filter.clone()),
+                        ))
+                    } else if let Some(frame) = self.apply_dynamic_filters_to_filter_shared_frame(
+                        node_id,
+                        filter,
+                        input_payload.clone_frame(),
+                        input_payload.reservation_bytes(),
+                    )? {
+                        execute_bounded_generic_unary(
                             self.context,
                             node_id,
                             "compiled_filter",
@@ -289,25 +345,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 )
                             },
                         )
-                        .map(CompiledGpuResource::new),
-                        CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            let stream =
-                                map_filter_resident_frame_stream(self.context, node_id, stream, filter.clone());
-                            if self.resource_has_multiple_consumers(output) {
-                                Ok(CompiledGpuResource::frame_stream(
-                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
-                                ))
-                            } else {
-                                Ok(CompiledGpuResource::frame_stream_payload(stream))
-                            }
-                        },
-                    }
-                } else {
-                    let input_payload = state.resource_payload(input)?;
-                    if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
-                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(
-                            stream.with_filter_stage(node_id, filter.clone()),
-                        ))
+                        .map(CompiledGpuResource::new)
                     } else {
                         execute_bounded_generic_unary_from_frame(
                             self.context,
@@ -433,6 +471,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
             let input_frame = match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                    let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
                     materialize_bounded_join_leaf_local_parquet_source_stream(
                         self.context,
                         stream,
@@ -447,6 +486,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         .with_fact("plan_node_id", node_id))
                 },
             }?;
+            self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
             let strategy = join_strategy(
                 self.plan,
                 node,
@@ -470,12 +510,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         } else {
             let input_payload = state.resource_payload(input)?;
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
                 let input_frame = materialize_bounded_join_leaf_local_parquet_source_stream(
                     self.context,
                     stream,
                     &mut self.reservations,
                     self.metrics,
                 )?;
+                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
                 let strategy = join_strategy(
                     self.plan,
                     node,
@@ -497,6 +539,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     self.metrics,
                 )
             } else {
+                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_payload.clone_frame())?;
                 let strategy = join_strategy(
                     self.plan,
                     node,
@@ -550,6 +593,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                    let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, stream)?;
                     execute_bounded_compiled_join_probe_from_stream(
                         self.context,
                         node_id,
@@ -561,6 +605,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, frame)?;
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         self.context,
                         node_id,
@@ -572,6 +617,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                    let stream = self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream)?;
                     execute_bounded_compiled_join_probe_from_frame_stream(
                         self.context,
                         node_id,
@@ -586,6 +632,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         } else {
             let input_payload = state.resource_payload(input)?;
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, stream)?;
                 execute_bounded_compiled_join_probe_from_stream(
                     self.context,
                     node_id,
@@ -616,6 +663,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         return Err(error);
                     },
                 };
+                let stream = self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream)?;
                 execute_bounded_compiled_join_probe_from_frame_stream(
                     self.context,
                     node_id,
@@ -626,16 +674,33 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     self.metrics,
                 )
             } else {
-                execute_bounded_compiled_join_probe_from_frame(
-                    self.context,
+                if let Some(frame) = self.apply_dynamic_filters_to_join_probe_shared_frame(
                     node_id,
                     node,
-                    build,
                     input_payload.clone_frame(),
-                    input_payload.reservation(),
-                    &mut self.reservations,
-                    self.metrics,
-                )
+                    input_payload.reservation_bytes(),
+                )? {
+                    execute_bounded_compiled_join_probe_from_resident_frame(
+                        self.context,
+                        node_id,
+                        node,
+                        build,
+                        frame,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                } else {
+                    execute_bounded_compiled_join_probe_from_frame(
+                        self.context,
+                        node_id,
+                        node,
+                        build,
+                        input_payload.clone_frame(),
+                        input_payload.reservation(),
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                }
             }
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
@@ -715,6 +780,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         };
         let can_consume_stream = state.can_consume_task_input_resource(task, input)
             && matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_));
+        let can_consume_join_leaf_source = state.can_consume_task_input_resource(task, input)
+            && matches!(
+                state.resource_payload(input)?.payload,
+                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            );
         let frame = if can_consume_stream {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
             match input_payload.payload {
@@ -746,6 +816,40 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     unreachable!("only frame streams are consumed here")
                 },
             }
+        } else if can_consume_join_leaf_source {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) = input_payload.payload else {
+                unreachable!("join leaf source payload was checked above")
+            };
+            let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+            let input_frame = materialize_bounded_join_leaf_local_parquet_source_stream(
+                self.context,
+                stream,
+                &mut self.reservations,
+                self.metrics,
+            )?;
+            let input_reserved_bytes = input_frame.reservation.bytes();
+            let input_reservation = input_frame.reservation;
+            let result = execute_compiled_bounded_aggregate_from_frame(
+                self.context,
+                node_id,
+                aggregate,
+                self.plan
+                    .node(aggregate.input)
+                    .ok_or_else(|| {
+                        invalid("compiled aggregate task references a missing aggregate input node")
+                            .with_fact("compiled_task_id", task.id())
+                            .with_fact("plan_node_id", aggregate.input)
+                    })?
+                    .output_schema(),
+                node.output_schema(),
+                input_frame.frame,
+                input_reserved_bytes,
+                &mut self.reservations,
+                self.metrics,
+            );
+            self.reservations.release(input_reservation, self.metrics);
+            result
         } else {
             let input_payload = state.resource_payload(input)?;
             execute_compiled_bounded_aggregate_from_frame(
@@ -768,6 +872,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             )
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
+        self.produce_aggregate_group_key_dynamic_filters(node_id, node.output_schema(), &frame.frame)?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
 
@@ -1029,6 +1134,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         .with_fact("plan_node_id", node_id)
                         .with_fact("resident_resource_id", resource));
                 }
+                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
                 inputs.push(materialize_bounded_join_leaf_local_parquet_source_stream(
                     self.context,
                     stream,

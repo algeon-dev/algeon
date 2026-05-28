@@ -39,7 +39,7 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
     let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
-    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join_single_pass_probe");
     assert_eq!(join_metrics[0].join_type, "inner");
     assert_eq!(join_metrics[1].execution_strategy, "bounded_mixed_keyed_residual_join");
     assert_eq!(join_metrics[1].join_type, "inner");

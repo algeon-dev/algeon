@@ -78,6 +78,149 @@ fn grouped_stddev_samp_matches_datafusion_welford_contract() {
 }
 
 #[test]
+fn grouped_stddev_samp_handles_repeated_string_multi_key_groups() {
+    let dir = unique_temp_dir("cudf-query-engine-string-multi-key-stddev-samp");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("w_name", DataType::Utf8, false),
+        Field::new("item_sk", DataType::Int64, false),
+        Field::new("warehouse_sk", DataType::Int64, false),
+        Field::new("month", DataType::Int64, false),
+        Field::new("qty", DataType::Float64, true),
+    ]));
+    let input = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["w1", "w1", "w1", "w2", "w2"])),
+            Arc::new(Int64Array::from(vec![10, 10, 10, 20, 20])),
+            Arc::new(Int64Array::from(vec![1, 1, 1, 2, 2])),
+            Arc::new(Int64Array::from(vec![1, 1, 2, 1, 1])),
+            Arc::new(Float64Array::from(vec![Some(10.0), Some(14.0), Some(5.0), Some(3.0), Some(7.0)])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(&runtime, &input).unwrap().write_parquet(&path).unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("w_name", DataType::Utf8, false),
+        Field::new("item_sk", DataType::Int64, false),
+        Field::new("warehouse_sk", DataType::Int64, false),
+        Field::new("month", DataType::Int64, false),
+        Field::new("stdev_qty", DataType::Float64, true),
+        Field::new("avg_qty", DataType::Float64, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec![
+            "w_name".to_string(),
+            "item_sk".to_string(),
+            "warehouse_sk".to_string(),
+            "month".to_string(),
+            "qty".to_string(),
+        ],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("w_name"), Expr::column("item_sk"), Expr::column("warehouse_sk"), Expr::column("month")],
+        vec![
+            AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev_qty"),
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
+        ],
+    );
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("w_name"), false, false),
+        SortExpr::new(Expr::column("item_sk"), false, false),
+        SortExpr::new(Expr::column("warehouse_sk"), false, false),
+        SortExpr::new(Expr::column("month"), false, false),
+    ]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder().with_shared_runtime(runtime).build().unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("w1"), Some("w1"), Some("w2")]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20]);
+    assert_eq!(int64_array(batch, 2).values().as_ref(), &[1, 1, 2]);
+    assert_eq!(int64_array(batch, 3).values().as_ref(), &[1, 2, 1]);
+    assert_eq!(float64_array(batch, 4).value(0), 8.0_f64.sqrt());
+    assert!(float64_array(batch, 4).is_null(1));
+    assert_eq!(float64_array(batch, 4).value(2), 8.0_f64.sqrt());
+    assert_eq!(float64_array(batch, 5).values().as_ref(), &[12.0, 5.0, 5.0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
+    let dir = unique_temp_dir("cudf-query-engine-gpu-native-stddev-samp");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_stddev_input_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("stdev_i32", DataType::Float64, true),
+        Field::new("avg_i32", DataType::Float64, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "v_i32".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v_i32"), "stdev_i32"),
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("v_i32"), "avg_i32"),
+        ],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_stddev_samp_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(float64_array(batch, 1).value(0), 2.0_f64.sqrt());
+    assert!(float64_array(batch, 1).is_null(1));
+    assert!(float64_array(batch, 1).is_null(2));
+    assert!(float64_array(batch, 1).is_null(3));
+    assert_eq!(float64_array(batch, 2).value(0), 3.0);
+    assert!(float64_array(batch, 2).is_null(3));
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "selected_strategy").as_deref(),
+        Some("stddev_samp_gpu_native_tolerant")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "stddev_samp_execution_mode").as_deref(),
+        Some("gpu_native_tolerant")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn global_stddev_samp_count_zero_and_one_return_null() {
     let dir = unique_temp_dir("cudf-query-engine-global-stddev-samp");
     let path = dir.join("input.parquet");
@@ -534,6 +677,14 @@ fn write_f64_keep_row_grouped_parquet(
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+fn aggregate_strategy_fact(metrics: &QueryMetrics, key: &str) -> Option<String> {
+    metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .flat_map(|decision| decision.facts.iter())
+        .find_map(|(fact_key, value)| (fact_key == key).then(|| value.clone()))
 }
 
 fn welford_stddev_samp(values: impl IntoIterator<Item = f64>) -> Option<f64> {

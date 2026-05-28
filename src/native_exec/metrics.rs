@@ -48,6 +48,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "native_graph_runtime_rows",
     "native_task_operator_rows",
     "native_task_runtime_rows",
+    "native_dynamic_filter_runtime_rows",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
@@ -91,6 +92,20 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "adaptive_memory_history_lookup_count",
     "adaptive_memory_history_hit_count",
     "adaptive_memory_history_miss_count",
+    "dynamic_filter_produced_count",
+    "dynamic_filter_skipped_count",
+    "dynamic_filter_applied_count",
+    "dynamic_filter_row_groups_pruned",
+    "dynamic_filter_source_bytes_pruned",
+    "dynamic_filter_reader_predicate_rows_before",
+    "dynamic_filter_reader_predicate_rows_after",
+    "dynamic_filter_reader_predicate_rows_filtered",
+    "dynamic_filter_post_decode_rows_before",
+    "dynamic_filter_post_decode_rows_after",
+    "dynamic_filter_post_decode_rows_filtered",
+    "dynamic_filter_source_post_decode_rows_filtered",
+    "dynamic_filter_filter_post_decode_rows_filtered",
+    "dynamic_filter_join_probe_post_decode_rows_filtered",
     "hash_join_build_count",
     "filtered_join_build_count",
     "one_shot_join_count",
@@ -201,6 +216,20 @@ pub(crate) struct NativeCudfMetrics {
     adaptive_memory_history_lookup_count: Count,
     adaptive_memory_history_hit_count: Count,
     adaptive_memory_history_miss_count: Count,
+    dynamic_filter_produced_count: Count,
+    dynamic_filter_skipped_count: Count,
+    dynamic_filter_applied_count: Count,
+    dynamic_filter_row_groups_pruned: Count,
+    dynamic_filter_source_bytes_pruned: Count,
+    dynamic_filter_reader_predicate_rows_before: Count,
+    dynamic_filter_reader_predicate_rows_after: Count,
+    dynamic_filter_reader_predicate_rows_filtered: Count,
+    dynamic_filter_post_decode_rows_before: Count,
+    dynamic_filter_post_decode_rows_after: Count,
+    dynamic_filter_post_decode_rows_filtered: Count,
+    dynamic_filter_source_post_decode_rows_filtered: Count,
+    dynamic_filter_filter_post_decode_rows_filtered: Count,
+    dynamic_filter_join_probe_post_decode_rows_filtered: Count,
     hash_join_build_count: Count,
     filtered_join_build_count: Count,
     one_shot_join_count: Count,
@@ -243,6 +272,7 @@ impl NativeCudfMetrics {
         let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
+        let _ = summary_counter(metrics, "native_dynamic_filter_runtime_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
@@ -352,6 +382,60 @@ impl NativeCudfMetrics {
             adaptive_memory_history_miss_count: summary_counter(
                 metrics,
                 "adaptive_memory_history_miss_count",
+                partition,
+            ),
+            dynamic_filter_produced_count: summary_counter(metrics, "dynamic_filter_produced_count", partition),
+            dynamic_filter_skipped_count: summary_counter(metrics, "dynamic_filter_skipped_count", partition),
+            dynamic_filter_applied_count: summary_counter(metrics, "dynamic_filter_applied_count", partition),
+            dynamic_filter_row_groups_pruned: summary_counter(metrics, "dynamic_filter_row_groups_pruned", partition),
+            dynamic_filter_source_bytes_pruned: summary_counter(
+                metrics,
+                "dynamic_filter_source_bytes_pruned",
+                partition,
+            ),
+            dynamic_filter_reader_predicate_rows_before: summary_counter(
+                metrics,
+                "dynamic_filter_reader_predicate_rows_before",
+                partition,
+            ),
+            dynamic_filter_reader_predicate_rows_after: summary_counter(
+                metrics,
+                "dynamic_filter_reader_predicate_rows_after",
+                partition,
+            ),
+            dynamic_filter_reader_predicate_rows_filtered: summary_counter(
+                metrics,
+                "dynamic_filter_reader_predicate_rows_filtered",
+                partition,
+            ),
+            dynamic_filter_post_decode_rows_before: summary_counter(
+                metrics,
+                "dynamic_filter_post_decode_rows_before",
+                partition,
+            ),
+            dynamic_filter_post_decode_rows_after: summary_counter(
+                metrics,
+                "dynamic_filter_post_decode_rows_after",
+                partition,
+            ),
+            dynamic_filter_post_decode_rows_filtered: summary_counter(
+                metrics,
+                "dynamic_filter_post_decode_rows_filtered",
+                partition,
+            ),
+            dynamic_filter_source_post_decode_rows_filtered: summary_counter(
+                metrics,
+                "dynamic_filter_source_post_decode_rows_filtered",
+                partition,
+            ),
+            dynamic_filter_filter_post_decode_rows_filtered: summary_counter(
+                metrics,
+                "dynamic_filter_filter_post_decode_rows_filtered",
+                partition,
+            ),
+            dynamic_filter_join_probe_post_decode_rows_filtered: summary_counter(
+                metrics,
+                "dynamic_filter_join_probe_post_decode_rows_filtered",
                 partition,
             ),
             hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
@@ -471,6 +555,25 @@ impl NativeCudfMetrics {
         self.adaptive_memory_history_lookup_count.add(count(metrics.adaptive_memory_history_lookup_count));
         self.adaptive_memory_history_hit_count.add(count(metrics.adaptive_memory_history_hit_count));
         self.adaptive_memory_history_miss_count.add(count(metrics.adaptive_memory_history_miss_count));
+        self.dynamic_filter_produced_count.add(count(metrics.dynamic_filter_produced_count));
+        self.dynamic_filter_skipped_count.add(count(metrics.dynamic_filter_skipped_count));
+        self.dynamic_filter_applied_count.add(count(metrics.dynamic_filter_applied_count));
+        self.dynamic_filter_row_groups_pruned.add(count(metrics.dynamic_filter_row_groups_pruned));
+        self.dynamic_filter_source_bytes_pruned.add(count(metrics.dynamic_filter_source_bytes_pruned));
+        self.dynamic_filter_reader_predicate_rows_before
+            .add(count(metrics.dynamic_filter_reader_predicate_rows_before));
+        self.dynamic_filter_reader_predicate_rows_after.add(count(metrics.dynamic_filter_reader_predicate_rows_after));
+        self.dynamic_filter_reader_predicate_rows_filtered
+            .add(count(metrics.dynamic_filter_reader_predicate_rows_filtered));
+        self.dynamic_filter_post_decode_rows_before.add(count(metrics.dynamic_filter_post_decode_rows_before));
+        self.dynamic_filter_post_decode_rows_after.add(count(metrics.dynamic_filter_post_decode_rows_after));
+        self.dynamic_filter_post_decode_rows_filtered.add(count(metrics.dynamic_filter_post_decode_rows_filtered));
+        self.dynamic_filter_source_post_decode_rows_filtered
+            .add(count(metrics.dynamic_filter_source_post_decode_rows_filtered));
+        self.dynamic_filter_filter_post_decode_rows_filtered
+            .add(count(metrics.dynamic_filter_filter_post_decode_rows_filtered));
+        self.dynamic_filter_join_probe_post_decode_rows_filtered
+            .add(count(metrics.dynamic_filter_join_probe_post_decode_rows_filtered));
         self.hash_join_build_count.add(count(metrics.hash_join_build_count));
         self.filtered_join_build_count.add(count(metrics.filtered_join_build_count));
         self.one_shot_join_count.add(count(metrics.one_shot_join_count));
@@ -490,6 +593,7 @@ impl NativeCudfMetrics {
         self.record_graph_runtime_rows(metrics);
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
+        self.record_dynamic_filter_runtime_rows(metrics);
         self.record_aggregate_strategy_rows(metrics);
         self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
@@ -591,6 +695,88 @@ impl NativeCudfMetrics {
                     row.max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .global_counter("native_task_runtime_rows")
+                .add(1);
+        }
+    }
+
+    fn record_dynamic_filter_runtime_rows(&self, metrics: &QueryMetrics) {
+        for row in &metrics.dynamic_filter_runtime_rows {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("dynamic_filter_id", row.dynamic_filter_id.clone())
+                .with_new_label("event", row.event.clone())
+                .with_new_label("producer_kind", row.producer_kind.clone())
+                .with_new_label("producer_node_id", row.producer_node_id.clone())
+                .with_new_label("consumer_kind", row.consumer_kind.clone())
+                .with_new_label("consumer_node_id", row.consumer_node_id.clone())
+                .with_new_label("consumer_lowering", row.consumer_lowering.clone())
+                .with_new_label("consumer_reduction_stage", row.consumer_reduction_stage.clone())
+                .with_new_label("filter_kind", row.filter_kind.clone())
+                .with_new_label(
+                    "payload_value_count",
+                    row.payload_value_count.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "payload_min_i64",
+                    row.payload_min_i64.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "payload_max_i64",
+                    row.payload_max_i64.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "producer_rows",
+                    row.producer_rows.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "skipped_reason",
+                    row.skipped_reason.as_deref().map_or_else(|| "none".to_string(), ToOwned::to_owned),
+                )
+                .with_new_label(
+                    "selected_row_groups_before",
+                    row.selected_row_groups_before.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "selected_row_groups_after",
+                    row.selected_row_groups_after.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "selected_source_bytes_before",
+                    row.selected_source_bytes_before.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "selected_source_bytes_after",
+                    row.selected_source_bytes_after.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "source_file_index",
+                    row.source_file_index.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "source_chunk_index",
+                    row.source_chunk_index.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "reader_predicate_rows_before",
+                    row.reader_predicate_rows_before.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "reader_predicate_rows_after",
+                    row.reader_predicate_rows_after.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("reader_predicate_rows_filtered", row.reader_predicate_rows_filtered.to_string())
+                .with_new_label(
+                    "post_decode_rows_before",
+                    row.post_decode_rows_before.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "post_decode_rows_after",
+                    row.post_decode_rows_after.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("post_decode_rows_filtered", row.post_decode_rows_filtered.to_string())
+                .with_new_label("row_groups_pruned", row.row_groups_pruned.to_string())
+                .with_new_label("source_bytes_pruned", row.source_bytes_pruned.to_string())
+                .global_counter("native_dynamic_filter_runtime_rows")
                 .add(1);
         }
     }
@@ -745,6 +931,11 @@ impl NativeCudfMetrics {
                 .with_new_label("groupby_elapsed_ns", aggregate_fact(facts, "groupby_elapsed_ns"))
                 .with_new_label("decode_elapsed_ns", aggregate_fact(facts, "decode_elapsed_ns"))
                 .with_new_label("strategy_operator_elapsed_ns", aggregate_fact(facts, "strategy_operator_elapsed_ns"))
+                .with_new_label("aggregate_structural_key", aggregate_fact(facts, "aggregate_structural_key"))
+                .with_new_label(
+                    "prior_cardinality_evidence_scope",
+                    aggregate_fact(facts, "prior_cardinality_evidence_scope"),
+                )
                 .with_new_label(
                     "encoded_key_partial_cost_model",
                     aggregate_fact(facts, "encoded_key_partial_cost_model"),
@@ -768,6 +959,35 @@ impl NativeCudfMetrics {
                 .with_new_label(
                     "encoded_key_partial_prior_strategy",
                     aggregate_fact(facts, "encoded_key_partial_prior_strategy"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_status",
+                    aggregate_fact(facts, "exact_cardinality_probe_status"),
+                )
+                .with_new_label("exact_cardinality_probe_key", aggregate_fact(facts, "exact_cardinality_probe_key"))
+                .with_new_label(
+                    "exact_cardinality_probe_input_rows",
+                    aggregate_fact(facts, "exact_cardinality_probe_input_rows"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_non_null_distinct_count",
+                    aggregate_fact(facts, "exact_cardinality_probe_non_null_distinct_count"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_null_count",
+                    aggregate_fact(facts, "exact_cardinality_probe_null_count"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_num_groups",
+                    aggregate_fact(facts, "exact_cardinality_probe_num_groups"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_reduction_ratio_ppm",
+                    aggregate_fact(facts, "exact_cardinality_probe_reduction_ratio_ppm"),
+                )
+                .with_new_label(
+                    "exact_cardinality_probe_elapsed_ns",
+                    aggregate_fact(facts, "exact_cardinality_probe_elapsed_ns"),
                 )
                 .with_new_label(
                     "prepared_sort_groupby_rejected_reason",

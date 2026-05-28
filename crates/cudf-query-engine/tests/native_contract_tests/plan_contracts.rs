@@ -126,11 +126,11 @@ fn aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage
     );
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_partial_stage")
+        Some("prepared_sort_groupby_requires_partial_or_single_stage")
     );
     assert_eq!(
         decision.rejected_candidate_summary(),
-        "encoded_key_partial:encoded_key_partial_requires_partial_stage;prepared_sort_groupby:prepared_sort_groupby_requires_partial_stage"
+        "encoded_key_partial:encoded_key_partial_requires_partial_stage;prepared_sort_groupby:prepared_sort_groupby_requires_partial_or_single_stage"
     );
 }
 
@@ -247,7 +247,7 @@ fn aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_loc
 }
 
 #[test]
-fn aggregate_strategy_capability_rejects_optimized_candidates_by_stage() {
+fn aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
     let aggregate = AggregateSpec::new(
@@ -268,7 +268,12 @@ fn aggregate_strategy_capability_rejects_optimized_candidates_by_stage() {
     );
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_partial_stage")
+        Some("prepared_sort_groupby_requires_runtime_cardinality_evidence")
+    );
+    assert_eq!(decision.facts.get("prepared_sort_groupby_contract_status").map(String::as_str), Some("available"));
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("pending_runtime_evidence")
     );
 }
 
@@ -376,7 +381,7 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
 }
 
 #[test]
-fn regexp_replace_projection_requires_bounded_output_contract() {
+fn regexp_replace_projection_declares_bounded_output_contract() {
     let input_schema = Arc::new(Schema::new(vec![Field::new("referer", DataType::Utf8, true)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("domain", DataType::Utf8, true)]));
 
@@ -400,13 +405,13 @@ fn regexp_replace_projection_requires_bounded_output_contract() {
     let plan = builder.finish_gpu_resident(projection);
     let analysis = plan.capability_analysis();
     let node = analysis.nodes.iter().find(|node| node.node_id == projection).expect("projection node capability");
-    let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
-        panic!("regexp_replace projection should be rejected until a bounded output contract exists");
-    };
-
-    assert_eq!(*reason, "unsupported_projection_expression_capability");
-    assert_eq!(facts.get("reason").map(String::as_str), Some("regexp_replace_requires_bounded_output_contract"));
-    assert_eq!(facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
+    assert_eq!(node.executable, CapabilityDecision::Satisfied);
+    assert_eq!(node.local_requirements.len(), 1);
+    let requirement = &node.local_requirements[0];
+    assert_eq!(requirement.kind, ReservationKind::OperatorOutput);
+    assert_eq!(requirement.memory_boundary, "regexp_replace_expression_output");
+    assert_eq!(requirement.required_contract, "regexp_replace_expression_output_contract");
+    assert_eq!(requirement.quality, ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
 }
 
 #[test]

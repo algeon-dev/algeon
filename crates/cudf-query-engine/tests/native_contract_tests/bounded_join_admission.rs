@@ -170,6 +170,7 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
         .expect("large probe reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
+    assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
@@ -185,25 +186,55 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
         .expect("small-build reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
+    assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_side_bytes"), None);
 }
 
 #[test]
-fn string_keyed_join_selects_non_reusable_strategy_before_runtime() {
+fn small_string_keyed_join_selects_one_shot_strategy_before_runtime() {
     let plan = string_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.has_rejections(), "string-key join should remain executable without reusable pre-build");
+    assert!(!analysis.has_rejections(), "small string-key join should remain executable without reusable pre-build");
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-        .expect("string-key join should report modeled bounded facts");
+        .expect("small string-key join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(
+        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:build_key_prebuild_reservation_unsupported")
+    );
+    assert_eq!(
+        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:small_non_reusable_join_prefers_one_shot")
+    );
+    assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:false"));
+
+    let pipeline =
+        cudf_query_engine::compile_pipeline(&plan, &analysis).expect("string-key one-shot join should compile");
+    assert!(
+        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
+        "string-key one-shot joins must not carry reusable hash-table gates"
+    );
+    assert_one_shot_output_preflight_gap(&pipeline, "small string-key one-shot join");
+}
+
+#[test]
+fn large_string_keyed_probe_still_selects_partitioned_strategy() {
+    let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "large string-key probe should remain executable without reusable pre-build");
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("large string-key probe should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
         Some("n2:build_key_prebuild_reservation_unsupported")
     );
-    assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:false"));
+    assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
     let pipeline =
         cudf_query_engine::compile_pipeline(&plan, &analysis).expect("string-key partitioned join should compile");
@@ -211,7 +242,7 @@ fn string_keyed_join_selects_non_reusable_strategy_before_runtime() {
         pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
         "string-key partitioned joins must not carry reusable hash-table gates"
     );
-    assert_one_shot_output_preflight_gap(&pipeline, "string-key partitioned join");
+    assert_one_shot_output_preflight_gap(&pipeline, "large string-key partitioned join");
 }
 
 #[test]
@@ -318,23 +349,17 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_h
 }
 
 #[test]
-fn keyed_inner_residual_or_selects_one_shot_post_filter_strategy() {
+fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let plan = large_keyed_residual_or_join_strategy_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through post-join filtering");
+    assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through mixed join");
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("keyed residual OR join should report modeled bounded facts");
-    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
-    assert_eq!(
-        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
-        Some("n2:residual_requires_post_join_filter")
-    );
-    assert_eq!(
-        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
-        Some("n2:residual_requires_post_join_filter")
-    );
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
+    assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 }
 
@@ -593,6 +618,15 @@ fn unknown_probe_small_left_build_join_strategy_plan() -> cudf_query_engine::Que
 }
 
 fn string_keyed_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    string_keyed_join_strategy_plan_with_probe(10_000, 1024 * 1024, 10, 1024)
+}
+
+fn string_keyed_join_strategy_plan_with_probe(
+    probe_rows: u64,
+    probe_bytes: u64,
+    build_rows: u64,
+    build_bytes: u64,
+) -> cudf_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("customer_id", DataType::Utf8, false),
         Field::new("qty", DataType::Int32, false),
@@ -611,8 +645,8 @@ fn string_keyed_join_strategy_plan() -> cudf_query_engine::QueryPlan {
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new("/tmp/string-key-join-left.parquet")
-                .with_row_group_rows(vec![10_000])
-                .with_row_group_bytes(vec![1024 * 1024]),
+                .with_row_group_rows(vec![probe_rows])
+                .with_row_group_bytes(vec![probe_bytes]),
         ],
         Arc::clone(&left_schema),
         vec!["customer_id".to_string(), "qty".to_string()],
@@ -620,8 +654,8 @@ fn string_keyed_join_strategy_plan() -> cudf_query_engine::QueryPlan {
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new("/tmp/string-key-join-right.parquet")
-                .with_row_group_rows(vec![10])
-                .with_row_group_bytes(vec![1024]),
+                .with_row_group_rows(vec![build_rows])
+                .with_row_group_bytes(vec![build_bytes]),
         ],
         Arc::clone(&right_schema),
         vec!["customer_id".to_string(), "segment".to_string()],

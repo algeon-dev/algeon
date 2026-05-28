@@ -362,7 +362,9 @@ fn execute_bounded_chunk_operator_from_source(
     }
 
     let partial_input_rows = frame.num_rows() as u64;
+    let source_chunk_fingerprint = partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(&chunk));
     let input_evidence = PartialAggregateInputEvidence {
+        source_chunk_fingerprint,
         source_adjacent_partial: bounded.has_source_adjacent_stages(),
         source_chunk_row_group_count: chunk.row_group_count() as u64,
         source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,

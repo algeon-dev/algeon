@@ -112,6 +112,338 @@ pub(super) fn union_of_ranked_join_branches_plan() -> QueryPlan {
     builder.finish_with_host_sink(limit)
 }
 
+pub(super) fn large_full_scan_rollup_rank_topk_plan() -> QueryPlan {
+    rollup_rank_topk_plan_with_fact_file(
+        LocalParquetFile::new("/tmp/compiled-large-rollup-rank-topk-fact.parquet").with_file_size_bytes(2_u64 << 30),
+        true,
+    )
+}
+
+pub(super) fn large_full_scan_rollup_rank_native_fragment_plan() -> QueryPlan {
+    rollup_rank_topk_plan_with_fact_file(
+        LocalParquetFile::new("/tmp/compiled-large-rollup-rank-native-fragment-fact.parquet")
+            .with_file_size_bytes(2_u64 << 30),
+        false,
+    )
+}
+
+pub(super) fn selected_large_rollup_rank_topk_plan() -> QueryPlan {
+    rollup_rank_topk_plan_with_fact_file(
+        LocalParquetFile::new("/tmp/compiled-selected-large-rollup-rank-topk-fact.parquet")
+            .with_file_size_bytes(4_u64 << 30)
+            .with_row_groups(vec![0, 1])
+            .with_projected_row_group_bytes(
+                vec![768 << 20, 768 << 20, 768 << 20, 768 << 20],
+                vec![768 << 20, 768 << 20, 768 << 20, 768 << 20],
+            )
+            .with_row_group_rows(vec![10_000_000; 4]),
+        true,
+    )
+}
+
+pub(super) fn selected_q86_class_rollup_rank_topk_plan() -> QueryPlan {
+    let row_group_bytes = vec![2 << 20; 448];
+    rollup_rank_topk_plan_with_fact_file(
+        LocalParquetFile::new("/tmp/compiled-selected-q86-class-rollup-rank-topk-fact.parquet")
+            .with_file_size_bytes(2_u64 << 30)
+            .with_row_groups((0..448).collect())
+            .with_projected_row_group_bytes(row_group_bytes.clone(), row_group_bytes)
+            .with_row_group_rows(vec![100_000; 448]),
+        true,
+    )
+}
+
+pub(super) fn selected_q70_class_left_semi_rollup_rank_topk_plan() -> QueryPlan {
+    let row_group_bytes = vec![2 << 20; 448];
+    rollup_rank_topk_plan_with_fact_file_and_join_type(
+        LocalParquetFile::new("/tmp/compiled-selected-q70-class-rollup-rank-topk-fact.parquet")
+            .with_file_size_bytes(2_u64 << 30)
+            .with_row_groups((0..448).collect())
+            .with_projected_row_group_bytes(row_group_bytes.clone(), row_group_bytes)
+            .with_row_group_rows(vec![100_000; 448]),
+        true,
+        JoinType::LeftSemi,
+    )
+}
+
+pub(super) fn selected_q67_class_rollup_rank_topk_projection_chain_plan() -> QueryPlan {
+    let row_group_bytes = vec![2 << 20; 448];
+    rollup_rank_topk_plan_with_projection_chain(
+        LocalParquetFile::new("/tmp/compiled-selected-q67-class-rollup-rank-topk-fact.parquet")
+            .with_file_size_bytes(2_u64 << 30)
+            .with_row_groups((0..448).collect())
+            .with_projected_row_group_bytes(row_group_bytes.clone(), row_group_bytes)
+            .with_row_group_rows(vec![100_000; 448]),
+    )
+}
+
+pub(super) fn selected_small_rollup_rank_topk_plan() -> QueryPlan {
+    rollup_rank_topk_plan_with_fact_file(
+        LocalParquetFile::new("/tmp/compiled-selected-small-rollup-rank-topk-fact.parquet")
+            .with_file_size_bytes(4_u64 << 30)
+            .with_row_groups(vec![0])
+            .with_projected_row_group_bytes(
+                vec![128 << 20, 2 << 30, 2 << 30, 2 << 30],
+                vec![128 << 20, 2 << 30, 2 << 30, 2 << 30],
+            )
+            .with_row_group_rows(vec![1_000_000; 4]),
+        true,
+    )
+}
+
+fn rollup_rank_topk_plan_with_fact_file(fact_file: LocalParquetFile, include_final_topk: bool) -> QueryPlan {
+    rollup_rank_topk_plan_with_fact_file_and_join_type(fact_file, include_final_topk, JoinType::Inner)
+}
+
+/// q67-class shape: aggregate over a projection chain that computes the
+/// measure (`amount * quantity`, then COALESCE), with group keys on both sides
+/// of the join. Mirrors TPC-DS q67's
+/// `Aggregate(rollup) <- Projection(coalesce) <- Projection(arith) <- Join`
+/// shape that the projection-chain peeling in `aggregate_join_pushdown` must
+/// handle.
+fn rollup_rank_topk_plan_with_projection_chain(fact_file: LocalParquetFile) -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("left_group", DataType::Utf8, true),
+        Field::new("quantity", DataType::Int64, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("right_group", DataType::Utf8, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("left_group", DataType::Utf8, true),
+        Field::new("quantity", DataType::Int64, false),
+        Field::new("amount", DataType::Int64, false),
+        Field::new("right_group", DataType::Utf8, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("left_group", DataType::Utf8, true),
+        Field::new("right_group", DataType::Utf8, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("sumsales", DataType::Int64, true),
+    ]));
+    let ranked_schema = Arc::new(Schema::new(vec![
+        Field::new("left_group", DataType::Utf8, true),
+        Field::new("right_group", DataType::Utf8, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("sumsales", DataType::Int64, true),
+        Field::new("rk", DataType::UInt64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![fact_file],
+        fact_schema,
+        vec!["id".into(), "left_group".into(), "quantity".into(), "amount".into()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-q67-class-rollup-rank-topk-dim.parquet",
+        dim_schema,
+        vec!["id".into(), "right_group".into()],
+    )));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_group", "left_group"), "left_group"),
+            JoinOutputColumn::left(ColumnRef::input(0, "quantity", "quantity"), "quantity"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_group", "right_group"), "right_group"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let common_projection = builder.add_projection(
+        join,
+        vec![
+            ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
+            ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
+            ProjectionOutput::new(
+                Expr::binary(Expr::column("amount"), BinaryOp::Multiply, Expr::column("quantity"))
+                    .alias("__common_expr_1"),
+                Field::new("__common_expr_1", DataType::Int64, true),
+            ),
+        ],
+    );
+    let coalesce_projection = builder.add_projection(
+        common_projection,
+        vec![
+            ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
+            ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
+            ProjectionOutput::new(
+                Expr::column("__common_expr_1"),
+                Field::new("__common_expr_1", DataType::Int64, true),
+            ),
+            ProjectionOutput::new(
+                Expr::Case {
+                    branches: vec![CaseWhen::new(
+                        Expr::IsNotNull(Box::new(Expr::column("__common_expr_1"))),
+                        Expr::column("__common_expr_1"),
+                    )],
+                    else_expr: Box::new(Expr::literal(LiteralValue::Int64(0))),
+                }
+                .alias("__cudf_aggregate_arg_0"),
+                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+            ),
+        ],
+    );
+    let aggregate = builder.add_aggregate(
+        coalesce_projection,
+        AggregateSpec::new(
+            vec![Expr::column("left_group"), Expr::column("right_group")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "sumsales")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(
+            vec![vec![false, false], vec![false, true], vec![true, true]],
+            "__grouping_id",
+        )),
+        Arc::clone(&aggregate_schema),
+    );
+    let window_input_sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let window = builder.add_window(
+        window_input_sort,
+        WindowSpec::new(
+            vec![Expr::column("left_group")],
+            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+            vec![WindowFunction::rank("rk")],
+        ),
+        Arc::clone(&ranked_schema),
+    );
+    let filter = builder.add_filter(
+        window,
+        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))),
+        Arc::clone(&ranked_schema),
+    );
+    let final_sort = builder.add_sort(
+        filter,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("left_group"), false, true),
+            SortExpr::new(Expr::column("right_group"), false, true),
+            SortExpr::new(Expr::column("sumsales"), true, false),
+        ]),
+        Arc::clone(&ranked_schema),
+    );
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
+    builder.finish_with_host_sink(limit)
+}
+
+fn rollup_rank_topk_plan_with_fact_file_and_join_type(
+    fact_file: LocalParquetFile,
+    include_final_topk: bool,
+    join_type: JoinType,
+) -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("sumsales", DataType::Int64, true),
+    ]));
+    let ranked_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("sumsales", DataType::Int64, true),
+        Field::new("rk", DataType::UInt64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![fact_file],
+        fact_schema,
+        vec!["id".into(), "category".into(), "class".into(), "brand".into(), "amount".into()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-large-rollup-rank-topk-dim.parquet",
+        dim_schema,
+        vec!["id".into()],
+    )));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "class", "class"), "class"),
+                JoinOutputColumn::left(ColumnRef::input(0, "brand", "brand"), "brand"),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("category"), Expr::column("class"), Expr::column("brand")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sumsales")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(
+            vec![vec![false, false, false], vec![false, false, true], vec![false, true, true], vec![true, true, true]],
+            "__grouping_id",
+        )),
+        Arc::clone(&aggregate_schema),
+    );
+    let window_input_sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let window = builder.add_window(
+        window_input_sort,
+        WindowSpec::new(
+            vec![Expr::column("category")],
+            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+            vec![WindowFunction::rank("rk")],
+        ),
+        Arc::clone(&ranked_schema),
+    );
+    let filter = builder.add_filter(
+        window,
+        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))),
+        Arc::clone(&ranked_schema),
+    );
+    if !include_final_topk {
+        return builder.finish_with_host_sink(filter);
+    }
+    let final_sort = builder.add_sort(
+        filter,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("category"), false, true),
+            SortExpr::new(Expr::column("class"), false, true),
+            SortExpr::new(Expr::column("brand"), false, true),
+            SortExpr::new(Expr::column("sumsales"), true, false),
+        ]),
+        Arc::clone(&ranked_schema),
+    );
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
+    builder.finish_with_host_sink(limit)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ranked_join_branch(
     builder: &mut QueryPlanBuilder,

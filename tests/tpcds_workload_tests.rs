@@ -5,7 +5,8 @@ use std::{
 
 use datafusion_cudf::{
     TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, describe_tpcds_dataset, tiny_tpcds_dataset_metadata,
-    tpcds_query_ids, write_tiny_tpcds_parquet_dataset,
+    tpcds_native_optimizer_config, tpcds_native_report_session_config, tpcds_query_ids, tpcds_report_session_config,
+    write_tiny_tpcds_parquet_dataset,
 };
 
 #[test]
@@ -39,6 +40,33 @@ fn tpcds_tables_list_has_24_official_tpcds_tables() {
     for table in ["store_sales", "catalog_sales", "web_sales", "date_dim", "customer", "item", "web_site"] {
         assert!(TPCDS_TABLES.contains(&table), "TPCDS_TABLES missing {table}");
     }
+}
+
+#[test]
+fn tpcds_native_report_session_config_avoids_datafusion_statistics_estimates() {
+    let report_config = tpcds_report_session_config();
+    let native_config = tpcds_native_report_session_config();
+
+    assert!(
+        report_config.options().execution.collect_statistics,
+        "shared TPC-DS report config remains CPU-compatible; native contexts apply their own statistics safety"
+    );
+    assert!(
+        !native_config.options().execution.collect_statistics,
+        "native TPC-DS report planning reads source metadata directly and must not depend on DataFusion join statistics"
+    );
+    assert!(!native_config.options().optimizer.repartition_joins);
+    assert_eq!(native_config.options().execution.target_partitions, 1);
+}
+
+#[test]
+fn tpcds_native_optimizer_config_disables_cpu_preference_for_gpu_only_sql_surface() {
+    let config = tpcds_native_optimizer_config();
+
+    assert!(
+        !config.native_plan_preference_options().enabled,
+        "TPC-DS native surfaces must not emit cpu_preferred_not_run while SQL may contain GPU-only cugraph_* calls"
+    );
 }
 
 #[test]

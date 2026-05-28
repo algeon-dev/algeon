@@ -300,6 +300,291 @@ fn strict_admission_accepts_rank_window_branches_feeding_native_union() {
 }
 
 #[test]
+fn strict_admission_rejects_large_full_scan_rollup_rank_topk_before_execution() {
+    let plan = large_full_scan_rollup_rank_topk_plan();
+    let rendered_plan = plan.to_string();
+    assert!(
+        rendered_plan.contains("grouping_set_count=4"),
+        "native IR display must expose rollup/grouping-set metadata:\n{rendered_plan}"
+    );
+    assert!(
+        rendered_plan.contains("grouping_id_alias=__grouping_id"),
+        "native IR display must expose grouping id output metadata:\n{rendered_plan}"
+    );
+    assert!(
+        rendered_plan.contains("grouping_sets=000|001|011|111"),
+        "native IR display must expose grouping-set masks:\n{rendered_plan}"
+    );
+
+    let analysis = plan.capability_analysis();
+    assert!(analysis.has_rejections(), "large full-scan rollup/rank/top-k should be rejected before runtime");
+    let rejection = analysis.first_rejection_projection().expect("shape should project a rejection");
+    assert_eq!(rejection.reason, "blocking_rollup_rank_full_scan_requires_exact_contracts");
+    assert_eq!(rejection.facts.get("grouping_set_count").map(String::as_str), Some("4"));
+    assert_eq!(rejection.facts.get("final_topk_fetch").map(String::as_str), Some("100"));
+    assert_ne!(rejection.facts.get("rank_sort_id").map(String::as_str), Some("absent"));
+    assert_ne!(rejection.facts.get("rank_filter_id").map(String::as_str), Some("absent"));
+    assert_eq!(rejection.facts.get("large_source_selected_bytes").map(String::as_str), Some("2147483648"));
+    assert_eq!(rejection.facts.get("large_source_selected_row_groups").map(String::as_str), Some("unknown"));
+    assert_eq!(
+        rejection.facts.get("required_remediation").map(String::as_str),
+        Some("source_reduction_or_exact_blocking_stage_preflight")
+    );
+
+    assert!(
+        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        "rejected shape must not produce a strict pipeline for execution"
+    );
+
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .expect("rejected capability analysis should still produce a contract report");
+    let blocking_row = report
+        .gate_rows()
+        .iter()
+        .find(|row| row.required_contract == "blocking_rollup_rank_full_scan_requires_exact_contracts")
+        .expect("contract report should preserve the structured rejection code");
+    assert_eq!(blocking_row.execution_mode, StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    assert_eq!(blocking_row.contract_status, ContractStatus::RejectedByCapability);
+    assert_eq!(blocking_row.contract_quality, ContractQuality::CapabilityProof);
+}
+
+#[test]
+fn strict_admission_rejects_large_rollup_rank_native_fragment_without_outer_topk() {
+    let plan = large_full_scan_rollup_rank_native_fragment_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.has_rejections(),
+        "large rollup/rank native fragment should be rejected even when the outer TopK remains outside NativeCudfExec"
+    );
+    let rejection = analysis.first_rejection_projection().expect("shape should project a rejection");
+    assert_eq!(rejection.reason, "blocking_rollup_rank_full_scan_requires_exact_contracts");
+    assert_eq!(rejection.facts.get("final_topk_fetch").map(String::as_str), Some("unknown"));
+    assert_ne!(rejection.facts.get("rank_sort_id").map(String::as_str), Some("absent"));
+    assert_ne!(rejection.facts.get("rank_filter_id").map(String::as_str), Some("absent"));
+    assert!(
+        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        "native fragment rejected by the guard must not produce a strict pipeline"
+    );
+}
+
+#[test]
+fn strict_admission_rejects_rollup_rank_topk_when_selected_bytes_are_still_large() {
+    let plan = selected_large_rollup_rank_topk_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.has_rejections(), "selected row groups are not enough when selected bytes remain large");
+    let rejection = analysis.first_rejection_projection().expect("shape should project a rejection");
+    assert_eq!(rejection.reason, "blocking_rollup_rank_full_scan_requires_exact_contracts");
+    assert_eq!(rejection.facts.get("large_source_selected_bytes").map(String::as_str), Some("1610612736"));
+    assert_eq!(rejection.facts.get("large_source_selected_row_groups").map(String::as_str), Some("2"));
+    assert_eq!(rejection.facts.get("large_source_total_row_groups").map(String::as_str), Some("4"));
+}
+
+#[test]
+fn strict_admission_rejects_q86_class_rollup_rank_topk_selected_scan() {
+    let plan = selected_q86_class_rollup_rank_topk_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.has_rejections(),
+        "q86-class rollup/rank/top-k selected scans are fact-sized even below the old 1 GiB cutoff"
+    );
+    let rejection = analysis.first_rejection_projection().expect("shape should project a rejection");
+    assert_eq!(rejection.reason, "blocking_rollup_rank_full_scan_requires_exact_contracts");
+    assert_eq!(rejection.facts.get("large_source_selected_bytes").map(String::as_str), Some("939524096"));
+    assert_eq!(rejection.facts.get("large_source_selected_row_groups").map(String::as_str), Some("448"));
+}
+
+#[test]
+fn strict_admission_accepts_q86_class_rollup_rank_topk_after_aggregate_join_pushdown() {
+    let plan = selected_q86_class_rollup_rank_topk_plan();
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the q86-class shape");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_none())),
+        "optimized plan should contain a detail-level pre-aggregate"
+    );
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_some())),
+        "optimized plan should retain the final grouping-set aggregate"
+    );
+
+    let analysis = optimized.plan.capability_analysis();
+    let rejection = analysis.invariants.iter().find(|invariant| {
+        invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
+    });
+    assert!(rejection.is_none(), "source reduced by pre-aggregate should not trip the blocking-shape guard");
+    assert!(
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
+        "optimized q86-class shape should produce a strict bounded pipeline"
+    );
+}
+
+#[test]
+fn strict_admission_accepts_q70_class_left_semi_rollup_rank_topk_after_aggregate_join_pushdown() {
+    let plan = selected_q70_class_left_semi_rollup_rank_topk_plan();
+    let raw_analysis = plan.capability_analysis();
+    assert!(
+        raw_analysis.has_rejections(),
+        "raw q70-class left-semi rollup/rank/top-k selected scan should still hit the blocking guard"
+    );
+    assert_eq!(
+        raw_analysis.first_rejection_projection().expect("shape should project a rejection").reason,
+        "blocking_rollup_rank_full_scan_requires_exact_contracts"
+    );
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the q70-class left-semi shape");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_none())),
+        "optimized q70-class plan should contain a detail-level pre-aggregate"
+    );
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_some())),
+        "optimized q70-class plan should retain the final grouping-set aggregate"
+    );
+
+    let analysis = optimized.plan.capability_analysis();
+    let rejection = analysis.invariants.iter().find(|invariant| {
+        invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
+    });
+    assert!(rejection.is_none(), "left-semi source reduced by pre-aggregate should not trip the guard");
+    assert!(
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
+        "optimized q70-class left-semi shape should produce a strict bounded pipeline"
+    );
+}
+
+#[test]
+fn strict_admission_accepts_q67_class_rollup_rank_topk_projection_chain_after_aggregate_join_pushdown() {
+    let plan = selected_q67_class_rollup_rank_topk_projection_chain_plan();
+
+    // Sanity: before the rewrite the q67-class shape (projection chain over a
+    // dimension-fact join with mixed group sides) trips the blocking guard.
+    let raw_analysis = plan.capability_analysis();
+    assert!(
+        raw_analysis.has_rejections(),
+        "raw q67-class projection-chain rollup/rank/top-k should still hit the blocking guard"
+    );
+    assert_eq!(
+        raw_analysis.first_rejection_projection().expect("shape should project a rejection").reason,
+        "blocking_rollup_rank_full_scan_requires_exact_contracts"
+    );
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the q67-class projection-chain shape");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_none())),
+        "optimized q67-class plan should contain a detail-level pre-aggregate"
+    );
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_some())),
+        "optimized q67-class plan should retain the final grouping-set aggregate"
+    );
+
+    // The pre-aggregate must read a plain column reference; the inlined
+    // measure expression (the original projection-chain `COALESCE(amount *
+    // quantity, 0)`) is materialized in a projection above the pre-aggregate's
+    // input so the executor's plain-column aggregate-input contract holds.
+    let preagg = optimized
+        .plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_none() => Some(aggregate),
+            _ => None,
+        })
+        .expect("optimized plan should contain a pre-aggregate");
+    assert_eq!(preagg.spec.aggr_exprs.len(), 1);
+    let preagg_aggr = &preagg.spec.aggr_exprs[0];
+    assert_eq!(preagg_aggr.function, AggregateFunction::Sum);
+    assert!(
+        matches!(&preagg_aggr.expr, Expr::Column(_)),
+        "pre-aggregate measure must be a plain column reference, got: {}",
+        preagg_aggr.expr
+    );
+
+    let measure_projection = optimized.plan.node(preagg.input).expect("pre-aggregate input must exist");
+    let PlanNode::Projection(measure_projection) = &measure_projection.kind else {
+        panic!("pre-aggregate input should be the materializing projection, got: {:?}", measure_projection.kind);
+    };
+    let measure_output = measure_projection
+        .outputs
+        .iter()
+        .find(|output| output.expr.to_string().contains("CASE WHEN"))
+        .expect("materializing projection should carry the inlined CASE expression for the measure");
+    assert!(
+        measure_output.expr.to_string().contains("CASE WHEN"),
+        "materializing projection should retain the inlined CASE expression, got: {}",
+        measure_output.expr
+    );
+
+    let analysis = optimized.plan.capability_analysis();
+    let rejection = analysis.invariants.iter().find(|invariant| {
+        invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
+    });
+    assert!(
+        rejection.is_none(),
+        "q67-class projection-chain source reduced by pre-aggregate should not trip the blocking-shape guard"
+    );
+    let first_rejection = analysis.first_rejection_projection();
+    assert!(
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
+        "optimized q67-class projection-chain shape should produce a strict bounded pipeline\n\
+         has_rejections={} first_rejection={:?}\n\
+         plan:\n{}",
+        analysis.has_rejections(),
+        first_rejection,
+        optimized.plan
+    );
+}
+
+#[test]
+fn strict_admission_does_not_apply_rollup_rank_topk_guard_when_selected_bytes_are_small() {
+    let plan = selected_small_rollup_rank_topk_plan();
+    let analysis = plan.capability_analysis();
+
+    let rejection = analysis.invariants.iter().find(|invariant| {
+        invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
+    });
+    assert!(rejection.is_none(), "small selected source should not trip the large blocking-shape guard");
+}
+
+#[test]
 fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_scheduler_execution() {
     for case in d3_1_inventory_cases() {
         let analysis = case.plan.capability_analysis();
@@ -475,7 +760,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
-        6,
+        7,
         "strict unresolved preflight gap retirement must remove entries from this registry"
     );
 
@@ -504,6 +789,7 @@ fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_window_output_temporary_workspace_preflight_unavailable"));
+    assert!(markers.contains("libcudf_regexp_replace_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_edge_normalize_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
     assert!(markers.contains("libcudf_equality_join_output_size_preflight_unavailable"));

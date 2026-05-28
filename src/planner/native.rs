@@ -22,6 +22,7 @@ mod strict_bounded;
 
 pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
 use adaptive::{adaptive_pipeline_was_rejected, plan_adaptive_pipeline_diagnostics};
+use cudf_query_engine::capability::BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS;
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
@@ -192,14 +193,21 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
 
         let native_execution_config = self.config.native_execution_config();
         let native_optimizer_options = self.config.native_optimizer_options();
+        let native_plan_preference_options = self.config.native_plan_preference_options();
 
         let optimized = match self.phase {
-            NativeOptimizerPhase::CountOnlyProbe => {
-                optimize_count_only_native_plan(Arc::clone(&plan), native_execution_config, native_optimizer_options)?
-            },
-            NativeOptimizerPhase::Final => {
-                optimize_final_native_plan(Arc::clone(&plan), native_execution_config, native_optimizer_options)?
-            },
+            NativeOptimizerPhase::CountOnlyProbe => optimize_count_only_native_plan(
+                Arc::clone(&plan),
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_preference_options,
+            )?,
+            NativeOptimizerPhase::Final => optimize_final_native_plan(
+                Arc::clone(&plan),
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_preference_options,
+            )?,
         };
         let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &self.config)?;
         *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
@@ -270,6 +278,27 @@ fn first_native_rejection(report: &PlanningReport) -> Option<(&GpuCandidate, Fal
     })
 }
 
+fn native_preference_rejected(report: &PlanningReport) -> bool {
+    first_native_rejection(report).is_some_and(|(_, reason)| {
+        matches!(
+            reason,
+            FallbackReason::NativeSmallSelectiveTopkCpuPreferred
+                | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
+        )
+    })
+}
+
+fn native_preference_fallback_reason(reason: cudf_query_engine::NativePlanCpuPreferenceReason) -> FallbackReason {
+    match reason {
+        cudf_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveTopK => {
+            FallbackReason::NativeSmallSelectiveTopkCpuPreferred
+        },
+        cudf_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin => {
+            FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
+        },
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NativeOptimizationAttempt {
     plan: Arc<dyn ExecutionPlan>,
@@ -291,16 +320,24 @@ fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &cudf_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
-    replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config, native_optimizer_options)
+    replace_lowered_root_or_keep_plan(
+        plan,
+        lowering,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_preference_options,
+    )
 }
 
 fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &cudf_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
     if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
@@ -309,8 +346,15 @@ fn optimize_final_native_plan(
             lowering,
             native_execution_config,
             native_optimizer_options,
+            native_plan_preference_options,
         )?;
         if attempt.rewritten {
+            return Ok(attempt);
+        }
+        if native_preference_rejected(&attempt.report) {
+            return Ok(attempt);
+        }
+        if strict_bounded_rejection_blocks_child_rewrites(&attempt.strict_bounded_contract) {
             return Ok(attempt);
         }
 
@@ -328,6 +372,7 @@ fn optimize_final_native_plan(
             Arc::clone(&plan),
             native_execution_config,
             native_optimizer_options,
+            native_plan_preference_options,
             mode,
             &mut report,
             &mut native_optimizer,
@@ -370,6 +415,7 @@ fn optimize_final_native_plan(
         Arc::clone(&plan),
         native_execution_config,
         native_optimizer_options,
+        native_plan_preference_options,
         HostArrowChildReplacementMode::Normal,
         &mut report,
         &mut native_optimizer,
@@ -405,6 +451,7 @@ fn replace_lowered_root_or_keep_plan(
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &cudf_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
         return Ok(NativeOptimizationAttempt {
@@ -427,6 +474,19 @@ fn replace_lowered_root_or_keep_plan(
     let optimizer_result = cudf_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
     let native_plan = optimizer_result.plan;
+    if let cudf_query_engine::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
+        cudf_query_engine::native_plan_preference_decision(&native_plan, native_plan_preference_options)
+    {
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report: native_execution_rejection_report(&lowering.report, native_preference_fallback_reason(reason)),
+            native_optimizer,
+            source_diagnostics: lowering.source_diagnostics,
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            rewritten: false,
+        });
+    }
 
     if native_execution_config.native_pipeline_execution_mode()
         == cudf_query_engine::NativePipelineExecutionMode::Adaptive
@@ -583,6 +643,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &cudf_query_engine::NativePlanPreferenceOptions,
     mode: HostArrowChildReplacementMode,
     report: &mut PlanningReport,
     native_optimizer: &mut cudf_query_engine::NativeOptimizerDiagnostics,
@@ -615,6 +676,7 @@ fn optimize_native_children_for_host_arrow_boundary(
                 Arc::clone(child),
                 native_execution_config,
                 native_optimizer_options,
+                native_plan_preference_options,
                 mode,
                 report,
                 native_optimizer,
@@ -640,6 +702,7 @@ fn optimize_native_children_for_host_arrow_boundary(
                 Arc::clone(child),
                 native_execution_config,
                 native_optimizer_options,
+                native_plan_preference_options,
                 HostArrowChildReplacementMode::OuterJoinBoundary,
                 report,
                 native_optimizer,
@@ -654,7 +717,12 @@ fn optimize_native_children_for_host_arrow_boundary(
             }
             continue;
         }
-        let attempt = optimize_final_native_plan(Arc::clone(child), native_execution_config, native_optimizer_options)?;
+        let attempt = optimize_final_native_plan(
+            Arc::clone(child),
+            native_execution_config,
+            native_optimizer_options,
+            native_plan_preference_options,
+        )?;
         if attempt.rewritten && !host_arrow_child_replacement_preserves_schema(child.as_ref(), attempt.plan.as_ref()) {
             new_children.push(Arc::clone(child));
             continue;
@@ -801,6 +869,12 @@ fn native_execution_boundary_is_rejected(
         return Ok(false);
     }
     strict_bounded_admission_is_rejected(plan)
+}
+
+fn strict_bounded_rejection_blocks_child_rewrites(diagnostics: &NativeStrictBoundedContractDiagnostics) -> bool {
+    diagnostics.rejected_candidates.iter().any(|candidate| {
+        candidate.blocking_contract.required_contract == BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS
+    })
 }
 
 fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: FallbackReason) -> PlanningReport {

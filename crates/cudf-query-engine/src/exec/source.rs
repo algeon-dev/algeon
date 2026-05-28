@@ -159,6 +159,9 @@ fn read_local_parquet_source_uncached(
     let mut remaining_rows = source.scan_limit;
     for (file_index, file) in source.files.iter().enumerate() {
         context.check_cancellation("cudf_query_engine.local_parquet_source.file")?;
+        if file.row_groups.as_ref().is_some_and(Vec::is_empty) {
+            continue;
+        }
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
@@ -189,7 +192,13 @@ fn read_local_parquet_source_uncached(
     }
 
     let mut frames = frames.into_iter();
-    let frame = frames.next().expect("validated local parquet source contains at least one file");
+    let Some(frame) = frames.next() else {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, 0)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    };
     let other_frames = frames.collect::<Vec<_>>();
     if other_frames.is_empty() {
         return Ok(GpuDataFrame::new(frame));

@@ -1,33 +1,51 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    expr::{ColumnRef, Expr},
+    expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr},
     plan::{
         JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior,
+        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior, estimated_output_bytes,
+        estimated_output_rows,
     },
 };
 
 /// Stable rule name used in optimizer diagnostics.
 pub const JOIN_FILTER_REASSOCIATION_RULE_NAME: &str = "join_filter_reassociation";
+const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_ROWS: u64 = 1_000_000;
+const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Configuration for moving filters across preserved-side join structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinFilterReassociationOptions {
     /// Whether the pass is allowed to rewrite eligible join/filter shapes.
     pub enabled: bool,
+    /// Whether residual-derived necessary predicates may be pushed into join inputs.
+    ///
+    /// The rewrite keeps the original residual predicate in place and only
+    /// pushes predicates that are implied by every surviving residual branch for
+    /// a side. Large local-Parquet targets remain gated out unless the predicate
+    /// can be remapped through transparent structure to a supported smaller
+    /// target.
+    pub residual_filter_pushdown_enabled: bool,
 }
 
 impl JoinFilterReassociationOptions {
     /// Returns options with the pass disabled.
     pub fn disabled() -> Self {
-        Self { enabled: false }
+        Self { enabled: false, residual_filter_pushdown_enabled: false }
+    }
+
+    /// Enables residual-derived necessary-predicate pushdown for experiments
+    /// and targeted tests.
+    pub fn with_residual_filter_pushdown(mut self, enabled: bool) -> Self {
+        self.residual_filter_pushdown_enabled = enabled;
+        self
     }
 }
 
 impl Default for JoinFilterReassociationOptions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, residual_filter_pushdown_enabled: true }
     }
 }
 
@@ -90,6 +108,8 @@ pub enum JoinFilterReassociationRejectedReason {
     AmbiguousKeyLineage,
     /// Crossed join shape is not safe for reassociation.
     UnsupportedCrossedJoinShape,
+    /// Join residual did not contain a side-local necessary predicate.
+    NoPushableResidualPredicate,
 }
 
 pub(crate) struct JoinFilterReassociationResult {
@@ -110,15 +130,16 @@ pub(crate) fn optimize_join_filter_reassociation(
         };
     }
 
-    let mut rewriter = JoinFilterReassociationRewriter::new(&plan);
+    let mut rewriter = JoinFilterReassociationRewriter::new(&plan, options);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let diagnostics = rewriter.diagnostics;
         return JoinFilterReassociationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
+    let (nodes, new_root) = compact_reachable_rewritten_nodes(rewriter.nodes, new_root);
     let sink = rewrite_sink(plan.sink(), new_root);
     JoinFilterReassociationResult {
-        plan: QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink),
+        plan: QueryPlan::from_rewritten_parts(nodes, new_root, sink),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }
@@ -126,6 +147,7 @@ pub(crate) fn optimize_join_filter_reassociation(
 
 struct JoinFilterReassociationRewriter<'a> {
     original: &'a QueryPlan,
+    options: &'a JoinFilterReassociationOptions,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
     diagnostics: JoinFilterReassociationDiagnostics,
@@ -133,9 +155,10 @@ struct JoinFilterReassociationRewriter<'a> {
 }
 
 impl<'a> JoinFilterReassociationRewriter<'a> {
-    fn new(original: &'a QueryPlan) -> Self {
+    fn new(original: &'a QueryPlan, options: &'a JoinFilterReassociationOptions) -> Self {
         Self {
             original,
+            options,
             nodes: Vec::new(),
             memo: BTreeMap::new(),
             diagnostics: JoinFilterReassociationDiagnostics::default(),
@@ -149,6 +172,13 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         }
 
         let old_node = self.original.node(old_id).expect("optimizer input node must exist");
+        if self.options.residual_filter_pushdown_enabled
+            && let PlanNode::Join(join) = &old_node.kind
+            && let Some(new_id) = self.try_push_residual_filters_candidate(old_id, join)
+        {
+            self.memo.insert(old_id, new_id);
+            return new_id;
+        }
         if let PlanNode::Join(join) = &old_node.kind
             && let Some(new_id) = self.try_reassociate_candidate(old_id, join)
         {
@@ -250,6 +280,173 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
                 self.diagnostics.candidates.push(candidate);
                 None
             },
+        }
+    }
+
+    fn try_push_residual_filters_candidate(&mut self, candidate_node_id: NodeId, join: &JoinNode) -> Option<NodeId> {
+        if !residual_pushdown_join_supported(join) {
+            return None;
+        }
+
+        let mut candidate = JoinFilterReassociationCandidateDiagnostics {
+            rule_name: JOIN_FILTER_REASSOCIATION_RULE_NAME,
+            candidate_node_id,
+            crossed_join_node_id: None,
+            filtered_child_node_id: None,
+            filtering_node_id: None,
+            applied: false,
+            rejected_reason: None,
+        };
+        self.diagnostics.considered_count += 1;
+
+        match self.plan_residual_filter_pushdown(candidate_node_id, join) {
+            Ok(planned) => {
+                candidate.filtered_child_node_id = planned.filtered_child_node_id;
+                candidate.filtering_node_id = planned.filtering_node_id;
+                candidate.applied = true;
+                self.diagnostics.applied_count += 1;
+                self.diagnostics.candidates.push(candidate);
+                self.changed = true;
+                Some(planned.new_id)
+            },
+            Err(reason) => {
+                candidate.rejected_reason = Some(reason);
+                self.diagnostics.candidates.push(candidate);
+                None
+            },
+        }
+    }
+
+    fn plan_residual_filter_pushdown(
+        &mut self,
+        candidate_node_id: NodeId,
+        join: &JoinNode,
+    ) -> Result<ResidualFilterPushdownPlan, JoinFilterReassociationRejectedReason> {
+        let residual = join
+            .spec
+            .residual_predicate
+            .as_ref()
+            .ok_or(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate)?;
+        let left_filter = derive_side_necessary_filter(residual, JoinSide::Left);
+        let right_filter = derive_side_necessary_filter(residual, JoinSide::Right);
+        if left_filter.is_none() && right_filter.is_none() {
+            return Err(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate);
+        }
+
+        let mut new_join = join.clone();
+        let left_plan = self.push_filter_if_new(join.inputs[0], left_filter);
+        let right_plan = self.push_filter_if_new(join.inputs[1], right_filter);
+        if left_plan.filtering_node_id.is_none() && right_plan.filtering_node_id.is_none() {
+            return Err(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate);
+        }
+
+        new_join.inputs = [left_plan.node_id, right_plan.node_id];
+        let old_node = self.original.node(candidate_node_id).expect("optimizer input node must exist");
+        let new_id = self.push_node(PlanNode::Join(new_join), old_node.facts.clone());
+        Ok(ResidualFilterPushdownPlan {
+            new_id,
+            filtered_child_node_id: left_plan.filtered_child_node_id.or(right_plan.filtered_child_node_id),
+            filtering_node_id: left_plan.filtering_node_id.or(right_plan.filtering_node_id),
+        })
+    }
+
+    fn push_filter_if_new(&mut self, old_input: NodeId, predicate: Option<Expr>) -> PushedFilterInput {
+        let Some(predicate) = predicate else {
+            let input_new = self.rewrite_subtree(old_input);
+            return PushedFilterInput { node_id: input_new, filtered_child_node_id: None, filtering_node_id: None };
+        };
+        self.push_filter_into_subtree(old_input, predicate)
+    }
+
+    fn push_filter_into_subtree(&mut self, old_input: NodeId, predicate: Expr) -> PushedFilterInput {
+        if input_has_top_filter(self.original, old_input, &predicate) {
+            let input_new = self.rewrite_subtree(old_input);
+            return PushedFilterInput { node_id: input_new, filtered_child_node_id: None, filtering_node_id: None };
+        }
+
+        let old_node = self.original.node(old_input).expect("optimizer input node must exist");
+        match &old_node.kind {
+            PlanNode::Filter(filter) => {
+                let pushed = self.push_filter_into_subtree(filter.input, predicate);
+                if pushed.filtering_node_id.is_none() {
+                    let input_new = self.rewrite_subtree(old_input);
+                    return PushedFilterInput {
+                        node_id: input_new,
+                        filtered_child_node_id: None,
+                        filtering_node_id: None,
+                    };
+                }
+                let mut rebuilt = filter.clone();
+                rebuilt.input = pushed.node_id;
+                let new_id = self.push_node(PlanNode::Filter(rebuilt), old_node.facts.clone());
+                return PushedFilterInput { node_id: new_id, ..pushed };
+            },
+            PlanNode::Projection(projection) => {
+                if let Some(remapped) = remap_projection_predicate(&predicate, projection) {
+                    let pushed = self.push_filter_into_subtree(projection.input, remapped);
+                    if pushed.filtering_node_id.is_some() {
+                        let mut rebuilt = projection.clone();
+                        rebuilt.input = pushed.node_id;
+                        let new_id = self.push_node(PlanNode::Projection(rebuilt), old_node.facts.clone());
+                        return PushedFilterInput { node_id: new_id, ..pushed };
+                    }
+                    let input_new = self.rewrite_subtree(old_input);
+                    return PushedFilterInput {
+                        node_id: input_new,
+                        filtered_child_node_id: None,
+                        filtering_node_id: None,
+                    };
+                }
+            },
+            PlanNode::Join(join) => {
+                if let Some((side, remapped)) = remap_single_side_join_output_predicate(&predicate, join) {
+                    let child_index = join_side_index(side);
+                    let pushed = self.push_filter_into_subtree(join.inputs[child_index], remapped);
+                    if pushed.filtering_node_id.is_some() {
+                        let mut rebuilt = join.clone();
+                        rebuilt.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
+                        rebuilt.inputs[child_index] = pushed.node_id;
+                        let new_id = self.push_node(PlanNode::Join(rebuilt), old_node.facts.clone());
+                        return PushedFilterInput { node_id: new_id, ..pushed };
+                    }
+                    let input_new = self.rewrite_subtree(old_input);
+                    return PushedFilterInput {
+                        node_id: input_new,
+                        filtered_child_node_id: None,
+                        filtering_node_id: None,
+                    };
+                }
+            },
+            PlanNode::Source(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_) => {},
+        }
+
+        self.wrap_filter_above_subtree(old_input, predicate)
+    }
+
+    fn wrap_filter_above_subtree(&mut self, old_input: NodeId, predicate: Expr) -> PushedFilterInput {
+        if !residual_filter_pushdown_target_supported(self.original, old_input) {
+            let input_new = self.rewrite_subtree(old_input);
+            return PushedFilterInput { node_id: input_new, filtered_child_node_id: None, filtering_node_id: None };
+        }
+
+        let input_new = self.rewrite_subtree(old_input);
+        let input_node =
+            self.nodes.get(input_new.index()).expect("rewritten join input node must exist before adding filter");
+        let mut facts = input_node.facts.clone();
+        facts.schema_behavior = SchemaBehavior::PreservesInput;
+        let filter_new =
+            self.push_node(PlanNode::Filter(crate::plan::FilterNode { input: input_new, predicate }), facts);
+        PushedFilterInput {
+            node_id: filter_new,
+            filtered_child_node_id: Some(old_input),
+            filtering_node_id: Some(filter_new),
         }
     }
 
@@ -372,6 +569,18 @@ struct ReassociationPlan {
     filtering_node_id: NodeId,
 }
 
+struct ResidualFilterPushdownPlan {
+    new_id: NodeId,
+    filtered_child_node_id: Option<NodeId>,
+    filtering_node_id: Option<NodeId>,
+}
+
+struct PushedFilterInput {
+    node_id: NodeId,
+    filtered_child_node_id: Option<NodeId>,
+    filtering_node_id: Option<NodeId>,
+}
+
 struct PreservedInputLineage {
     projection_node_id: Option<NodeId>,
     crossed_join_node_id: NodeId,
@@ -444,6 +653,330 @@ fn parent_join_supported(join: &JoinNode) -> bool {
         && !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
         && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+}
+
+fn residual_pushdown_join_supported(join: &JoinNode) -> bool {
+    join.spec.join_type == JoinType::Inner
+        && join.spec.residual_predicate.is_some()
+        && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+}
+
+fn residual_filter_pushdown_target_supported(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            crate::source::SourceNode::LocalParquet(_) => {
+                estimated_output_rows(plan, node_id)
+                    .is_some_and(|rows| rows <= RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_ROWS)
+                    || estimated_output_bytes(plan, node_id)
+                        .is_some_and(|bytes| bytes <= RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_BYTES)
+            },
+            crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => true,
+        },
+        PlanNode::Filter(filter) => residual_filter_pushdown_target_supported(plan, filter.input),
+        PlanNode::Projection(projection) => residual_filter_pushdown_target_supported(plan, projection.input),
+        PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => false,
+    }
+}
+
+fn input_has_top_filter(plan: &QueryPlan, node_id: NodeId, predicate: &Expr) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    matches!(&node.kind, PlanNode::Filter(filter) if filter.predicate == *predicate)
+}
+
+fn derive_side_necessary_filter(expr: &Expr, side: JoinSide) -> Option<Expr> {
+    if expression_scope(expr) == ExpressionScope::Side(side) {
+        return Some(strip_input_qualifiers(expr));
+    }
+
+    match expr {
+        Expr::Binary { left, op: BinaryOp::And, right, output_type } => {
+            let left_filter = derive_side_necessary_filter(left, side);
+            let right_filter = derive_side_necessary_filter(right, side);
+            combine_optional_filters(left_filter, BinaryOp::And, right_filter, output_type.clone())
+        },
+        Expr::Binary { left, op: BinaryOp::Or, right, output_type } => {
+            let left_filter = derive_side_necessary_filter(left, side)?;
+            let right_filter = derive_side_necessary_filter(right, side)?;
+            Some(Expr::Binary {
+                left: Box::new(left_filter),
+                op: BinaryOp::Or,
+                right: Box::new(right_filter),
+                output_type: output_type.clone(),
+            })
+        },
+        _ => None,
+    }
+}
+
+fn remap_projection_predicate(predicate: &Expr, projection: &ProjectionNode) -> Option<Expr> {
+    remap_unqualified_columns(predicate, &mut |column| {
+        let expr = unique_projection_expr_for_output(projection, column.name())?;
+        simple_projection_column(expr).map(|input| Expr::column(input.name()))
+    })
+}
+
+fn remap_single_side_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(JoinSide, Expr)> {
+    if join.spec.join_type != JoinType::Inner
+        || join.spec.null_equality != crate::plan::JoinNullEquality::NullsDoNotMatch
+        || join.spec.output_projection.is_empty()
+    {
+        return None;
+    }
+
+    let mut side = None;
+    let remapped = remap_unqualified_columns(predicate, &mut |column| {
+        let output = unique_join_output_for_name(join, column.name())?;
+        match side {
+            Some(existing) if existing != output.side => return None,
+            Some(_) => {},
+            None => side = Some(output.side),
+        }
+        Some(Expr::column(output.column.name()))
+    })?;
+    side.map(|side| (side, remapped))
+}
+
+fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef) -> Option<Expr>) -> Option<Expr> {
+    match expr {
+        Expr::Column(column) if column.qualifier().is_none() => map_column(column),
+        Expr::Column(_) => None,
+        Expr::Literal(value) => Some(Expr::Literal(value.clone())),
+        Expr::Not(expr) => Some(Expr::logical_not(remap_unqualified_columns(expr, map_column)?)),
+        Expr::IsNull(expr) => Some(Expr::is_null(remap_unqualified_columns(expr, map_column)?)),
+        Expr::IsNotNull(expr) => Some(Expr::is_not_null(remap_unqualified_columns(expr, map_column)?)),
+        Expr::Cast { expr, target_type } => {
+            Some(Expr::cast(remap_unqualified_columns(expr, map_column)?, target_type.clone()))
+        },
+        Expr::TryCast { expr, target_type } => {
+            Some(Expr::try_cast(remap_unqualified_columns(expr, map_column)?, target_type.clone()))
+        },
+        Expr::Binary { left, op, right, output_type } => Some(Expr::Binary {
+            left: Box::new(remap_unqualified_columns(left, map_column)?),
+            op: *op,
+            right: Box::new(remap_unqualified_columns(right, map_column)?),
+            output_type: output_type.clone(),
+        }),
+        Expr::Like { expr, pattern, escape, negated } => Some(Expr::Like {
+            expr: Box::new(remap_unqualified_columns(expr, map_column)?),
+            pattern: pattern.clone(),
+            escape: escape.clone(),
+            negated: *negated,
+        }),
+        Expr::Substring { expr, start, length } => {
+            Some(Expr::substring(remap_unqualified_columns(expr, map_column)?, *start, *length))
+        },
+        Expr::Lower(expr) => Some(Expr::lower(remap_unqualified_columns(expr, map_column)?)),
+        Expr::Upper(expr) => Some(Expr::upper(remap_unqualified_columns(expr, map_column)?)),
+        Expr::StringLength { expr, output_type } => {
+            Some(Expr::string_length(remap_unqualified_columns(expr, map_column)?, output_type.clone()))
+        },
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => Some(Expr::regexp_replace(
+            remap_unqualified_columns(expr, map_column)?,
+            pattern.clone(),
+            replacement.clone(),
+            output_type.clone(),
+        )),
+        Expr::Concat(exprs) => Some(Expr::concat(
+            exprs.iter().map(|expr| remap_unqualified_columns(expr, map_column)).collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::Abs(expr) => Some(Expr::abs(remap_unqualified_columns(expr, map_column)?)),
+        Expr::Sqrt { expr, output_type } => {
+            Some(Expr::sqrt(remap_unqualified_columns(expr, map_column)?, output_type.clone()))
+        },
+        Expr::Round { expr, decimal_places, output_type } => {
+            Some(Expr::round(remap_unqualified_columns(expr, map_column)?, *decimal_places, output_type.clone()))
+        },
+        Expr::InList { expr, list, negated } => Some(Expr::InList {
+            expr: Box::new(remap_unqualified_columns(expr, map_column)?),
+            list: list.iter().map(|expr| remap_unqualified_columns(expr, map_column)).collect::<Option<Vec<_>>>()?,
+            negated: *negated,
+        }),
+        Expr::IsDistinctFrom { left, right } => Some(Expr::is_distinct_from(
+            remap_unqualified_columns(left, map_column)?,
+            remap_unqualified_columns(right, map_column)?,
+        )),
+        Expr::IsNotDistinctFrom { left, right } => Some(Expr::is_not_distinct_from(
+            remap_unqualified_columns(left, map_column)?,
+            remap_unqualified_columns(right, map_column)?,
+        )),
+        Expr::Case { branches, else_expr } => Some(Expr::case(
+            branches
+                .iter()
+                .map(|branch| {
+                    Some(crate::expr::CaseWhen::new(
+                        remap_unqualified_columns(&branch.when, map_column)?,
+                        remap_unqualified_columns(&branch.then, map_column)?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?,
+            remap_unqualified_columns(else_expr, map_column)?,
+        )),
+        Expr::Extract { field, expr } => Some(Expr::extract(*field, remap_unqualified_columns(expr, map_column)?)),
+        Expr::DateTrunc { field, expr, output_type } => {
+            Some(Expr::date_trunc(*field, remap_unqualified_columns(expr, map_column)?, output_type.clone()))
+        },
+        Expr::Alias { expr, alias } => Some(remap_unqualified_columns(expr, map_column)?.alias(alias.clone())),
+    }
+}
+
+fn combine_optional_filters(
+    left: Option<Expr>,
+    op: BinaryOp,
+    right: Option<Expr>,
+    output_type: Option<arrow::datatypes::DataType>,
+) -> Option<Expr> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            Some(Expr::Binary { left: Box::new(left), op, right: Box::new(right), output_type })
+        },
+        (Some(expr), None) | (None, Some(expr)) => Some(expr),
+        (None, None) => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpressionScope {
+    NoColumns,
+    Side(JoinSide),
+    MixedOrUnknown,
+}
+
+fn expression_scope(expr: &Expr) -> ExpressionScope {
+    match expr {
+        Expr::Column(column) => column_scope(column),
+        Expr::Literal(_) => ExpressionScope::NoColumns,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
+        | Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
+        | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
+        | Expr::Round { expr, .. }
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
+        | Expr::Alias { expr, .. } => expression_scope(expr),
+        Expr::Binary { left, right, .. }
+        | Expr::IsDistinctFrom { left, right }
+        | Expr::IsNotDistinctFrom { left, right } => {
+            merge_expression_scopes(expression_scope(left), expression_scope(right))
+        },
+        Expr::InList { expr, list, .. } => list
+            .iter()
+            .fold(expression_scope(expr), |scope, item| merge_expression_scopes(scope, expression_scope(item))),
+        Expr::Concat(exprs) => exprs
+            .iter()
+            .fold(ExpressionScope::NoColumns, |scope, expr| merge_expression_scopes(scope, expression_scope(expr))),
+        Expr::Case { branches, else_expr } => branches.iter().fold(expression_scope(else_expr), |scope, branch| {
+            merge_expression_scopes(
+                scope,
+                merge_expression_scopes(expression_scope(&branch.when), expression_scope(&branch.then)),
+            )
+        }),
+    }
+}
+
+fn column_scope(column: &ColumnRef) -> ExpressionScope {
+    match column.qualifier() {
+        Some(ColumnQualifier::Input { index: 0 }) => ExpressionScope::Side(JoinSide::Left),
+        Some(ColumnQualifier::Input { index: 1 }) => ExpressionScope::Side(JoinSide::Right),
+        _ => ExpressionScope::MixedOrUnknown,
+    }
+}
+
+fn merge_expression_scopes(left: ExpressionScope, right: ExpressionScope) -> ExpressionScope {
+    match (left, right) {
+        (ExpressionScope::MixedOrUnknown, _) | (_, ExpressionScope::MixedOrUnknown) => ExpressionScope::MixedOrUnknown,
+        (ExpressionScope::NoColumns, other) | (other, ExpressionScope::NoColumns) => other,
+        (ExpressionScope::Side(left), ExpressionScope::Side(right)) if left == right => ExpressionScope::Side(left),
+        (ExpressionScope::Side(_), ExpressionScope::Side(_)) => ExpressionScope::MixedOrUnknown,
+    }
+}
+
+fn strip_input_qualifiers(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Column(column) => Expr::column(column.name()),
+        Expr::Literal(value) => Expr::Literal(value.clone()),
+        Expr::Not(expr) => Expr::logical_not(strip_input_qualifiers(expr)),
+        Expr::IsNull(expr) => Expr::is_null(strip_input_qualifiers(expr)),
+        Expr::IsNotNull(expr) => Expr::is_not_null(strip_input_qualifiers(expr)),
+        Expr::Cast { expr, target_type } => Expr::cast(strip_input_qualifiers(expr), target_type.clone()),
+        Expr::TryCast { expr, target_type } => Expr::try_cast(strip_input_qualifiers(expr), target_type.clone()),
+        Expr::Binary { left, op, right, output_type } => Expr::Binary {
+            left: Box::new(strip_input_qualifiers(left)),
+            op: *op,
+            right: Box::new(strip_input_qualifiers(right)),
+            output_type: output_type.clone(),
+        },
+        Expr::Like { expr, pattern, escape, negated } => Expr::Like {
+            expr: Box::new(strip_input_qualifiers(expr)),
+            pattern: pattern.clone(),
+            escape: escape.clone(),
+            negated: *negated,
+        },
+        Expr::Substring { expr, start, length } => Expr::substring(strip_input_qualifiers(expr), *start, *length),
+        Expr::Lower(expr) => Expr::lower(strip_input_qualifiers(expr)),
+        Expr::Upper(expr) => Expr::upper(strip_input_qualifiers(expr)),
+        Expr::StringLength { expr, output_type } => {
+            Expr::string_length(strip_input_qualifiers(expr), output_type.clone())
+        },
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::regexp_replace(
+            strip_input_qualifiers(expr),
+            pattern.clone(),
+            replacement.clone(),
+            output_type.clone(),
+        ),
+        Expr::Concat(exprs) => Expr::concat(exprs.iter().map(strip_input_qualifiers).collect()),
+        Expr::Abs(expr) => Expr::abs(strip_input_qualifiers(expr)),
+        Expr::Sqrt { expr, output_type } => Expr::sqrt(strip_input_qualifiers(expr), output_type.clone()),
+        Expr::Round { expr, decimal_places, output_type } => {
+            Expr::round(strip_input_qualifiers(expr), *decimal_places, output_type.clone())
+        },
+        Expr::InList { expr, list, negated } => Expr::InList {
+            expr: Box::new(strip_input_qualifiers(expr)),
+            list: list.iter().map(strip_input_qualifiers).collect(),
+            negated: *negated,
+        },
+        Expr::IsDistinctFrom { left, right } => {
+            Expr::is_distinct_from(strip_input_qualifiers(left), strip_input_qualifiers(right))
+        },
+        Expr::IsNotDistinctFrom { left, right } => {
+            Expr::is_not_distinct_from(strip_input_qualifiers(left), strip_input_qualifiers(right))
+        },
+        Expr::Case { branches, else_expr } => Expr::case(
+            branches
+                .iter()
+                .map(|branch| crate::expr::CaseWhen {
+                    when: strip_input_qualifiers(&branch.when),
+                    then: strip_input_qualifiers(&branch.then),
+                })
+                .collect(),
+            strip_input_qualifiers(else_expr),
+        ),
+        Expr::Extract { field, expr } => Expr::extract(*field, strip_input_qualifiers(expr)),
+        Expr::DateTrunc { field, expr, output_type } => {
+            Expr::date_trunc(*field, strip_input_qualifiers(expr), output_type.clone())
+        },
+        Expr::Alias { expr, alias } => strip_input_qualifiers(expr).alias(alias.clone()),
+    }
 }
 
 fn parent_preserved_output_side(join: &JoinNode) -> Option<JoinSide> {
@@ -519,6 +1052,61 @@ fn rewrite_sink(sink: &ResultSink, root: NodeId) -> ResultSink {
     }
 }
 
+fn compact_reachable_rewritten_nodes(nodes: Vec<QueryNode>, root: NodeId) -> (Vec<QueryNode>, NodeId) {
+    let mut reachable = vec![false; nodes.len()];
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Some(node) = nodes.get(id.index()) else {
+            continue;
+        };
+        if reachable[id.index()] {
+            continue;
+        }
+        reachable[id.index()] = true;
+        stack.extend(node.input_ids().iter().copied());
+    }
+
+    let mut remap = BTreeMap::new();
+    for node in nodes.iter().filter(|node| reachable[node.id.index()]) {
+        remap.insert(node.id, NodeId::from_index_for_internal_use(remap.len()));
+    }
+    let new_root = *remap.get(&root).expect("rewritten root must be reachable");
+    let compacted = nodes
+        .into_iter()
+        .filter(|node| reachable[node.id.index()])
+        .map(|node| {
+            let id = *remap.get(&node.id).expect("reachable node must have a remapped id");
+            QueryNode { id, kind: remap_plan_node_inputs(node.kind, &remap), facts: node.facts }
+        })
+        .collect::<Vec<_>>();
+    (compacted, new_root)
+}
+
+fn remap_plan_node_inputs(mut kind: PlanNode, remap: &BTreeMap<NodeId, NodeId>) -> PlanNode {
+    match &mut kind {
+        PlanNode::Source(_) => {},
+        PlanNode::Filter(filter) => filter.input = remap_node_id(filter.input, remap),
+        PlanNode::Projection(projection) => projection.input = remap_node_id(projection.input, remap),
+        PlanNode::Aggregate(aggregate) => aggregate.input = remap_node_id(aggregate.input, remap),
+        PlanNode::Window(window) => window.input = remap_node_id(window.input, remap),
+        PlanNode::Sort(sort) => sort.input = remap_node_id(sort.input, remap),
+        PlanNode::Limit(limit) => limit.input = remap_node_id(limit.input, remap),
+        PlanNode::Join(join) => {
+            join.inputs = [remap_node_id(join.inputs[0], remap), remap_node_id(join.inputs[1], remap)];
+        },
+        PlanNode::Union(union) => {
+            union.inputs = union.inputs.iter().map(|input| remap_node_id(*input, remap)).collect();
+        },
+        PlanNode::EdgeNormalize(edge_normalize) => edge_normalize.input = remap_node_id(edge_normalize.input, remap),
+        PlanNode::GraphAlgorithm(graph) => graph.input = remap_node_id(graph.input, remap),
+    }
+    kind
+}
+
+fn remap_node_id(id: NodeId, remap: &BTreeMap<NodeId, NodeId>) -> NodeId {
+    *remap.get(&id).expect("reachable input node must have a remapped id")
+}
+
 const fn join_side_index(side: JoinSide) -> usize {
     match side {
         JoinSide::Left => 0,
@@ -530,5 +1118,159 @@ const fn opposite_side(side: JoinSide) -> JoinSide {
     match side {
         JoinSide::Left => JoinSide::Right,
         JoinSide::Right => JoinSide::Left,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        expr::LiteralValue,
+        plan::{JoinKey, JoinSpec, QueryPlanBuilder},
+        source::{GpuResidentSource, SourceNode},
+    };
+
+    #[test]
+    fn residual_pushdown_extracts_side_filters_from_or_of_and_terms() {
+        let plan = residual_join_plan(or(
+            and(left_eq("l_flag", 1), right_gt("r_price", 10)),
+            and(left_eq("l_flag", 2), right_lt("r_price", 5)),
+        ));
+
+        let result = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+
+        assert!(result.change.changed());
+        assert_eq!(result.diagnostics.applied_count, 1);
+        let join = root_join(&result.plan);
+        let left_filter = filter_node(&result.plan, join.inputs[0]);
+        let right_filter = filter_node(&result.plan, join.inputs[1]);
+        assert_eq!(left_filter.predicate, or(unqualified_eq("l_flag", 1), unqualified_eq("l_flag", 2)));
+        assert_eq!(right_filter.predicate, or(unqualified_gt("r_price", 10), unqualified_lt("r_price", 5)));
+        assert!(join.spec.residual_predicate.is_some(), "residual stays in place for correctness");
+    }
+
+    #[test]
+    fn residual_pushdown_requires_every_or_branch_to_imply_the_side_filter() {
+        let residual = or(and(left_eq("l_flag", 1), right_gt("r_price", 10)), right_lt("r_price", 5));
+        let plan = residual_join_plan(residual);
+
+        let result = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+
+        assert!(result.change.changed());
+        let join = root_join(&result.plan);
+        assert!(
+            !matches!(result.plan.node(join.inputs[0]).map(|node| &node.kind), Some(PlanNode::Filter(_))),
+            "left filter is unsafe because one OR branch has no left-side predicate"
+        );
+        let right_filter = filter_node(&result.plan, join.inputs[1]);
+        assert_eq!(right_filter.predicate, or(unqualified_gt("r_price", 10), unqualified_lt("r_price", 5)));
+    }
+
+    #[test]
+    fn residual_pushdown_is_not_reapplied_when_filter_is_already_present() {
+        let plan = residual_join_plan(and(left_eq("l_flag", 1), right_gt("r_price", 10)));
+
+        let first = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+        assert!(first.change.changed());
+        let second = optimize_join_filter_reassociation(first.plan, &residual_pushdown_options());
+
+        assert!(!second.change.changed());
+        assert_eq!(second.diagnostics.applied_count, 0);
+    }
+
+    fn residual_join_plan(residual: Expr) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(source("left", vec![field("l_key"), field("l_flag")]));
+        let right = builder.add_source(source("right", vec![field("r_key"), field("r_price")]));
+        let output_schema = schema(vec![field("l_key"), field("l_flag"), field("r_price")]);
+        let join = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+            )
+            .with_residual_predicate(residual)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "l_flag", "l_flag"), "l_flag"),
+                JoinOutputColumn::right(ColumnRef::input(1, "r_price", "r_price"), "r_price"),
+            ]),
+            output_schema,
+        );
+        builder.finish_gpu_resident(join)
+    }
+
+    fn residual_pushdown_options() -> JoinFilterReassociationOptions {
+        JoinFilterReassociationOptions::default().with_residual_filter_pushdown(true)
+    }
+
+    fn root_join(plan: &QueryPlan) -> &JoinNode {
+        let PlanNode::Join(join) = &plan.root_node().kind else {
+            panic!("root must be a join");
+        };
+        join
+    }
+
+    fn filter_node(plan: &QueryPlan, node_id: NodeId) -> &crate::plan::FilterNode {
+        let Some(node) = plan.node(node_id) else {
+            panic!("missing node {node_id}");
+        };
+        let PlanNode::Filter(filter) = &node.kind else {
+            panic!("node {node_id} must be a filter");
+        };
+        filter
+    }
+
+    fn source(name: &str, fields: Vec<Field>) -> SourceNode {
+        SourceNode::GpuResident(GpuResidentSource::new(name, schema(fields)))
+    }
+
+    fn schema(fields: Vec<Field>) -> Arc<Schema> {
+        Arc::new(Schema::new(fields))
+    }
+
+    fn field(name: &str) -> Field {
+        Field::new(name, DataType::Int32, false)
+    }
+
+    fn left_eq(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::input_column(0, name, name), BinaryOp::Eq, int(value))
+    }
+
+    fn right_gt(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::input_column(1, name, name), BinaryOp::Gt, int(value))
+    }
+
+    fn right_lt(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::input_column(1, name, name), BinaryOp::Lt, int(value))
+    }
+
+    fn unqualified_eq(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::column(name), BinaryOp::Eq, int(value))
+    }
+
+    fn unqualified_gt(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::column(name), BinaryOp::Gt, int(value))
+    }
+
+    fn unqualified_lt(name: &str, value: i32) -> Expr {
+        Expr::binary(Expr::column(name), BinaryOp::Lt, int(value))
+    }
+
+    fn and(left: Expr, right: Expr) -> Expr {
+        Expr::binary(left, BinaryOp::And, right)
+    }
+
+    fn or(left: Expr, right: Expr) -> Expr {
+        Expr::binary(left, BinaryOp::Or, right)
+    }
+
+    fn int(value: i32) -> Expr {
+        Expr::literal(LiteralValue::Int32(value))
     }
 }

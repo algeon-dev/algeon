@@ -406,6 +406,7 @@ impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
 
 enum UnaryMappedResidentFrameStreamOperator {
     Filter(FilterNode),
+    DynamicFilter { filter: FilterNode, route: DynamicFilterRoute, dynamic_filter: DynamicFilter },
     Projection(ProjectionNode),
 }
 
@@ -431,6 +432,22 @@ impl UnaryMappedResidentFrameStreamSource {
         }
     }
 
+    fn from_dynamic_filter(
+        context: &ExecutionContext,
+        node_id: NodeId,
+        input: ResidentFrameStreamPayload,
+        filter: FilterNode,
+        route: DynamicFilterRoute,
+        dynamic_filter: DynamicFilter,
+    ) -> Self {
+        Self {
+            context: context.clone(),
+            node_id,
+            input: Some(input),
+            operator: UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, route, dynamic_filter },
+        }
+    }
+
     fn from_projection(
         context: &ExecutionContext,
         node_id: NodeId,
@@ -452,7 +469,8 @@ impl UnaryMappedResidentFrameStreamSource {
         metrics: &mut QueryMetrics,
     ) -> Result<ResidentGpuFrame> {
         match &self.operator {
-            UnaryMappedResidentFrameStreamOperator::Filter(filter) => execute_bounded_generic_unary(
+            UnaryMappedResidentFrameStreamOperator::Filter(filter)
+            | UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, .. } => execute_bounded_generic_unary(
                 &self.context,
                 self.node_id,
                 "compiled_filter",
@@ -492,6 +510,17 @@ impl UnaryMappedResidentFrameStreamSource {
             ),
         }
     }
+
+    fn record_metrics(&self, input_rows: u64, output: &ResidentGpuFrame, metrics: &mut QueryMetrics) {
+        if let UnaryMappedResidentFrameStreamOperator::DynamicFilter { route, dynamic_filter, .. } = &self.operator {
+            metrics.record_dynamic_filter_post_decode_rows(
+                route,
+                dynamic_filter,
+                Some(input_rows),
+                Some(output.frame.num_rows() as u64),
+            );
+        }
+    }
 }
 
 impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
@@ -502,7 +531,13 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
     ) -> Option<Result<ResidentGpuFrame>> {
         let input = self.input.as_mut()?;
         match input.next_yielded_frame(reservations, metrics) {
-            Some(Ok(mut yielded)) => Some(self.execute(yielded.take_for_release(), reservations, metrics)),
+            Some(Ok(mut yielded)) => {
+                let frame = yielded.take_for_release();
+                let input_rows = frame.frame.num_rows() as u64;
+                Some(self.execute(frame, reservations, metrics).inspect(|output| {
+                    self.record_metrics(input_rows, output, metrics);
+                }))
+            },
             Some(Err(error)) => Some(Err(error)),
             None => {
                 self.release(reservations, metrics);
@@ -535,6 +570,35 @@ pub(super) fn map_filter_resident_frame_stream(
         num_columns,
         Vec::new(),
         Box::new(UnaryMappedResidentFrameStreamSource::from_filter(context, node_id, stream, filter)),
+    )
+}
+
+pub(super) fn map_dynamic_filter_resident_frame_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stream: ResidentFrameStreamPayload,
+    filter: FilterNode,
+    route: DynamicFilterRoute,
+    dynamic_filter: DynamicFilter,
+) -> ResidentFrameStreamPayload {
+    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
+    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let aggregate_num_rows = stream.num_rows();
+    let num_columns = stream.num_columns();
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(UnaryMappedResidentFrameStreamSource::from_dynamic_filter(
+            context,
+            node_id,
+            stream,
+            filter,
+            route,
+            dynamic_filter,
+        )),
     )
 }
 

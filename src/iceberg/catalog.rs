@@ -90,8 +90,7 @@ async fn build_table_provider(
 ) -> Result<Arc<dyn TableProvider>> {
     match kind {
         IcebergProviderKind::Gpu => Ok(Arc::new(
-            crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)?
-                .with_catalog_type(catalog_type),
+            crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)?.with_catalog_type(catalog_type),
         )),
         IcebergProviderKind::Cpu => {
             #[cfg(feature = "iceberg-cpu")]
@@ -270,9 +269,8 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
 
         let ident = TableIdent::new(self.namespace.clone(), name.to_string());
         let table = self.backend.load_table(&ident).await.map_err(DataFusionError::from)?;
-        let provider = build_table_provider(table, self.provider_kind, &self.catalog_type)
-            .await
-            .map_err(DataFusionError::from)?;
+        let provider =
+            build_table_provider(table, self.provider_kind, &self.catalog_type).await.map_err(DataFusionError::from)?;
 
         // Insert into cache; under concurrent first-access races both paths
         // produce equivalent providers — first write wins, the loser's provider

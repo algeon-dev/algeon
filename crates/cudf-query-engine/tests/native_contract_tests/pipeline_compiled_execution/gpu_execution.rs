@@ -118,7 +118,14 @@ fn execute_query_plan_routes_grouped_aggregate_join_build_input_through_compiled
     let right_path = dir.join("right.parquet");
     write_aggregate_join_input_parquets(&left_path, &right_path);
 
-    let plan = aggregate_join_build_input_data_plan(&left_path, &right_path);
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+    let plan =
+        optimize_query_plan(aggregate_join_build_input_data_plan(&left_path, &right_path), &optimizer_options).plan;
+    assert_eq!(plan.dynamic_filter_routes().len(), 1);
+    assert!(matches!(plan.dynamic_filter_routes()[0].producer, DynamicFilterProducer::AggregateGroupKeys { .. }));
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
@@ -137,7 +144,20 @@ fn execute_query_plan_routes_grouped_aggregate_join_build_input_through_compiled
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.dynamic_filter_produced_count, 1);
+    assert_eq!(metrics.dynamic_filter_applied_count, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 0);
+    let join_strategies = metrics
+        .operators
+        .iter()
+        .filter_map(|operator| operator.join.as_ref())
+        .map(|join| join.execution_strategy.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        join_strategies.contains(&"bounded_reusable_hash_join_single_pass_probe"),
+        "join strategies: {join_strategies:?}"
+    );
 }
 
 #[test]

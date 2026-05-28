@@ -2,8 +2,8 @@
 // native GPU execution against tuned CPU DataFusion (and, separately, external-engine via
 // its own benchmark_and_validate.sh runner — that lives outside this binary).
 //
-// Run two invocations per session: one with CUDF_TPCDS_BENCH_ENGINE=native_gpu
-// and one with CUDF_TPCDS_BENCH_ENGINE=cpu_datafusion. Each invocation registers
+// Run separate invocations per session: native_gpu, cpu_datafusion, and
+// hybrid_cpu_preferred for CPU-preferred native plans. Each invocation registers
 // the TPC-DS tables once, then runs every requested query through DataFusion
 // `(warmups + iterations)` times, printing one TSV row per measured iteration.
 
@@ -26,9 +26,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
+    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
     NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery,
-    discover_tpcds_table_layout, tpcds_native_optimizer_config, tpcds_report_session_config,
+    discover_tpcds_table_layout, tpcds_native_optimizer_config, tpcds_native_report_session_config,
 };
 
 const DEFAULT_QUERY_IDS: &[&str] =
@@ -40,6 +40,11 @@ const TSV_HEADER: &str = concat!(
     "\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms",
     "\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms",
     "\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms",
+    "\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns",
+    "\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count",
+    "\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows",
+    "\taggregate_prepared_sort_groupby_elapsed_ns",
+    "\taggregate_encoded_key_partial_elapsed_ns",
     "\truntime_operator_class\truntime_operator_class_ms\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes",
     "\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes",
     "\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried",
@@ -48,7 +53,16 @@ const TSV_HEADER: &str = concat!(
     "\tsource_cache_insert_skipped\tsource_cache_retained_bytes\tsource_fetch_bytes\tsource_fetch_count",
     "\trow_groups_planned\trow_groups_committed",
     "\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\tpartitioned_join_count",
-    "\tjoin_partitioning_status\taggregate_strategy_rows\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
+    "\tjoin_partitioning_status\tdynamic_filter_produced_count\tdynamic_filter_skipped_count",
+    "\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned",
+    "\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after",
+    "\tdynamic_filter_reader_predicate_rows_filtered",
+    "\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after",
+    "\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered",
+    "\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered",
+    "\tdynamic_filter_post_decode_reduction_stage",
+    "\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows",
+    "\taggregate_strategy_rows\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
 );
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
@@ -63,16 +77,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cfg.iterations,
     );
 
-    let (ctx, optimizer) = build_context(&cfg).await?;
+    let runtime = build_runtime(&cfg).await?;
 
     println!("{TSV_HEADER}");
     for query in &cfg.queries {
         for warmup_index in 0..cfg.warmups {
-            let outcome = run_once(&ctx, optimizer.as_deref(), query).await;
+            let outcome = run_once(&runtime, query).await;
             print_row(query, warmup_index, true, &outcome, cfg.engine);
         }
         for iteration in 0..cfg.iterations {
-            let outcome = run_once(&ctx, optimizer.as_deref(), query).await;
+            let outcome = run_once(&runtime, query).await;
             print_row(query, iteration, false, &outcome, cfg.engine);
         }
     }
@@ -83,6 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 enum Engine {
     NativeGpu,
     CpuDataFusion,
+    HybridCpuPreferred,
 }
 
 impl Engine {
@@ -90,8 +105,21 @@ impl Engine {
         match self {
             Engine::NativeGpu => "native_gpu",
             Engine::CpuDataFusion => "cpu_datafusion",
+            Engine::HybridCpuPreferred => "hybrid_cpu_preferred",
         }
     }
+}
+
+struct BenchRuntime {
+    execution_ctx: SessionContext,
+    optimizer: Option<Arc<CudfNativePhysicalOptimizerRule>>,
+    native_planning: Option<NativePlanningRuntime>,
+    skip_cpu_preferred: bool,
+}
+
+struct NativePlanningRuntime {
+    ctx: SessionContext,
+    optimizer: Arc<CudfNativePhysicalOptimizerRule>,
 }
 
 struct BenchConfig {
@@ -107,8 +135,13 @@ impl BenchConfig {
         let engine = match std::env::var("CUDF_TPCDS_BENCH_ENGINE").as_deref() {
             Ok("native_gpu") => Engine::NativeGpu,
             Ok("cpu_datafusion") => Engine::CpuDataFusion,
+            Ok("hybrid_cpu_preferred") => Engine::HybridCpuPreferred,
             Ok(other) => return Err(format!("unsupported CUDF_TPCDS_BENCH_ENGINE={other}").into()),
-            Err(_) => return Err("CUDF_TPCDS_BENCH_ENGINE must be set to native_gpu or cpu_datafusion".into()),
+            Err(_) => {
+                return Err(
+                    "CUDF_TPCDS_BENCH_ENGINE must be set to native_gpu, cpu_datafusion, or hybrid_cpu_preferred".into(),
+                );
+            },
         };
         let root = std::env::var("CUDF_TPCDS_PARQUET_DIR")
             .map_err(|_| "CUDF_TPCDS_PARQUET_DIR must be set to the SF100 parquet root")?;
@@ -136,28 +169,56 @@ fn env_usize(name: &str, default: usize) -> Result<usize, Box<dyn Error>> {
     }
 }
 
-async fn build_context(
-    cfg: &BenchConfig,
-) -> Result<(SessionContext, Option<Arc<CudfNativePhysicalOptimizerRule>>), Box<dyn Error>> {
+async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>> {
     match cfg.engine {
         Engine::CpuDataFusion => {
             let session_config = tuned_cpu_session_config();
             let ctx = SessionContext::new_with_config(session_config);
             register_tpcds_tables(&ctx, &cfg.root).await?;
-            Ok((ctx, None))
+            Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
             let optimizer_config = tpcds_native_optimizer_config();
             let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
-                .with_config(tpcds_report_session_config())
+                .with_config(tpcds_native_report_session_config())
                 .with_cudf_native_rule(Arc::clone(&rule))
                 .build();
             let ctx = SessionContext::new_with_state(state);
             register_tpcds_tables(&ctx, &cfg.root).await?;
-            Ok((ctx, Some(rule)))
+            Ok(BenchRuntime {
+                execution_ctx: ctx,
+                optimizer: Some(rule),
+                native_planning: None,
+                skip_cpu_preferred: true,
+            })
+        },
+        Engine::HybridCpuPreferred => {
+            let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
+            register_tpcds_tables(&cpu_ctx, &cfg.root).await?;
+            let (native_ctx, optimizer) = build_native_planning_context(&cfg.root).await?;
+            Ok(BenchRuntime {
+                execution_ctx: cpu_ctx,
+                optimizer: None,
+                native_planning: Some(NativePlanningRuntime { ctx: native_ctx, optimizer }),
+                skip_cpu_preferred: false,
+            })
         },
     }
+}
+
+async fn build_native_planning_context(
+    root: &Path,
+) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
+    let optimizer_config = tpcds_native_optimizer_config();
+    let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(tpcds_native_report_session_config())
+        .with_cudf_native_rule(Arc::clone(&rule))
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tpcds_tables(&ctx, root).await?;
+    Ok((ctx, rule))
 }
 
 fn tuned_cpu_session_config() -> SessionConfig {
@@ -190,7 +251,7 @@ async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> Result<(), 
 }
 
 struct IterOutcome {
-    wall: Duration,
+    wall: Option<Duration>,
     outcome: &'static str,
     planning_outcome: String,
     output_batches: Option<usize>,
@@ -205,17 +266,130 @@ struct IterOutcome {
     failure: Option<String>,
 }
 
-async fn run_once(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanningSummary {
+    planning_outcome: String,
+    native_runtime_started: bool,
+    cpu_preferred_reason: Option<String>,
+}
+
+async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
+    if let Some(native_planning) = runtime.native_planning.as_ref() {
+        return run_hybrid_cpu_preferred_once(&runtime.execution_ctx, native_planning, query).await;
+    }
+
+    run_query_collect(
+        &runtime.execution_ctx,
+        runtime.optimizer.as_deref(),
+        query,
+        None,
+        None,
+        runtime.skip_cpu_preferred,
+    )
+    .await
+}
+
+async fn run_hybrid_cpu_preferred_once(
+    cpu_ctx: &SessionContext,
+    native_planning: &NativePlanningRuntime,
+    query: &TpcdsQuery,
+) -> IterOutcome {
+    let native_planning_summary =
+        match plan_native_preference(&native_planning.ctx, &native_planning.optimizer, query).await {
+            Ok(summary) => summary,
+            Err(outcome) => return outcome,
+        };
+
+    let Some(reason) = native_planning_summary.cpu_preferred_reason.as_ref() else {
+        return IterOutcome {
+            wall: None,
+            outcome: "skipped_not_cpu_preferred",
+            planning_outcome: format!("gpu_preferred native_planning={}", native_planning_summary.planning_outcome),
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            reservation_live_peak_bytes: None,
+            reservation_denied_count: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+    };
+
+    run_query_collect(
+        cpu_ctx,
+        None,
+        query,
+        Some(format!("cpu_preferred reason={reason} native_planning={}", native_planning_summary.planning_outcome)),
+        Some(false),
+        false,
+    )
+    .await
+}
+
+async fn plan_native_preference(
+    ctx: &SessionContext,
+    optimizer: &CudfNativePhysicalOptimizerRule,
+    query: &TpcdsQuery,
+) -> Result<PlanningSummary, IterOutcome> {
+    let started_plan = Instant::now();
+    let df = match ctx.sql(query.sql).await {
+        Ok(df) => df,
+        Err(err) => {
+            return Err(IterOutcome {
+                wall: Some(started_plan.elapsed()),
+                outcome: "native_sql_planning_failed",
+                planning_outcome: String::from("native_sql_to_logical_plan_failed"),
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                reservation_live_peak_bytes: None,
+                reservation_denied_count: None,
+                retry_count: None,
+                native_runtime_started: false,
+                native_metrics: None,
+                timing_metrics: NativeTimingMetrics::default(),
+                failure: Some(err.to_string()),
+            });
+        },
+    };
+    if let Err(err) = df.create_physical_plan().await {
+        return Err(IterOutcome {
+            wall: Some(started_plan.elapsed()),
+            outcome: "native_physical_planning_failed",
+            planning_outcome: String::from("native_physical_planning_failed"),
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            reservation_live_peak_bytes: None,
+            reservation_denied_count: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: Some(err.to_string()),
+        });
+    }
+
+    Ok(planning_summary(Some(optimizer)))
+}
+
+async fn run_query_collect(
     ctx: &SessionContext,
     optimizer: Option<&CudfNativePhysicalOptimizerRule>,
     query: &TpcdsQuery,
+    planning_outcome_override: Option<String>,
+    native_runtime_started_override: Option<bool>,
+    skip_cpu_preferred: bool,
 ) -> IterOutcome {
     let started_plan = Instant::now();
     let df = match ctx.sql(query.sql).await {
         Ok(df) => df,
         Err(err) => {
             return IterOutcome {
-                wall: started_plan.elapsed(),
+                wall: Some(started_plan.elapsed()),
                 outcome: "sql_planning_failed",
                 planning_outcome: String::from("sql_to_logical_plan_failed"),
                 output_batches: None,
@@ -235,7 +409,7 @@ async fn run_once(
         Ok(plan) => plan,
         Err(err) => {
             return IterOutcome {
-                wall: started_plan.elapsed(),
+                wall: Some(started_plan.elapsed()),
                 outcome: "physical_planning_failed",
                 planning_outcome: String::from("physical_planning_failed"),
                 output_batches: None,
@@ -251,18 +425,43 @@ async fn run_once(
             };
         },
     };
-    let planning_outcome = optimizer
-        .and_then(|rule| rule.last_planning_diagnostics())
-        .map(|diag| {
-            let rewritten = diag.report.rewritten_count();
-            let rejected = diag.report.rejected_count();
-            format!("rewritten={rewritten} rejected={rejected}")
-        })
-        .unwrap_or_else(|| String::from("cpu_only"));
-    let native_runtime_started = optimizer
-        .and_then(|rule| rule.last_planning_diagnostics())
-        .map(|diag| diag.report.rewritten_count() > 0)
-        .unwrap_or(false);
+    let planning_summary = planning_summary(optimizer);
+    let planning_outcome = planning_outcome_override.unwrap_or(planning_summary.planning_outcome);
+    let native_runtime_started = native_runtime_started_override.unwrap_or(planning_summary.native_runtime_started);
+    if skip_cpu_preferred && let Some(reason) = planning_summary.cpu_preferred_reason {
+        return IterOutcome {
+            wall: None,
+            outcome: "cpu_preferred_not_run",
+            planning_outcome: format!("{planning_outcome} cpu_preferred_reason={reason}"),
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            reservation_live_peak_bytes: None,
+            reservation_denied_count: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+    }
+    if skip_cpu_preferred && !native_runtime_started {
+        return IterOutcome {
+            wall: None,
+            outcome: "native_rejected_not_run",
+            planning_outcome,
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            reservation_live_peak_bytes: None,
+            reservation_denied_count: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+    }
 
     let task_ctx = Arc::new(TaskContext::default());
     let started = Instant::now();
@@ -278,7 +477,7 @@ async fn run_once(
             let native_metrics = metrics.as_ref().map(NativeDataFusionExecutionMetrics::from_metrics);
             let timing_metrics = NativeTimingMetrics::from_metrics(metrics.as_ref());
             IterOutcome {
-                wall,
+                wall: Some(wall),
                 outcome: "succeeded",
                 planning_outcome,
                 output_batches: Some(output_batches),
@@ -294,7 +493,7 @@ async fn run_once(
             }
         },
         Err(err) => IterOutcome {
-            wall,
+            wall: Some(wall),
             outcome: "execution_failed",
             planning_outcome,
             output_batches: None,
@@ -309,6 +508,48 @@ async fn run_once(
             failure: Some(err.to_string()),
         },
     }
+}
+
+fn planning_summary(optimizer: Option<&CudfNativePhysicalOptimizerRule>) -> PlanningSummary {
+    optimizer
+        .and_then(|rule| rule.last_planning_diagnostics())
+        .map(|diag| {
+            let rewritten = diag.report.rewritten_count();
+            let rejected = diag.report.rejected_count();
+            let reasons = diag
+                .report
+                .outcomes()
+                .iter()
+                .filter_map(|outcome| match outcome {
+                    CandidateOutcome::Rejected { reason, .. } => Some(reason.code()),
+                    CandidateOutcome::Rewritten { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            let reasons_text = reasons.join(",");
+            let planning_outcome = if reasons_text.is_empty() {
+                format!("rewritten={rewritten} rejected={rejected}")
+            } else {
+                format!("rewritten={rewritten} rejected={rejected} reasons={reasons_text}")
+            };
+            PlanningSummary {
+                planning_outcome,
+                native_runtime_started: rewritten > 0,
+                cpu_preferred_reason: reasons
+                    .iter()
+                    .copied()
+                    .find(|reason| cpu_preferred_reason_code(reason))
+                    .map(str::to_string),
+            }
+        })
+        .unwrap_or_else(|| PlanningSummary {
+            planning_outcome: String::from("cpu_only"),
+            native_runtime_started: false,
+            cpu_preferred_reason: None,
+        })
+}
+
+fn cpu_preferred_reason_code(reason: &str) -> bool {
+    matches!(reason, "native_small_selective_topk_cpu_preferred" | "native_small_selective_residual_join_cpu_preferred")
 }
 
 fn metric_sum(metrics: &Option<MetricsSet>, name: &str) -> Option<u64> {
@@ -345,7 +586,7 @@ fn row_fields(
         query.id.to_string(),
         iteration.to_string(),
         if warmup { "true" } else { "false" }.to_string(),
-        format!("{:.3}", outcome.wall.as_secs_f64() * 1000.0),
+        duration_ms_text(outcome.wall),
         outcome.outcome.to_string(),
         sanitize(&outcome.planning_outcome),
         format_opt(outcome.output_batches),
@@ -369,6 +610,14 @@ fn row_fields(
         optional_f64_text(outcome.timing_metrics.final_merge_time_ms),
         optional_f64_text(outcome.timing_metrics.final_sort_time_ms),
         optional_f64_text(outcome.timing_metrics.materialization_time_ms),
+        metric_field(metrics, |metrics| metrics.aggregate_libcudf_runtime_probe_count()),
+        metric_field(metrics, |metrics| metrics.aggregate_libcudf_runtime_probe_elapsed_ns()),
+        metric_field(metrics, |metrics| metrics.aggregate_libcudf_runtime_probe_input_rows()),
+        metric_field(metrics, |metrics| metrics.aggregate_exact_cardinality_probe_count()),
+        metric_field(metrics, |metrics| metrics.aggregate_exact_cardinality_probe_elapsed_ns()),
+        metric_field(metrics, |metrics| metrics.aggregate_exact_cardinality_probe_input_rows()),
+        metric_field(metrics, |metrics| metrics.aggregate_prepared_sort_groupby_elapsed_ns()),
+        metric_field(metrics, |metrics| metrics.aggregate_encoded_key_partial_elapsed_ns()),
         p1.runtime_operator_class,
         optional_f64_text(p1.runtime_operator_class_ms),
         p1.peak_memory_operator_class,
@@ -397,6 +646,33 @@ fn row_fields(
         metric_field(metrics, |metrics| metrics.one_shot_join_count),
         metrics.map_or_else(|| "not_run".to_string(), partitioned_join_count_text),
         metrics.map_or_else(|| "not_run".to_string(), join_partitioning_status),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_produced_count),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_skipped_count),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_applied_count),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_row_groups_pruned),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_source_bytes_pruned),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_reader_predicate_rows_before),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_reader_predicate_rows_after),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_reader_predicate_rows_filtered),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_post_decode_rows_before),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_post_decode_rows_after),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_post_decode_rows_filtered),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_source_post_decode_rows_filtered),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_filter_post_decode_rows_filtered),
+        metric_field(metrics, |metrics| metrics.dynamic_filter_join_probe_post_decode_rows_filtered),
+        metrics.map_or_else(
+            || "unknown".to_string(),
+            |metrics| metrics.dynamic_filter_post_decode_reduction_stage().as_str().to_string(),
+        ),
+        metrics.map_or_else(
+            || "unknown".to_string(),
+            |metrics| metrics.dynamic_filter_measured_reduction_status().as_str().to_string(),
+        ),
+        metrics.map_or_else(
+            || "unknown".to_string(),
+            |metrics| metrics.dynamic_filter_work_avoidance_status().as_str().to_string(),
+        ),
+        metrics.map_or_else(|| "not_run".to_string(), format_dynamic_filter_runtime_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_aggregate_strategy_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_join_strategy_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_task_operator_rows),
@@ -409,6 +685,10 @@ fn format_opt<T: std::fmt::Display>(value: Option<T>) -> String {
         Some(v) => v.to_string(),
         None => String::from(""),
     }
+}
+
+fn duration_ms_text(value: Option<Duration>) -> String {
+    value.map_or_else(String::new, |value| format!("{:.3}", value.as_secs_f64() * 1000.0))
 }
 
 fn sanitize(s: &str) -> String {
@@ -705,6 +985,15 @@ fn format_aggregate_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) ->
     rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
+fn format_dynamic_filter_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.dynamic_filter_runtime_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.dynamic_filter_runtime_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
 fn format_task_operator_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
     if metrics.task_operator_rows.is_empty() {
         return "none".to_string();
@@ -754,7 +1043,7 @@ mod tests {
     fn p1_tsv_header_matches_row_field_count_for_cpu_rows() {
         let query = TPCDS_QUERIES.iter().find(|query| query.id == "q85").unwrap();
         let outcome = IterOutcome {
-            wall: Duration::from_millis(1),
+            wall: Some(Duration::from_millis(1)),
             outcome: "succeeded",
             planning_outcome: "cpu_only".to_string(),
             output_batches: Some(1),
@@ -774,10 +1063,52 @@ mod tests {
     }
 
     #[test]
+    fn native_no_runtime_not_run_rows_suppress_wall_time() {
+        let query = TPCDS_QUERIES.iter().find(|query| query.id == "q67").unwrap();
+        let outcome = IterOutcome {
+            wall: None,
+            outcome: "native_rejected_not_run",
+            planning_outcome: "rewritten=0 rejected=1 reasons=native_bounded_join_unsupported".to_string(),
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            reservation_live_peak_bytes: None,
+            reservation_denied_count: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+
+        let fields = row_fields(query, 0, false, &outcome, Engine::NativeGpu);
+
+        let header = TSV_HEADER.split('\t').collect::<Vec<_>>();
+        let wall_ms_index = header.iter().position(|field| *field == "wall_ms").unwrap();
+        let outcome_index = header.iter().position(|field| *field == "outcome").unwrap();
+        let native_runtime_started_index = header.iter().position(|field| *field == "native_runtime_started").unwrap();
+        assert_eq!(fields[wall_ms_index], "");
+        assert_eq!(fields[outcome_index], "native_rejected_not_run");
+        assert_eq!(fields[native_runtime_started_index], "false");
+    }
+
+    #[test]
     fn p1_task_operator_classes_cover_native_runtime_rows() {
         assert_eq!(task_operator_class("source_read"), Some("source"));
         assert_eq!(task_operator_class("join_probe"), Some("join"));
         assert_eq!(task_operator_class("aggregate"), Some("aggregate"));
         assert_eq!(task_operator_class("sink_materialize"), Some("materialization"));
+    }
+
+    #[test]
+    fn hybrid_cpu_preferred_engine_has_stable_label() {
+        assert_eq!(Engine::HybridCpuPreferred.as_str(), "hybrid_cpu_preferred");
+    }
+
+    #[test]
+    fn cpu_preferred_reason_codes_are_classified() {
+        assert!(cpu_preferred_reason_code("native_small_selective_topk_cpu_preferred"));
+        assert!(cpu_preferred_reason_code("native_small_selective_residual_join_cpu_preferred"));
+        assert!(!cpu_preferred_reason_code("native_bounded_join_unsupported"));
     }
 }

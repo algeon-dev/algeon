@@ -54,16 +54,11 @@ pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Optio
     match &plan.node(node_id)?.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LocalParquet(source) => source
-                .files
-                .iter()
-                .map(|file| {
-                    file.projected_row_group_uncompressed_bytes
-                        .as_ref()
-                        .or(file.row_group_bytes.as_ref())
-                        .map(|bytes| bytes.iter().copied().sum::<u64>())
-                        .or(file.file_size_bytes)
-                })
-                .try_fold(0_u64, |sum, bytes| sum.checked_add(bytes?)),
+                .diagnostics
+                .selected_row_group_stats
+                .as_ref()
+                .and_then(|stats| stats.selected_source_bytes())
+                .or(source.diagnostics.known_bytes),
             SourceNode::GpuResident(_) => None,
             SourceNode::LiteralBatch(source) => source
                 .batches

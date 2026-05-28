@@ -17,6 +17,72 @@ pub enum NativePipelineExecutionMode {
     Adaptive,
 }
 
+/// Execution contract for logical `STDDEV_SAMP` aggregates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StddevSampExecutionMode {
+    /// Preserve DataFusion's order-sensitive Welford accumulator bits by
+    /// materializing to host and evaluating in DataFusion input order.
+    #[default]
+    DataFusionExactHostWelford,
+    /// Use libcudf's native grouped/scalar standard-deviation kernels with
+    /// `ddof=1`; floating-point bits may differ from DataFusion Welford order.
+    GpuNativeTolerant,
+}
+
+impl StddevSampExecutionMode {
+    /// Stable snake-case mode label used in env vars and reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DataFusionExactHostWelford => "datafusion_exact_host_welford",
+            Self::GpuNativeTolerant => "gpu_native_tolerant",
+        }
+    }
+
+    /// Returns true when execution must preserve DataFusion's exact Welford bits.
+    pub const fn is_datafusion_exact(self) -> bool {
+        matches!(self, Self::DataFusionExactHostWelford)
+    }
+}
+
+impl fmt::Display for StddevSampExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for StddevSampExecutionMode {
+    type Err = StddevSampExecutionModeParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "datafusion_exact_host_welford" | "datafusion_exact" | "exact" => Ok(Self::DataFusionExactHostWelford),
+            "gpu_native_tolerant" | "gpu_native" | "tolerant" => Ok(Self::GpuNativeTolerant),
+            other => Err(StddevSampExecutionModeParseError { value: other.to_string() }),
+        }
+    }
+}
+
+/// Error returned when parsing a `STDDEV_SAMP` execution-mode label fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StddevSampExecutionModeParseError {
+    value: String,
+}
+
+impl StddevSampExecutionModeParseError {
+    /// Returns the unrecognized label after ASCII-lowercase normalization.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl fmt::Display for StddevSampExecutionModeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid stddev_samp execution mode: {}", self.value)
+    }
+}
+
+impl std::error::Error for StddevSampExecutionModeParseError {}
+
 impl NativePipelineExecutionMode {
     /// Stable snake-case mode label used in env vars and reports.
     pub const fn as_str(self) -> &'static str {

@@ -52,7 +52,9 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert_eq!(q06.native_candidate_shape_family.as_deref(), Some("projected_global_local_parquet_aggregate"));
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=6\n"));
+    assert!(text.starts_with(&format!(
+        "# native_fallback_pressure_tsv_schema_version={NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION}\n"
+    )));
     assert!(text.contains("# workload=tpch\n"));
     assert!(text.contains("# dataset_scale_factor=tiny\n"));
     assert!(text.contains("# dataset_provenance=generated_tiny\n"));

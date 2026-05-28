@@ -132,6 +132,7 @@ pub(super) fn lower_source_input(
         native_source = native_source.with_reader_predicate(predicate.expr);
     }
     let reader_pushdown = native_source.reader_predicate.is_some();
+    let selected_row_group_stats = native_source.diagnostics.selected_row_group_stats.clone();
     native_source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
@@ -141,6 +142,7 @@ pub(super) fn lower_source_input(
         reader_pushdown,
         false,
     );
+    native_source.diagnostics.selected_row_group_stats = selected_row_group_stats;
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
     let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {

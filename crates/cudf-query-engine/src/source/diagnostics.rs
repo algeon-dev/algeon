@@ -15,6 +15,49 @@ pub(super) struct LocalParquetDiagnosticColumns<'a> {
     pub(super) scan_limit: Option<usize>,
 }
 
+/// Row-group selection evidence for a local Parquet source.
+///
+/// `None` on the parent diagnostics means the source does not have enough
+/// row-group metadata to distinguish unknown selection from an all-row-group
+/// scan. Byte counts are optional because some frontends only know row counts
+/// or file sizes at lowering time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedRowGroupStats {
+    /// Number of row groups selected for scanning.
+    pub selected_row_groups: usize,
+    /// Total row groups represented by the source metadata.
+    pub total_row_groups: usize,
+    /// Selected uncompressed source-read bytes, when known.
+    pub selected_uncompressed_bytes: Option<u64>,
+    /// Total uncompressed source-read bytes, when known.
+    pub total_uncompressed_bytes: Option<u64>,
+    /// Selected compressed source-read bytes, when known.
+    pub selected_compressed_bytes: Option<u64>,
+    /// Total compressed source-read bytes, when known.
+    pub total_compressed_bytes: Option<u64>,
+    /// Selected source rows, when known.
+    pub selected_rows: Option<u64>,
+    /// Total source rows, when known.
+    pub total_rows: Option<u64>,
+}
+
+impl SelectedRowGroupStats {
+    /// Returns true when the selection covers every represented row group.
+    pub fn selects_all_row_groups(&self) -> bool {
+        self.selected_row_groups >= self.total_row_groups
+    }
+
+    /// Best available selected byte evidence for source-read sizing.
+    pub fn selected_source_bytes(&self) -> Option<u64> {
+        self.selected_uncompressed_bytes.or(self.selected_compressed_bytes)
+    }
+
+    /// Best available total byte evidence for source-read sizing.
+    pub fn total_source_bytes(&self) -> Option<u64> {
+        self.total_uncompressed_bytes.or(self.total_compressed_bytes)
+    }
+}
+
 /// Frontend-visible source capability and lowering diagnostics.
 ///
 /// Diagnostics explain why a source can or cannot use the native direct device
@@ -34,6 +77,8 @@ pub struct SourceDiagnostics {
     pub known_bytes: Option<u64>,
     /// Total selected row groups, or `None` when row-group selection is unknown.
     pub selected_row_groups: Option<usize>,
+    /// Selected-versus-total row-group, byte, and row evidence.
+    pub selected_row_group_stats: Option<SelectedRowGroupStats>,
     /// How pushed-down source predicates were represented.
     pub predicate_disposition: PredicateDisposition,
     /// How byte-range file entries were represented.
@@ -70,6 +115,7 @@ impl SourceDiagnostics {
             .iter()
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
+        let selected_row_group_stats = selected_row_group_stats_for_files(files);
         let zero_column_count_disposition = if columns.read_columns.is_empty() && columns.missing_columns.is_empty() {
             ZeroColumnCountDisposition::Rejected
         } else {
@@ -111,6 +157,7 @@ impl SourceDiagnostics {
             ranged_file_count: 0,
             known_bytes,
             selected_row_groups,
+            selected_row_group_stats,
             predicate_disposition: PredicateDisposition::Absent,
             byte_range_disposition: ByteRangeDisposition::FullFiles,
             partition_column_disposition,
@@ -122,6 +169,178 @@ impl SourceDiagnostics {
             pure_filter_column_count: columns.pure_filter_columns.len(),
             rejected_features,
         }
+    }
+}
+
+fn selected_row_group_stats_for_files(files: &[LocalParquetFile]) -> Option<SelectedRowGroupStats> {
+    let mut aggregate = SelectedRowGroupStatsAccumulator::default();
+    for file in files {
+        let file_stats = selected_row_group_stats_for_file(file)?;
+        aggregate.add(file_stats)?;
+    }
+    aggregate.finish()
+}
+
+fn selected_row_group_stats_for_file(file: &LocalParquetFile) -> Option<SelectedRowGroupStats> {
+    let total_row_groups = local_parquet_file_row_group_metadata_count(file)?;
+    if total_row_groups == 0 {
+        return None;
+    }
+    let selected_indices = file.row_groups.clone().unwrap_or_else(|| (0..total_row_groups).collect::<Vec<_>>());
+    if selected_indices.iter().any(|index| *index >= total_row_groups) {
+        return None;
+    }
+
+    let total_compressed_bytes = source_read_bytes(
+        file.projected_row_group_compressed_bytes.as_ref(),
+        file.pure_filter_row_group_compressed_bytes.as_ref(),
+        file.row_group_bytes.as_ref(),
+        0..total_row_groups,
+    )
+    .or(file.file_size_bytes);
+    let selected_compressed_bytes = source_read_bytes(
+        file.projected_row_group_compressed_bytes.as_ref(),
+        file.pure_filter_row_group_compressed_bytes.as_ref(),
+        file.row_group_bytes.as_ref(),
+        selected_indices.iter().copied(),
+    )
+    .or_else(|| proportional_file_bytes(file.file_size_bytes, selected_indices.len(), total_row_groups));
+    let total_uncompressed_bytes = source_read_bytes(
+        file.projected_row_group_uncompressed_bytes.as_ref(),
+        file.pure_filter_row_group_uncompressed_bytes.as_ref(),
+        file.row_group_bytes.as_ref(),
+        0..total_row_groups,
+    );
+    let selected_uncompressed_bytes = source_read_bytes(
+        file.projected_row_group_uncompressed_bytes.as_ref(),
+        file.pure_filter_row_group_uncompressed_bytes.as_ref(),
+        file.row_group_bytes.as_ref(),
+        selected_indices.iter().copied(),
+    );
+    let total_rows = row_group_sum(file.row_group_rows.as_ref(), 0..total_row_groups);
+    let selected_rows = row_group_sum(file.row_group_rows.as_ref(), selected_indices.iter().copied());
+
+    Some(SelectedRowGroupStats {
+        selected_row_groups: selected_indices.len(),
+        total_row_groups,
+        selected_uncompressed_bytes,
+        total_uncompressed_bytes,
+        selected_compressed_bytes,
+        total_compressed_bytes,
+        selected_rows,
+        total_rows,
+    })
+}
+
+fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
+    file.row_group_bytes
+        .as_ref()
+        .or(file.projected_row_group_compressed_bytes.as_ref())
+        .or(file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(file.row_group_rows.as_ref())
+        .map(Vec::len)
+}
+
+fn source_read_bytes(
+    projected: Option<&Vec<u64>>,
+    pure_filter: Option<&Vec<u64>>,
+    fallback: Option<&Vec<u64>>,
+    indexes: impl IntoIterator<Item = usize> + Clone,
+) -> Option<u64> {
+    match (projected, pure_filter) {
+        (Some(projected), Some(pure_filter)) => {
+            checked_row_group_sum(projected, indexes.clone())?.checked_add(checked_row_group_sum(pure_filter, indexes)?)
+        },
+        (Some(projected), None) => checked_row_group_sum(projected, indexes),
+        (None, Some(pure_filter)) => checked_row_group_sum(pure_filter, indexes),
+        (None, None) => row_group_sum(fallback, indexes),
+    }
+}
+
+fn row_group_sum(values: Option<&Vec<u64>>, indexes: impl IntoIterator<Item = usize>) -> Option<u64> {
+    checked_row_group_sum(values?, indexes)
+}
+
+fn checked_row_group_sum(values: &[u64], indexes: impl IntoIterator<Item = usize>) -> Option<u64> {
+    indexes.into_iter().try_fold(0_u64, |total, index| total.checked_add(*values.get(index)?))
+}
+
+fn proportional_file_bytes(
+    file_size_bytes: Option<u64>,
+    selected_row_groups: usize,
+    total_row_groups: usize,
+) -> Option<u64> {
+    if total_row_groups == 0 {
+        return None;
+    }
+    let file_size_bytes = file_size_bytes?;
+    let numerator = u128::from(file_size_bytes).checked_mul(selected_row_groups as u128)?;
+    u64::try_from(numerator / total_row_groups as u128).ok()
+}
+
+#[derive(Debug)]
+struct SelectedRowGroupStatsAccumulator {
+    selected_row_groups: usize,
+    total_row_groups: usize,
+    selected_uncompressed_bytes: Option<u64>,
+    total_uncompressed_bytes: Option<u64>,
+    selected_compressed_bytes: Option<u64>,
+    total_compressed_bytes: Option<u64>,
+    selected_rows: Option<u64>,
+    total_rows: Option<u64>,
+}
+
+impl Default for SelectedRowGroupStatsAccumulator {
+    fn default() -> Self {
+        Self {
+            selected_row_groups: 0,
+            total_row_groups: 0,
+            selected_uncompressed_bytes: Some(0),
+            total_uncompressed_bytes: Some(0),
+            selected_compressed_bytes: Some(0),
+            total_compressed_bytes: Some(0),
+            selected_rows: Some(0),
+            total_rows: Some(0),
+        }
+    }
+}
+
+impl SelectedRowGroupStatsAccumulator {
+    fn add(&mut self, stats: SelectedRowGroupStats) -> Option<()> {
+        self.selected_row_groups = self.selected_row_groups.checked_add(stats.selected_row_groups)?;
+        self.total_row_groups = self.total_row_groups.checked_add(stats.total_row_groups)?;
+        self.selected_uncompressed_bytes =
+            add_optional_u64(self.selected_uncompressed_bytes, stats.selected_uncompressed_bytes)?;
+        self.total_uncompressed_bytes =
+            add_optional_u64(self.total_uncompressed_bytes, stats.total_uncompressed_bytes)?;
+        self.selected_compressed_bytes =
+            add_optional_u64(self.selected_compressed_bytes, stats.selected_compressed_bytes)?;
+        self.total_compressed_bytes = add_optional_u64(self.total_compressed_bytes, stats.total_compressed_bytes)?;
+        self.selected_rows = add_optional_u64(self.selected_rows, stats.selected_rows)?;
+        self.total_rows = add_optional_u64(self.total_rows, stats.total_rows)?;
+        Some(())
+    }
+
+    fn finish(self) -> Option<SelectedRowGroupStats> {
+        (self.total_row_groups > 0).then_some(SelectedRowGroupStats {
+            selected_row_groups: self.selected_row_groups,
+            total_row_groups: self.total_row_groups,
+            selected_uncompressed_bytes: self.selected_uncompressed_bytes,
+            total_uncompressed_bytes: self.total_uncompressed_bytes,
+            selected_compressed_bytes: self.selected_compressed_bytes,
+            total_compressed_bytes: self.total_compressed_bytes,
+            selected_rows: self.selected_rows,
+            total_rows: self.total_rows,
+        })
+    }
+}
+
+fn add_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<Option<u64>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(Some(left.checked_add(right)?)),
+        _ => Some(None),
     }
 }
 

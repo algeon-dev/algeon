@@ -182,6 +182,16 @@ pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> S
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
+pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
 pub(super) fn format_failure_facts(facts: &BTreeMap<String, String>) -> String {
     format_key_value_facts(facts)
 }

@@ -414,7 +414,9 @@ pub fn execute_query_plan_with_gpu_inputs(
 ) -> Result<ExecutionResult> {
     context.check_cancellation("cudf_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
-    let _order_tracking = DataFusionOrderTrackingGuard::new(plan_requires_datafusion_exact_stddev_order(plan));
+    let _order_tracking = DataFusionOrderTrackingGuard::new(
+        context.stddev_samp_execution_mode().is_datafusion_exact() && plan_requires_datafusion_exact_stddev_order(plan),
+    );
     let mut metrics = QueryMetrics {
         phase_c_memory_control_policy: context.memory_control_policy(),
         execution_boundary_policy: context.boundary_policy(),

@@ -670,6 +670,10 @@ pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
 
 fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<ReservationRequirement> {
     match &node.kind {
+        PlanNode::Filter(filter) if expr_contains_regexp_replace(&filter.predicate) => regexp_replace_requirements(),
+        PlanNode::Projection(projection) if projection_contains_regexp_replace(projection) => {
+            regexp_replace_requirements()
+        },
         PlanNode::Aggregate(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
             "operator_output",
@@ -771,5 +775,54 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             ContractQuality::ExactPreflight,
         )],
         _ => Vec::new(),
+    }
+}
+
+fn regexp_replace_requirements() -> Vec<ReservationRequirement> {
+    vec![ReservationRequirement::modeled(
+        ReservationKind::OperatorOutput,
+        "regexp_replace_expression_output",
+        "regexp_replace_expression_output_contract",
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+    )]
+}
+
+fn projection_contains_regexp_replace(projection: &crate::plan::ProjectionNode) -> bool {
+    projection.outputs.iter().any(|output| expr_contains_regexp_replace(&output.expr))
+}
+
+fn expr_contains_regexp_replace(expr: &Expr) -> bool {
+    match expr {
+        Expr::RegexpReplace { .. } => true,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
+        | Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
+        | Expr::Round { expr, .. }
+        | Expr::InList { expr, .. }
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
+        | Expr::Alias { expr, .. } => expr_contains_regexp_replace(expr),
+        Expr::Binary { left, right, .. }
+        | Expr::IsDistinctFrom { left, right }
+        | Expr::IsNotDistinctFrom { left, right } => {
+            expr_contains_regexp_replace(left) || expr_contains_regexp_replace(right)
+        },
+        Expr::Concat(exprs) => exprs.iter().any(expr_contains_regexp_replace),
+        Expr::Case { branches, else_expr } => {
+            branches
+                .iter()
+                .any(|branch| expr_contains_regexp_replace(&branch.when) || expr_contains_regexp_replace(&branch.then))
+                || expr_contains_regexp_replace(else_expr)
+        },
+        Expr::Column(_) | Expr::Literal(_) => false,
     }
 }

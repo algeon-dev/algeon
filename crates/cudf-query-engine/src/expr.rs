@@ -558,10 +558,12 @@ impl fmt::Display for BinaryOp {
 /// state whenever partial/final aggregation is involved, and finalize with
 /// `SUM / COUNT`. It must never merge AVG states by averaging partial averages.
 ///
-/// Logical `StddevSamp` carries DataFusion sample standard-deviation semantics:
-/// null inputs are ignored, inputs are accumulated as Float64 Welford state
-/// (`count`, `mean`, `m2`), counts 0 and 1 produce null, and finalization is
-/// `sqrt(m2 / (count - 1))`.
+/// Logical `StddevSamp` defaults to DataFusion sample standard-deviation
+/// semantics: null inputs are ignored, inputs are accumulated as Float64
+/// Welford state (`count`, `mean`, `m2`), counts 0 and 1 produce null, and
+/// finalization is `sqrt(m2 / (count - 1))`. Execution may explicitly select
+/// the GPU-native tolerant contract, which keeps SQL null/ddof semantics but
+/// does not preserve DataFusion's order-sensitive final bits.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateSpec {
     /// Grouping key expressions in output key order.

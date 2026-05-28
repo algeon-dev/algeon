@@ -19,7 +19,7 @@ use super::{
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
     error::{QueryError, QueryErrorCode, Result},
-    mode::NativePipelineExecutionMode,
+    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
 
 /// Stable tenant identifier used by service-level admission and future caches.
@@ -113,6 +113,8 @@ pub struct QueryServiceConfig {
     pub source_scheduler_policy: SourceSchedulerPolicy,
     /// Strict bounded or adaptive execution mode copied into tenant contexts.
     pub native_pipeline_execution_mode: NativePipelineExecutionMode,
+    /// STDDEV_SAMP execution contract copied into tenant contexts.
+    pub stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
     /// Maximum number of admitted query handles active at one time.
@@ -184,6 +186,7 @@ impl Default for QueryServiceConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             stream_pool_size: None,
             max_concurrent_queries: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             max_admission_queue_len: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
@@ -615,6 +618,11 @@ impl QueryHandle {
         self.service.config.native_pipeline_execution_mode
     }
 
+    /// STDDEV_SAMP execution contract assigned to this admitted query.
+    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+        self.service.config.stddev_samp_execution_mode
+    }
+
     /// Acquires a tenant-bound execution context from the service stream pool.
     pub fn acquire_context(&self) -> Result<TenantQueryContext> {
         if self.released.load(Ordering::Acquire) {
@@ -652,6 +660,7 @@ impl QueryHandle {
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: self.service.config.native_pipeline_execution_mode,
+            stddev_samp_execution_mode: self.service.config.stddev_samp_execution_mode,
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -829,6 +838,7 @@ mod tests {
         let config = QueryServiceConfig {
             source_scheduler_policy: SourceSchedulerPolicy::new(4),
             native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+            stddev_samp_execution_mode: StddevSampExecutionMode::GpuNativeTolerant,
             ..QueryServiceConfig::default()
         };
         let service = QueryService::new_for_admission_tests(
@@ -843,6 +853,7 @@ mod tests {
         assert_eq!(handle.boundary_policy(), ExecutionBoundaryPolicy::default());
         assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
         assert_eq!(handle.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
+        assert_eq!(handle.stddev_samp_execution_mode(), StddevSampExecutionMode::GpuNativeTolerant);
     }
 
     #[test]

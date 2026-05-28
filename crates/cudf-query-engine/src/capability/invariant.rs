@@ -7,6 +7,9 @@
 #![deny(missing_docs)]
 
 use super::{edge::*, graph::*, model::*, node::*, shape::*, *};
+use crate::{plan::WindowFunction, source::LocalParquetSource};
+
+const LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD: u64 = 512 << 20;
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
@@ -53,6 +56,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
     append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(plan, &mut invariants);
     append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(plan, &mut invariants);
+    append_blocking_rollup_rank_full_scan_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
@@ -98,6 +102,290 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
         });
     }
     invariants
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockingRollupRankTopKFullScanShape {
+    aggregate_id: NodeId,
+    grouping_key_count: usize,
+    grouping_set_count: usize,
+    window_id: NodeId,
+    rank_function_count: usize,
+    rank_sort_id: Option<NodeId>,
+    rank_filter_id: Option<NodeId>,
+    final_topk_sort_id: Option<NodeId>,
+    final_topk_limit_id: Option<NodeId>,
+    final_topk_fetch: Option<usize>,
+    large_source_id: NodeId,
+    large_source_selected_bytes: u64,
+    large_source_total_bytes: Option<u64>,
+    large_source_selected_row_groups: Option<usize>,
+    large_source_total_row_groups: Option<usize>,
+    large_source_file_count: usize,
+    large_source_read_column_count: usize,
+    source_count: usize,
+    join_count: usize,
+}
+
+fn append_blocking_rollup_rank_full_scan_invariant(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    let Some(shape) = blocking_rollup_rank_full_scan_shape(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    let mut nodes = vec![shape.large_source_id, shape.aggregate_id, shape.window_id];
+    if let Some(rank_sort_id) = shape.rank_sort_id {
+        nodes.push(rank_sort_id);
+    }
+    if let Some(rank_filter_id) = shape.rank_filter_id {
+        nodes.push(rank_filter_id);
+    }
+    if let Some(final_topk_sort_id) = shape.final_topk_sort_id {
+        nodes.push(final_topk_sort_id);
+    }
+    if let Some(final_topk_limit_id) = shape.final_topk_limit_id {
+        nodes.push(final_topk_limit_id);
+    }
+    let mut required_resources =
+        vec![ResidentResource::NodeOutput(shape.aggregate_id), ResidentResource::NodeOutput(shape.window_id)];
+    if let Some(rank_sort_id) = shape.rank_sort_id {
+        required_resources.push(ResidentResource::NodeOutput(rank_sort_id));
+    }
+    if let Some(final_topk_sort_id) = shape.final_topk_sort_id {
+        required_resources.push(ResidentResource::NodeOutput(final_topk_sort_id));
+    }
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::BlockingRollupRankTopKFullScan,
+        nodes,
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources,
+        reservation_requirements: Vec::new(),
+        decision: CapabilityDecision::rejected(
+            BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS,
+            [
+                ("aggregate_id", shape.aggregate_id.to_string()),
+                ("grouping_key_count", shape.grouping_key_count.to_string()),
+                ("grouping_set_count", shape.grouping_set_count.to_string()),
+                ("window_id", shape.window_id.to_string()),
+                ("rank_function_count", shape.rank_function_count.to_string()),
+                ("rank_sort_id", optional_node_fact(shape.rank_sort_id)),
+                ("rank_filter_id", optional_node_fact(shape.rank_filter_id)),
+                ("final_topk_sort_id", optional_node_fact(shape.final_topk_sort_id)),
+                ("final_topk_limit_id", optional_node_fact(shape.final_topk_limit_id)),
+                ("final_topk_fetch", optional_usize_fact(shape.final_topk_fetch)),
+                ("large_source_id", shape.large_source_id.to_string()),
+                ("large_source_selected_bytes", shape.large_source_selected_bytes.to_string()),
+                ("large_source_total_bytes", optional_u64_fact(shape.large_source_total_bytes)),
+                ("large_source_selected_row_groups", optional_usize_fact(shape.large_source_selected_row_groups)),
+                ("large_source_total_row_groups", optional_usize_fact(shape.large_source_total_row_groups)),
+                ("large_source_threshold_bytes", LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD.to_string()),
+                ("large_source_file_count", shape.large_source_file_count.to_string()),
+                ("large_source_read_column_count", shape.large_source_read_column_count.to_string()),
+                ("source_count", shape.source_count.to_string()),
+                ("join_count", shape.join_count.to_string()),
+                ("required_remediation", "source_reduction_or_exact_blocking_stage_preflight".to_string()),
+                (
+                    "unmodeled_contracts",
+                    "aggregate_contract;rank_sort_contract;window_contract;optional_final_topk_contract".to_string(),
+                ),
+            ],
+        ),
+    });
+}
+
+fn blocking_rollup_rank_full_scan_shape(plan: &QueryPlan) -> Option<BlockingRollupRankTopKFullScanShape> {
+    let reachable = collect_reachable_node_ids(plan).ok()?;
+    let mut source_count = 0;
+    let mut join_count = 0;
+    let mut grouping_aggregates = Vec::new();
+    let mut rank_windows = Vec::new();
+    let mut final_topks = Vec::new();
+    let mut filters = Vec::new();
+    let mut large_sources = Vec::new();
+
+    for node_id in &reachable {
+        let node = plan.node(*node_id)?;
+        match &node.kind {
+            PlanNode::Source(source) => {
+                source_count += 1;
+                let SourceNode::LocalParquet(source) = source.as_ref() else {
+                    continue;
+                };
+                let Some(source_size) = blocking_rollup_rank_topk_source_size(source) else {
+                    continue;
+                };
+                if source_size.selected_bytes < LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD {
+                    continue;
+                }
+                large_sources.push((*node_id, source_size, source.file_count(), source.read_column_count()));
+            },
+            PlanNode::Join(_) => join_count += 1,
+            PlanNode::Aggregate(aggregate) => {
+                if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
+                    grouping_aggregates.push((
+                        *node_id,
+                        aggregate.spec.group_exprs.len(),
+                        grouping_sets.groups.len(),
+                        grouping_set_input_sources_reduced_by_prior_aggregate(plan, aggregate.input),
+                    ));
+                }
+            },
+            PlanNode::Window(window) => {
+                let rank_function_count = window
+                    .spec
+                    .functions
+                    .iter()
+                    .filter(|function| matches!(function, WindowFunction::Rank { .. }))
+                    .count();
+                if rank_function_count > 0 {
+                    rank_windows.push((*node_id, rank_function_count));
+                }
+            },
+            PlanNode::Limit(limit) => {
+                if let Some(fetch) = limit.spec.fetch
+                    && matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_)))
+                {
+                    final_topks.push((limit.input, *node_id, fetch));
+                }
+            },
+            PlanNode::Filter(filter) => filters.push((*node_id, filter.input)),
+            PlanNode::Projection(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_) => {},
+        }
+    }
+
+    if join_count == 0 {
+        return None;
+    }
+
+    let mut selected = None;
+    for (window_id, rank_function_count) in &rank_windows {
+        let window_inputs = collect_reachable_node_ids_from(plan, *window_id).ok()?;
+        let rank_sort_id = match plan.node(*window_id).map(|node| &node.kind) {
+            Some(PlanNode::Window(window))
+                if matches!(plan.node(window.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) =>
+            {
+                Some(window.input)
+            },
+            _ => None,
+        };
+        let rank_filter_id = filters.iter().find_map(|(filter_id, filter_input)| {
+            collect_reachable_node_ids_from(plan, *filter_input)
+                .ok()
+                .is_some_and(|filter_inputs| filter_inputs.contains(window_id))
+                .then_some(*filter_id)
+        });
+        let final_topk = final_topks.iter().copied().find(|(_, final_limit_id, _)| {
+            collect_reachable_node_ids_from(plan, *final_limit_id)
+                .ok()
+                .is_some_and(|topk_inputs| topk_inputs.contains(window_id))
+        });
+        for (aggregate_id, grouping_key_count, grouping_set_count, reduced_source_ids) in &grouping_aggregates {
+            if !window_inputs.contains(aggregate_id) {
+                continue;
+            }
+            let aggregate_inputs = collect_reachable_node_ids_from(plan, *aggregate_id).ok()?;
+            for (large_source_id, source_size, large_source_file_count, large_source_read_column_count) in
+                &large_sources
+            {
+                if !aggregate_inputs.contains(large_source_id) {
+                    continue;
+                }
+                if reduced_source_ids.contains(large_source_id) {
+                    continue;
+                }
+                if selected.is_none_or(|shape: BlockingRollupRankTopKFullScanShape| {
+                    source_size.selected_bytes > shape.large_source_selected_bytes
+                }) {
+                    selected = Some(BlockingRollupRankTopKFullScanShape {
+                        aggregate_id: *aggregate_id,
+                        grouping_key_count: *grouping_key_count,
+                        grouping_set_count: *grouping_set_count,
+                        window_id: *window_id,
+                        rank_function_count: *rank_function_count,
+                        rank_sort_id,
+                        rank_filter_id,
+                        final_topk_sort_id: final_topk.map(|(sort_id, _, _)| sort_id),
+                        final_topk_limit_id: final_topk.map(|(_, limit_id, _)| limit_id),
+                        final_topk_fetch: final_topk.map(|(_, _, fetch)| fetch),
+                        large_source_id: *large_source_id,
+                        large_source_selected_bytes: source_size.selected_bytes,
+                        large_source_total_bytes: source_size.total_bytes,
+                        large_source_selected_row_groups: source_size.selected_row_groups,
+                        large_source_total_row_groups: source_size.total_row_groups,
+                        large_source_file_count: *large_source_file_count,
+                        large_source_read_column_count: *large_source_read_column_count,
+                        source_count,
+                        join_count,
+                    });
+                }
+            }
+        }
+    }
+
+    let shape = selected?;
+    Some(BlockingRollupRankTopKFullScanShape { source_count, join_count, ..shape })
+}
+
+fn grouping_set_input_sources_reduced_by_prior_aggregate(
+    plan: &QueryPlan,
+    input: NodeId,
+) -> std::collections::BTreeSet<NodeId> {
+    let Some(aggregate_inputs) = collect_reachable_node_ids_from(plan, input).ok() else {
+        return std::collections::BTreeSet::new();
+    };
+    aggregate_inputs
+        .iter()
+        .filter_map(|node_id| plan.node(*node_id))
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(prior) if prior.spec.grouping_sets.is_none() => {
+                collect_reachable_node_ids_from(plan, prior.input).ok()
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockingRollupRankTopKSourceSize {
+    selected_bytes: u64,
+    total_bytes: Option<u64>,
+    selected_row_groups: Option<usize>,
+    total_row_groups: Option<usize>,
+}
+
+fn blocking_rollup_rank_topk_source_size(source: &LocalParquetSource) -> Option<BlockingRollupRankTopKSourceSize> {
+    if let Some(stats) = source.diagnostics.selected_row_group_stats.as_ref() {
+        let selected_bytes = stats.selected_source_bytes()?;
+        return Some(BlockingRollupRankTopKSourceSize {
+            selected_bytes,
+            total_bytes: stats.total_source_bytes(),
+            selected_row_groups: Some(stats.selected_row_groups),
+            total_row_groups: Some(stats.total_row_groups),
+        });
+    }
+    source.diagnostics.known_bytes.map(|known_bytes| BlockingRollupRankTopKSourceSize {
+        selected_bytes: known_bytes,
+        total_bytes: Some(known_bytes),
+        selected_row_groups: source.diagnostics.selected_row_groups,
+        total_row_groups: None,
+    })
+}
+
+fn optional_u64_fact(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+}
+
+fn optional_usize_fact(value: Option<usize>) -> String {
+    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+}
+
+fn optional_node_fact(value: Option<NodeId>) -> String {
+    value.map_or_else(|| "absent".to_string(), |value| value.to_string())
 }
 
 pub(super) fn append_shared_resident_subplan_invariants(

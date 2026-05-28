@@ -395,6 +395,44 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.adaptive_memory_history_hit_count.saturating_add(current.adaptive_memory_history_hit_count);
         aggregate.adaptive_memory_history_miss_count =
             aggregate.adaptive_memory_history_miss_count.saturating_add(current.adaptive_memory_history_miss_count);
+        aggregate.dynamic_filter_produced_count =
+            aggregate.dynamic_filter_produced_count.saturating_add(current.dynamic_filter_produced_count);
+        aggregate.dynamic_filter_skipped_count =
+            aggregate.dynamic_filter_skipped_count.saturating_add(current.dynamic_filter_skipped_count);
+        aggregate.dynamic_filter_applied_count =
+            aggregate.dynamic_filter_applied_count.saturating_add(current.dynamic_filter_applied_count);
+        aggregate.dynamic_filter_row_groups_pruned =
+            aggregate.dynamic_filter_row_groups_pruned.saturating_add(current.dynamic_filter_row_groups_pruned);
+        aggregate.dynamic_filter_source_bytes_pruned =
+            aggregate.dynamic_filter_source_bytes_pruned.saturating_add(current.dynamic_filter_source_bytes_pruned);
+        aggregate.dynamic_filter_reader_predicate_rows_before = aggregate
+            .dynamic_filter_reader_predicate_rows_before
+            .saturating_add(current.dynamic_filter_reader_predicate_rows_before);
+        aggregate.dynamic_filter_reader_predicate_rows_after = aggregate
+            .dynamic_filter_reader_predicate_rows_after
+            .saturating_add(current.dynamic_filter_reader_predicate_rows_after);
+        aggregate.dynamic_filter_reader_predicate_rows_filtered = aggregate
+            .dynamic_filter_reader_predicate_rows_filtered
+            .saturating_add(current.dynamic_filter_reader_predicate_rows_filtered);
+        aggregate.dynamic_filter_post_decode_rows_before = aggregate
+            .dynamic_filter_post_decode_rows_before
+            .saturating_add(current.dynamic_filter_post_decode_rows_before);
+        aggregate.dynamic_filter_post_decode_rows_after = aggregate
+            .dynamic_filter_post_decode_rows_after
+            .saturating_add(current.dynamic_filter_post_decode_rows_after);
+        aggregate.dynamic_filter_post_decode_rows_filtered = aggregate
+            .dynamic_filter_post_decode_rows_filtered
+            .saturating_add(current.dynamic_filter_post_decode_rows_filtered);
+        aggregate.dynamic_filter_source_post_decode_rows_filtered = aggregate
+            .dynamic_filter_source_post_decode_rows_filtered
+            .saturating_add(current.dynamic_filter_source_post_decode_rows_filtered);
+        aggregate.dynamic_filter_filter_post_decode_rows_filtered = aggregate
+            .dynamic_filter_filter_post_decode_rows_filtered
+            .saturating_add(current.dynamic_filter_filter_post_decode_rows_filtered);
+        aggregate.dynamic_filter_join_probe_post_decode_rows_filtered = aggregate
+            .dynamic_filter_join_probe_post_decode_rows_filtered
+            .saturating_add(current.dynamic_filter_join_probe_post_decode_rows_filtered);
+        aggregate.merge_dynamic_filter_runtime_rows(current.dynamic_filter_runtime_rows);
         aggregate.hash_join_build_count = aggregate.hash_join_build_count.saturating_add(current.hash_join_build_count);
         aggregate.filtered_join_build_count =
             aggregate.filtered_join_build_count.saturating_add(current.filtered_join_build_count);

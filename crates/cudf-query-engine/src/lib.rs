@@ -28,6 +28,8 @@ pub mod chunk;
 pub mod contract_report;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
 pub mod datatypes;
+/// DataFusion-free dynamic-filter producer/consumer route IR.
+pub mod dynamic_filter;
 pub mod error;
 pub mod exec;
 /// DataFusion-free expression IR used by native query plans.
@@ -64,6 +66,11 @@ pub use datatypes::{
     arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
     is_supported_arrow_implicit_cast, is_supported_arrow_type, timestamp_unit_to_cudf_resolution,
 };
+pub use dynamic_filter::{
+    DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
+    DynamicFilterId, DynamicFilterKind, DynamicFilterPayload, DynamicFilterProducer, DynamicFilterReadiness,
+    DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+};
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{
     AdaptivePipelineAdmission, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
@@ -80,25 +87,40 @@ pub use expr::{
     GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{
-    AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, GraphAlgorithmRuntimeMetrics,
-    JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction,
-    MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
+    AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
+    DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics,
+    MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics,
+    TaskOperatorMetrics, TaskRuntimeMetrics,
 };
-pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
+pub use mode::{
+    AdaptiveExecutionMode, NativePipelineExecutionMode, StddevSampExecutionMode, StrictBoundedExecutionMode,
+};
 pub use optimizer::{
-    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
-    JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics,
-    JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason, JoinFilterReassociationCandidateDiagnostics,
+    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
+    AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
+    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+    DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedRowGroupPruningCandidateDiagnostics,
+    DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
+    DimensionDerivedRowGroupPruningRejectedReason, DynamicFilterRouteCandidateDiagnostics,
+    DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions, DynamicFilterRouteRejectedReason,
+    JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
+    JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions,
+    JoinBuildSideSelectionRejectedReason, JoinFilterReassociationCandidateDiagnostics,
     JoinFilterReassociationDiagnostics, JoinFilterReassociationOptions, JoinFilterReassociationRejectedReason,
+    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseCandidateDiagnostics,
+    LocalParquetSourceReuseDiagnostics, LocalParquetSourceReuseOptions, LocalParquetSourceReuseRejectedReason,
     NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
     OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics, OuterJoinNullRejectionDiagnostics,
-    OuterJoinNullRejectionOptions, OuterJoinNullRejectionRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME,
+    OuterJoinNullRejectionOptions, OuterJoinNullRejectionRejectedReason, PROJECTION_SIMPLIFICATION_RULE_NAME,
+    ProjectionSimplificationCandidateDiagnostics, ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions,
+    ProjectionSimplificationRejectedReason, SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
     STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode,
     SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal,
     SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions,
-    SemijoinReductionRejectedReason, SemijoinReductionResult, StreamFanoutReplayCandidateDiagnostics,
-    StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason, optimize_query_plan,
-    optimize_semijoin_reduction,
+    SemijoinReductionRejectedReason, SemijoinReductionResult, SharedSubplanMaterializationCandidateDiagnostics,
+    SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
+    SharedSubplanMaterializationRejectedReason, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
+    StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason, optimize_query_plan, optimize_semijoin_reduction,
 };
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -117,9 +139,10 @@ pub use plan::{
     GraphOperationDefinition, GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams,
     GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
-    LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder,
-    ResultSink, SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
-    stable_graph_result_schema,
+    LimitNode, NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceFacts,
+    NativePlanPreferenceOptions, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan,
+    QueryPlanBuilder, ResultSink, SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode,
+    WindowSpec, native_plan_preference_decision, stable_graph_result_schema,
 };
 pub use runtime::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
@@ -137,6 +160,6 @@ pub use runtime::{
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
     ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDiagnostics,
+    SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

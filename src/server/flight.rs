@@ -799,10 +799,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
 
         let handle = Uuid::new_v4().hyphenated().to_string();
         self.prepared_statements.insert(handle.clone(), sql);
-        tracing::info!(
-            prepared_statement_handle = handle.as_str(),
-            "created Flight SQL prepared statement"
-        );
+        tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
 
         Ok(ActionCreatePreparedStatementResult {
             prepared_statement_handle: handle.into_bytes().into(),
@@ -850,7 +847,12 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
 
         let query_id = Uuid::new_v4().hyphenated().to_string();
         let planning_started_at = Instant::now();
-        tracing::info!(query_id, sql, prepared_statement_handle = handle.as_str(), "planning Flight SQL prepared statement");
+        tracing::info!(
+            query_id,
+            sql,
+            prepared_statement_handle = handle.as_str(),
+            "planning Flight SQL prepared statement"
+        );
         let queued_at = Instant::now();
         let permit = match self.acquire_statement_permit(&query_id).await {
             Ok(permit) => permit,
@@ -1111,9 +1113,7 @@ const FLIGHT_SQL_TABLE_TYPES: &[&str] = &[FLIGHT_SQL_TABLE_TYPE_TABLE, FLIGHT_SQ
 fn flight_sql_table_types_schema() -> Arc<Schema> {
     use arrow::datatypes::{DataType, Field};
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
-    SCHEMA
-        .get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)])))
-        .clone()
+    SCHEMA.get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]))).clone()
 }
 
 /// Schema for `CommandGetPrimaryKeys` responses. Pinned to the columns
@@ -1224,9 +1224,7 @@ fn table_type_to_flight_sql(table_type: TableType) -> &'static str {
 /// the original command back as the ticket payload (matching how
 /// `get_flight_info_sql_info` is wired).
 fn metadata_flight_info<C>(command: C, descriptor: FlightDescriptor, schema: &Schema) -> Result<FlightInfo, Status>
-where
-    C: ProstMessageExt,
-{
+where C: ProstMessageExt {
     let ticket = Ticket { ticket: command.as_any().encode_to_vec().into() };
     let endpoint = FlightEndpoint::new().with_ticket(ticket);
     let info = FlightInfo::new()

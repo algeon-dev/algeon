@@ -112,6 +112,31 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.adaptive_memory_history_lookup_count, 13);
     assert_eq!(row.metrics.adaptive_memory_history_hit_count, 8);
     assert_eq!(row.metrics.adaptive_memory_history_miss_count, 5);
+    assert_eq!(row.metrics.dynamic_filter_produced_count, 1);
+    assert_eq!(row.metrics.dynamic_filter_skipped_count, 1);
+    assert_eq!(row.metrics.dynamic_filter_applied_count, 1);
+    assert_eq!(row.metrics.dynamic_filter_row_groups_pruned, 3);
+    assert_eq!(row.metrics.dynamic_filter_source_bytes_pruned, 4096);
+    assert_eq!(row.metrics.dynamic_filter_reader_predicate_rows_before, 1000);
+    assert_eq!(row.metrics.dynamic_filter_reader_predicate_rows_after, 250);
+    assert_eq!(row.metrics.dynamic_filter_reader_predicate_rows_filtered, 750);
+    assert_eq!(row.metrics.dynamic_filter_post_decode_rows_before, 80);
+    assert_eq!(row.metrics.dynamic_filter_post_decode_rows_after, 25);
+    assert_eq!(row.metrics.dynamic_filter_post_decode_rows_filtered, 55);
+    assert_eq!(row.metrics.dynamic_filter_source_post_decode_rows_filtered, 55);
+    assert_eq!(row.metrics.dynamic_filter_filter_post_decode_rows_filtered, 0);
+    assert_eq!(row.metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 0);
+    assert_eq!(row.metrics.dynamic_filter_measured_reduction_status().as_str(), "measured_source_pruned");
+    assert_eq!(row.metrics.dynamic_filter_post_decode_reduction_stage().as_str(), "source_post_decode");
+    assert_eq!(row.metrics.dynamic_filter_work_avoidance_status().as_str(), "source_read_pruned");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows.len(), 2);
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[0].dynamic_filter_id, "df0");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[0].event, "applied");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[0].filter_kind, "small_in_list");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[0].row_groups_pruned, 3);
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[1].event, "applied_post_decode");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[1].consumer_reduction_stage, "source_post_decode");
+    assert_eq!(row.metrics.dynamic_filter_runtime_rows[1].post_decode_rows_filtered, 55);
     assert_eq!(row.metrics.hash_join_build_count, 1);
     assert_eq!(row.metrics.filtered_join_build_count, 6);
     assert_eq!(row.metrics.one_shot_join_count, 7);
@@ -140,18 +165,33 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.aggregate_strategy_rows[0].source_chunk_row_group_count, "1");
     assert_eq!(row.metrics.aggregate_strategy_rows[0].source_chunk_known_row_count, "6001215");
     assert_eq!(row.metrics.aggregate_strategy_rows[0].groupby_elapsed_ns, 123456789);
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].aggregate_structural_key, "agg-v1-fnv64-0123456789abcdef");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].prior_cardinality_evidence_scope, "absent");
     assert_eq!(row.metrics.aggregate_strategy_rows[0].encoded_key_partial_cost_model, "prior_partial_reduction_ratio");
     assert_eq!(row.metrics.aggregate_strategy_rows[0].encoded_key_partial_cost_model_status, "rejected_by_cost_model");
     assert_eq!(
         row.metrics.aggregate_strategy_rows[0].encoded_key_partial_selection_reason,
         "no_prior_cardinality_evidence"
     );
-    assert_eq!(
-        row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_rejected_reason,
-        "prepared_sort_groupby_cost_model_no_prior_cardinality_evidence"
-    );
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_rejected_reason, "none");
     assert_eq!(row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_contract_status, "available");
+    assert_eq!(
+        row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_cost_model_status,
+        "selected_libcudf_runtime_probe"
+    );
+    assert_eq!(
+        row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_selection_reason,
+        "runtime_cardinality_probe_required"
+    );
     assert_eq!(row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_num_groups, "unknown");
+    assert_eq!(row.metrics.aggregate_libcudf_runtime_probe_count(), 1);
+    assert_eq!(row.metrics.aggregate_libcudf_runtime_probe_elapsed_ns(), 123456789);
+    assert_eq!(row.metrics.aggregate_libcudf_runtime_probe_input_rows(), 6001215);
+    assert_eq!(row.metrics.aggregate_exact_cardinality_probe_count(), 0);
+    assert_eq!(row.metrics.aggregate_exact_cardinality_probe_elapsed_ns(), 0);
+    assert_eq!(row.metrics.aggregate_exact_cardinality_probe_input_rows(), 0);
+    assert_eq!(row.metrics.aggregate_prepared_sort_groupby_elapsed_ns(), 0);
+    assert_eq!(row.metrics.aggregate_encoded_key_partial_elapsed_ns(), 0);
     assert_eq!(row.metrics.join_strategy_rows.len(), 1);
     assert_eq!(row.metrics.join_strategy_rows[0].node_id, "n2");
     assert_eq!(row.metrics.join_strategy_rows[0].join_strategy, "one_shot_equi");
@@ -161,15 +201,35 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 27);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 103);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 37);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 129);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=27\n"));
+    assert!(text.starts_with(&format!(
+        "# native_datafusion_execution_tsv_schema_version={NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION}\n"
+    )));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .contains("\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\t")
+    );
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tdynamic_filter_measured_reduction_status\t"));
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tdynamic_filter_work_avoidance_status\t"));
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tdynamic_filter_post_decode_reduction_stage\t"));
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
+        "\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\t"
+    ));
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .contains("\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\t")
+    );
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .contains("\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\t")
+    );
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\taggregate_strategy_rows\tjoin_strategy_rows\t"));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\t"
@@ -182,6 +242,26 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
         )
     );
     assert!(text.contains("algorithm_metadata=converged=true,iterations=12"));
+    assert!(text.contains("dynamic_filter_id=df0,event=applied,producer_kind=hash_join_build"));
+    assert!(
+        text.contains(
+            "\tsource_post_decode\tmeasured_source_pruned\tsource_read_pruned\tdynamic_filter_id=df0,event=applied,producer_kind=hash_join_build"
+        )
+    );
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("execution report should contain a TSV header");
+    let data = lines.next().expect("execution report should contain a data row");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let data_fields = data.split('\t').collect::<Vec<_>>();
+    assert_eq!(header_fields.len(), data_fields.len());
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_count")], "1");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_elapsed_ns")], "123456789");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_input_rows")], "6001215");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_count")], "0");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_elapsed_ns")], "0");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_input_rows")], "0");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_prepared_sort_groupby_elapsed_ns")], "0");
+    assert_eq!(data_fields[header_index(&header_fields, "aggregate_encoded_key_partial_elapsed_ns")], "0");
     assert!(text.contains("operator_kind=source_read,task_count=3,elapsed_ns=0,reservation_requested_bytes=120,reservation_granted_bytes=96,reservation_released_bytes=32,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("\tcompiled_task_id=t7,operator_kind=source_read,elapsed_ns=0,reservation_requested_bytes=80,reservation_granted_bytes=64,reservation_released_bytes=48,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("execution_mode=strict_bounded"));
@@ -191,6 +271,217 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(text.contains("node_id=n2,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\tNativeCudfExec\tnative\t1\t0\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t"));
+}
+
+#[test]
+fn aggregate_runtime_probe_summary_uses_selection_evidence_not_strategy_name_alone() {
+    let metrics = NativeDataFusionExecutionMetrics {
+        aggregate_strategy_rows: vec![
+            aggregate_strategy_row(
+                "libcudf_groupby",
+                "partial",
+                "selected_libcudf_runtime_probe",
+                "runtime_cardinality_probe_required",
+                100,
+                11,
+            ),
+            aggregate_strategy_row(
+                "libcudf_groupby",
+                "partial",
+                "selected_libcudf_runtime_probe",
+                "runtime_cardinality_probe_required",
+                200,
+                22,
+            ),
+            aggregate_strategy_row(
+                "libcudf_groupby",
+                "single",
+                "selected_libcudf_runtime_probe",
+                "runtime_cardinality_probe_required",
+                300,
+                33,
+            ),
+            aggregate_strategy_row(
+                "libcudf_groupby",
+                "partial",
+                "rejected_by_cost_model",
+                "no_prior_cardinality_evidence",
+                400,
+                44,
+            ),
+            aggregate_strategy_row("prepared_sort_groupby", "partial", "selected", "selected", 500, 55),
+            aggregate_strategy_row("encoded_key_partial", "partial", "selected", "selected", 600, 66),
+            datafusion_cudf::NativeAggregateStrategyMetricRow {
+                selected_strategy: "prepared_sort_groupby".to_string(),
+                execution_stage: "partial".to_string(),
+                exact_cardinality_probe_status: "measured".to_string(),
+                exact_cardinality_probe_input_rows: 700,
+                exact_cardinality_probe_elapsed_ns: 77,
+                strategy_operator_elapsed_ns: 88,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert_eq!(metrics.aggregate_libcudf_runtime_probe_count(), 2);
+    assert_eq!(metrics.aggregate_libcudf_runtime_probe_elapsed_ns(), 33);
+    assert_eq!(metrics.aggregate_libcudf_runtime_probe_input_rows(), 300);
+    assert_eq!(metrics.aggregate_exact_cardinality_probe_count(), 1);
+    assert_eq!(metrics.aggregate_exact_cardinality_probe_elapsed_ns(), 77);
+    assert_eq!(metrics.aggregate_exact_cardinality_probe_input_rows(), 700);
+    assert_eq!(metrics.aggregate_prepared_sort_groupby_elapsed_ns(), 143);
+    assert_eq!(metrics.aggregate_encoded_key_partial_elapsed_ns(), 66);
+}
+
+#[test]
+fn dynamic_filter_measured_reduction_status_uses_measured_counters_not_applied_count() {
+    assert_eq!(
+        NativeDataFusionExecutionMetrics::default().dynamic_filter_measured_reduction_status().as_str(),
+        "unknown"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics { dynamic_filter_applied_count: 1, ..Default::default() }
+            .dynamic_filter_measured_reduction_status()
+            .as_str(),
+        "measured_no_reduction"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_reader_predicate_rows_filtered: 7,
+            dynamic_filter_applied_count: 1,
+            ..Default::default()
+        }
+        .dynamic_filter_measured_reduction_status()
+        .as_str(),
+        "measured_reader_rows_reduced"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics { dynamic_filter_post_decode_rows_filtered: 3, ..Default::default() }
+            .dynamic_filter_measured_reduction_status()
+            .as_str(),
+        "measured_post_decode_reduced"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics::default().dynamic_filter_post_decode_reduction_stage().as_str(),
+        "none"
+    );
+    assert_eq!(NativeDataFusionExecutionMetrics::default().dynamic_filter_work_avoidance_status().as_str(), "unknown");
+    assert_eq!(
+        NativeDataFusionExecutionMetrics { dynamic_filter_applied_count: 1, ..Default::default() }
+            .dynamic_filter_work_avoidance_status()
+            .as_str(),
+        "measured_no_reduction"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_reader_predicate_rows_filtered: 7,
+            dynamic_filter_applied_count: 1,
+            ..Default::default()
+        }
+        .dynamic_filter_work_avoidance_status()
+        .as_str(),
+        "source_reader_rows_reduced"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics { dynamic_filter_post_decode_rows_filtered: 3, ..Default::default() }
+            .dynamic_filter_post_decode_reduction_stage()
+            .as_str(),
+        "unknown"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_post_decode_rows_filtered: 3,
+            dynamic_filter_filter_post_decode_rows_filtered: 3,
+            dynamic_filter_runtime_rows: vec![NativeDynamicFilterRuntimeMetricRow {
+                consumer_reduction_stage: "filter_post_decode".to_string(),
+                post_decode_rows_filtered: 3,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .dynamic_filter_post_decode_reduction_stage()
+        .as_str(),
+        "filter_post_decode"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_post_decode_rows_filtered: 3,
+            dynamic_filter_filter_post_decode_rows_filtered: 3,
+            ..Default::default()
+        }
+        .dynamic_filter_work_avoidance_status()
+        .as_str(),
+        "filter_post_decode_rows_reduced"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_post_decode_rows_filtered: 5,
+            dynamic_filter_filter_post_decode_rows_filtered: 3,
+            dynamic_filter_join_probe_post_decode_rows_filtered: 2,
+            dynamic_filter_runtime_rows: vec![
+                NativeDynamicFilterRuntimeMetricRow {
+                    consumer_reduction_stage: "filter_post_decode".to_string(),
+                    post_decode_rows_filtered: 3,
+                    ..Default::default()
+                },
+                NativeDynamicFilterRuntimeMetricRow {
+                    consumer_reduction_stage: "join_probe_post_decode".to_string(),
+                    post_decode_rows_filtered: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .dynamic_filter_post_decode_reduction_stage()
+        .as_str(),
+        "mixed_post_decode"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_post_decode_rows_filtered: 5,
+            dynamic_filter_filter_post_decode_rows_filtered: 3,
+            dynamic_filter_join_probe_post_decode_rows_filtered: 2,
+            ..Default::default()
+        }
+        .dynamic_filter_work_avoidance_status()
+        .as_str(),
+        "mixed_post_decode_rows_reduced"
+    );
+    assert_eq!(
+        NativeDataFusionExecutionMetrics {
+            dynamic_filter_source_bytes_pruned: 1,
+            dynamic_filter_reader_predicate_rows_filtered: 7,
+            dynamic_filter_post_decode_rows_filtered: 3,
+            ..Default::default()
+        }
+        .dynamic_filter_measured_reduction_status()
+        .as_str(),
+        "measured_source_pruned"
+    );
+}
+
+fn header_index(header_fields: &[&str], name: &str) -> usize {
+    header_fields.iter().position(|field| *field == name).unwrap_or_else(|| panic!("missing TSV column {name}"))
+}
+
+fn aggregate_strategy_row(
+    selected_strategy: &str,
+    execution_stage: &str,
+    prepared_sort_groupby_cost_model_status: &str,
+    prepared_sort_groupby_selection_reason: &str,
+    input_rows: usize,
+    strategy_operator_elapsed_ns: usize,
+) -> datafusion_cudf::NativeAggregateStrategyMetricRow {
+    datafusion_cudf::NativeAggregateStrategyMetricRow {
+        selected_strategy: selected_strategy.to_string(),
+        execution_stage: execution_stage.to_string(),
+        prepared_sort_groupby_cost_model_status: prepared_sort_groupby_cost_model_status.to_string(),
+        prepared_sort_groupby_selection_reason: prepared_sort_groupby_selection_reason.to_string(),
+        input_rows,
+        strategy_operator_elapsed_ns,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -414,6 +705,75 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     assert!(!text.contains("q18"));
 }
 
+#[test]
+fn native_datafusion_planning_report_projects_projection_simplification_diagnostics() {
+    let optimizer_result =
+        cudf_query_engine::optimize_query_plan(projection_simplification_identity_plan(), &Default::default());
+    assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
+    assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
+
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new("ProjectionExec(GpuResidentSource)", 1));
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "ProjectionExec".to_string(),
+        input_plan_shape: "ProjectionExec(GpuResidentSource)".to_string(),
+        report,
+        native_optimizer: optimizer_result.diagnostics,
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "projection_simplification",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+    let row = &planning.rows[0];
+    assert_eq!(row.native_optimizer.projection_simplification.considered_count, 1);
+    assert_eq!(row.native_optimizer.projection_simplification.applied_count, 1);
+
+    let text = planning.to_tsv();
+    assert!(text.contains("rule=projection_simplification,considered_count=1,applied_count=1"));
+    assert!(text.contains("replacement_node_id="));
+    assert!(text.contains("applied=true"));
+    assert!(!text.contains("q13"));
+}
+
+#[test]
+fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics() {
+    let optimizer_result = cudf_query_engine::optimize_query_plan(dynamic_filter_route_plan(), &Default::default());
+    assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1));
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "HashJoinExec".to_string(),
+        input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
+        report,
+        native_optimizer: optimizer_result.diagnostics,
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "dynamic_filter_route",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+
+    let text = planning.to_tsv();
+    assert!(text.contains("rule=dynamic_filter_route_discovery,considered_count=1,route_count=1"));
+    assert!(text.contains("dynamic_filter_id=df0"));
+    assert!(text.contains("filter_kinds=range+small_in_list+hash_set_contains"));
+    assert!(text.contains("consumer_kind=local_parquet_source"));
+    assert!(text.contains("consumer_node_id="));
+    assert!(text.contains("consumer_lowering=reader_predicate"));
+    assert!(text.contains("consumer_reduction_stage=source_reader"));
+    assert!(!text.contains("q08"));
+}
+
 fn semijoin_reduction_projection_plan() -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(semijoin_gpu_source("x", &["x_key", "x_payload"]));
@@ -472,6 +832,75 @@ fn semijoin_reduction_projection_plan() -> cudf_query_engine::QueryPlan {
         xy_schema,
     );
     builder.finish_gpu_resident(semi)
+}
+
+fn projection_simplification_identity_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "identity_projection_source",
+        semijoin_schema(&["key"]),
+    )));
+    let projection = builder.add_projection(
+        source,
+        vec![cudf_query_engine::ProjectionOutput::new(
+            cudf_query_engine::Expr::column("key"),
+            Field::new("key", DataType::Int32, false),
+        )],
+    );
+    builder.finish_gpu_resident(projection)
+}
+
+fn dynamic_filter_route_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("left_key", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("right_key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_key", DataType::Int32, false),
+        Field::new("right_key", DataType::Int32, false),
+    ]));
+    let left_file = cudf_query_engine::LocalParquetFile::new("/tmp/dynamic-filter-left.parquet")
+        .with_stable_id("dynamic-filter-left")
+        .with_projected_row_group_bytes(vec![1024], vec![1024])
+        .with_row_group_rows(vec![10]);
+    let right_file = cudf_query_engine::LocalParquetFile::new("/tmp/dynamic-filter-right.parquet")
+        .with_stable_id("dynamic-filter-right")
+        .with_projected_row_group_bytes(vec![64], vec![64])
+        .with_row_group_rows(vec![2]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![left_file],
+        left_schema,
+        vec!["left_key".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![right_file],
+        right_schema,
+        vec!["right_key".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        cudf_query_engine::JoinSpec::new(
+            cudf_query_engine::JoinType::Inner,
+            vec![cudf_query_engine::JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "left_key", "left_key"),
+                cudf_query_engine::ColumnRef::input(1, "right_key", "right_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            cudf_query_engine::JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "left_key", "left_key"),
+                "left_key",
+            ),
+            cudf_query_engine::JoinOutputColumn::right(
+                cudf_query_engine::ColumnRef::input(1, "right_key", "right_key"),
+                "right_key",
+            ),
+        ])
+        .with_build_side(cudf_query_engine::JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
 }
 
 fn semijoin_gpu_source(name: &str, fields: &[&str]) -> SourceNode {
