@@ -248,10 +248,15 @@ impl NativeCudfExecutionConfig {
         self
     }
 
-    /// Select the execution contract for logical STDDEV_SAMP aggregates.
-    pub fn with_stddev_samp_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
+    /// Select the execution contract for floating statistical aggregates.
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
         self.stddev_samp_execution_mode = mode;
         self
+    }
+
+    /// Select the execution contract through the legacy STDDEV_SAMP builder.
+    pub fn with_stddev_samp_execution_mode(self, mode: StddevSampExecutionMode) -> Self {
+        self.with_statistical_aggregate_execution_mode(mode)
     }
 
     /// Attach an adaptive-only memory-history store for adaptive admission/execution.
@@ -317,9 +322,15 @@ impl NativeCudfExecutionConfig {
         self.native_pipeline_execution_mode
     }
 
-    /// Execution contract for logical STDDEV_SAMP aggregates.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+    /// Execution contract for floating statistical aggregates.
+    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
         self.stddev_samp_execution_mode
+    }
+
+    /// Floating statistical aggregate contract returned through the legacy
+    /// STDDEV_SAMP accessor.
+    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+        self.statistical_aggregate_execution_mode()
     }
 
     /// Adaptive-only memory history store, if configured.
@@ -347,7 +358,7 @@ impl NativeCudfExecutionConfig {
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
-            .with_stddev_samp_execution_mode(self.stddev_samp_execution_mode);
+            .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode);
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());
         }

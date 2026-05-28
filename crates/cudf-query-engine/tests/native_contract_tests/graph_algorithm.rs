@@ -4,9 +4,9 @@ use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
     GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeColumnBindings, GraphLayoutRequirement, GraphPageRankParams, PlanNode, QueryPlan, QueryPlanBuilder,
-    SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphPageRankParams, GraphPredicateInput,
+    PlanNode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
 };
@@ -114,10 +114,161 @@ fn raw_graph_construction_policy_does_not_insert_edge_normalize() {
 }
 
 #[test]
+fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    )));
+    let targets = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "targets",
+        Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, false)])),
+    )));
+    let params = GraphBfsParams {
+        source_vertex: 0,
+        source_vertices: None,
+        depth_limit: Some(4),
+        predicates: GraphBfsPredicateInputs {
+            target_vertices: Some(GraphPredicateInput::new(targets, "vertex_id")),
+            ..Default::default()
+        },
+        return_target_info: false,
+    };
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    assert_eq!(graph.inputs, vec![graph.input, targets]);
+    assert_eq!(plan.root_node().input_ids(), &[graph.input, targets]);
+
+    let display = plan.to_string();
+    assert!(display.contains("side_inputs=n1"));
+    assert!(display.contains("predicates=target_vertices:n1:vertex_id"));
+}
+
+#[test]
+fn bfs_source_vertex_side_input_precedes_predicate_side_inputs() {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int32, DataType::Float32, false),
+    )));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "source",
+        Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int32, false)])),
+    )));
+    let targets = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "targets",
+        Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int32, false)])),
+    )));
+    let mut params = GraphBfsParams::new(0, None);
+    params.source_vertices = Some(GraphPredicateInput::new(source, "source_vertex"));
+    params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    assert_eq!(graph.inputs, vec![graph.input, source, targets]);
+    assert_eq!(plan.root_node().input_ids(), &[graph.input, source, targets]);
+
+    let display = plan.to_string();
+    assert!(display.contains("side_inputs=n1,n2"));
+    assert!(display.contains("params=source_vertex=0:source_vertices=n1:source_vertex:depth_limit=none"));
+    assert!(display.contains("predicates=target_vertices:n2:vertex_id"));
+}
+
+#[test]
+fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int32, DataType::Float32, false),
+    )));
+    let allowed = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "allowed",
+        Arc::new(Schema::new(vec![Field::new("edge_id", DataType::Int32, false)])),
+    )));
+    let params = GraphBfsParams {
+        source_vertex: 0,
+        source_vertices: None,
+        depth_limit: None,
+        predicates: GraphBfsPredicateInputs {
+            include_edge_ids: Some(GraphPredicateInput::new(allowed, "edge_id")),
+            ..Default::default()
+        },
+        return_target_info: false,
+    };
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
+        panic!("expected graph capability rejection");
+    };
+    assert_eq!(facts.get("missing_binding").map(String::as_str), Some("edge_id_col"));
+}
+
+#[test]
+fn edge_id_binding_is_preserved_through_python_edge_normalize() {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema_with_edge_id(DataType::Int32, DataType::Float32),
+    )));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")).with_edge_id("edge_id"),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(input, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    assert_eq!(graph.spec.edge_columns.edge_id.as_deref(), Some("edge_id"));
+    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
+        panic!("expected edge normalize input");
+    };
+    assert_eq!(edge_normalize.spec.edge_columns.edge_id.as_deref(), Some("edge_id"));
+    assert_eq!(
+        normalize_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["src", "dst", "weight", "edge_id"]
+    );
+
+    let display = plan.to_string();
+    assert!(display.contains("edge_id_col=edge_id"));
+}
+
+#[test]
 fn graph_algorithm_capability_blocks_strict_bounded_on_lower_level_contract() {
     let plan = graph_plan(
         GraphAlgorithm::Bfs,
-        GraphAlgorithmParams::Bfs(GraphBfsParams { source_vertex: 0, depth_limit: Some(3) }),
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, Some(3)))),
         edge_schema(DataType::Int32, DataType::Float32, false),
     );
 
@@ -299,6 +450,15 @@ fn edge_schema(vertex_type: DataType, weight_type: DataType, weight_nullable: bo
     ]))
 }
 
+fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("src", vertex_type.clone(), false),
+        Field::new("dst", vertex_type.clone(), false),
+        Field::new("weight", weight_type, false),
+        Field::new("edge_id", vertex_type, false),
+    ]))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // cugraph-rs inventory drift gate
 // ═══════════════════════════════════════════════════════════════════════════
@@ -416,8 +576,10 @@ const CUGRAPH_RS_NON_ALGORITHM_METHODS: &[&str] = &[
     "edge_count_checked",
     "has_edge_ids",
     "has_weights",
+    // registered algorithm variants represented by auxiliary-input IR, not separate registry entries
+    "bfs_with_predicates",
     // vertex-selection entry points that are Phase 2 variants of registered algorithms
-    // (already listed in KNOWN_MISSING) — excluded here so they don't appear as unknown
+    // (already listed in KNOWN_MISSING) - excluded here so they don't appear as unknown
 ];
 
 #[test]

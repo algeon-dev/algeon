@@ -225,6 +225,13 @@ fn is_supported_native_aggregate_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("avg")
         || name.eq_ignore_ascii_case("stddev")
         || name.eq_ignore_ascii_case("stddev_samp")
+        || name.eq_ignore_ascii_case("stddev_pop")
+        || name.eq_ignore_ascii_case("var_samp")
+        || name.eq_ignore_ascii_case("var_sample")
+        || name.eq_ignore_ascii_case("var")
+        || name.eq_ignore_ascii_case("variance")
+        || name.eq_ignore_ascii_case("var_pop")
+        || name.eq_ignore_ascii_case("var_population")
 }
 
 pub(super) fn collect_required_columns(

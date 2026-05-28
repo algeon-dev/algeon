@@ -315,8 +315,8 @@ fn validate_grouping_sets_capability(
     if grouping_sets.groups.iter().any(|group| group.len() != spec.group_exprs.len()) {
         return Err("grouping_set_mask_length_mismatch");
     }
-    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp) {
-        return Err("grouping_sets_stddev_samp_not_supported");
+    if spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical()) {
+        return Err("grouping_sets_floating_statistical_aggregate_not_supported");
     }
     Ok(())
 }
@@ -556,12 +556,70 @@ fn graph_algorithm_node_executable_decision(
         }
     }
 
-    if graph.output_schema().as_ref() != crate::plan::stable_graph_result_schema(graph.spec.algorithm).as_ref() {
+    if let Some(edge_id_col) = graph.spec.edge_columns.edge_id.as_deref() {
+        let Some(field) = input.output_schema().field_with_name(edge_id_col).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", "edge_id".to_string()),
+                    ("column", edge_id_col.to_string()),
+                ],
+            );
+        };
+        if field.is_nullable() {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "nullable_edge_column".to_string()),
+                    ("edge_column_role", "edge_id".to_string()),
+                    ("column", edge_id_col.to_string()),
+                ],
+            );
+        }
+        let source_type = input
+            .output_schema()
+            .field_with_name(&graph.spec.edge_columns.source)
+            .expect("source column was validated above")
+            .data_type();
+        if field.data_type() != source_type {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "edge_id_dtype_mismatch".to_string()),
+                    ("edge_column_role", "edge_id".to_string()),
+                    ("column", edge_id_col.to_string()),
+                    ("edge_id_type", format!("{:?}", field.data_type())),
+                    ("vertex_type", format!("{source_type:?}")),
+                ],
+            );
+        }
+    }
+
+    if let crate::plan::GraphAlgorithmParams::Bfs(params) = &graph.spec.params
+        && params.predicates.include_edge_ids.is_some()
+        && graph.spec.edge_columns.edge_id.is_none()
+    {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "non_stable_output_schema".to_string()),
+                ("reason", "missing_edge_id_binding".to_string()),
+                ("predicate_role", "include_edge_ids".to_string()),
+                ("missing_binding", "edge_id_col".to_string()),
+            ],
+        );
+    }
+
+    if graph.output_schema().as_ref() != crate::plan::graph_result_schema_for_params(&graph.spec.params).as_ref() {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "unexpected_output_schema".to_string()),
                 ("algorithm", graph.spec.algorithm.as_str().to_string()),
                 ("schema_field_count", graph.output_schema().fields().len().to_string()),
             ],
@@ -642,6 +700,32 @@ fn edge_normalize_node_executable_decision(
                     ("reason", "unsupported_weight_type".to_string()),
                     ("edge_column_role", "weight".to_string()),
                     ("column", weight_col.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                ],
+            );
+        }
+    }
+
+    if let Some(edge_id_col) = edge_normalize.spec.edge_columns.edge_id.as_deref() {
+        let Some(field) = input.output_schema().field_with_name(edge_id_col).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", "edge_id".to_string()),
+                    ("column", edge_id_col.to_string()),
+                ],
+            );
+        };
+        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+            return CapabilityDecision::rejected(
+                "unsupported_edge_normalize_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_edge_id_type".to_string()),
+                    ("edge_column_role", "edge_id".to_string()),
+                    ("column", edge_id_col.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),
                 ],
             );

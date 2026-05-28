@@ -93,7 +93,8 @@ pub use metrics::{
     TaskOperatorMetrics, TaskRuntimeMetrics,
 };
 pub use mode::{
-    AdaptiveExecutionMode, NativePipelineExecutionMode, StddevSampExecutionMode, StrictBoundedExecutionMode,
+    AdaptiveExecutionMode, NativePipelineExecutionMode, StatisticalAggregateExecutionMode,
+    StatisticalAggregateToleranceContract, StddevSampExecutionMode, StrictBoundedExecutionMode,
 };
 pub use optimizer::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
@@ -132,14 +133,14 @@ pub use plan::{
     AggregateNode, DataPlacement, FilterNode, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
     GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
     GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
-    GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams,
-    GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
-    GraphOperationDefinition, GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams,
-    GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
-    HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
-    LimitNode, NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceFacts,
+    GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
+    GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams,
+    GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams,
+    GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
+    GraphWccParams, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec,
+    JoinType, LimitNode, NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceFacts,
     NativePlanPreferenceOptions, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan,
     QueryPlanBuilder, ResultSink, SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode,
     WindowSpec, native_plan_preference_decision, stable_graph_result_schema,

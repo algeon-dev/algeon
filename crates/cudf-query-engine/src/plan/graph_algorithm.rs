@@ -322,9 +322,12 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
 
 /// Edge-list column bindings consumed by a graph algorithm.
 ///
-/// `weight` is optional. When present, duplicate-edge normalization follows
-/// the selected [`GraphConstructionPolicy`] and [`EdgeWeightCombiner`] so
-/// conflicting weights are deterministic.
+/// `weight` and `edge_id` are optional. When `weight` is present,
+/// duplicate-edge normalization follows the selected
+/// [`GraphConstructionPolicy`] and [`EdgeWeightCombiner`] so conflicting
+/// weights are deterministic. When `edge_id` is present, the column is carried
+/// through graph construction as the stable user-visible edge id used by
+/// edge-id predicates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEdgeColumnBindings {
     /// Source-vertex column name in the edge-list input.
@@ -333,12 +336,20 @@ pub struct GraphEdgeColumnBindings {
     pub destination: String,
     /// Optional edge-weight column name.
     pub weight: Option<String>,
+    /// Optional stable edge-id column name.
+    pub edge_id: Option<String>,
 }
 
 impl GraphEdgeColumnBindings {
     /// Create edge-list column bindings.
     pub fn new(source: impl Into<String>, destination: impl Into<String>, weight: Option<impl Into<String>>) -> Self {
-        Self { source: source.into(), destination: destination.into(), weight: weight.map(Into::into) }
+        Self { source: source.into(), destination: destination.into(), weight: weight.map(Into::into), edge_id: None }
+    }
+
+    /// Attach a stable edge-id column binding.
+    pub fn with_edge_id(mut self, edge_id: impl Into<String>) -> Self {
+        self.edge_id = Some(edge_id.into());
+        self
     }
 }
 
@@ -517,7 +528,7 @@ impl fmt::Display for GraphKCoreDegreeType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
     PageRank(GraphPageRankParams),
-    Bfs(GraphBfsParams),
+    Bfs(Box<GraphBfsParams>),
     Louvain(GraphLouvainParams),
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
     KatzCentrality(GraphKatzCentralityParams),
@@ -597,8 +608,126 @@ impl Default for GraphPageRankParams {
 pub struct GraphBfsParams {
     /// Root vertex for traversal.
     pub source_vertex: i64,
+    /// Optional one-row GPU-resident source-vertex input. When present, this
+    /// takes precedence over `source_vertex` so callers can derive the source
+    /// id on device and avoid host round-trips during logical-id mapping.
+    pub source_vertices: Option<GraphPredicateInput>,
     /// Optional non-negative traversal depth limit.
     pub depth_limit: Option<i64>,
+    /// Optional relation-backed predicate inputs consumed by predicate BFS.
+    pub predicates: GraphBfsPredicateInputs,
+    /// Whether the BFS output should include per-row target metadata columns.
+    ///
+    /// When true, `target_vertices` must be present. The executor appends
+    /// `target_found BOOLEAN` and nullable `target_distance INT64`; it does
+    /// not expose a target vertex because cuGraph does not define a stable
+    /// tie-break for equally near targets.
+    pub return_target_info: bool,
+}
+
+impl GraphBfsParams {
+    /// Creates plain BFS parameters without predicate side inputs.
+    pub fn new(source_vertex: i64, depth_limit: Option<i64>) -> Self {
+        Self {
+            source_vertex,
+            source_vertices: None,
+            depth_limit,
+            predicates: GraphBfsPredicateInputs::default(),
+            return_target_info: false,
+        }
+    }
+
+    /// Returns true when this BFS call has any predicate side input.
+    pub fn has_predicates(&self) -> bool {
+        self.predicates.has_inputs()
+    }
+
+    /// Visits every side-input node id in stable role order.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
+    }
+}
+
+/// Optional predicate side inputs for predicate-aware BFS.
+///
+/// Each input identifies another native plan node plus the column(s) the BFS
+/// executor should read from that node's GPU-resident output. SQL table names
+/// and option JSON are deliberately absent from this IR.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphBfsPredicateInputs {
+    /// Allowed vertex id set.
+    pub include_vertices: Option<GraphPredicateInput>,
+    /// Excluded vertex id set.
+    pub exclude_vertices: Option<GraphPredicateInput>,
+    /// Early-stop target vertex id set.
+    pub target_vertices: Option<GraphPredicateInput>,
+    /// Stable edge-id allow set. Requires graph construction with edge ids.
+    pub include_edge_ids: Option<GraphPredicateInput>,
+    /// Relation-backed edge allow set aligned by declared edge columns.
+    pub include_edges: Option<GraphEdgePredicateInput>,
+}
+
+impl GraphBfsPredicateInputs {
+    /// Returns true when any predicate input is present.
+    pub fn has_inputs(&self) -> bool {
+        self.include_vertices.is_some()
+            || self.exclude_vertices.is_some()
+            || self.target_vertices.is_some()
+            || self.include_edge_ids.is_some()
+            || self.include_edges.is_some()
+    }
+
+    /// Visits every side-input node id in stable role order.
+    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.include_vertices
+            .iter()
+            .map(|input| input.input)
+            .chain(self.exclude_vertices.iter().map(|input| input.input))
+            .chain(self.target_vertices.iter().map(|input| input.input))
+            .chain(self.include_edge_ids.iter().map(|input| input.input))
+            .chain(self.include_edges.iter().map(|input| input.input))
+    }
+}
+
+/// Single-column graph predicate input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphPredicateInput {
+    /// Native plan node producing the predicate relation.
+    pub input: NodeId,
+    /// Non-null id column in the predicate relation.
+    pub column: String,
+}
+
+impl GraphPredicateInput {
+    /// Creates a single-column predicate input binding.
+    pub fn new(input: NodeId, column: impl Into<String>) -> Self {
+        Self { input, column: column.into() }
+    }
+}
+
+/// Edge relation predicate input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEdgePredicateInput {
+    /// Native plan node producing the allowed-edge relation.
+    pub input: NodeId,
+    /// Source vertex column used to align with the primary edge relation.
+    pub source: String,
+    /// Destination vertex column used to align with the primary edge relation.
+    pub destination: String,
+    /// Optional stable edge-id column when the source relation already has one.
+    pub edge_id: Option<String>,
+}
+
+impl GraphEdgePredicateInput {
+    /// Creates an edge predicate input binding.
+    pub fn new(
+        input: NodeId,
+        source: impl Into<String>,
+        destination: impl Into<String>,
+        edge_id: Option<impl Into<String>>,
+    ) -> Self {
+        Self { input, source: source.into(), destination: destination.into(), edge_id: edge_id.map(Into::into) }
+    }
 }
 
 /// Louvain community detection parameters.
@@ -911,6 +1040,9 @@ impl GraphAlgorithmSpec {
 pub struct GraphAlgorithmNode {
     /// Edge-list input node.
     pub input: NodeId,
+    /// All semantic inputs in execution order: edge-list input first, followed
+    /// by BFS source/predicate side-input nodes in stable role order.
+    pub inputs: Vec<NodeId>,
     /// Graph algorithm specification.
     pub spec: GraphAlgorithmSpec,
 }
@@ -1017,5 +1149,24 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             ]
         },
     };
+    Arc::new(Schema::new(fields))
+}
+
+/// Expected graph result schema after algorithm-specific output options.
+///
+/// Most graph algorithms use [`stable_graph_result_schema`] exactly. BFS can
+/// opt into target metadata columns through [`GraphBfsParams::return_target_info`].
+pub fn graph_result_schema_for_params(params: &GraphAlgorithmParams) -> SchemaRef {
+    let mut fields = stable_graph_result_schema(params.algorithm())
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .collect::<Vec<_>>();
+    if let GraphAlgorithmParams::Bfs(params) = params
+        && params.return_target_info
+    {
+        fields.push(Field::new("target_found", arrow::datatypes::DataType::Boolean, false));
+        fields.push(Field::new("target_distance", arrow::datatypes::DataType::Int64, true));
+    }
     Arc::new(Schema::new(fields))
 }

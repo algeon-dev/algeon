@@ -677,8 +677,24 @@ fn format_semijoin_cost_signal(signal: &cudf_query_engine::SemijoinReductionCost
             format!("byte_estimate:semi_right_bytes={semi_right_bytes}:target_bytes={target_bytes}")
         },
         cudf_query_engine::SemijoinReductionCostSignal::AggregateKeysetShape => "aggregate_keyset_shape".to_string(),
+        cudf_query_engine::SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+            filtered_source_count,
+            semi_right_source_bytes,
+            target_rows,
+            target_bytes,
+            crossed_join_count,
+        } => format!(
+            "filtered_source_keyset_shape:filtered_source_count={filtered_source_count}:semi_right_source_bytes={}:target_rows={}:target_bytes={}:crossed_join_count={crossed_join_count}",
+            optional_semijoin_u64(*semi_right_source_bytes),
+            optional_semijoin_u64(*target_rows),
+            optional_semijoin_u64(*target_bytes),
+        ),
         cudf_query_engine::SemijoinReductionCostSignal::Unavailable => "unavailable".to_string(),
     }
+}
+
+fn optional_semijoin_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {

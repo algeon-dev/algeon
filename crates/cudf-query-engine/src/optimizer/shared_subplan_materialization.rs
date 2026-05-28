@@ -1302,15 +1302,7 @@ fn aggregate_expr_signature(expr: &AggregateExpr) -> String {
 }
 
 fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
-    match function {
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-        AggregateFunction::Count => "count",
-        AggregateFunction::NUnique => "nunique",
-        AggregateFunction::Avg => "avg",
-        AggregateFunction::StddevSamp => "stddev_samp",
-    }
+    function.as_str()
 }
 
 fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {

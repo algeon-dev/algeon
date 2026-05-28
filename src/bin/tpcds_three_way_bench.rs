@@ -26,9 +26,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
+    CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery,
-    discover_tpcds_table_layout, tpcds_native_optimizer_config, tpcds_native_report_session_config,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, StatisticalAggregateExecutionMode, TPCDS_QUERIES,
+    TPCDS_TABLES, TpcdsQuery, discover_tpcds_table_layout, tpcds_native_analytics_optimizer_config,
+    tpcds_native_report_session_config,
 };
 
 const DEFAULT_QUERY_IDS: &[&str] =
@@ -63,6 +65,7 @@ const TSV_HEADER: &str = concat!(
     "\tdynamic_filter_post_decode_reduction_stage",
     "\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows",
     "\taggregate_strategy_rows\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
+    "\tstatistical_aggregate_execution_mode\tstatistical_aggregate_tolerance_contract",
 );
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
@@ -147,12 +150,7 @@ impl BenchConfig {
             .map_err(|_| "CUDF_TPCDS_PARQUET_DIR must be set to the SF100 parquet root")?;
         let root = std::path::PathBuf::from(root);
         let queries_csv = std::env::var("CUDF_TPCDS_BENCH_QUERIES").unwrap_or_else(|_| DEFAULT_QUERY_IDS.join(","));
-        let query_ids: Vec<String> =
-            queries_csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-        let queries: Vec<&'static TpcdsQuery> = query_ids
-            .iter()
-            .map(|id| TPCDS_QUERIES.iter().find(|q| q.id == id).ok_or_else(|| format!("unknown TPC-DS query id: {id}")))
-            .collect::<Result<_, _>>()?;
+        let queries = bench_queries_from_csv(&queries_csv)?;
         let warmups = env_usize("CUDF_TPCDS_BENCH_WARMUPS", 1)?;
         let iterations = env_usize("CUDF_TPCDS_BENCH_ITERATIONS", 2)?;
         if iterations == 0 {
@@ -160,6 +158,19 @@ impl BenchConfig {
         }
         Ok(Self { engine, root, queries, warmups, iterations })
     }
+}
+
+fn bench_queries_from_csv(queries_csv: &str) -> Result<Vec<&'static TpcdsQuery>, Box<dyn Error>> {
+    if queries_csv.trim().eq_ignore_ascii_case("all") {
+        return Ok(TPCDS_QUERIES.iter().collect());
+    }
+    let query_ids: Vec<String> =
+        queries_csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let queries: Vec<&'static TpcdsQuery> = query_ids
+        .iter()
+        .map(|id| TPCDS_QUERIES.iter().find(|q| q.id == id).ok_or_else(|| format!("unknown TPC-DS query id: {id}")))
+        .collect::<Result<_, _>>()?;
+    Ok(queries)
 }
 
 fn env_usize(name: &str, default: usize) -> Result<usize, Box<dyn Error>> {
@@ -178,7 +189,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
             Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
-            let optimizer_config = tpcds_native_optimizer_config();
+            let optimizer_config = tpcds_native_analytics_optimizer_config();
             let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
                 .with_config(tpcds_native_report_session_config())
@@ -210,7 +221,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
 async fn build_native_planning_context(
     root: &Path,
 ) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
-    let optimizer_config = tpcds_native_optimizer_config();
+    let optimizer_config = tpcds_native_analytics_optimizer_config();
     let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
@@ -677,7 +688,41 @@ fn row_fields(
         metrics.map_or_else(|| "not_run".to_string(), format_join_strategy_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_task_operator_rows),
         metrics.map_or_else(|| "not_run".to_string(), format_task_runtime_rows),
+        statistical_aggregate_execution_mode_for_row(engine),
+        statistical_aggregate_tolerance_contract_for_row(engine),
     ]
+}
+
+fn statistical_aggregate_execution_mode_for_row(engine: Engine) -> String {
+    match engine {
+        Engine::NativeGpu | Engine::HybridCpuPreferred => {
+            native_statistical_aggregate_execution_mode_from_env().as_str().to_string()
+        },
+        Engine::CpuDataFusion => "not_applicable".to_string(),
+    }
+}
+
+fn statistical_aggregate_tolerance_contract_for_row(engine: Engine) -> String {
+    match engine {
+        Engine::NativeGpu | Engine::HybridCpuPreferred => {
+            native_statistical_aggregate_execution_mode_from_env().tolerance_contract().as_str().to_string()
+        },
+        Engine::CpuDataFusion => "not_applicable".to_string(),
+    }
+}
+
+fn native_statistical_aggregate_execution_mode_from_env() -> StatisticalAggregateExecutionMode {
+    std::env::var(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
+        .or_else(|_| std::env::var(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV))
+        .ok()
+        .map(|value| {
+            value.parse::<StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
+                panic!(
+                    "unsupported TPC-DS statistical aggregate execution mode={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}"
+                )
+            })
+        })
+        .unwrap_or(StatisticalAggregateExecutionMode::GpuNativeTolerant)
 }
 
 fn format_opt<T: std::fmt::Display>(value: Option<T>) -> String {
@@ -1060,6 +1105,56 @@ mod tests {
         let p1 = P1BottleneckSummary::from_outcome(&outcome);
         assert_eq!(p1.runtime_operator_class, "not_run");
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
+    }
+
+    #[test]
+    fn all_query_selector_runs_full_sweep_including_q39() {
+        let queries = bench_queries_from_csv("all").unwrap();
+        assert_eq!(queries.len(), TPCDS_QUERIES.len());
+        assert!(queries.iter().any(|query| query.id == "q39"));
+    }
+
+    #[test]
+    fn explicit_query_selector_rejects_unknown_ids() {
+        let error = match bench_queries_from_csv("q39,no_such_query") {
+            Ok(_) => panic!("unknown query id should be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("unknown TPC-DS query id: no_such_query"));
+    }
+
+    #[test]
+    fn statistical_aggregate_contract_columns_are_visible_per_engine() {
+        let query = TPCDS_QUERIES.iter().find(|query| query.id == "q39").unwrap();
+        let outcome = IterOutcome {
+            wall: Some(Duration::from_millis(1)),
+            outcome: "succeeded",
+            planning_outcome: "rewritten=1 rejected=0".to_string(),
+            output_batches: Some(1),
+            output_rows: Some(2),
+            output_bytes: Some(3),
+            reservation_live_peak_bytes: Some(4),
+            reservation_denied_count: Some(0),
+            retry_count: Some(0),
+            native_runtime_started: true,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+        let header = TSV_HEADER.split('\t').collect::<Vec<_>>();
+        let mode_index = header.iter().position(|field| *field == "statistical_aggregate_execution_mode").unwrap();
+        let tolerance_index =
+            header.iter().position(|field| *field == "statistical_aggregate_tolerance_contract").unwrap();
+
+        for engine in [Engine::NativeGpu, Engine::HybridCpuPreferred] {
+            let fields = row_fields(query, 0, false, &outcome, engine);
+            assert_eq!(fields[mode_index], "gpu_native_tolerant");
+            assert_eq!(fields[tolerance_index], "float_tolerant");
+        }
+
+        let cpu_fields = row_fields(query, 0, false, &outcome, Engine::CpuDataFusion);
+        assert_eq!(cpu_fields[mode_index], "not_applicable");
+        assert_eq!(cpu_fields[tolerance_index], "not_applicable");
     }
 
     #[test]

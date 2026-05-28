@@ -301,8 +301,8 @@ fn prepared_sort_groupby_rejected_reason(
     if distinct_aggregate_count(spec) > 0 {
         return Some("prepared_sort_groupby_distinct_aggregate_unsupported");
     }
-    if aggregate_spec_has_stddev_samp(spec) {
-        return Some("prepared_sort_groupby_stddev_samp_unsupported");
+    if aggregate_spec_has_floating_statistical_aggregate(spec) {
+        return Some("prepared_sort_groupby_floating_statistical_aggregate_unsupported");
     }
     if spec.group_exprs.iter().any(|expr| plain_column_group_key_dtype(expr, input_schema).is_none()) {
         return Some("prepared_sort_groupby_group_key_column_missing");
@@ -320,8 +320,8 @@ fn partitioned_merge_rejected_reason(spec: &AggregateSpec, stage: AggregateExecu
     if stage != AggregateExecutionStage::FinalMerge {
         return Some("partitioned_merge_requires_final_merge_stage");
     }
-    if aggregate_spec_has_stddev_samp(spec) {
-        return Some("partitioned_merge_stddev_samp_unsupported");
+    if aggregate_spec_has_floating_statistical_aggregate(spec) {
+        return Some("partitioned_merge_floating_statistical_aggregate_unsupported");
     }
     if distinct_aggregate_count(spec) > 0 {
         return Some("partitioned_merge_distinct_aggregate_unsupported");
@@ -329,8 +329,8 @@ fn partitioned_merge_rejected_reason(spec: &AggregateSpec, stage: AggregateExecu
     None
 }
 
-fn aggregate_spec_has_stddev_samp(spec: &AggregateSpec) -> bool {
-    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp)
+fn aggregate_spec_has_floating_statistical_aggregate(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
 }
 
 fn aggregate_group_key_exprs(spec: &AggregateSpec) -> String {
@@ -431,15 +431,7 @@ fn aggregate_function_list(spec: &AggregateSpec) -> String {
 }
 
 fn aggregate_function_label(function: AggregateFunction) -> &'static str {
-    match function {
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-        AggregateFunction::Count => "count",
-        AggregateFunction::NUnique => "nunique",
-        AggregateFunction::Avg => "avg",
-        AggregateFunction::StddevSamp => "stddev_samp",
-    }
+    function.as_str()
 }
 
 fn aggregate_filter_count(spec: &AggregateSpec) -> usize {

@@ -3,8 +3,9 @@ use super::*;
 pub(super) fn execute_louvain(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::Louvain(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -44,8 +45,9 @@ pub(super) fn execute_louvain(
 pub(super) fn execute_leiden(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::Leiden(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -90,8 +92,9 @@ pub(super) fn execute_leiden(
 pub(super) fn execute_ecg(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::Ecg(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -136,8 +139,9 @@ pub(super) fn execute_ecg(
 pub(super) fn execute_spectral_modularity_maximization(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -186,8 +190,9 @@ pub(super) fn execute_spectral_modularity_maximization(
 pub(super) fn execute_balanced_cut_clustering(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::BalancedCutClustering(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

@@ -19,6 +19,9 @@ pub const SEMIJOIN_REDUCTION_RULE_NAME: &str = "semijoin_reduction";
 /// Default cost gate multiplier for comparing semijoin-side cost to target cost.
 pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 = 8;
 
+const DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_ROWS: u64 = 1_000_000;
+const DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Configuration for the semijoin-reduction optimizer pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionOptions {
@@ -176,6 +179,24 @@ pub enum SemijoinReductionCostSignal {
     },
     /// Aggregate keyset shape was considered small enough without estimates.
     AggregateKeysetShape,
+    /// A filtered source-derived keyset was pushed into a dimension-sized
+    /// subtree so downstream joins can reuse the narrowed dimension keys.
+    FilteredSourceKeysetShape {
+        /// Number of static filter or reader-predicate nodes found in the
+        /// semijoin right-side keyset subtree.
+        filtered_source_count: usize,
+        /// Estimated source bytes scanned by the semijoin right-side keyset
+        /// subtree, when every source has byte evidence.
+        semi_right_source_bytes: Option<u64>,
+        /// Estimated rows for the target subtree that receives the pushed
+        /// semijoin.
+        target_rows: Option<u64>,
+        /// Estimated bytes for the target subtree that receives the pushed
+        /// semijoin.
+        target_bytes: Option<u64>,
+        /// Number of inner joins crossed while pushing the semijoin.
+        crossed_join_count: usize,
+    },
     /// No usable cost signal was available.
     Unavailable,
 }
@@ -647,7 +668,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
         let cost_gate = evaluate_semijoin_cost_gate(
             self.original,
             join.inputs[1],
-            analysis.target_subtree_id,
+            &analysis,
             self.options.cost_threshold_multiplier,
         );
         if !cost_gate.accepted {
@@ -840,9 +861,10 @@ fn input_column(side: JoinSide, column: &ColumnRef) -> ColumnRef {
 fn evaluate_semijoin_cost_gate(
     plan: &QueryPlan,
     semi_right: NodeId,
-    target_subtree: NodeId,
+    analysis: &SemijoinLineageAnalysis,
     threshold_multiplier: u64,
 ) -> SemijoinReductionCostGateDiagnostics {
+    let target_subtree = analysis.target_subtree_id;
     let threshold_multiplier = threshold_multiplier.max(1);
     if let (Some(semi_right_rows), Some(target_rows)) =
         (estimated_output_rows(plan, semi_right), estimated_output_rows(plan, target_subtree))
@@ -865,14 +887,132 @@ fn evaluate_semijoin_cost_gate(
     }
 
     let accepted = is_aggregate_keyset_shape(plan, semi_right);
+    if accepted {
+        return SemijoinReductionCostGateDiagnostics {
+            signal: SemijoinReductionCostSignal::AggregateKeysetShape,
+            threshold_multiplier,
+            accepted,
+        };
+    }
+
+    if let Some(signal) = filtered_source_keyset_cost_signal(plan, semi_right, analysis) {
+        return SemijoinReductionCostGateDiagnostics { signal, threshold_multiplier, accepted: true };
+    }
+
     SemijoinReductionCostGateDiagnostics {
-        signal: if accepted {
-            SemijoinReductionCostSignal::AggregateKeysetShape
-        } else {
-            SemijoinReductionCostSignal::Unavailable
-        },
+        signal: SemijoinReductionCostSignal::Unavailable,
         threshold_multiplier,
-        accepted,
+        accepted: false,
+    }
+}
+
+fn filtered_source_keyset_cost_signal(
+    plan: &QueryPlan,
+    semi_right: NodeId,
+    analysis: &SemijoinLineageAnalysis,
+) -> Option<SemijoinReductionCostSignal> {
+    if analysis.steps.is_empty() {
+        return None;
+    }
+
+    let keyset = filtered_source_keyset_evidence(plan, semi_right)?;
+    if keyset.filtered_source_count == 0 {
+        return None;
+    }
+
+    let target_rows = estimated_output_rows(plan, analysis.target_subtree_id);
+    let target_bytes = estimated_output_bytes(plan, analysis.target_subtree_id);
+    let target_is_dimension_sized = target_rows
+        .is_some_and(|rows| rows <= DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_ROWS)
+        || target_bytes.is_some_and(|bytes| bytes <= DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_BYTES);
+    if !target_is_dimension_sized {
+        return None;
+    }
+
+    Some(SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+        filtered_source_count: keyset.filtered_source_count,
+        semi_right_source_bytes: keyset.source_bytes,
+        target_rows,
+        target_bytes,
+        crossed_join_count: analysis.steps.len(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilteredSourceKeysetEvidence {
+    filtered_source_count: usize,
+    source_bytes: Option<u64>,
+}
+
+impl FilteredSourceKeysetEvidence {
+    fn source() -> Self {
+        Self { filtered_source_count: 0, source_bytes: Some(0) }
+    }
+
+    fn filtered(mut self) -> Self {
+        self.filtered_source_count = self.filtered_source_count.saturating_add(1);
+        self
+    }
+
+    fn with_source_bytes(mut self, bytes: Option<u64>) -> Self {
+        self.source_bytes = combine_optional_u64(self.source_bytes, bytes);
+        self
+    }
+
+    fn combine(self, other: Self) -> Self {
+        Self {
+            filtered_source_count: self.filtered_source_count.saturating_add(other.filtered_source_count),
+            source_bytes: combine_optional_u64(self.source_bytes, other.source_bytes),
+        }
+    }
+}
+
+fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<FilteredSourceKeysetEvidence> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            crate::source::SourceNode::LocalParquet(source) => {
+                let evidence =
+                    FilteredSourceKeysetEvidence::source().with_source_bytes(estimated_output_bytes(plan, node_id));
+                Some(if source.reader_predicate.is_some() { evidence.filtered() } else { evidence })
+            },
+            crate::source::SourceNode::LiteralBatch(source) => Some(
+                FilteredSourceKeysetEvidence::source().with_source_bytes(
+                    source
+                        .batches
+                        .iter()
+                        .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
+                ),
+            ),
+            crate::source::SourceNode::GpuResident(_) => Some(FilteredSourceKeysetEvidence::source()),
+        },
+        PlanNode::Filter(filter) => Some(filtered_source_keyset_evidence(plan, filter.input)?.filtered()),
+        PlanNode::Projection(projection) => filtered_source_keyset_evidence(plan, projection.input),
+        PlanNode::Sort(sort) => filtered_source_keyset_evidence(plan, sort.input),
+        PlanNode::Limit(limit) => filtered_source_keyset_evidence(plan, limit.input),
+        PlanNode::Join(join)
+            if join.spec.join_type == JoinType::Inner
+                && join.spec.keys.len() == 1
+                && join.spec.residual_predicate.is_none()
+                && join.spec.build_artifact_id.is_none() =>
+        {
+            let left = filtered_source_keyset_evidence(plan, join.inputs[0])?;
+            let right = filtered_source_keyset_evidence(plan, join.inputs[1])?;
+            Some(left.combine(right))
+        },
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn combine_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => left.checked_add(right),
+        _ => None,
     }
 }
 
@@ -1279,7 +1419,8 @@ mod tests {
         let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
         let plan = builder.finish_gpu_resident(target);
 
-        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+        let analysis = lineage_analysis_for_target(target);
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
 
         assert!(gate.accepted);
         assert_eq!(gate.threshold_multiplier, 8);
@@ -1293,7 +1434,8 @@ mod tests {
         let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
         let plan = builder.finish_gpu_resident(target);
 
-        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+        let analysis = lineage_analysis_for_target(target);
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
 
         assert!(!gate.accepted);
         assert_eq!(gate.signal, SemijoinReductionCostSignal::RowEstimate { semi_right_rows: 100, target_rows: 700 });
@@ -1306,7 +1448,8 @@ mod tests {
         let semi_right = builder.add_source(local_source_with_bytes_only("semi_right", 1_100));
         let plan = builder.finish_gpu_resident(target);
 
-        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, target, 8);
+        let analysis = lineage_analysis_for_target(target);
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
 
         assert!(!gate.accepted);
         assert_eq!(
@@ -1321,6 +1464,19 @@ mod tests {
         keys: &[JoinKey],
     ) -> Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
         SemijoinLineageAnalyzer::new(plan).analyze_left_semi_key_lineage(left_input, keys)
+    }
+
+    fn lineage_analysis_for_target(target_subtree_id: NodeId) -> SemijoinLineageAnalysis {
+        SemijoinLineageAnalysis {
+            target_subtree_id,
+            target_key_columns: vec![ColumnRef::unqualified("k")],
+            key_mappings: vec![SemijoinReductionKeyMappingDiagnostics {
+                before_column: "k".to_string(),
+                after_column: Some("k".to_string()),
+                target_subtree_id: Some(target_subtree_id),
+            }],
+            steps: Vec::new(),
+        }
     }
 
     fn single_source_plan(fields: Vec<Field>) -> (QueryPlan, NodeId) {

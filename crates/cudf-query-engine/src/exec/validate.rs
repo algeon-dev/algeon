@@ -143,6 +143,7 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input = input_node(plan, graph.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, graph.input)?;
                 validate_graph_algorithm_node(graph, input.output_schema(), input_available, node.output_schema())?;
+                validate_graph_algorithm_side_inputs(graph, plan, &available_columns_by_node, node.id)?;
                 schema_column_names(node.output_schema())
             },
         };
@@ -381,10 +382,14 @@ fn validate_edge_normalize_node(
     if let Some(weight_col) = edge_normalize.spec.edge_columns.weight.as_deref() {
         validate_graph_weight_column(weight_col, input_schema, input_available)?;
     }
+    if let Some(edge_id_col) = edge_normalize.spec.edge_columns.edge_id.as_deref() {
+        validate_graph_edge_id_column(edge_id_col, input_schema, input_available)?;
+    }
     let expected = [
         Some(edge_normalize.spec.edge_columns.source.as_str()),
         Some(edge_normalize.spec.edge_columns.destination.as_str()),
         edge_normalize.spec.edge_columns.weight.as_deref(),
+        edge_normalize.spec.edge_columns.edge_id.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -394,7 +399,7 @@ fn validate_edge_normalize_node(
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.edge_normalize.validate",
-            "edge normalize output schema must contain source, destination, and optional weight columns in order",
+            "edge normalize output schema must contain source, destination, optional weight, and optional edge-id columns in order",
         )
         .with_fact("expected_columns", expected.join(","))
         .with_fact("actual_columns", actual.join(",")));
@@ -408,19 +413,211 @@ fn validate_graph_algorithm_node(
     input_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
 ) -> Result<()> {
-    if output_schema.as_ref() != crate::plan::stable_graph_result_schema(graph.spec.algorithm).as_ref() {
+    if output_schema.as_ref() != crate::plan::graph_result_schema_for_params(&graph.spec.params).as_ref() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.graph_algorithm.validate",
-            "graph algorithm output schema must match the stable algorithm schema",
+            "graph algorithm output schema must match the algorithm result schema",
         )
         .with_fact("algorithm", graph.spec.algorithm.as_str())
         .with_fact("output_fields", output_schema.fields().len()));
     }
     validate_graph_vertex_column("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
     validate_graph_vertex_column("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
+    let vertex_type =
+        graph_edge_field("source", &graph.spec.edge_columns.source, input_schema, input_available)?.data_type().clone();
     if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {
         validate_graph_weight_column(weight_col, input_schema, input_available)?;
+    }
+    if let Some(edge_id_col) = graph.spec.edge_columns.edge_id.as_deref() {
+        validate_graph_edge_id_column(edge_id_col, input_schema, input_available)?;
+        let edge_id_type = graph_edge_field("edge_id", edge_id_col, input_schema, input_available)?.data_type().clone();
+        if edge_id_type != vertex_type {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.graph_algorithm.validate",
+                "graph edge-id column type must match the graph vertex dtype",
+            )
+            .with_fact("reason", "edge_id_dtype_mismatch")
+            .with_fact("column", edge_id_col)
+            .with_fact("edge_id_type", format!("{edge_id_type:?}"))
+            .with_fact("vertex_type", format!("{vertex_type:?}")));
+        }
+    }
+    Ok(())
+}
+
+fn validate_graph_algorithm_side_inputs(
+    graph: &crate::plan::GraphAlgorithmNode,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    if graph.inputs.first().copied() != Some(graph.input) {
+        return Err(graph_algorithm_error("graph algorithm input list must begin with the edge-list input")
+            .with_fact("node_id", node_id)
+            .with_fact("input", graph.input)
+            .with_fact("first_input", graph.inputs.first().map_or_else(|| "none".to_string(), ToString::to_string)));
+    }
+    let edge_input = input_node(plan, graph.input, node_id)?;
+    let edge_available = available_columns(available_columns_by_node, graph.input)?;
+    let vertex_type =
+        graph_edge_field("source", &graph.spec.edge_columns.source, edge_input.output_schema(), edge_available)?
+            .data_type()
+            .clone();
+    let crate::plan::GraphAlgorithmParams::Bfs(params) = &graph.spec.params else {
+        if graph.inputs.len() > 1 {
+            return Err(graph_algorithm_error("only BFS graph algorithm nodes may carry predicate side inputs")
+                .with_fact("node_id", node_id)
+                .with_fact("algorithm", graph.spec.algorithm.as_str())
+                .with_fact("side_input_count", graph.inputs.len().saturating_sub(1)));
+        }
+        return Ok(());
+    };
+    let expected_side_inputs = params.side_input_node_ids().collect::<Vec<_>>();
+    if graph.inputs[1..] != expected_side_inputs[..] {
+        return Err(graph_algorithm_error(
+            "BFS graph algorithm side-input list must match source/predicate input bindings",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact(
+            "actual_side_inputs",
+            graph.inputs[1..].iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+        )
+        .with_fact(
+            "expected_side_inputs",
+            expected_side_inputs.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+        ));
+    }
+
+    validate_graph_predicate_input(
+        params.source_vertices.as_ref(),
+        "source_vertices",
+        &vertex_type,
+        plan,
+        available_columns_by_node,
+        node_id,
+    )?;
+    validate_graph_predicate_input(
+        params.predicates.include_vertices.as_ref(),
+        "include_vertices",
+        &vertex_type,
+        plan,
+        available_columns_by_node,
+        node_id,
+    )?;
+    validate_graph_predicate_input(
+        params.predicates.exclude_vertices.as_ref(),
+        "exclude_vertices",
+        &vertex_type,
+        plan,
+        available_columns_by_node,
+        node_id,
+    )?;
+    validate_graph_predicate_input(
+        params.predicates.target_vertices.as_ref(),
+        "target_vertices",
+        &vertex_type,
+        plan,
+        available_columns_by_node,
+        node_id,
+    )?;
+    validate_graph_predicate_input(
+        params.predicates.include_edge_ids.as_ref(),
+        "include_edge_ids",
+        &vertex_type,
+        plan,
+        available_columns_by_node,
+        node_id,
+    )?;
+    if params.predicates.include_edge_ids.is_some() && graph.spec.edge_columns.edge_id.is_none() {
+        return Err(graph_algorithm_error("BFS include_edge_ids requires a primary edge-id column binding")
+            .with_fact("reason", "missing_edge_id_binding")
+            .with_fact("predicate_role", "include_edge_ids")
+            .with_fact("missing_binding", "edge_id_col"));
+    }
+    if let Some(input) = &params.predicates.include_edges {
+        validate_graph_edge_predicate_input(input, &vertex_type, plan, available_columns_by_node, node_id)?;
+    }
+    Ok(())
+}
+
+fn validate_graph_predicate_input(
+    input: Option<&crate::plan::GraphPredicateInput>,
+    role: &'static str,
+    expected_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    let Some(input) = input else {
+        return Ok(());
+    };
+    let input_node = input_node(plan, input.input, node_id)?;
+    let input_available = available_columns(available_columns_by_node, input.input)?;
+    validate_graph_predicate_column(role, &input.column, input_node.output_schema(), input_available, expected_type)
+}
+
+fn validate_graph_edge_predicate_input(
+    input: &crate::plan::GraphEdgePredicateInput,
+    expected_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    let input_node = input_node(plan, input.input, node_id)?;
+    let input_available = available_columns(available_columns_by_node, input.input)?;
+    validate_graph_predicate_column(
+        "include_edges_source",
+        &input.source,
+        input_node.output_schema(),
+        input_available,
+        expected_type,
+    )?;
+    validate_graph_predicate_column(
+        "include_edges_destination",
+        &input.destination,
+        input_node.output_schema(),
+        input_available,
+        expected_type,
+    )?;
+    if let Some(edge_id) = &input.edge_id {
+        validate_graph_predicate_column(
+            "include_edges_edge_id",
+            edge_id,
+            input_node.output_schema(),
+            input_available,
+            expected_type,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_graph_predicate_column(
+    role: &'static str,
+    column: &str,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+    expected_type: &arrow::datatypes::DataType,
+) -> Result<()> {
+    let field = graph_edge_field(role, column, input_schema, input_available)?;
+    if field.is_nullable() {
+        return Err(graph_algorithm_error("graph predicate id columns must be non-null")
+            .with_fact("reason", "nullable_predicate_column")
+            .with_fact("predicate_role", role)
+            .with_fact("column", column));
+    }
+    if field.data_type() != expected_type {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.graph_algorithm.validate",
+            "graph predicate id column type must match the graph vertex dtype",
+        )
+        .with_fact("reason", "predicate_dtype_mismatch")
+        .with_fact("predicate_role", role)
+        .with_fact("column", column)
+        .with_fact("predicate_type", format!("{:?}", field.data_type()))
+        .with_fact("vertex_type", format!("{expected_type:?}")));
     }
     Ok(())
 }
@@ -472,6 +669,32 @@ fn validate_graph_weight_column(
         )
         .with_fact("reason", "unsupported_weight_type")
         .with_fact("edge_column_role", "weight")
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    Ok(())
+}
+
+fn validate_graph_edge_id_column(
+    column: &str,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<()> {
+    let field = graph_edge_field("edge_id", column, input_schema, input_available)?;
+    if field.is_nullable() {
+        return Err(graph_algorithm_error("graph edge-id column must be non-null")
+            .with_fact("reason", "nullable_edge_column")
+            .with_fact("edge_column_role", "edge_id")
+            .with_fact("column", column));
+    }
+    if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.graph_algorithm.validate",
+            "graph edge-id column type is unsupported",
+        )
+        .with_fact("reason", "unsupported_edge_id_type")
+        .with_fact("edge_column_role", "edge_id")
         .with_fact("column", column)
         .with_fact("data_type", format!("{:?}", field.data_type())));
     }

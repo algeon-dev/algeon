@@ -637,15 +637,7 @@ fn binary_op_signature(op: BinaryOp) -> &'static str {
 }
 
 fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
-    match function {
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-        AggregateFunction::Count => "count",
-        AggregateFunction::NUnique => "nunique",
-        AggregateFunction::Avg => "avg",
-        AggregateFunction::StddevSamp => "stddev_samp",
-    }
+    function.as_str()
 }
 
 fn join_signatures(signatures: impl IntoIterator<Item = String>) -> String {

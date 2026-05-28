@@ -3,8 +3,9 @@ use super::*;
 pub(super) fn execute_degrees_all(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::DegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -43,8 +44,9 @@ pub(super) fn execute_degrees_all(
 pub(super) fn execute_in_degrees_all(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::InDegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -83,8 +85,9 @@ pub(super) fn execute_in_degrees_all(
 pub(super) fn execute_out_degrees_all(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::OutDegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -125,8 +128,9 @@ pub(super) fn execute_out_degrees_all(
 pub(super) fn execute_weakly_connected_components(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::WeaklyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -166,8 +170,9 @@ pub(super) fn execute_weakly_connected_components(
 pub(super) fn execute_strongly_connected_components(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::StronglyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -207,8 +212,9 @@ pub(super) fn execute_strongly_connected_components(
 pub(super) fn execute_triangle_count_all(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::TriangleCountAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -248,8 +254,9 @@ pub(super) fn execute_triangle_count_all(
 pub(super) fn execute_core_number(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::CoreNumber(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -292,8 +299,9 @@ pub(super) fn execute_core_number(
 pub(super) fn execute_k_core(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::KCore(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -340,8 +348,9 @@ pub(super) fn execute_k_core(
 pub(super) fn execute_minimum_spanning_tree(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

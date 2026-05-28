@@ -17,13 +17,16 @@ use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue, LocalParquetFile,
-    LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId, MissingColumn,
-    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode,
-    WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinKey,
+    JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId,
+    MissingColumn, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder,
+    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy,
+    StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    stable_graph_result_schema,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -58,6 +61,9 @@ mod window_execution;
 mod aggregate_execution;
 #[path = "native_execution_tests/core_execution.rs"]
 mod core_execution;
+#[cfg(feature = "cugraph")]
+#[path = "native_execution_tests/graph_algorithm_execution.rs"]
+mod graph_algorithm_execution;
 #[path = "native_execution_tests/partition_execution.rs"]
 mod partition_execution;
 

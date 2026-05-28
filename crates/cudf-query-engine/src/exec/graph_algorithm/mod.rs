@@ -1,4 +1,7 @@
 #[cfg(feature = "cugraph")]
+use std::collections::BTreeMap;
+
+#[cfg(feature = "cugraph")]
 use arrow::datatypes::SchemaRef;
 
 use super::*;
@@ -43,10 +46,12 @@ pub(super) fn execute_graph_algorithm(
     node_id: NodeId,
     node: &crate::plan::GraphAlgorithmNode,
     input: GpuDataFrame,
+    side_inputs: std::collections::BTreeMap<NodeId, GpuDataFrame>,
     _metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows();
     let input_columns = input.num_columns();
+    let side_input_count = side_inputs.len();
     Err(QueryError::new(
         QueryErrorCode::UnsupportedOperator,
         "cudf_query_engine.graph_algorithm.execute",
@@ -56,6 +61,7 @@ pub(super) fn execute_graph_algorithm(
     .with_fact("algorithm", node.spec.algorithm.as_str())
     .with_fact("input_rows", input_rows)
     .with_fact("input_columns", input_columns)
+    .with_fact("side_input_count", side_input_count)
     .with_fact("required_feature", "cugraph"))
 }
 
@@ -65,6 +71,7 @@ pub(super) fn execute_graph_algorithm(
     node_id: NodeId,
     node: &crate::plan::GraphAlgorithmNode,
     input: GpuDataFrame,
+    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
@@ -72,7 +79,8 @@ pub(super) fn execute_graph_algorithm(
     let boundary_before = metrics.boundary.clone();
     let timer = Instant::now();
     let executor = graph_algorithm_executor(node.spec.algorithm);
-    let result = executor(context, &node.spec, input)?;
+    let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs };
+    let result = executor(context, &node.spec, inputs)?;
     let elapsed = timer.elapsed();
     metrics.operator_time += elapsed;
 
@@ -113,8 +121,17 @@ pub(super) struct GraphAlgorithmExecutionResult {
 }
 
 #[cfg(feature = "cugraph")]
-type GraphAlgorithmExecutor =
-    fn(&ExecutionContext, &crate::plan::GraphAlgorithmSpec, GpuDataFrame) -> Result<GraphAlgorithmExecutionResult>;
+pub(super) struct GraphAlgorithmExecutionInputs {
+    pub(super) edge_list: GpuDataFrame,
+    pub(super) side_inputs: BTreeMap<NodeId, GpuDataFrame>,
+}
+
+#[cfg(feature = "cugraph")]
+type GraphAlgorithmExecutor = fn(
+    &ExecutionContext,
+    &crate::plan::GraphAlgorithmSpec,
+    GraphAlgorithmExecutionInputs,
+) -> Result<GraphAlgorithmExecutionResult>;
 
 #[cfg(feature = "cugraph")]
 const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmExecutor)] = &[
@@ -257,6 +274,7 @@ struct GraphCacheKey {
     source_column: String,
     destination_column: String,
     weight_column: Option<String>,
+    edge_id_column: Option<String>,
     construction_policy: &'static str,
     directed: bool,
     renumber: bool,
@@ -280,6 +298,7 @@ impl GraphCacheKey {
             source_column: spec.edge_columns.source.clone(),
             destination_column: spec.edge_columns.destination.clone(),
             weight_column: spec.edge_columns.weight.clone(),
+            edge_id_column: spec.edge_columns.edge_id.clone(),
             construction_policy: spec.graph_options.policy.as_str(),
             directed: spec.graph_options.directed,
             renumber: spec.graph_options.renumber,
@@ -336,11 +355,206 @@ where
     f(context.runtime(), &entered, &mut graph)
 }
 
+/// Build a cuGraph graph through `GraphBuilder` when the native edge list
+/// carries stable edge ids. The cudf table-export path does not expose edge-id
+/// binding, so this path borrows typed device slices for source, destination,
+/// optional weight, and edge id columns directly for graph construction.
+#[cfg(feature = "cugraph")]
+pub(super) fn run_with_cugraph_graph_edge_ids<T, F, R>(
+    context: &ExecutionContext,
+    edges: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    operation: &'static str,
+    f: F,
+) -> Result<R>
+where
+    T: cugraph::Transposition,
+    F: FnOnce(&cudf::Runtime, &cugraph::EnteredContext<'_>, &mut cugraph::Graph<T>) -> Result<R>,
+{
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter(operation).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+    let mut graph = build_graph_from_edge_id_columns::<T>(&entered, edges, spec)?;
+    f(context.runtime(), &entered, &mut graph)
+}
+
+#[cfg(feature = "cugraph")]
+fn build_graph_from_edge_id_columns<T: cugraph::Transposition>(
+    entered: &cugraph::EnteredContext<'_>,
+    edges: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<cugraph::Graph<T>> {
+    let vertex_type = edges
+        .series(&spec.edge_columns.source)
+        .and_then(|series| series.dtype())
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.graph_algorithm.edge_id_graph",
+                "failed to inspect source vertex dtype for edge-id graph construction",
+                error,
+            )
+            .with_fact("src_col", &spec.edge_columns.source)
+        })?
+        .id();
+    match vertex_type {
+        cudf::TypeId::Int32 => build_graph_from_edge_id_columns_typed::<T, i32>(entered, edges, spec),
+        cudf::TypeId::Int64 => build_graph_from_edge_id_columns_typed::<T, i64>(entered, edges, spec),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.graph_algorithm.edge_id_graph",
+            "edge-id graph construction requires Int32 or Int64 vertices",
+        )
+        .with_fact("vertex_dtype", format!("{vertex_type:?}"))),
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn build_graph_from_edge_id_columns_typed<T, V>(
+    entered: &cugraph::EnteredContext<'_>,
+    edges: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<cugraph::Graph<T>>
+where
+    T: cugraph::Transposition,
+    V: cudf::CudfType + cugraph::types::CugraphElement,
+{
+    let edge_id_col = spec.edge_columns.edge_id.as_deref().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.edge_id_graph",
+            "edge-id graph construction requires a stable edge-id column binding",
+        )
+    })?;
+    let src = graph_series(edges, &spec.edge_columns.source, "source")?;
+    let dst = graph_series(edges, &spec.edge_columns.destination, "destination")?;
+    let edge_ids = graph_series(edges, edge_id_col, "edge_id")?;
+    let src_slice = graph_device_slice::<V>(&src, "source")?;
+    let dst_slice = graph_device_slice::<V>(&dst, "destination")?;
+    let edge_id_slice = graph_device_slice::<V>(&edge_ids, "edge_id")?;
+    let src_view = graph_device_view::<V>(&src_slice, "source")?;
+    let dst_view = graph_device_view::<V>(&dst_slice, "destination")?;
+    let edge_id_view = graph_device_view::<V>(&edge_id_slice, "edge_id")?;
+
+    match spec.edge_columns.weight.as_deref() {
+        Some(weight_col) => {
+            let weight = graph_series(edges, weight_col, "weight")?;
+            let weight_dtype = weight.dtype().map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.graph_algorithm.edge_id_graph",
+                    "failed to inspect graph weight column dtype",
+                    error,
+                )
+                .with_fact("weight_col", weight_col)
+            })?;
+            match weight_dtype.id() {
+                cudf::TypeId::Float32 => {
+                    let weight_slice = graph_device_slice::<f32>(&weight, "weight")?;
+                    let weight_view = graph_device_view::<f32>(&weight_slice, "weight")?;
+                    graph_builder_base(spec, &src_view, &dst_view)
+                        .weights(&weight_view)
+                        .edge_ids(&edge_id_view)
+                        .build(entered)
+                        .map_err(map_cugraph_error(
+                            "cudf_query_engine.graph_algorithm.edge_id_graph",
+                            "failed to build cuGraph graph with stable edge ids",
+                        ))
+                },
+                cudf::TypeId::Float64 => {
+                    let weight_slice = graph_device_slice::<f64>(&weight, "weight")?;
+                    let weight_view = graph_device_view::<f64>(&weight_slice, "weight")?;
+                    graph_builder_base(spec, &src_view, &dst_view)
+                        .weights(&weight_view)
+                        .edge_ids(&edge_id_view)
+                        .build(entered)
+                        .map_err(map_cugraph_error(
+                            "cudf_query_engine.graph_algorithm.edge_id_graph",
+                            "failed to build cuGraph graph with stable edge ids",
+                        ))
+                },
+                _ => Err(QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.graph_algorithm.edge_id_graph",
+                    "graph weight column dtype is unsupported",
+                )
+                .with_fact("weight_col", weight_col)
+                .with_fact("weight_dtype", format!("{weight_dtype:?}"))),
+            }
+        },
+        None => graph_builder_base(spec, &src_view, &dst_view).edge_ids(&edge_id_view).build(entered).map_err(
+            map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.edge_id_graph",
+                "failed to build cuGraph graph with stable edge ids",
+            ),
+        ),
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_builder_base<'a, V: cugraph::types::CugraphElement>(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    src_view: &'a cugraph::DeviceArrayView<'a, V>,
+    dst_view: &'a cugraph::DeviceArrayView<'a, V>,
+) -> cugraph::GraphBuilder<'a> {
+    let mut builder =
+        cugraph::GraphBuilder::new(src_view, dst_view).properties(graph_properties(spec.graph_options.directed));
+    if spec.graph_options.renumber {
+        builder = builder.renumber();
+    }
+    builder
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_series(edges: &DataFrame, column: &str, role: &'static str) -> Result<cudf::Series> {
+    edges.series(column).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.graph_algorithm.edge_id_graph",
+            "failed to access graph construction column",
+            error,
+        )
+        .with_fact("role", role)
+        .with_fact("column", column)
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_device_slice<'a, T: cudf::CudfType>(
+    series: &'a cudf::Series,
+    role: &'static str,
+) -> Result<cudf::core::DeviceSlice<'a>> {
+    series.as_column().device_slice::<T>().map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.graph_algorithm.edge_id_graph",
+            "failed to borrow graph construction column device slice",
+            error,
+        )
+        .with_fact("role", role)
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_device_view<'a, T: cugraph::types::CugraphElement>(
+    slice: &'a cudf::core::DeviceSlice<'a>,
+    role: &'static str,
+) -> Result<cugraph::DeviceArrayView<'a, T>> {
+    cugraph::cudf_interop::device_array_view_from_slice::<T>(slice)
+        .map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.edge_id_graph",
+            "failed to wrap graph construction column as a cuGraph device-array view",
+        ))
+        .map_err(|error| error.with_fact("role", role))
+}
+
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, Copy)]
 enum EdgeColumnRole {
     Vertex,
     Weight,
+    EdgeId,
 }
 
 #[cfg(feature = "cugraph")]
@@ -364,10 +578,26 @@ pub(super) fn project_edge_list(
     if let Some(weight) = &spec.edge_columns.weight {
         validate_edge_column(frame, weight, EdgeColumnRole::Weight)?;
     }
+    if let Some(edge_id) = &spec.edge_columns.edge_id {
+        let edge_id_type = validate_edge_column(frame, edge_id, EdgeColumnRole::EdgeId)?;
+        if edge_id_type.id() != source_type.id() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.graph_algorithm.validate_edge_column",
+                "cuGraph edge-id column dtype must match the graph vertex dtype",
+            )
+            .with_fact("edge_id_col", edge_id)
+            .with_fact("edge_id_cudf_dtype", format!("{edge_id_type:?}"))
+            .with_fact("vertex_cudf_dtype", format!("{source_type:?}")));
+        }
+    }
 
     let mut selected = vec![spec.edge_columns.source.as_str(), spec.edge_columns.destination.as_str()];
     if let Some(weight) = &spec.edge_columns.weight {
         selected.push(weight.as_str());
+    }
+    if let Some(edge_id) = &spec.edge_columns.edge_id {
+        selected.push(edge_id.as_str());
     }
     let edges = frame.select(selected).map_err(|error| {
         QueryError::from_cudf(
@@ -378,6 +608,7 @@ pub(super) fn project_edge_list(
         .with_fact("src_col", &spec.edge_columns.source)
         .with_fact("dst_col", &spec.edge_columns.destination)
         .with_fact("weight_col", spec.edge_columns.weight.as_deref().unwrap_or("<none>"))
+        .with_fact("edge_id_col", spec.edge_columns.edge_id.as_deref().unwrap_or("<none>"))
     })?;
     Ok((edges, source_type.id()))
 }
@@ -412,6 +643,7 @@ fn validate_edge_column(frame: &DataFrame, column: &str, role: EdgeColumnRole) -
     let supported = match role {
         EdgeColumnRole::Vertex => matches!(dtype.id(), cudf::TypeId::Int32 | cudf::TypeId::Int64),
         EdgeColumnRole::Weight => matches!(dtype.id(), cudf::TypeId::Float32 | cudf::TypeId::Float64),
+        EdgeColumnRole::EdgeId => matches!(dtype.id(), cudf::TypeId::Int32 | cudf::TypeId::Int64),
     };
     if supported {
         return Ok(dtype);
@@ -427,6 +659,7 @@ fn validate_edge_column(frame: &DataFrame, column: &str, role: EdgeColumnRole) -
         match role {
             EdgeColumnRole::Vertex => "vertex",
             EdgeColumnRole::Weight => "weight",
+            EdgeColumnRole::EdgeId => "edge_id",
         },
     )
     .with_fact("cudf_dtype", format!("{dtype:?}")))

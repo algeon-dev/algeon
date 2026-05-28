@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arrow::{
     array::{Decimal128Array, Float64Array, Int64Array, StringArray},
@@ -10,7 +14,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
+    CUDF_TPCDS_PARQUET_DIR_ENV, CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
     NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAdaptivePipelineDiagnostics, NativeCudfExecutionConfig,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
     NativeDataFusionRuntimeOutcome, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics,
@@ -18,14 +22,28 @@ use datafusion_cudf::{
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityFloatTolerance, ParityStageStatus, ParityStatus, PlanningReport, TPCDS_QUERIES, TPCDS_TABLES,
-    TpcdsWorkloadResult, compare_record_batches, discover_tpcds_table_layout, lower_physical_plan_to_native,
-    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    TpcdsWorkloadResult, compare_record_batches, default_tpcds_sf1_parquet_root, discover_tpcds_table_layout,
+    lower_physical_plan_to_native, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     tpcds_datafusion_planning_workload_items_with_optimizer_config,
     tpcds_parity_workload_items as raw_tpcds_parity_workload_items, tpcds_report_session_config,
 };
 
-const TPCDS_SF1_FIXTURE: &str = "tests/data/tpcds/sf1/parquet";
 static TPCDS_NATIVE_PARITY_WORKLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn sf1_fixture_root_or_skip() -> Option<PathBuf> {
+    if let Ok(root) = std::env::var(CUDF_TPCDS_PARQUET_DIR_ENV) {
+        return Some(PathBuf::from(root));
+    }
+
+    let root = PathBuf::from(default_tpcds_sf1_parquet_root());
+    let complete = TPCDS_TABLES.iter().all(|table| discover_tpcds_table_layout(&root, table).is_ok());
+    if complete {
+        Some(root)
+    } else {
+        eprintln!("skipping external SF1 TPC-DS parity: no complete default SF1 fixture at {}", root.display());
+        None
+    }
+}
 
 #[test]
 fn parity_tsv_header_pins_schema_version_and_columns() {
@@ -104,13 +122,19 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
         native_retry_count: None,
         native_runtime_failure: None,
     };
-    let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact());
+    let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact())
+        .with_statistical_aggregate_execution_mode(
+            datafusion_cudf::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        );
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();
     assert_eq!(
         first_line,
         format!("# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}")
     );
+    assert!(tsv.contains("# statistical_aggregate_execution_mode=gpu_native_tolerant\n"));
+    assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
+    assert!(tsv.contains("# stddev_samp_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
     // 36 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");
@@ -119,7 +143,10 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
 
 #[tokio::test]
 async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q06".to_string()];
@@ -155,7 +182,10 @@ async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
 
 #[tokio::test]
 async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("web_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let plain_plan = plain_tpcds_physical_plan(root, "q85").await;
@@ -194,7 +224,10 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
 
 #[tokio::test]
 async fn tpcds_sf1_q93_matches_after_outer_join_filter_reassociation() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q93".to_string()];
@@ -227,7 +260,10 @@ async fn tpcds_sf1_q93_matches_after_outer_join_filter_reassociation() {
 
 #[tokio::test]
 async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admission() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("customer.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q04".to_string(), "q11".to_string(), "q31".to_string(), "q74".to_string()];
@@ -263,7 +299,10 @@ async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admiss
 
 #[tokio::test]
 async fn tpcds_sf1_q15_nullable_or_residual_matches_after_post_filter_admission() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("catalog_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q15".to_string()];
@@ -298,7 +337,10 @@ async fn tpcds_sf1_q15_nullable_or_residual_matches_after_post_filter_admission(
 
 #[tokio::test]
 async fn tpcds_sf1_global_limit_join_aggregate_queries_match_after_limit_admission() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("catalog_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec![
@@ -350,7 +392,10 @@ async fn tpcds_sf1_global_limit_join_aggregate_queries_match_after_limit_admissi
 
 #[tokio::test]
 async fn tpcds_sf1_q61_matches_after_physical_cross_join_admission() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q61").await);
@@ -399,7 +444,10 @@ async fn tpcds_sf1_q61_matches_after_physical_cross_join_admission() {
 
 #[tokio::test]
 async fn tpcds_sf1_q09_matches_after_scalar_nested_loop_left_join_cross_admission() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q09".to_string()];
@@ -434,7 +482,10 @@ async fn tpcds_sf1_q09_matches_after_scalar_nested_loop_left_join_cross_admissio
 
 #[tokio::test]
 async fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let items = tpcds_datafusion_planning_workload_items_with_optimizer_config(
@@ -482,7 +533,10 @@ async fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
 
 #[tokio::test]
 async fn tpcds_sf1_q44_keyless_outer_cross_join_matches_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q44".to_string()];
@@ -520,7 +574,10 @@ async fn tpcds_sf1_q44_keyless_outer_cross_join_matches_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_bitwise_grouping_window_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("web_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q70".to_string(), "q86".to_string()];
@@ -557,7 +614,10 @@ async fn tpcds_sf1_bitwise_grouping_window_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_abs_window_filter_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q53".to_string(), "q63".to_string(), "q89".to_string()];
@@ -594,7 +654,10 @@ async fn tpcds_sf1_abs_window_filter_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_rank_window_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q36".to_string(), "q47".to_string(), "q57".to_string(), "q67".to_string()];
@@ -631,7 +694,10 @@ async fn tpcds_sf1_rank_window_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_partition_aggregate_window_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q12".to_string(), "q20".to_string(), "q98".to_string()];
@@ -668,7 +734,10 @@ async fn tpcds_sf1_partition_aggregate_window_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_cumulative_aggregate_window_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q51".to_string()];
@@ -704,7 +773,10 @@ async fn tpcds_sf1_cumulative_aggregate_window_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_rank_window_union_query_matches_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q49".to_string()];
@@ -741,7 +813,10 @@ async fn tpcds_sf1_rank_window_union_query_matches_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_round_decimal_segment_query_matches_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q54".to_string()];
@@ -776,7 +851,10 @@ async fn tpcds_sf1_round_decimal_segment_query_matches_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_mark_join_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q10".to_string(), "q35".to_string(), "q45".to_string()];
@@ -813,7 +891,10 @@ async fn tpcds_sf1_mark_join_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_host_arrow_join_boundary_queries_match_with_partial_native_children() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q17".to_string()];
@@ -848,7 +929,10 @@ async fn tpcds_sf1_host_arrow_join_boundary_queries_match_with_partial_native_ch
 
 #[tokio::test]
 async fn tpcds_sf1_phase3_distributed_aggregate_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec![
@@ -894,7 +978,10 @@ async fn tpcds_sf1_phase3_distributed_aggregate_queries_match_as_whole_native() 
 
 #[tokio::test]
 async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_grouping_sets() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     for query_id in ["q05", "q18"] {
@@ -928,7 +1015,10 @@ async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_
 
 #[tokio::test]
 async fn tpcds_sf1_phase2_union_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec![
@@ -987,7 +1077,10 @@ async fn tpcds_sf1_phase2_union_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_projection_scalar_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q02".to_string(), "q78".to_string(), "q84".to_string()];
@@ -1026,7 +1119,10 @@ async fn tpcds_sf1_projection_scalar_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q28").await);
@@ -1077,7 +1173,10 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
 
 #[tokio::test]
 async fn tpcds_sf1_phase1_hash_join_queries_match_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec![
@@ -1130,7 +1229,10 @@ async fn tpcds_sf1_phase1_hash_join_queries_match_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_outer_hash_join_query_matches_as_whole_native() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("catalog_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q72".to_string()];
@@ -1168,7 +1270,10 @@ async fn tpcds_sf1_outer_hash_join_query_matches_as_whole_native() {
 
 #[tokio::test]
 async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("catalog_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q72").await);
@@ -1195,7 +1300,10 @@ async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
 
 #[tokio::test]
 async fn tpcds_sf1_precision_sensitive_stddev_matches_with_native_order_contract() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q39".to_string()];
@@ -1229,7 +1337,10 @@ async fn tpcds_sf1_precision_sensitive_stddev_matches_with_native_order_contract
 
 #[tokio::test]
 async fn tpcds_sf1_cross_join_count_subplans_match_after_hidden_join_output_projection() {
-    let root = Path::new(TPCDS_SF1_FIXTURE);
+    let Some(root) = sf1_fixture_root_or_skip() else {
+        return;
+    };
+    let root = root.as_path();
     assert!(root.join("web_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q88".to_string(), "q90".to_string()];

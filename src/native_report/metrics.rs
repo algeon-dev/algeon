@@ -995,6 +995,20 @@ pub struct NativeAggregateStrategyMetricRow {
     pub group_key_dtypes: String,
     /// Stable aggregate function summary.
     pub aggregate_functions: String,
+    /// Whether this aggregate row carries a floating statistical aggregate contract.
+    pub floating_statistical_aggregate: String,
+    /// Selected floating statistical aggregate execution mode.
+    pub statistical_aggregate_execution_mode: String,
+    /// Required tolerance contract for floating statistical parity.
+    pub statistical_aggregate_tolerance_contract: String,
+    /// Floating statistical aggregate functions covered by the contract.
+    pub statistical_aggregate_functions: String,
+    /// Degrees-of-freedom value used by statistical aggregate kernels.
+    pub statistical_aggregate_ddof: String,
+    /// Migration projection for logical `STDDEV_SAMP`.
+    pub stddev_samp_execution_mode: String,
+    /// Migration projection for logical `STDDEV_SAMP` ddof.
+    pub stddev_samp_ddof: String,
     /// Count of aggregate filter predicates.
     pub aggregate_filter_count: usize,
     /// Count of distinct aggregate expressions.
@@ -1121,7 +1135,7 @@ impl NativeAggregateStrategyMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},aggregate_filter_count={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
+            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},floating_statistical_aggregate={},statistical_aggregate_execution_mode={},statistical_aggregate_tolerance_contract={},statistical_aggregate_functions={},statistical_aggregate_ddof={},stddev_samp_execution_mode={},stddev_samp_ddof={},aggregate_filter_count={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
             self.node_id,
             self.selected_strategy,
             self.execution_stage,
@@ -1130,6 +1144,13 @@ impl NativeAggregateStrategyMetricRow {
             self.group_key_exprs,
             self.group_key_dtypes,
             self.aggregate_functions,
+            self.floating_statistical_aggregate,
+            self.statistical_aggregate_execution_mode,
+            self.statistical_aggregate_tolerance_contract,
+            self.statistical_aggregate_functions,
+            self.statistical_aggregate_ddof,
+            self.stddev_samp_execution_mode,
+            self.stddev_samp_ddof,
             self.aggregate_filter_count,
             self.distinct_aggregate_count,
             self.input_rows,
@@ -1195,6 +1216,13 @@ impl NativeAggregateStrategyMetricRow {
             && self.group_key_exprs == other.group_key_exprs
             && self.group_key_dtypes == other.group_key_dtypes
             && self.aggregate_functions == other.aggregate_functions
+            && self.floating_statistical_aggregate == other.floating_statistical_aggregate
+            && self.statistical_aggregate_execution_mode == other.statistical_aggregate_execution_mode
+            && self.statistical_aggregate_tolerance_contract == other.statistical_aggregate_tolerance_contract
+            && self.statistical_aggregate_functions == other.statistical_aggregate_functions
+            && self.statistical_aggregate_ddof == other.statistical_aggregate_ddof
+            && self.stddev_samp_execution_mode == other.stddev_samp_execution_mode
+            && self.stddev_samp_ddof == other.stddev_samp_ddof
             && self.aggregate_filter_count == other.aggregate_filter_count
             && self.distinct_aggregate_count == other.distinct_aggregate_count
             && self.source_adjacent_partial == other.source_adjacent_partial
@@ -1630,6 +1658,13 @@ fn labels_to_aggregate_strategy_row(labels: BTreeMap<&str, &str>) -> NativeAggre
         group_key_exprs: string_label(&labels, "group_key_exprs"),
         group_key_dtypes: string_label(&labels, "group_key_dtypes"),
         aggregate_functions: string_label(&labels, "aggregate_functions"),
+        floating_statistical_aggregate: string_label(&labels, "floating_statistical_aggregate"),
+        statistical_aggregate_execution_mode: string_label(&labels, "statistical_aggregate_execution_mode"),
+        statistical_aggregate_tolerance_contract: string_label(&labels, "statistical_aggregate_tolerance_contract"),
+        statistical_aggregate_functions: string_label(&labels, "statistical_aggregate_functions"),
+        statistical_aggregate_ddof: string_label(&labels, "statistical_aggregate_ddof"),
+        stddev_samp_execution_mode: string_label(&labels, "stddev_samp_execution_mode"),
+        stddev_samp_ddof: string_label(&labels, "stddev_samp_ddof"),
         aggregate_filter_count: usize_label(&labels, "aggregate_filter_count"),
         distinct_aggregate_count: usize_label(&labels, "distinct_aggregate_count"),
         input_rows: usize_label(&labels, "input_rows"),

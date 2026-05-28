@@ -22,7 +22,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 metrics,
             );
         }
-        if aggregate_spec_has_stddev_samp(&aggregate.spec) {
+        if aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec) {
             let frames = inputs.collect_remaining_frames_owned(reservations, metrics)?;
             if frames.is_empty() {
                 return execute_compiled_bounded_aggregate_from_empty_input(
@@ -39,8 +39,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             return execute_bounded_generic_unary(
                 context,
                 node_id,
-                "compiled_stddev_aggregate",
-                "compiled_stddev_aggregate_output",
+                "compiled_floating_statistical_aggregate",
+                "compiled_floating_statistical_aggregate_output",
                 input,
                 reservations,
                 metrics,

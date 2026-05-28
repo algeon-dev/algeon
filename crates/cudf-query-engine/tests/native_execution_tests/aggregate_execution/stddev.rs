@@ -73,6 +73,18 @@ fn grouped_stddev_samp_matches_datafusion_welford_contract() {
     assert!(float64_array(batch, 4).is_null(1));
     assert!(float64_array(batch, 4).is_null(2));
     assert!(float64_array(batch, 4).is_null(3));
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "selected_strategy").as_deref(),
+        Some("datafusion_exact_host_welford")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_execution_mode").as_deref(),
+        Some("datafusion_exact_host_welford")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_tolerance_contract").as_deref(),
+        Some("exact")
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -216,6 +228,91 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
         aggregate_strategy_fact(result.metrics(), "stddev_samp_execution_mode").as_deref(),
         Some("gpu_native_tolerant")
     );
+    assert_eq!(aggregate_strategy_fact(result.metrics(), "floating_statistical_aggregate").as_deref(), Some("true"));
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_execution_mode").as_deref(),
+        Some("gpu_native_tolerant")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_tolerance_contract").as_deref(),
+        Some("float_tolerant")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_ddof").as_deref(),
+        Some("stddev_samp:1")
+    );
+    assert_eq!(aggregate_strategy_fact(result.metrics(), "stddev_samp_ddof").as_deref(), Some("1"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
+    let dir = unique_temp_dir("cudf-query-engine-gpu-native-statistical-aggregates");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_stddev_input_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("stddev_pop_i32", DataType::Float64, true),
+        Field::new("var_samp_i32", DataType::Float64, true),
+        Field::new("var_pop_i32", DataType::Float64, true),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "v_i32".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::StddevPop, Expr::column("v_i32"), "stddev_pop_i32"),
+            AggregateExpr::new(AggregateFunction::VarSamp, Expr::column("v_i32"), "var_samp_i32"),
+            AggregateExpr::new(AggregateFunction::VarPop, Expr::column("v_i32"), "var_pop_i32"),
+        ],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_statistical_aggregate_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(float64_array(batch, 1).value(0), 1.0);
+    assert_eq!(float64_array(batch, 2).value(0), 2.0);
+    assert_eq!(float64_array(batch, 3).value(0), 1.0);
+    assert_eq!(float64_array(batch, 1).value(1), 0.0);
+    assert!(float64_array(batch, 2).is_null(1));
+    assert_eq!(float64_array(batch, 3).value(1), 0.0);
+    assert!(float64_array(batch, 1).is_null(3));
+    assert!(float64_array(batch, 2).is_null(3));
+    assert!(float64_array(batch, 3).is_null(3));
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "selected_strategy").as_deref(),
+        Some("floating_statistical_gpu_native_tolerant")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_functions").as_deref(),
+        Some("stddev_pop,var_samp,var_pop")
+    );
+    assert_eq!(
+        aggregate_strategy_fact(result.metrics(), "statistical_aggregate_ddof").as_deref(),
+        Some("stddev_pop:0,var_samp:1,var_pop:0")
+    );
+    assert_eq!(aggregate_strategy_fact(result.metrics(), "stddev_samp_execution_mode"), None);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -287,12 +287,14 @@ pub struct NativeTpcdsParityReport {
     pub workload_dataset: Option<WorkloadDatasetMetadata>,
     /// Float tolerance recorded in the TSV header and used for comparisons.
     pub float_tolerance: ParityFloatTolerance,
+    /// Floating statistical aggregate contract selected for native execution.
+    pub statistical_aggregate_execution_mode: Option<StatisticalAggregateExecutionMode>,
 }
 
 impl NativeTpcdsParityReport {
     /// Builds a report from already-derived rows.
     pub fn from_rows(rows: Vec<NativeTpcdsParityRow>, float_tolerance: ParityFloatTolerance) -> Self {
-        Self { rows, workload_dataset: None, float_tolerance }
+        Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
     }
 
     /// Builds report rows from captured CPU/native/oracle workload outcomes.
@@ -301,12 +303,18 @@ impl NativeTpcdsParityReport {
         float_tolerance: ParityFloatTolerance,
     ) -> Self {
         let rows = items.into_iter().map(|item| parity_row_for_item(item, float_tolerance)).collect();
-        Self { rows, workload_dataset: None, float_tolerance }
+        Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
     }
 
     /// Attaches fixture metadata to the TSV header.
     pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
         self.workload_dataset = Some(metadata);
+        self
+    }
+
+    /// Attaches the native floating statistical aggregate contract to TSV metadata.
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
+        self.statistical_aggregate_execution_mode = Some(mode);
         self
     }
 
@@ -326,6 +334,12 @@ impl NativeTpcdsParityReport {
         let _ = writeln!(output, "# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}");
         let _ = writeln!(output, "# parity_float_tolerance_absolute={}", self.float_tolerance.absolute);
         let _ = writeln!(output, "# parity_float_tolerance_relative={}", self.float_tolerance.relative);
+        if let Some(mode) = self.statistical_aggregate_execution_mode {
+            let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
+            let _ =
+                writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
+            let _ = writeln!(output, "# stddev_samp_execution_mode={}", mode.as_str());
+        }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         output.push_str(NATIVE_TPCDS_PARITY_TSV_HEADER);
         output.push('\n');

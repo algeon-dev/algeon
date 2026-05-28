@@ -201,7 +201,7 @@ pub(super) fn should_partition_compiled_grouped_aggregate(
     aggregate: &AggregateNode,
     input_reserved_bytes: u64,
 ) -> bool {
-    !aggregate_spec_has_stddev_samp(&aggregate.spec)
+    !aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec)
         && !aggregate.spec.group_exprs.is_empty()
         && partitioned_aggregate_partition_count(context, input_reserved_bytes) > 1
 }

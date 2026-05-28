@@ -98,6 +98,9 @@ pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupBy
         AggregateFunction::NUnique => GroupByAgg::NUnique,
         AggregateFunction::Avg => GroupByAgg::Mean,
         AggregateFunction::StddevSamp => GroupByAgg::Std { ddof: 1 },
+        AggregateFunction::StddevPop => GroupByAgg::Std { ddof: 0 },
+        AggregateFunction::VarSamp => GroupByAgg::Variance { ddof: 1 },
+        AggregateFunction::VarPop => GroupByAgg::Variance { ddof: 0 },
     }
 }
 
@@ -109,8 +112,11 @@ pub(in crate::exec) fn lower_final_aggregate_function(function: AggregateFunctio
         AggregateFunction::Count => GroupByAgg::Sum,
         AggregateFunction::NUnique => GroupByAgg::Sum,
         AggregateFunction::Avg => unreachable!("avg final aggregate is lowered as explicit sum/count state"),
-        AggregateFunction::StddevSamp => {
-            unreachable!("stddev_samp final aggregate uses the DataFusion-exact Welford aggregate path")
+        AggregateFunction::StddevSamp
+        | AggregateFunction::StddevPop
+        | AggregateFunction::VarSamp
+        | AggregateFunction::VarPop => {
+            unreachable!("floating statistical final aggregate uses the whole-input statistical aggregate path")
         },
     }
 }
@@ -142,8 +148,8 @@ pub(in crate::exec) fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
 }
 
-pub(in crate::exec) fn aggregate_spec_has_stddev_samp(spec: &AggregateSpec) -> bool {
-    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp)
+pub(in crate::exec) fn aggregate_spec_has_floating_statistical_aggregate(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
 }
 
 pub(in crate::exec) fn aggregate_spec_has_distinct(spec: &AggregateSpec) -> bool {

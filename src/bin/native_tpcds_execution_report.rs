@@ -6,8 +6,8 @@ use std::{
 
 use datafusion_cudf::{
     NativeDataFusionExecutionReport, NativePipelineExecutionMode, TpcdsDatasetMetadata, TpcdsExecutionProgressEvent,
-    prepare_tpcds_report_dataset, tpcds_datafusion_execution_workload_items_filtered, tpcds_native_optimizer_config,
-    tpcds_report_session_config,
+    prepare_tpcds_report_dataset, tpcds_datafusion_execution_workload_items_filtered,
+    tpcds_native_analytics_optimizer_config, tpcds_report_session_config,
 };
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
@@ -24,8 +24,9 @@ async fn main() {
 
 async fn tpcds_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsExecutionReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
-    let optimizer_config =
-        tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let optimizer_config = tpcds_native_analytics_optimizer_config()
+        .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
     let query_filter = query_filter_from_env();
     let progress_enabled = progress_enabled_from_env();
     let mut progress_callback = |event: TpcdsExecutionProgressEvent<'_>| {
@@ -62,7 +63,8 @@ async fn tpcds_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadRe
         progress,
     )
     .await?;
-    let report = NativeDataFusionExecutionReport::collect(items);
+    let report = NativeDataFusionExecutionReport::collect(items)
+        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode);
     Ok(TpcdsExecutionReport { report, metadata })
 }
 

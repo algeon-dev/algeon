@@ -9,11 +9,11 @@ pub(super) fn execute_grouping_sets_aggregate(
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(spec) {
+    if aggregate_spec_has_floating_statistical_aggregate(spec) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "cudf_query_engine.aggregate.grouping_sets",
-            "grouping sets do not currently support stddev_samp",
+            "grouping sets do not currently support floating statistical aggregates",
         ));
     }
     let aggregate = lower_partial_aggregate_spec(spec)?;
@@ -67,11 +67,11 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(spec) {
+    if aggregate_spec_has_floating_statistical_aggregate(spec) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "cudf_query_engine.aggregate.grouping_sets_partial",
-            "grouping sets do not currently support stddev_samp",
+            "grouping sets do not currently support floating statistical aggregates",
         ));
     }
     let aggregate = lower_partial_aggregate_spec(spec)?;

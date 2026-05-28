@@ -3,8 +3,9 @@ use super::*;
 pub(super) fn execute_pagerank(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::PageRank(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -45,8 +46,9 @@ pub(super) fn execute_pagerank(
 pub(super) fn execute_eigenvector_centrality(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -88,8 +90,9 @@ pub(super) fn execute_eigenvector_centrality(
 pub(super) fn execute_hits(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::Hits(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -144,8 +147,9 @@ pub(super) fn execute_hits(
 pub(super) fn execute_katz_centrality(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::KatzCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -187,8 +191,9 @@ pub(super) fn execute_katz_centrality(
 pub(super) fn execute_pagerank_strict(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
-    input: GpuDataFrame,
+    inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::PageRankStrict(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

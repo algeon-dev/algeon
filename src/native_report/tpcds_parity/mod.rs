@@ -33,7 +33,7 @@ use super::{
     diagnostics::{post_native_plan_coverage, unsupported_category},
     tsv::{stable_tsv_field, write_workload_dataset_metadata},
 };
-use crate::planner::NativePlanningDiagnostics;
+use crate::{StatisticalAggregateExecutionMode, planner::NativePlanningDiagnostics};
 
 /// TPC-DS parity TSV schema version.
 ///

@@ -39,8 +39,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExec,
-    NativeCudfExecutionConfig, TPCH_QUERIES, TPCH_TABLES, lower_physical_plan_to_native, tpch_report_session_config,
+    CUDF_TPCH_PARQUET_DIR_ENV, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy,
+    NativeCudfExec, NativeCudfExecutionConfig, TPCH_QUERIES, TPCH_TABLES, TpchDefaultScale, default_nvme_tpch_dataset,
+    default_tpch_parquet_root, lower_physical_plan_to_native, tpch_report_session_config,
     write_tiny_tpch_parquet_dataset,
 };
 use tokio::sync::Mutex;
