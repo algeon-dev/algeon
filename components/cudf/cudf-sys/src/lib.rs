@@ -188,6 +188,13 @@ extern "C" {
         buf_size: usize,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_create_from_device_data(
+        type_id: cudf_type_id_t,
+        device_data: *const c_void,
+        size: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     // -- Table (owning) ------------------------------------------------------
 
     pub fn cudf_table_create(

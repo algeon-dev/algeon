@@ -108,6 +108,19 @@ cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
                                                  uint8_t* host_buf,
                                                  size_t buf_size);
 
+/// Create a column by copying data from an existing device (GPU) pointer.
+///
+/// `device_data` must point to GPU memory with `size` elements of `type_id`.
+/// Performs a device-to-device copy; the new column owns its own memory.
+///
+/// For `size == 0`, `device_data` may be NULL.
+/// For `size > 0`, `device_data` must be non-NULL.
+cudf_status_t cudf_column_create_from_device_data(
+    cudf_type_id_t type_id,
+    const void* device_data,
+    int32_t size,
+    cudf_column_handle* out);
+
 #ifdef __cplusplus
 }
 #endif
