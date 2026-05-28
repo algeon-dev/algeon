@@ -1123,6 +1123,133 @@ fn test_groupby_zero_aggregations_returns_null_output_array() {
     }
 }
 
+#[test]
+fn test_groupby_aggregate_publish_failure_does_not_publish_partial_outputs() {
+    let _shim_state = lock_shim_state();
+    let key_col = make_i32_column(&[1, 1, 2]);
+    let val_col = make_i32_column(&[10, 20, 30]);
+    let keys_tbl = make_table_from_columns(vec![key_col]);
+    let keys_view = make_table_view(keys_tbl);
+    let val_view = make_column_view(val_col);
+    let values = [val_view];
+    let agg_counts = [2i32];
+
+    let mut sum: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_SUM, &mut sum) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let mut min: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_MIN, &mut min) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let aggregations = [sum, min];
+
+    let mut out_keys: *mut c_void = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut out_vals: *mut *mut c_void = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_total: i32 = -1;
+    let (_stream, _mr, exec) = strict_exec_owners();
+
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(1) };
+    let status = unsafe {
+        cudf_sys::cudf_groupby_aggregate_ex(
+            keys_view,
+            values.as_ptr(),
+            aggregations.as_ptr(),
+            agg_counts.as_ptr(),
+            1,
+            2,
+            cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
+            &mut out_keys,
+            &mut out_vals,
+            &mut out_total,
+            &exec,
+        )
+    };
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out_keys.is_null());
+    assert!(out_vals.is_null());
+    assert_eq!(out_total, 0);
+
+    unsafe {
+        cudf_sys::cudf_aggregation_destroy(sum);
+        cudf_sys::cudf_aggregation_destroy(min);
+        cudf_sys::cudf_column_view_destroy(val_view);
+        cudf_sys::cudf_column_destroy(val_col);
+        cudf_sys::cudf_table_view_destroy(keys_view);
+        cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
+#[test]
+fn test_prepared_groupby_aggregate_publish_failure_does_not_publish_partial_outputs() {
+    let _shim_state = lock_shim_state();
+    let key_col = make_i32_column(&[1, 1, 2]);
+    let val_col = make_i32_column(&[10, 20, 30]);
+    let keys_tbl = make_table_from_columns(vec![key_col]);
+    let keys_view = make_table_view(keys_tbl);
+    let val_view = make_column_view(val_col);
+    let values = [val_view];
+    let agg_counts = [2i32];
+
+    let mut sum: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_SUM, &mut sum) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let mut min: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_MIN, &mut min) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let aggregations = [sum, min];
+
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let mut prepared: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_prepared_groupby_create_ex(
+            keys_view,
+            cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
+            0,
+            &mut prepared,
+            &exec,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!prepared.is_null());
+
+    let mut out_keys: *mut c_void = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut out_vals: *mut *mut c_void = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_total: i32 = -1;
+
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(1) };
+    let status = unsafe {
+        cudf_sys::cudf_prepared_groupby_aggregate_ex(
+            prepared,
+            values.as_ptr(),
+            aggregations.as_ptr(),
+            agg_counts.as_ptr(),
+            1,
+            2,
+            &mut out_keys,
+            &mut out_vals,
+            &mut out_total,
+            &exec,
+        )
+    };
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out_keys.is_null());
+    assert!(out_vals.is_null());
+    assert_eq!(out_total, 0);
+
+    unsafe {
+        cudf_sys::cudf_prepared_groupby_destroy(prepared);
+        cudf_sys::cudf_aggregation_destroy(sum);
+        cudf_sys::cudf_aggregation_destroy(min);
+        cudf_sys::cudf_column_view_destroy(val_view);
+        cudf_sys::cudf_column_destroy(val_col);
+        cudf_sys::cudf_table_view_destroy(keys_view);
+        cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
 fn assert_join_invalid_null_equality_rejected(
     join_fn: unsafe extern "C" fn(
         *mut c_void,

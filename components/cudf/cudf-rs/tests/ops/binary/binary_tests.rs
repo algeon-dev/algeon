@@ -7,8 +7,8 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, column_from_strs, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, scalar,
+    column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, scalar,
 };
 
 #[test]
@@ -88,6 +88,54 @@ fn test_logical_and() {
     let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false, false]);
+}
+
+#[test]
+fn test_null_logical_or_uses_sql_three_valued_logic() {
+    // Rows pair LHS x RHS over {true, false, null}:
+    //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
+    let lhs_values = [true, true, true, false, false, false, false, false, false];
+    let lhs_validity = [true, true, true, true, true, true, false, false, false];
+    let a = column_from_slice_nullable(&lhs_values, &lhs_validity).unwrap();
+    let rhs_values = [true, false, false, true, false, false, true, false, false];
+    let rhs_validity = [true, true, false, true, true, false, true, true, false];
+    let b = column_from_slice_nullable(&rhs_values, &rhs_validity).unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::NullLogicalOr, &DataType::new(TypeId::Bool8)).unwrap();
+    let rv = result.testing_view().unwrap();
+    // true||* = true; false||true = true; false||false = false; false||null = null;
+    // null||true = true; null||false = null; null||null = null.
+    assert_eq!(
+        rv.to_optional_vec::<bool>().unwrap(),
+        vec![Some(true), Some(true), Some(true), Some(true), Some(false), None, Some(true), None, None]
+    );
+}
+
+#[test]
+fn test_null_logical_and_uses_sql_three_valued_logic() {
+    // Rows pair LHS x RHS over {true, false, null}:
+    //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
+    let lhs_values = [true, true, true, false, false, false, false, false, false];
+    let lhs_validity = [true, true, true, true, true, true, false, false, false];
+    let a = column_from_slice_nullable(&lhs_values, &lhs_validity).unwrap();
+    let rhs_values = [true, false, false, true, false, false, true, false, false];
+    let rhs_validity = [true, true, false, true, true, false, true, true, false];
+    let b = column_from_slice_nullable(&rhs_values, &rhs_validity).unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::NullLogicalAnd, &DataType::new(TypeId::Bool8)).unwrap();
+    let rv = result.testing_view().unwrap();
+    // false&&* = false; true&&true = true; true&&false = false; true&&null = null;
+    // null&&true = null; null&&false = false; null&&null = null.
+    assert_eq!(
+        rv.to_optional_vec::<bool>().unwrap(),
+        vec![Some(true), Some(false), None, Some(false), Some(false), Some(false), None, Some(false), None]
+    );
 }
 
 #[test]
@@ -447,6 +495,8 @@ fn operator_name(op: BinaryOperator) -> &'static str {
         BinaryOperator::NullNotEquals => "null_not_equals",
         BinaryOperator::NullMax => "null_max",
         BinaryOperator::NullMin => "null_min",
+        BinaryOperator::NullLogicalAnd => "null_logical_and",
+        BinaryOperator::NullLogicalOr => "null_logical_or",
         BinaryOperator::Add => "add",
         BinaryOperator::Sub => "sub",
         BinaryOperator::Mul => "mul",

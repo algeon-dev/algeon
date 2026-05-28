@@ -278,6 +278,9 @@ pub enum cudf_binary_operator_t {
     CUDF_BINARY_NULL_NOT_EQUALS = 28,
     CUDF_BINARY_NULL_MAX = 29,
     CUDF_BINARY_NULL_MIN = 30,
+    CUDF_BINARY_GENERIC_BINARY = 31,
+    CUDF_BINARY_NULL_LOGICAL_AND = 32,
+    CUDF_BINARY_NULL_LOGICAL_OR = 33,
 }
 
 // ---------------------------------------------------------------------------

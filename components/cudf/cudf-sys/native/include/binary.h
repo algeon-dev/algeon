@@ -46,6 +46,9 @@ typedef enum {
   CUDF_BINARY_NULL_NOT_EQUALS,       // 28
   CUDF_BINARY_NULL_MAX,              // 29
   CUDF_BINARY_NULL_MIN,              // 30
+  CUDF_BINARY_GENERIC_BINARY,        // 31 (alignment placeholder; requires PTX, not callable here)
+  CUDF_BINARY_NULL_LOGICAL_AND,      // 32 Spark-rule && (null, true) is null, (null, false) is false
+  CUDF_BINARY_NULL_LOGICAL_OR,       // 33 Spark-rule || (null, true) is true, (null, false) is null
 } cudf_binary_operator_t;
 
 /// Binary operation: column op column with explicit execution context.

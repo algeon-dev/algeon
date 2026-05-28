@@ -49,13 +49,16 @@ fn make_timestamp_days_column(values: &[i32]) -> *mut c_void {
     out
 }
 
-fn read_i16_column_data(col: *mut c_void, expected_len: usize) -> Vec<i16> {
+fn read_i16_column_data_with_exec(
+    col: *mut c_void,
+    expected_len: usize,
+    exec: &cudf_sys::cudf_exec_options_t,
+) -> Vec<i16> {
     let view = make_column_view(col);
-    let (_stream, _mr, exec) = required_test_exec();
     let mut buf = vec![0i16; expected_len];
     let buf_size = expected_len * std::mem::size_of::<i16>();
     let status =
-        unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf_size, &exec) };
+        unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf_size, exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     unsafe { cudf_sys::cudf_column_view_destroy(view) };
     buf
@@ -92,7 +95,7 @@ fn test_datetime_extract_component_returns_int16_values() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_column_type(out, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT16);
-    assert_eq!(read_i16_column_data(out, 3), vec![1970, 1998, 2020]);
+    assert_eq!(read_i16_column_data_with_exec(out, 3, &exec), vec![1970, 1998, 2020]);
 
     unsafe {
         cudf_sys::cudf_column_destroy(out);
@@ -131,7 +134,7 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
     assert_ne!(last_exec_mr_raw(), ptr::null_mut());
     assert_ne!(last_exec_mr_raw(), default_mr);
     assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-    assert_eq!(read_i16_column_data(out, 2), vec![1, 12]);
+    assert_eq!(read_i16_column_data_with_exec(out, 2, &exec), vec![1, 12]);
 
     unsafe {
         cudf_sys::cudf_column_destroy(out);

@@ -76,6 +76,8 @@ fn public_binary_operator_discriminants_match_ffi_contract() {
         (BinaryOperator::NullNotEquals as i32, CUDF_BINARY_NULL_NOT_EQUALS as i32),
         (BinaryOperator::NullMax as i32, CUDF_BINARY_NULL_MAX as i32),
         (BinaryOperator::NullMin as i32, CUDF_BINARY_NULL_MIN as i32),
+        (BinaryOperator::NullLogicalAnd as i32, CUDF_BINARY_NULL_LOGICAL_AND as i32),
+        (BinaryOperator::NullLogicalOr as i32, CUDF_BINARY_NULL_LOGICAL_OR as i32),
     ];
 
     for (public_value, ffi_value) in pairs {

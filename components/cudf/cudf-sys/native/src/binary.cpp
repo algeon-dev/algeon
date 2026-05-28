@@ -16,7 +16,12 @@
 namespace {
 cudf_status_t to_binary_operator(cudf_binary_operator_t input, cudf::binary_operator* out)
 {
-  if (input < CUDF_BINARY_ADD || input > CUDF_BINARY_NULL_MIN) {
+  // GENERIC_BINARY requires user-provided PTX and is not callable through this shim; it only
+  // exists in the enum to keep the integer values aligned with cudf::binary_operator so the
+  // NULL_LOGICAL_* operators that follow it map by static_cast.
+  bool const in_low_range  = input >= CUDF_BINARY_ADD && input <= CUDF_BINARY_NULL_MIN;
+  bool const is_null_logic = input == CUDF_BINARY_NULL_LOGICAL_AND || input == CUDF_BINARY_NULL_LOGICAL_OR;
+  if (!in_low_range && !is_null_logic) {
     set_error("invalid binary operator");
     return CUDF_ERROR_INVALID_OPERATION;
   }

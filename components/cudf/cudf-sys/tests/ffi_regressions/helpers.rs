@@ -557,15 +557,23 @@ pub(crate) fn make_table_from_one_column(col: *mut c_void) -> *mut c_void {
 }
 
 pub(crate) fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec<i32> {
-    let view = make_column_view(col);
-    let mut buf = vec![0i32; expected_len];
-    let buf_size = expected_len * std::mem::size_of::<i32>();
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let st = unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf_size, &exec) };
+    read_i32_column_data_with_exec(col, expected_len, &exec)
+}
+
+pub(crate) fn read_i32_column_data_with_exec(
+    col: *mut c_void,
+    expected_len: usize,
+    exec: &cudf_sys::cudf_exec_options_t,
+) -> Vec<i32> {
+    let view = make_column_view(col);
+    let mut buf = vec![0i32; expected_len];
+    let buf_size = expected_len * std::mem::size_of::<i32>();
+    let st = unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf_size, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     unsafe { cudf_sys::cudf_column_view_destroy(view) };
     buf

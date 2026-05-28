@@ -420,7 +420,10 @@ fn lower_binary_expr(
             validate_row_predicate_comparison_types(lhs_type.id(), rhs_type.id(), op, operation)?;
             crate::ops::binary::infer_binary_output_dtype_in(lhs_type, rhs_type, op, operation)?
         },
-        BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => {
+        BinaryOperator::LogicalAnd
+        | BinaryOperator::LogicalOr
+        | BinaryOperator::NullLogicalAnd
+        | BinaryOperator::NullLogicalOr => {
             if lhs_type.id() != TypeId::Bool8 || rhs_type.id() != TypeId::Bool8 {
                 return Err(Error::new_with(
                     ErrorCode::TypeMismatch,

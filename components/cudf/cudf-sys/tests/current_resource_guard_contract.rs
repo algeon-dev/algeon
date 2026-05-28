@@ -23,7 +23,11 @@ const EXPECTED_GUARDS: &[&str] = &[
     "filter::apply_boolean_mask",
     "filter::row_predicate_compute_mask_and_final_apply_boolean_mask",
     "groupby::aggregate",
+    "groupby::prepared_aggregate",
+    "groupby::prepared_create",
+    "groupby::prepared_prepare_groups",
     "groupby::scan",
+    "groupby::shift",
     "hashing::murmurhash3_x86_32",
     "hashing::xxhash_64",
     "io_csv::read_csv",
@@ -31,9 +35,11 @@ const EXPECTED_GUARDS: &[&str] = &[
     "io_json::read_json",
     "io_json::read_json_with_metadata",
     "io_json::write_json",
-    "io_parquet::read_parquet",
+    "io_parquet::read_parquet_file",
+    "io_parquet::read_parquet_host_buffer",
     "io_parquet::read_parquet_with_metadata",
-    "io_parquet::read_parquet_with_metadata_filter",
+    "io_parquet::read_parquet_with_metadata_filter_file",
+    "io_parquet::read_parquet_with_metadata_filter_host_buffer",
     "io_parquet::write_parquet",
     "join::distinct_hash_join_create",
     "join::distinct_hash_join_left_join",
@@ -135,8 +141,10 @@ fn current_device_resource_guard_stays_on_explicit_allowlist() {
             let file_name =
                 path.file_name().and_then(|name| name.to_str()).expect("native source file must have UTF-8 name");
             let context = context_around(&lines, index);
+            let guard_block = guard_block_around(&lines, index);
             let normalized_context = context.replace("*exec->mr", "exec->mr");
-            match classify_allowed_guard(file_name, &normalized_context) {
+            let normalized_guard_block = guard_block.replace("*exec->mr", "exec->mr");
+            match classify_allowed_guard(file_name, &normalized_context, &normalized_guard_block) {
                 Some(label) if seen.insert(label) => {},
                 Some(label) => violations.push(format!(
                     "{}:{} duplicate allowlisted guard context `{}`",
@@ -173,6 +181,26 @@ fn context_around(lines: &[&str], index: usize) -> String {
     lines[start..end].join("\n")
 }
 
+fn guard_block_around(lines: &[&str], index: usize) -> String {
+    let start = (0..index).rev().find(|candidate| lines[*candidate].contains('{')).unwrap_or(index);
+    let mut depth = 0i32;
+    for (offset, line) in lines[start..].iter().enumerate() {
+        for ch in line.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return lines[start..=start + offset].join("\n");
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+    lines[start..(index + 8).min(lines.len())].join("\n")
+}
+
 fn is_join_source(file_name: &str) -> bool {
     matches!(
         file_name,
@@ -186,7 +214,7 @@ fn contains_normalized(haystack: &str, needle: &str) -> bool {
     normalized_haystack.contains(&normalized_needle)
 }
 
-fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str> {
+fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> Option<&'static str> {
     match file_name {
         "binary.cpp"
             if context
@@ -281,8 +309,31 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         {
             Some("filter::row_predicate_compute_mask_and_final_apply_boolean_mask")
         },
-        "groupby.cpp" if context.contains("cudf::groupby::groupby gb(*keys_view, null_policy)") => {
+        "groupby.cpp"
+            if guard_block.contains("cudf::groupby::groupby gb(")
+                && guard_block.contains("*keys_view, null_policy")
+                && guard_block.contains("cudf_groupby_aggregate_from_groupby") =>
+        {
             Some("groupby::aggregate")
+        },
+        "groupby.cpp"
+            if contains_normalized(
+                guard_block,
+                "owner->groupby = std::make_unique<cudf::groupby::groupby>( *keys_view, null_policy",
+            ) =>
+        {
+            Some("groupby::prepared_create")
+        },
+        "groupby.cpp"
+            if contains_normalized(guard_block, "prepared->groupby->get_groups({}, exec->stream, exec->mr)") =>
+        {
+            Some("groupby::prepared_prepare_groups")
+        },
+        "groupby.cpp"
+            if guard_block.contains("cudf_groupby_aggregate_from_groupby")
+                && guard_block.contains("*prepared->groupby") =>
+        {
+            Some("groupby::prepared_aggregate")
         },
         "groupby.cpp" if context.contains("cudf::groupby::scan_request") => Some("groupby::scan"),
         "groupby.cpp" if context.contains("gb.shift(") => Some("groupby::shift"),
@@ -314,15 +365,29 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
             if contains_normalized(
                 context,
                 "auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, exec->mr)",
-            ) =>
+            ) && context.contains("std::string(filepath)") =>
         {
-            Some("io_parquet::read_parquet")
+            Some("io_parquet::read_parquet_file")
+        },
+        "io_parquet.cpp"
+            if contains_normalized(
+                context,
+                "auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, exec->mr)",
+            ) && context.contains("host_span<std::byte const>") =>
+        {
+            Some("io_parquet::read_parquet_host_buffer")
         },
         "io_parquet.cpp"
             if contains_normalized(context, "result = cudf::io::read_parquet(options, exec->stream, exec->mr)")
                 && context.contains("builder.filter") =>
         {
-            Some("io_parquet::read_parquet_with_metadata_filter")
+            if context.contains("std::string(filepath)") {
+                Some("io_parquet::read_parquet_with_metadata_filter_file")
+            } else if context.contains("host_span<std::byte const>") {
+                Some("io_parquet::read_parquet_with_metadata_filter_host_buffer")
+            } else {
+                None
+            }
         },
         "io_parquet.cpp"
             if contains_normalized(context, "result = cudf::io::read_parquet(options, exec->stream, exec->mr)") =>

@@ -173,7 +173,7 @@ fn find_newest_source(
             if mtime > baseline {
                 newer_than_baseline += 1;
             }
-            if newest.as_ref().map_or(true, |(_, t)| mtime > *t) {
+            if newest.as_ref().is_none_or(|(_, t)| mtime > *t) {
                 newest = Some((path, mtime));
             }
         }
@@ -208,7 +208,7 @@ fn check_libcudf_staleness(manifest_dir: &Path) {
         let (dir_newest, count) = find_newest_source(dir, libcudf_mtime);
         total_newer += count;
         if let Some(candidate) = dir_newest {
-            if newest.as_ref().map_or(true, |(_, t)| candidate.1 > *t) {
+            if newest.as_ref().is_none_or(|(_, t)| candidate.1 > *t) {
                 newest = Some(candidate);
             }
         }

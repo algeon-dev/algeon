@@ -152,27 +152,6 @@ fn uri_scheme(value: &str) -> Option<&str> {
     value.split_once("://").map(|(scheme, _)| scheme).filter(|scheme| !scheme.is_empty())
 }
 
-fn object_store_reader_path(uri: &str) -> String {
-    if let Some(path) = s3_https_reader_path(uri) {
-        return path;
-    }
-    uri.to_string()
-}
-
-fn s3_https_reader_path(uri: &str) -> Option<String> {
-    let rest = uri.strip_prefix("s3://")?;
-    let (bucket, key) = rest.split_once('/')?;
-    if bucket.is_empty() || key.is_empty() {
-        return None;
-    }
-    let region = std::env::var("AWS_REGION")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|value| !value.is_empty()))
-        .unwrap_or_else(|| "us-east-1".to_string());
-    Some(format!("https://{bucket}.s3.{region}.amazonaws.com/{key}"))
-}
-
 fn validate_unique_strings<'a>(
     names: impl IntoIterator<Item = &'a str>,
     operation: &'static str,

@@ -92,6 +92,16 @@ pub enum BinaryOperator {
     NullMax = 29,
     /// Element-wise min, treating nulls as missing (returns the non-null operand).
     NullMin = 30,
+    /// Null-aware logical AND (Spark 3-valued logic): `false && null` is `false`,
+    /// `true && null` is `null`. Operates on `Bool8` columns.
+    ///
+    /// Discriminant 31 (`GENERIC_BINARY`) is intentionally skipped: it requires
+    /// user-provided PTX and is not exposed here, but the gap keeps these
+    /// discriminants aligned with `cudf::binary_operator`.
+    NullLogicalAnd = 32,
+    /// Null-aware logical OR (Spark 3-valued logic): `true || null` is `true`,
+    /// `false || null` is `null`. Operates on `Bool8` columns.
+    NullLogicalOr = 33,
 }
 
 impl BinaryOperator {
@@ -128,6 +138,8 @@ impl BinaryOperator {
             BinaryOperator::NullNotEquals => "null_not_equals",
             BinaryOperator::NullMax => "null_max",
             BinaryOperator::NullMin => "null_min",
+            BinaryOperator::NullLogicalAnd => "null_logical_and",
+            BinaryOperator::NullLogicalOr => "null_logical_or",
         }
     }
 
@@ -164,6 +176,8 @@ impl BinaryOperator {
             BinaryOperator::NullNotEquals => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_NOT_EQUALS,
             BinaryOperator::NullMax => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_MAX,
             BinaryOperator::NullMin => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_MIN,
+            BinaryOperator::NullLogicalAnd => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_LOGICAL_AND,
+            BinaryOperator::NullLogicalOr => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_LOGICAL_OR,
         }
     }
 
@@ -383,7 +397,13 @@ fn infer_primitive_binary_output(
         return make_err("cannot perform arithmetic on string types");
     }
 
-    if matches!(op, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+    if matches!(
+        op,
+        BinaryOperator::LogicalAnd
+            | BinaryOperator::LogicalOr
+            | BinaryOperator::NullLogicalAnd
+            | BinaryOperator::NullLogicalOr
+    ) {
         if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
             return Ok(DataType::new(TypeId::Bool8));
         }
