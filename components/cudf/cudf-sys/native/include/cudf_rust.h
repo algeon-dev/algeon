@@ -21,5 +21,9 @@
 #include "concatenate.h"
 #include "dictionary.h"
 #include "hashing.h"
+#include "replace.h"
+#include "search.h"
+#include "copying.h"
+#include "stream_compaction.h"
 
 #endif  // CUDF_RUST_H
