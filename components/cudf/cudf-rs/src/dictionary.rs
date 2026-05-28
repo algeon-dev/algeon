@@ -157,8 +157,7 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         .with_operation("dictionary::match_dictionaries"));
     }
 
-    let handles: Vec<*mut std::ffi::c_void> =
-        dict_columns.iter().map(|c| c.raw_handle()).collect();
+    let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
     let mut out: Vec<*mut std::ffi::c_void> = vec![ptr::null_mut(); n];
 
     error::check_status_in_with(

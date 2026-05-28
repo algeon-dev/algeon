@@ -23,7 +23,11 @@ fn test_murmurhash3_i32_column() {
     // Different input values should (almost certainly) produce different hashes.
     // This is probabilistic but extremely unlikely to fail.
     let unique: std::collections::HashSet<u32> = values.iter().copied().collect();
-    assert!(unique.len() >= 4, "Expected mostly unique hashes, got {:?}", values);
+    assert!(
+        unique.len() >= 4,
+        "Expected mostly unique hashes, got {:?}",
+        values
+    );
 }
 
 #[test]
@@ -65,7 +69,10 @@ fn test_murmurhash3_device_ptr() {
     let hash_view = hashes.view().unwrap();
 
     let ptr = hash_view.device_data_ptr().unwrap();
-    assert!(!ptr.is_null(), "hash column device pointer must be non-null");
+    assert!(
+        !ptr.is_null(),
+        "hash column device pointer must be non-null"
+    );
 }
 
 #[test]

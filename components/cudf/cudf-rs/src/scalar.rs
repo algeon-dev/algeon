@@ -136,7 +136,10 @@ impl Scalar {
             )
             .with_operation("scalar::value")
             .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            .with_context(
+                "requested_type_id",
+                format!("{:?}", T::TYPE_ID).to_lowercase(),
+            ));
         }
         let mut out = unsafe { std::mem::zeroed::<T>() };
         error::check_status_in(

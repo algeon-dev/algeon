@@ -314,7 +314,10 @@ impl<'a> ColumnView<'a> {
             )
             .with_operation("column_view::to_vec")
             .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            .with_context(
+                "requested_type_id",
+                format!("{:?}", T::TYPE_ID).to_lowercase(),
+            ));
         }
 
         let size = self.len()? as usize;
@@ -404,7 +407,10 @@ impl<'a> ColumnView<'a> {
             )
             .with_operation("column_view::device_slice")
             .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            .with_context(
+                "requested_type_id",
+                format!("{:?}", T::TYPE_ID).to_lowercase(),
+            ));
         }
 
         let base_ptr = self.device_data_ptr()?;

@@ -173,10 +173,8 @@ extern "C" {
         out: *mut *const c_void,
     ) -> cudf_status_t;
 
-    pub fn cudf_column_view_offset(
-        handle: cudf_column_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_offset(handle: cudf_column_view_handle, out: *mut i32)
+        -> cudf_status_t;
 
     pub fn cudf_column_view_to_host(
         handle: cudf_column_view_handle,

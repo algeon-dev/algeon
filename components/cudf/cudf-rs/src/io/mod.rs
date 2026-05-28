@@ -10,8 +10,7 @@ pub mod parquet;
 /// Convert a filesystem path to a `CString` for FFI, with operation context.
 fn path_to_cstring(path: &Path, operation: &'static str) -> Result<CString> {
     let path_str = path.to_str().ok_or_else(|| {
-        Error::new(ErrorKind::InvalidOperation, "path is not valid UTF-8")
-            .with_operation(operation)
+        Error::new(ErrorKind::InvalidOperation, "path is not valid UTF-8").with_operation(operation)
     })?;
     CString::new(path_str).map_err(|_| {
         Error::new(
