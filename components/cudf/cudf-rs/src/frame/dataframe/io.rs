@@ -20,7 +20,10 @@ use crate::{
         TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
         json::{self, JsonTableReadOptions, JsonTableWriteOptions},
-        parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
+        parquet::{
+            self, ParquetDictionaryPolicy, ParquetMultiTableReadOptions, ParquetTableReadOptions,
+            ParquetTableWriteOptions,
+        },
         source::{
             LocalParquetSource, LocalParquetSourceKind, PartitionValue, SourceChunk, SourceColumnRef, SourceReadMode,
             plan_local_parquet_source_chunks,
@@ -233,6 +236,55 @@ fn parquet_source_budget_context(
     }
     if let Some(known_row_count) = chunk.known_row_count() {
         facts.insert("known_row_count".to_string(), known_row_count.to_string());
+    }
+    facts
+}
+
+fn parquet_source_batch_budget_context(
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    mode: SourceReadMode,
+) -> BTreeMap<String, String> {
+    let mut facts = BTreeMap::new();
+    facts.insert("source_kind".to_string(), local_parquet_source_kind_str(source.kind()).to_string());
+    facts.insert("source_read_mode".to_string(), source_read_mode_str(mode).to_string());
+    facts.insert("chunk_count".to_string(), chunks.len().to_string());
+    facts.insert("read_columns".to_string(), comma_separated_strings(source.read_columns()));
+    facts.insert("read_column_count".to_string(), source.read_columns().len().to_string());
+    facts.insert("projected_columns".to_string(), source_column_names(source.output_columns()));
+    facts.insert("projected_column_count".to_string(), source.output_columns().len().to_string());
+    facts.insert("required_columns".to_string(), required_column_names(source.required_columns()));
+    facts.insert("required_column_count".to_string(), source.required_columns().len().to_string());
+    facts.insert("partition_column_count".to_string(), source.partition_columns().len().to_string());
+    if let Some(first) = chunks.first() {
+        facts.insert("first_chunk_index".to_string(), first.chunk_index().to_string());
+        facts.insert("first_file_index".to_string(), first.file_index().to_string());
+    }
+    if let Some(last) = chunks.last() {
+        facts.insert("last_chunk_index".to_string(), last.chunk_index().to_string());
+        facts.insert("last_file_index".to_string(), last.file_index().to_string());
+    }
+    let mut known_rows = 0u64;
+    let mut all_rows_known = true;
+    let mut known_source_read_bytes = 0u64;
+    let mut all_source_read_bytes_known = true;
+    for chunk in chunks {
+        if let Some(rows) = chunk.known_row_count() {
+            known_rows = known_rows.saturating_add(rows);
+        } else {
+            all_rows_known = false;
+        }
+        if let Some(bytes) = chunk.estimated_source_read_bytes() {
+            known_source_read_bytes = known_source_read_bytes.saturating_add(bytes);
+        } else {
+            all_source_read_bytes_known = false;
+        }
+    }
+    if all_rows_known {
+        facts.insert("known_row_count".to_string(), known_rows.to_string());
+    }
+    if all_source_read_bytes_known {
+        facts.insert("estimated_source_read_bytes".to_string(), known_source_read_bytes.to_string());
     }
     facts
 }
@@ -1004,6 +1056,92 @@ fn read_parquet_source_chunk_frame_with_input(
     project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
 }
 
+fn read_parquet_source_chunks_frame(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    mode: SourceReadMode,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    if chunks.is_empty() {
+        return Err(Error::new_with(ErrorCode::EmptyInput, operation, "source chunk batch must not be empty")
+            .with_detail("reason", "empty_source_chunk_batch"));
+    }
+    if source.kind() != LocalParquetSourceKind::Data {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "multi-chunk Parquet source reads require data sources",
+        )
+        .with_detail("reason", "unsupported_source_kind")
+        .with_detail("source_kind", local_parquet_source_kind_str(source.kind())));
+    }
+    if source.read_columns().is_empty() {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "multi-chunk Parquet source reads require at least one physical read column",
+        )
+        .with_detail("reason", "empty_read_projection"));
+    }
+    if !source.partition_columns().is_empty() {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "multi-chunk Parquet source reads do not yet materialize per-file partition columns",
+        )
+        .with_detail("reason", "partition_columns_not_supported")
+        .with_detail("partition_column_count", source.partition_columns().len().to_string()));
+    }
+
+    let omit_row_groups = chunks.iter().all(SourceChunk::selects_all_known_file_row_groups);
+    let mut filepaths = Vec::with_capacity(chunks.len());
+    let mut row_groups_per_file = (!omit_row_groups).then(|| Vec::with_capacity(chunks.len()));
+    for chunk in chunks {
+        source.validate_chunk_partition_values(chunk, operation)?;
+        if !omit_row_groups && chunk.reads_all_row_groups() {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                operation,
+                "multi-chunk Parquet source reads require explicit row groups for each child chunk",
+            )
+            .with_detail("reason", "reads_all_row_groups_not_supported")
+            .with_detail("chunk_index", chunk.chunk_index().to_string())
+            .with_detail("file_index", chunk.file_index().to_string())
+            .with_detail("path", chunk.path().display().to_string()));
+        }
+        if let Some(row_groups_per_file) = row_groups_per_file.as_mut() {
+            let row_groups = chunk.row_group_indexes_i32()?;
+            if row_groups.is_empty() {
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    operation,
+                    "multi-chunk Parquet source reads require non-empty row-group selections",
+                )
+                .with_detail("reason", "empty_row_group_selection")
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
+                .with_detail("file_index", chunk.file_index().to_string())
+                .with_detail("path", chunk.path().display().to_string()));
+            }
+            row_groups_per_file.push(row_groups);
+        }
+        filepaths.push(std::path::PathBuf::from(chunk.reader_path()));
+    }
+
+    let table_options = ParquetMultiTableReadOptions::from_parts(
+        filepaths,
+        Some(source.read_columns().to_vec()),
+        row_groups_per_file,
+        source.reader_predicate().cloned(),
+        runtime.clone(),
+    );
+    let result = parquet::read_parquet_multi_table(&table_options).map_err(|error| error.reanchor(operation))?;
+    let (table, names) = require_reader_schema_names(result, operation, "multi-source parquet reader")?;
+    let mut frame = DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?;
+    frame = materialize_missing_null_columns(runtime, source, frame, None, mode)?;
+    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
+}
+
 fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
     let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor(operation))?;
     let memory = info.memory_accounting.ok_or_else(|| {
@@ -1249,6 +1387,36 @@ impl DataFrame {
         dataframe_from_parquet_table_options(&table_options, operation)
     }
 
+    /// Read a Parquet file under a hard execution-budget token.
+    ///
+    /// This is for executor-owned cache and source paths that already hold a
+    /// reservation and need the generic Parquet reader to allocate from the
+    /// token's scoped memory resource.
+    pub fn read_parquet_with_budget(
+        mut options: ParquetReadOptions<'_>,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::read_parquet_with_budget";
+        validate_parquet_projection(options.columns.as_deref(), operation)?;
+        options.runtime = options
+            .runtime
+            .with_memory_resource_override(token.memory_resource(), operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let table_options = options.to_table_options().map_err(|error| token.annotate_error(error, operation))?;
+        let frame = dataframe_from_parquet_table_options(&table_options, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output_rows = frame.num_rows();
+        let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output_rows)
+            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+        Ok(BudgetedExecutionOutcome::new(frame, report))
+    }
+
     /// Read a Parquet payload borrowed from host memory into a `DataFrame`.
     ///
     /// The host buffer is borrowed only for the duration of this call. The
@@ -1480,6 +1648,49 @@ impl DataFrame {
         )
     }
 
+    /// Execute multiple planned local Parquet source chunks in one path-based
+    /// libcudf reader call under a hard budget token.
+    ///
+    /// This is intentionally narrower than the single-chunk reader: it reads
+    /// path sources only, requires either explicit non-empty row-group
+    /// selections or known whole-file row-group coverage for every child chunk,
+    /// and rejects partition columns until the API can represent per-child
+    /// partition materialization without losing source identity.
+    pub fn read_parquet_source_chunks_with_budget(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        mode: SourceReadMode,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::read_parquet_source_chunks_with_budget";
+        let budget_runtime = runtime
+            .with_memory_resource_override(token.memory_resource(), operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let frame = read_parquet_source_chunks_frame(&budget_runtime, source, chunks, mode, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output_rows = frame.num_rows();
+        let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        frame
+            .record_boundary_observation_for_query_stage(
+                BoundaryKind::HostToDevice,
+                QueryStageKind::SourceRead,
+                false,
+                operation,
+            )
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output_rows)
+            .with_context_facts(parquet_source_batch_budget_context(source, chunks, mode))
+            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(frame, report))
+    }
+
     /// Execute one planned local Parquet source chunk from caller-owned host
     /// memory under a hard budget token.
     ///
@@ -1671,6 +1882,7 @@ impl JsonWriteOptions {
 /// # Defaults
 ///
 /// - `row_group_size_rows` = `0` (use libcudf default)
+/// - `dictionary_policy` = libcudf default
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetWriteOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -1679,6 +1891,9 @@ pub struct ParquetWriteOptions {
     /// default.
     #[builder(default)]
     row_group_size_rows: i32,
+    /// Dictionary encoding policy. The default keeps libcudf's writer default.
+    #[builder(default)]
+    dictionary_policy: ParquetDictionaryPolicy,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
@@ -1688,7 +1903,8 @@ impl ParquetWriteOptions {
         let base = ParquetTableWriteOptions::builder()
             .filepath(&self.filepath)
             .column_names(column_names)
-            .row_group_size_rows(self.row_group_size_rows);
+            .row_group_size_rows(self.row_group_size_rows)
+            .dictionary_policy(self.dictionary_policy);
         match &self.runtime {
             Some(rt) => base.with_runtime(rt).build(),
             None => base.build(),

@@ -321,9 +321,32 @@ impl SourceChunk {
         self.reads_all_row_groups
     }
 
+    /// Whether the selected row groups cover the whole file according to
+    /// available row-group metadata.
+    pub fn selects_all_known_file_row_groups(&self) -> bool {
+        if self.reads_all_row_groups {
+            return true;
+        }
+        let Some(row_group_count) = self.source_file_row_group_count() else {
+            return false;
+        };
+        self.row_group_indexes.len() == row_group_count && self.row_group_indexes.iter().copied().eq(0..row_group_count)
+    }
+
     /// Known full-file byte size, if supplied.
     pub fn known_file_bytes(&self) -> Option<u64> {
         self.known_file_bytes
+    }
+
+    fn source_file_row_group_count(&self) -> Option<usize> {
+        self.source_file_row_group_rows
+            .as_ref()
+            .or(self.source_file_row_group_bytes.as_ref())
+            .or(self.source_file_projected_uncompressed_bytes.as_ref())
+            .or(self.source_file_projected_compressed_bytes.as_ref())
+            .or(self.source_file_pure_filter_uncompressed_bytes.as_ref())
+            .or(self.source_file_pure_filter_compressed_bytes.as_ref())
+            .map(Vec::len)
     }
 
     /// Known sum of selected row-group bytes, if available.

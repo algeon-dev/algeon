@@ -80,7 +80,7 @@ pub use local_parquet::{LocalParquetFile, LocalParquetSource, LocalParquetSource
 pub use partition::{PartitionColumn, PartitionValue};
 pub use predicate::{
     SourceReaderPredicate, SourceReaderPredicateColumn, SourceReaderPredicateLiteral, SourceReaderPredicateOp,
-    build_local_parquet_reader_predicate,
+    build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
 };
 pub use schema::{
     SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn, SourceRequiredColumn, SourceSchema,
