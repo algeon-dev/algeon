@@ -57,6 +57,33 @@ pub struct ParquetTableReadOptions<'a> {
     _lifetime: PhantomData<&'a [u8]>,
 }
 
+/// Options for reading multiple Parquet paths into one low-level [`Table`].
+///
+/// This is the multi-source counterpart to [`ParquetTableReadOptions`] for
+/// path-based reads. File order is preserved by libcudf. When row groups are
+/// supplied, each entry in `row_groups_per_file` applies to the corresponding
+/// `filepaths` entry.
+#[derive(Debug, Clone)]
+pub(crate) struct ParquetMultiTableReadOptions {
+    pub(crate) filepaths: Vec<PathBuf>,
+    pub(crate) columns: Option<Vec<String>>,
+    pub(crate) row_groups_per_file: Option<Vec<Vec<i32>>>,
+    pub(crate) predicate: Option<Arc<AstExpression>>,
+    pub(crate) runtime: Runtime,
+}
+
+impl ParquetMultiTableReadOptions {
+    pub(crate) fn from_parts(
+        filepaths: Vec<PathBuf>,
+        columns: Option<Vec<String>>,
+        row_groups_per_file: Option<Vec<Vec<i32>>>,
+        predicate: Option<Arc<AstExpression>>,
+        runtime: Runtime,
+    ) -> Self {
+        Self { filepaths, columns, row_groups_per_file, predicate, runtime }
+    }
+}
+
 impl<'a> ParquetTableReadOptions<'a> {
     pub(crate) fn from_parts(
         filepath: PathBuf,
@@ -297,6 +324,145 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions<'_>) -> Result<Table
     Ok(TableReadOutput { table, column_names: Some(column_names) })
 }
 
+/// Read multiple Parquet files into a low-level table result.
+///
+/// This uses libcudf's multi-source Parquet reader. It does not materialize
+/// partition columns or perform DataFrame-level source projection.
+pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -> Result<TableReadOutput> {
+    const OPERATION: &str = "io::parquet::read_parquet_multi_table";
+    if options.filepaths.is_empty() {
+        return Err(Error::new_with(ErrorCode::EmptyInput, OPERATION, "multi-file Parquet read requires files")
+            .with_detail("resource", "filepaths")
+            .with_detail("reason", "empty_input"));
+    }
+    for (file_index, path) in options.filepaths.iter().enumerate() {
+        super::validate_input_path(path, OPERATION).map_err(|error| {
+            error.with_detail("file_index", file_index.to_string()).with_detail("path", path.display().to_string())
+        })?;
+    }
+    if let Some(row_groups_per_file) = &options.row_groups_per_file {
+        if row_groups_per_file.len() != options.filepaths.len() {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                OPERATION,
+                "row-group selection count must match file count",
+            )
+            .with_detail("reason", "row_group_file_count_mismatch")
+            .with_detail("file_count", options.filepaths.len().to_string())
+            .with_detail("row_group_file_count", row_groups_per_file.len().to_string()));
+        }
+    }
+
+    let file_count = i32::try_from(options.filepaths.len())
+        .map_err(|_| error::range_limit_error(OPERATION, "filepaths", "i32::MAX", options.filepaths.len()))?;
+    let filepath_cstrings = options
+        .filepaths
+        .iter()
+        .enumerate()
+        .map(|(file_index, path)| {
+            super::path_to_cstring(path, OPERATION).map_err(|error| {
+                error.with_detail("file_index", file_index.to_string()).with_detail("path", path.display().to_string())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let filepath_ptrs = filepath_cstrings.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+
+    let cstring_columns: Option<Vec<CString>> = options
+        .columns
+        .as_ref()
+        .map(|cols| {
+            cols.iter()
+                .enumerate()
+                .map(|(index, s)| {
+                    CString::new(s.as_str()).map_err(|_| {
+                        error::interior_null_byte_error(
+                            OPERATION,
+                            "column_name",
+                            "column name contains interior null byte",
+                        )
+                        .with_fact(FACT_COLUMN_INDEX, index)
+                        .with_column(s.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+    let col_ptrs_vec: Vec<*const c_char> =
+        cstring_columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+    let (col_ptrs, num_cols) =
+        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
+
+    let mut row_group_offsets = Vec::new();
+    let mut row_groups = Vec::new();
+    if let Some(row_groups_per_file) = &options.row_groups_per_file {
+        row_group_offsets.reserve(row_groups_per_file.len() + 1);
+        row_group_offsets.push(0_i32);
+        for groups in row_groups_per_file {
+            row_groups.extend(groups.iter().copied());
+            let offset = i32::try_from(row_groups.len())
+                .map_err(|_| error::range_limit_error(OPERATION, "row_groups", "i32::MAX", row_groups.len()))?;
+            row_group_offsets.push(offset);
+        }
+    }
+    let (row_group_offsets_ptr, num_row_group_offsets) = if row_group_offsets.is_empty() {
+        (ptr::null(), 0)
+    } else {
+        (row_group_offsets.as_ptr(), row_group_offsets.len() as i32)
+    };
+    let (row_groups_ptr, num_row_groups) =
+        if row_groups.is_empty() { (ptr::null(), 0) } else { (row_groups.as_ptr(), row_groups.len() as i32) };
+
+    let output_domain = Arc::clone(options.runtime.execution_domain());
+    let exec_options = output_domain.exec_options_raw();
+    let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
+
+    let mut table_handle = ptr::null_mut();
+    let mut names_ptr: *mut *mut c_char = ptr::null_mut();
+    let mut num_names: i32 = 0;
+
+    // SAFETY: filepath_ptrs and column/row-group buffers are valid for this
+    // call. The predicate handle, when present, is retained by options.
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_multi_with_metadata_filter_ex(
+            filepath_ptrs.as_ptr(),
+            file_count,
+            col_ptrs,
+            num_cols,
+            row_group_offsets_ptr,
+            num_row_group_offsets,
+            row_groups_ptr,
+            num_row_groups,
+            predicate,
+            &mut table_handle,
+            &mut names_ptr,
+            &mut num_names,
+            &exec_options,
+        )
+    };
+
+    error::check_status_in_with_details(
+        status,
+        OPERATION,
+        [
+            ("file_count", options.filepaths.len().to_string()),
+            ("column_name_count", num_cols.to_string()),
+            ("row_group_count", row_groups.len().to_string()),
+        ],
+    )?;
+
+    // SAFETY: table_handle was returned by a successful FFI call.
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) }?;
+
+    // SAFETY: names_ptr and num_names were returned by a successful FFI call.
+    let column_names = unsafe {
+        let names = super::collect_column_names(names_ptr, num_names, OPERATION);
+        cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
+        names?
+    };
+
+    Ok(TableReadOutput { table, column_names: Some(column_names) })
+}
+
 /// Options for writing a Parquet file.
 ///
 /// **Advanced.** Most users should prefer [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
@@ -308,6 +474,8 @@ pub struct ParquetTableWriteOptions {
     column_names: Option<Vec<String>>,
     #[builder(default)]
     row_group_size_rows: i32,
+    #[builder(default)]
+    dictionary_policy: ParquetDictionaryPolicy,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
@@ -315,6 +483,31 @@ pub struct ParquetTableWriteOptions {
 impl ParquetTableWriteOptions {
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
+    }
+}
+
+/// Parquet dictionary encoding policy for cuDF writes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ParquetDictionaryPolicy {
+    /// Use libcudf's default writer policy.
+    #[default]
+    Default,
+    /// Use libcudf's adaptive dictionary policy.
+    Adaptive,
+    /// Disable dictionary encoding.
+    Never,
+    /// Always attempt dictionary encoding.
+    Always,
+}
+
+impl ParquetDictionaryPolicy {
+    pub(crate) const fn ffi_value(self) -> i32 {
+        match self {
+            Self::Default => -1,
+            Self::Adaptive => 0,
+            Self::Never => 1,
+            Self::Always => 2,
+        }
     }
 }
 
@@ -388,6 +581,7 @@ pub(crate) fn write_parquet_with_exec(
                 name_ptrs,
                 num_cols,
                 options.row_group_size_rows,
+                options.dictionary_policy.ffi_value(),
                 exec_options,
             )
         },

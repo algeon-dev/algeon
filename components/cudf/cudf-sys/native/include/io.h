@@ -127,6 +127,36 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
                                                            int32_t* out_num_names,
                                                            const cudf_exec_options_t* exec_options);
 
+/// Read multiple Parquet files with metadata, explicit execution context, and
+/// an optional libcudf AST reader predicate.
+///
+/// `filepaths` must contain `num_files` non-NULL path strings. Row order follows
+/// the file order and then each file's selected row-group order.
+///
+/// Per-file row groups are represented by `row_group_offsets` and `row_groups`:
+/// `row_group_offsets` has `num_files + 1` entries and
+/// `row_groups[row_group_offsets[i]..row_group_offsets[i + 1]]` is the row-group
+/// selection for file `i`. Pass NULL offsets with zero row groups to read all
+/// row groups from every file.
+///
+/// `predicate` may be NULL. When non-NULL, it must outlive this call.
+/// `exec_options` must name an explicit valid device and non-NULL stream/MR.
+/// `exec_options->mr` must outlive the returned table.
+cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
+  const char** filepaths,
+  int32_t num_files,
+  const char** columns,
+  int32_t num_columns,
+  const int32_t* row_group_offsets,
+  int32_t num_row_group_offsets,
+  const int32_t* row_groups,
+  int32_t num_row_groups,
+  cudf_ast_expression_handle predicate,
+  cudf_table_handle* out_table,
+  char*** out_names,
+  int32_t* out_num_names,
+  const cudf_exec_options_t* exec_options);
+
 /// Read Parquet from a host buffer with metadata, explicit execution context,
 /// and an optional libcudf AST reader predicate.
 ///
@@ -171,6 +201,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
                                        const char** column_names,
                                        int32_t num_columns,
                                        int32_t row_group_size_rows,
+                                       int32_t dictionary_policy,
                                        const cudf_exec_options_t* exec_options);
 
 // ---------------------------------------------------------------------------

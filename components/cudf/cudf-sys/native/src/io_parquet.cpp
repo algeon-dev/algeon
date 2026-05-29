@@ -87,6 +87,87 @@ cudf_status_t validate_parquet_reader_args(const char** columns,
   return CUDF_SUCCESS;
 }
 
+cudf_status_t validate_parquet_multi_reader_args(const char** filepaths,
+                                                 int32_t num_files,
+                                                 const char** columns,
+                                                 int32_t num_columns,
+                                                 const int32_t* row_group_offsets,
+                                                 int32_t num_row_group_offsets,
+                                                 const int32_t* row_groups,
+                                                 int32_t num_row_groups)
+{
+  if (num_files <= 0) {
+    set_error("num_files must be > 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_NULL_CHECK(filepaths, "filepaths is null");
+  cudf_status_t const filepaths_status = validate_c_string_array(filepaths, num_files, "filepaths");
+  if (filepaths_status != CUDF_SUCCESS) { return filepaths_status; }
+
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) { CUDF_RUST_NULL_CHECK(columns, "columns is null"); }
+  if (num_columns > 0) {
+    cudf_status_t const column_status = validate_c_string_array(columns, num_columns, "columns");
+    if (column_status != CUDF_SUCCESS) { return column_status; }
+  }
+
+  if (num_row_group_offsets < 0) {
+    set_error("num_row_group_offsets must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups < 0) {
+    set_error("num_row_groups must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_group_offsets == 0) {
+    if (row_group_offsets != nullptr) {
+      set_error("row_group_offsets must be null when num_row_group_offsets is 0");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (num_row_groups != 0 || row_groups != nullptr) {
+      set_error("row_groups must be null and num_row_groups must be 0 when row_group_offsets are absent");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    return CUDF_SUCCESS;
+  }
+
+  CUDF_RUST_NULL_CHECK(row_group_offsets, "row_group_offsets is null");
+  if (num_row_group_offsets != num_files + 1) {
+    set_error("num_row_group_offsets must equal num_files + 1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups > 0) {
+    CUDF_RUST_NULL_CHECK(row_groups, "row_groups is null");
+  } else if (row_groups != nullptr) {
+    set_error("row_groups must be null when num_row_groups is 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (row_group_offsets[0] != 0) {
+    set_error("row_group_offsets[0] must be 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  for (int32_t i = 0; i < num_files; ++i) {
+    if (row_group_offsets[i] > row_group_offsets[i + 1]) {
+      set_error("row_group_offsets must be monotonically non-decreasing");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+  }
+  if (row_group_offsets[num_files] != num_row_groups) {
+    set_error("last row_group_offsets entry must equal num_row_groups");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  for (int32_t i = 0; i < num_row_groups; ++i) {
+    if (row_groups[i] < 0) {
+      set_error("row group index must be >= 0");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+  }
+  return CUDF_SUCCESS;
+}
+
 cudf_status_t validate_host_parquet_buffer(const void* host_buffer, size_t host_buffer_len)
 {
   if (host_buffer_len == 0) {
@@ -225,6 +306,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
                                        const char** column_names,
                                        int32_t num_columns,
                                        int32_t row_group_size_rows,
+                                       int32_t dictionary_policy,
                                        cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(table, "table is null");
@@ -260,6 +342,15 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     auto options = builder.build();
 
     if (row_group_size_rows > 0) { options.set_row_group_size_rows(row_group_size_rows); }
+    switch (dictionary_policy) {
+      case -1: break;
+      case 0: options.set_dictionary_policy(cudf::io::dictionary_policy::ADAPTIVE); break;
+      case 1: options.set_dictionary_policy(cudf::io::dictionary_policy::NEVER); break;
+      case 2: options.set_dictionary_policy(cudf::io::dictionary_policy::ALWAYS); break;
+      default:
+        set_error("dictionary_policy must be -1 (default), 0 (adaptive), 1 (never), or 2 (always)");
+        return CUDF_ERROR_INVALID_OPERATION;
+    }
     {
       cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::io::write_parquet(options, exec->stream);
@@ -389,6 +480,104 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
 
     *out_table     = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     *out_names     = names;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_IO_CATCH
+}
+
+cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
+  const char** filepaths,
+  int32_t num_files,
+  const char** columns,
+  int32_t num_columns,
+  const int32_t* row_group_offsets,
+  int32_t num_row_group_offsets,
+  const int32_t* row_groups,
+  int32_t num_row_groups,
+  cudf_ast_expression_handle predicate,
+  cudf_table_handle* out_table,
+  char*** out_names,
+  int32_t* out_num_names,
+  cudf_exec_options_t const* exec_options)
+{
+  CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
+  *out_table = nullptr;
+  CUDF_RUST_NULL_CHECK(out_names, "out_names is null");
+  *out_names = nullptr;
+  CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
+  *out_num_names = 0;
+  cudf_status_t const args_status = validate_parquet_multi_reader_args(
+    filepaths,
+    num_files,
+    columns,
+    num_columns,
+    row_group_offsets,
+    num_row_group_offsets,
+    row_groups,
+    num_row_groups);
+  if (args_status != CUDF_SUCCESS) { return args_status; }
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    std::vector<std::string> paths;
+    paths.reserve(num_files);
+    for (int32_t i = 0; i < num_files; ++i) {
+      paths.emplace_back(filepaths[i]);
+    }
+    auto source  = cudf::io::source_info(std::move(paths));
+    auto builder = cudf::io::parquet_reader_options::builder(source);
+
+    if (columns != nullptr && num_columns > 0) {
+      std::vector<std::string> col_names;
+      col_names.reserve(num_columns);
+      for (int32_t i = 0; i < num_columns; ++i) {
+        col_names.emplace_back(columns[i]);
+      }
+      builder.column_names(col_names);
+    }
+
+    if (num_row_group_offsets > 0) {
+      std::vector<std::vector<cudf::size_type>> grouped_row_groups;
+      grouped_row_groups.reserve(num_files);
+      for (int32_t file_index = 0; file_index < num_files; ++file_index) {
+        auto const begin = row_group_offsets[file_index];
+        auto const end   = row_group_offsets[file_index + 1];
+        std::vector<cudf::size_type> file_row_groups;
+        file_row_groups.reserve(end - begin);
+        for (int32_t row_group_index = begin; row_group_index < end; ++row_group_index) {
+          file_row_groups.push_back(static_cast<cudf::size_type>(row_groups[row_group_index]));
+        }
+        grouped_row_groups.push_back(std::move(file_row_groups));
+      }
+      builder.row_groups(std::move(grouped_row_groups));
+    }
+
+    if (predicate != nullptr) { builder.filter(cudf_ast_expression_from_handle(predicate)); }
+
+    cudf::io::table_with_metadata result;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto options = builder.build();
+      result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+    }
+
+    auto const fault = cudf_test_io_take_next_metadata_fault();
+    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+      cudf_status_t const fault_status =
+        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+      if (fault_status != CUDF_SUCCESS) { return fault_status; }
+      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      return CUDF_SUCCESS;
+    }
+
+    char** names = copy_schema_names(result.metadata, out_num_names);
+    if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
+
+    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_names = names;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH

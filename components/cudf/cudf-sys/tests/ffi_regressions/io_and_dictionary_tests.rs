@@ -294,7 +294,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
     let tv = make_table_view(tbl);
     let path = unique_missing_path("parquet");
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), -1, 0, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), -1, 0, -1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
     unsafe {
@@ -313,7 +313,7 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
     let path = unique_missing_path("parquet");
     let names = [ptr::null()];
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), names.as_ptr(), 1, 0, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), names.as_ptr(), 1, 0, -1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
 
     unsafe {
@@ -345,7 +345,7 @@ fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries
     let current_borrowed = current_mr.borrowed();
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, -1, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
