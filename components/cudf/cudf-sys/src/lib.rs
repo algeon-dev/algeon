@@ -290,6 +290,19 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_io_read_parquet_with_metadata(
+        filepath: *const c_char,
+        columns: *const *const c_char,
+        num_columns: i32,
+        skip_rows: i64,
+        num_rows: i64,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+    ) -> cudf_status_t;
+
+    pub fn cudf_io_free_column_names(names: *mut *mut c_char, num_names: i32);
+
     pub fn cudf_io_write_parquet(
         table: cudf_table_view_handle,
         filepath: *const c_char,
