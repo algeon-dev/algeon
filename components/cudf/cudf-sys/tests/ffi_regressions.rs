@@ -37,6 +37,22 @@ fn make_table_from_one_column(col: *mut c_void) -> *mut c_void {
     out
 }
 
+fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec<i32> {
+    let view = make_column_view(col);
+    let mut buf = vec![0i32; expected_len];
+    let buf_size = expected_len * std::mem::size_of::<i32>();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_to_host(
+            view,
+            buf.as_mut_ptr() as *mut c_void,
+            buf_size,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+    buf
+}
+
 fn make_table_view(tbl: *mut c_void) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_view(tbl, &mut out) };
@@ -354,4 +370,127 @@ fn test_memory_resource_pool_create_destroy_smoke() {
     assert!(!mr.is_null());
 
     unsafe { cudf_sys::cudf_memory_resource_destroy(mr) };
+}
+
+// ===========================================================================
+// cudf_table_release_columns tests
+// ===========================================================================
+
+#[test]
+fn test_table_release_columns_single_column() {
+    let col = make_i32_column(&[10, 20, 30]);
+    let tbl = make_table_from_one_column(col);
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = 0;
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out_count, 1);
+    assert!(!out_columns.is_null());
+
+    // Read the released column and verify data.
+    let released_col = unsafe { *out_columns };
+    assert!(!released_col.is_null());
+
+    let data = read_i32_column_data(released_col, 3);
+    assert_eq!(data, vec![10, 20, 30]);
+
+    // Cleanup: destroy the released column and the array.
+    unsafe {
+        cudf_sys::cudf_column_destroy(released_col);
+        cudf_sys::cudf_free_column_array(out_columns);
+    }
+    // Note: tbl is consumed by release_columns, no need to destroy it.
+}
+
+#[test]
+fn test_table_release_columns_multiple_columns() {
+    let c1 = make_i32_column(&[1, 2, 3]);
+    let c2 = make_i32_column(&[4, 5, 6]);
+    let mut col_arr = [c1, c2];
+    let mut tbl: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(col_arr.as_mut_ptr(), 2, &mut tbl) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = 0;
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out_count, 2);
+    assert!(!out_columns.is_null());
+
+    let col_ptrs = unsafe { std::slice::from_raw_parts(out_columns, 2) };
+
+    let data1 = read_i32_column_data(col_ptrs[0], 3);
+    assert_eq!(data1, vec![1, 2, 3]);
+
+    let data2 = read_i32_column_data(col_ptrs[1], 3);
+    assert_eq!(data2, vec![4, 5, 6]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(col_ptrs[0]);
+        cudf_sys::cudf_column_destroy(col_ptrs[1]);
+        cudf_sys::cudf_free_column_array(out_columns);
+    }
+}
+
+#[test]
+fn test_table_release_columns_empty_table() {
+    // Create an empty table (0 columns).
+    let mut tbl: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut tbl) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out_count, 0);
+    // out_columns may or may not be null for 0-column tables, but count should be 0.
+}
+
+#[test]
+fn test_table_release_columns_null_table_rejected() {
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = 0;
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(ptr::null_mut(), &mut out_columns, &mut out_count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+}
+
+#[test]
+fn test_table_release_columns_null_out_columns_rejected() {
+    let col = make_i32_column(&[1, 2]);
+    let tbl = make_table_from_one_column(col);
+
+    let mut out_count: i32 = 0;
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(tbl, ptr::null_mut(), &mut out_count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+
+    // Table was not consumed on error — must still be destroyed.
+    unsafe { cudf_sys::cudf_table_destroy(tbl) };
+}
+
+#[test]
+fn test_table_release_columns_null_out_count_rejected() {
+    let col = make_i32_column(&[1, 2]);
+    let tbl = make_table_from_one_column(col);
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, ptr::null_mut())
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+
+    // Table was not consumed on error — must still be destroyed.
+    unsafe { cudf_sys::cudf_table_destroy(tbl) };
 }

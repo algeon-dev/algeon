@@ -5,6 +5,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/strings/strings_column_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/error.hpp>
@@ -320,6 +321,171 @@ cudf_status_t cudf_column_create_from_device_data(
         rmm::device_buffer{}, 0);
 
     *out = static_cast<cudf_column_handle>(col.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_strings(
+    const char** strings,
+    const int32_t* lengths,
+    int32_t num_strings,
+    const uint8_t* null_mask,
+    int32_t null_count,
+    cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (num_strings < 0) {
+    set_error("num_strings must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (null_count < 0 || null_count > num_strings) {
+    set_error("null_count must be in [0, num_strings]");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_strings > 0) {
+    CUDF_RUST_NULL_CHECK(strings, "strings is null");
+    CUDF_RUST_NULL_CHECK(lengths, "lengths is null");
+  }
+  if (null_count > 0) {
+    CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
+  }
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    auto stream = cudf::get_default_stream();
+    auto mr = cudf::get_current_device_resource_ref();
+
+    if (num_strings == 0) {
+      auto col = cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));
+      *out = static_cast<cudf_column_handle>(col.release());
+      return CUDF_SUCCESS;
+    }
+
+    // Compute offsets: offsets[0] = 0, offsets[i+1] = offsets[i] + lengths[i]
+    std::vector<int32_t> host_offsets(num_strings + 1);
+    host_offsets[0] = 0;
+    for (int32_t i = 0; i < num_strings; ++i) {
+      host_offsets[i + 1] = host_offsets[i] + lengths[i];
+    }
+    int32_t total_chars = host_offsets[num_strings];
+
+    // Build a single concatenated chars buffer on host
+    std::vector<char> host_chars(total_chars);
+    for (int32_t i = 0; i < num_strings; ++i) {
+      if (lengths[i] > 0 && strings[i] != nullptr) {
+        std::memcpy(host_chars.data() + host_offsets[i], strings[i], lengths[i]);
+      }
+    }
+
+    // Upload offsets to device
+    size_t offsets_bytes = static_cast<size_t>(num_strings + 1) * sizeof(int32_t);
+    rmm::device_buffer dev_offsets(host_offsets.data(), offsets_bytes, stream, mr);
+    auto offsets_col = std::make_unique<cudf::column>(
+        cudf::data_type(cudf::type_id::INT32),
+        static_cast<cudf::size_type>(num_strings + 1),
+        std::move(dev_offsets),
+        rmm::device_buffer{}, 0);
+
+    // Upload chars to device
+    rmm::device_buffer dev_chars(host_chars.data(),
+                                 static_cast<size_t>(total_chars), stream, mr);
+
+    // Build null mask on device if needed
+    rmm::device_buffer dev_null_mask{};
+    if (null_mask != nullptr && null_count > 0) {
+      size_t mask_bytes =
+          cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(num_strings));
+      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, stream, mr);
+    }
+
+    auto col = cudf::make_strings_column(
+        static_cast<cudf::size_type>(num_strings),
+        std::move(offsets_col),
+        std::move(dev_chars),
+        static_cast<cudf::size_type>(null_count),
+        std::move(dev_null_mask));
+
+    *out = static_cast<cudf_column_handle>(col.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_view_strings_to_host(
+    cudf_column_view_handle handle,
+    int32_t* offsets_buf,
+    size_t offsets_buf_size,
+    char* chars_buf,
+    size_t chars_buf_size,
+    int32_t* total_chars_bytes) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(total_chars_bytes, "total_chars_bytes is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    if (view->type().id() != cudf::type_id::STRING) {
+      set_error("column is not STRING type");
+      return CUDF_ERROR_TYPE;
+    }
+
+    auto n = view->size();
+    auto stream = cudf::get_default_stream();
+
+    if (n == 0) {
+      *total_chars_bytes = 0;
+      return CUDF_SUCCESS;
+    }
+
+    // String columns: child 0 = offsets, child 1 = chars
+    // The offsets child has n+1 elements.
+    auto offsets_view = view->child(0);
+    auto offsets_count = offsets_view.size();  // should be n+1
+
+    // Copy offsets to host
+    size_t needed_offsets_bytes = static_cast<size_t>(offsets_count) * sizeof(int32_t);
+    CUDF_RUST_NULL_CHECK(offsets_buf, "offsets_buf is null");
+    if (offsets_buf_size < needed_offsets_bytes) {
+      set_error("offsets buffer too small");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    // Account for view offset in the offsets child
+    auto offsets_data = offsets_view.data<int32_t>();
+    cudaMemcpyAsync(offsets_buf, offsets_data,
+                    needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value());
+    stream.synchronize();
+
+    // Compute total chars bytes from offsets
+    int32_t char_begin = offsets_buf[0];
+    int32_t char_end = offsets_buf[offsets_count - 1];
+    int32_t total = char_end - char_begin;
+    *total_chars_bytes = total;
+
+    if (total > 0) {
+      if (chars_buf != nullptr) {
+        if (chars_buf_size < static_cast<size_t>(total)) {
+          set_error("chars buffer too small");
+          return CUDF_ERROR_INVALID_OPERATION;
+        }
+
+        // In cudf 25.x the chars are embedded in the offsets column's parent
+        // We need to get chars from the strings_column_view
+        cudf::strings_column_view scv(*view);
+        auto chars_ptr = scv.chars_begin(stream);
+
+        // chars_begin does NOT account for view offset, but the offsets
+        // already tell us where chars start (offsets_buf[0] = char_begin).
+        cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
+                        static_cast<size_t>(total),
+                        cudaMemcpyDeviceToHost, stream.value());
+        stream.synchronize();
+      }
+      // If chars_buf is null, we just return total_chars_bytes without copying.
+    }
+
+    // Adjust offsets to be zero-based for the caller
+    for (int i = 0; i < offsets_count; ++i) {
+      offsets_buf[i] -= char_begin;
+    }
+
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

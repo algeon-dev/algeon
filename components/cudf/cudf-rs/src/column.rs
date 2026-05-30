@@ -14,7 +14,7 @@ fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> 
 }
 use crate::types::{CudfType, DataType, TypeId};
 use std::marker::PhantomData;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 use std::ptr::{self, NonNull};
 
 /// An owned GPU column backed by a `cudf::column`.
@@ -182,13 +182,12 @@ impl Column {
         }
 
         if len > 0 && device_ptr.is_null() {
-            return Err(Error::new(
-                ErrorKind::NullError,
-                "device_ptr is null but len > 0",
-            )
-            .with_operation("column::from_device_ptr")
-            .with_context("len", len.to_string())
-            .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+            return Err(
+                Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
+                    .with_operation("column::from_device_ptr")
+                    .with_context("len", len.to_string())
+                    .with_context("type_id", format!("{:?}", type_id).to_lowercase()),
+            );
         }
 
         let size = usize_to_i32_len(len, "data", "column::from_device_ptr")?;
@@ -207,6 +206,95 @@ impl Column {
                 ("len", len.to_string()),
                 ("type_id", format!("{:?}", type_id).to_lowercase()),
             ],
+        )?;
+        Ok(Self {
+            handle: NonNull::new(handle).expect("null handle on success"),
+        })
+    }
+    /// Create a STRING type column from a slice of string references.
+    ///
+    /// Each string is copied to GPU memory. The resulting column has no null mask.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use cudf::column::Column;
+    /// let col = Column::from_strings(&["hello", "world"]).unwrap();
+    /// ```
+    pub fn from_strings(data: &[&str]) -> Result<Self> {
+        let num_strings = usize_to_i32_len(data.len(), "data", "column::from_strings")?;
+
+        let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
+        let lengths: Vec<i32> = data
+            .iter()
+            .map(|s| {
+                usize_to_i32_len(s.len(), "string_element", "column::from_strings")
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_strings(
+                    ptrs.as_ptr(),
+                    lengths.as_ptr(),
+                    num_strings,
+                    ptr::null(),
+                    0,
+                    &mut handle,
+                )
+            },
+            "column::from_strings",
+        )?;
+        Ok(Self {
+            handle: NonNull::new(handle).expect("null handle on success"),
+        })
+    }
+
+    /// Create a nullable STRING type column from host string data and a validity mask.
+    ///
+    /// `validity[i]` is `true` if element `i` is valid (non-null).
+    /// For null rows, the string content is ignored.
+    pub fn from_strings_nullable(data: &[&str], validity: &[bool]) -> Result<Self> {
+        if data.len() != validity.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "data and validity slices must have the same length",
+            )
+            .with_operation("column::from_strings_nullable")
+            .with_context("data_len", data.len().to_string())
+            .with_context("validity_len", validity.len().to_string()));
+        }
+
+        let num_strings = usize_to_i32_len(data.len(), "data", "column::from_strings_nullable")?;
+
+        let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
+        let lengths: Vec<i32> = data
+            .iter()
+            .map(|s| {
+                usize_to_i32_len(s.len(), "string_element", "column::from_strings_nullable")
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let null_mask = crate::types::validity_to_bitmask(validity);
+        let null_count = crate::types::count_nulls(validity);
+
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_strings(
+                    ptrs.as_ptr(),
+                    lengths.as_ptr(),
+                    num_strings,
+                    if null_count > 0 {
+                        null_mask.as_ptr()
+                    } else {
+                        ptr::null()
+                    },
+                    null_count,
+                    &mut handle,
+                )
+            },
+            "column::from_strings_nullable",
         )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
@@ -433,6 +521,90 @@ impl<'a> ColumnView<'a> {
             .collect();
 
         Ok(Some(validity))
+    }
+
+    /// Copy string column data to a host `Vec<String>`.
+    ///
+    /// The column's type must be `TypeId::String`.
+    ///
+    /// For null elements, the returned string is empty (`""`). Use
+    /// [`validity()`](Self::validity) to distinguish nulls from empty strings.
+    pub fn to_strings(&self) -> Result<Vec<String>> {
+        let dt = self.data_type()?;
+        if dt.id() != TypeId::String {
+            return Err(Error::new(
+                ErrorKind::TypeError,
+                "column type is not STRING",
+            )
+            .with_operation("column_view::to_strings")
+            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
+        }
+
+        let size = self.len()?;
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Allocate offsets buffer: n+1 elements
+        let offsets_count = (size + 1) as usize;
+        let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
+        let mut offsets = vec![0i32; offsets_count];
+
+        // First call to get total_chars_bytes: pass a generous chars buffer initially.
+        // We do a two-phase approach: first get offsets + total size, then get chars.
+        let mut total_chars_bytes: i32 = 0;
+
+        // Phase 1: get offsets and total char bytes (with null chars_buf if 0 chars)
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_strings_to_host(
+                    self.handle.as_ptr(),
+                    offsets.as_mut_ptr(),
+                    offsets_buf_size,
+                    ptr::null_mut(),          // chars_buf not needed yet for size query
+                    0,                        // chars_buf_size = 0
+                    &mut total_chars_bytes,
+                )
+            },
+            "column_view::to_strings",
+        )?;
+
+        // Phase 2: now allocate chars buffer and re-call
+        let mut chars = vec![0u8; total_chars_bytes as usize];
+        if total_chars_bytes > 0 {
+            // Need to re-fetch since the first call already wrote offsets but
+            // may not have written chars. Re-call to get everything.
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_strings_to_host(
+                        self.handle.as_ptr(),
+                        offsets.as_mut_ptr(),
+                        offsets_buf_size,
+                        chars.as_mut_ptr() as *mut c_char,
+                        total_chars_bytes as usize,
+                        &mut total_chars_bytes,
+                    )
+                },
+                "column_view::to_strings",
+            )?;
+        }
+
+        // Parse strings from offsets + chars
+        let mut result = Vec::with_capacity(size as usize);
+        for i in 0..size as usize {
+            let start = offsets[i] as usize;
+            let end = offsets[i + 1] as usize;
+            let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("invalid UTF-8 in string column at row {}: {}", i, e),
+                )
+                .with_operation("column_view::to_strings")
+            })?;
+            result.push(s.to_string());
+        }
+
+        Ok(result)
     }
 
     /// Returns a [`DeviceSlice`] describing the active device memory region
