@@ -33,7 +33,7 @@
 use std::sync::Arc;
 
 use arrow::array::*;
-use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+use arrow::datatypes::DataType as ArrowDataType;
 use arrow::record_batch::RecordBatch;
 
 use crate::column::{Column, ColumnView};
@@ -63,25 +63,19 @@ impl DataFrame {
     /// underlying GPU-to-host copy fails.
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
         let names = self.column_names();
-        let num_cols = names.len();
 
-        let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
-        let mut arrays: Vec<Arc<dyn Array>> = Vec::with_capacity(num_cols);
+        let columns: Vec<(String, Arc<dyn Array>, bool)> = names
+            .iter()
+            .map(|&name| {
+                let cv = self.column(name)?;
+                let type_id = cv.data_type()?.id();
+                let nullable = cv.nullable()?;
+                let arr = column_view_to_arrow(&cv, type_id)?;
+                Ok((name.to_string(), arr, nullable))
+            })
+            .collect::<Result<_>>()?;
 
-        for &name in &names {
-            let cv = self.column(name)?;
-            let type_id = cv.data_type()?.id();
-            let nullable = cv.nullable()?;
-
-            let arrow_dt = cudf_type_to_arrow(type_id)?;
-            fields.push(Field::new(name, arrow_dt, nullable));
-
-            let arr = column_view_to_arrow(&cv, type_id)?;
-            arrays.push(arr);
-        }
-
-        let schema = Arc::new(Schema::new(fields));
-        RecordBatch::try_new(schema, arrays).map_err(|e| {
+        RecordBatch::try_from_iter_with_nullable(columns).map_err(|e| {
             Error::new(ErrorKind::InvalidOperation, e.to_string())
                 .with_operation("dataframe::to_record_batch")
         })
@@ -127,6 +121,7 @@ pub fn dataframe_from_record_batch(batch: &RecordBatch) -> Result<DataFrame> {
 // ---------------------------------------------------------------------------
 
 /// Map a cudf `TypeId` to the corresponding Arrow `DataType`.
+#[allow(dead_code)]
 fn cudf_type_to_arrow(type_id: TypeId) -> Result<ArrowDataType> {
     match type_id {
         TypeId::Int8 => Ok(ArrowDataType::Int8),
@@ -210,8 +205,7 @@ where
 
     match validity {
         None => {
-            let buffer = arrow::buffer::ScalarBuffer::from(data);
-            let arr = PrimitiveArray::<T::ArrowPrimitive>::new(buffer, None);
+            let arr = PrimitiveArray::<T::ArrowPrimitive>::from_iter_values(data);
             Ok(Arc::new(arr))
         }
         Some(mask) => {
@@ -280,24 +274,13 @@ fn primitive_to_column<T>(arr: &dyn Array) -> Result<Column>
 where
     T: ArrowPrimitiveMapping,
 {
-    let prim = arr
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T::ArrowPrimitive>>()
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "failed to downcast Arrow array to expected primitive type",
-            )
-            .with_operation("arrow::primitive_to_column")
-        })?;
-
+    let prim = arr.as_primitive::<T::ArrowPrimitive>();
     let values: Vec<T> = prim.values().iter().copied().collect();
-    let nulls = prim.nulls();
 
-    match nulls {
+    match prim.nulls() {
         None => Column::from_slice(&values),
         Some(null_buf) => {
-            let validity: Vec<bool> = (0..arr.len()).map(|i| null_buf.is_valid(i)).collect();
+            let validity: Vec<bool> = null_buf.iter().collect();
             Column::from_slice_nullable(&values, &validity)
         }
     }
@@ -305,24 +288,13 @@ where
 
 /// Convert a boolean Arrow array to a cudf Column (Bool8).
 fn bool_to_column(arr: &dyn Array) -> Result<Column> {
-    let bool_arr = arr
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "failed to downcast Arrow array to BooleanArray",
-            )
-            .with_operation("arrow::bool_to_column")
-        })?;
+    let bool_arr = arr.as_boolean();
+    let values: Vec<bool> = bool_arr.values().iter().collect();
 
-    let values: Vec<bool> = (0..bool_arr.len()).map(|i| bool_arr.value(i)).collect();
-    let nulls = bool_arr.nulls();
-
-    match nulls {
+    match bool_arr.nulls() {
         None => Column::from_slice(&values),
         Some(null_buf) => {
-            let validity: Vec<bool> = (0..bool_arr.len()).map(|i| null_buf.is_valid(i)).collect();
+            let validity: Vec<bool> = null_buf.iter().collect();
             Column::from_slice_nullable(&values, &validity)
         }
     }

@@ -107,6 +107,22 @@ cudf_status_t cudf_column_copy(cudf_column_handle src,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_copy_from_view(cudf_column_view_handle src,
+                                         cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(src, "src is null");
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    auto const& view = *static_cast<cudf::column_view const*>(src);
+    auto stream = cudf::get_default_stream();
+    auto mr = cudf::get_current_device_resource_ref();
+    auto copy = std::make_unique<cudf::column>(view, stream, mr);
+    *out = static_cast<cudf_column_handle>(copy.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 void cudf_column_destroy(cudf_column_handle handle) {
   delete static_cast<cudf::column*>(handle);
 }

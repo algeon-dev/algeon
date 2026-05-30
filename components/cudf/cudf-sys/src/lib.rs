@@ -129,6 +129,11 @@ extern "C" {
     pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle)
         -> cudf_status_t;
 
+    pub fn cudf_column_copy_from_view(
+        src: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_destroy(handle: cudf_column_handle);
 
     // -- ColumnView (non-owning) --------------------------------------------

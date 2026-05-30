@@ -34,6 +34,11 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out);
 
+/// Deep-copy a column from a column_view. Works for all types including
+/// strings and nested types.
+cudf_status_t cudf_column_copy_from_view(cudf_column_view_handle src,
+                                         cudf_column_handle* out);
+
 /// Destroy an owning column handle.
 void cudf_column_destroy(cudf_column_handle handle);
 

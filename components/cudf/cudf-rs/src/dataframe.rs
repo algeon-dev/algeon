@@ -848,7 +848,7 @@ impl DataFrame {
         let left_payload_indices = payload_indices(&self.schema, &left_key_indices);
         let right_payload_indices = payload_indices(&right.schema, &right_key_indices);
 
-        // Build keys and payload tables via host round-trip.
+        // Build keys and payload tables via deep-copy from column views.
         let left_tv = self.table.view()?;
         let right_tv = right.table.view()?;
 
@@ -1095,7 +1095,7 @@ impl DataFrame {
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// The columns appear in the order given in `columns`. Each selected
-    /// column is deep-copied via a host round-trip.
+    /// column is deep-copied from its column view.
     ///
     /// # Errors
     ///
@@ -1516,7 +1516,7 @@ impl<'a> GroupByBuilder<'a> {
             all_result_cols.push(col);
         }
 
-        // Build the key columns from the keys table via host round-trip.
+        // Build the key columns from the keys table via deep-copy.
         let result_keys_view = gb_result.keys.view()?;
         let num_key_cols = result_keys_view.num_columns()?;
         let mut final_cols: Vec<Column> = Vec::with_capacity(
@@ -1650,9 +1650,8 @@ fn resolve_column_names(
 }
 
 /// Build an owned `Table` containing only the columns at the given indices
-/// from `source`. This copies each selected column via host round-trip
-/// (GPU → host → GPU). Acceptable for sort-key tables; will be optimized
-/// when `cudf_table_view_from_column_views` is available in cudf-sys.
+/// from `source`. This deep-copies each selected column from its
+/// `ColumnView`.
 fn build_keys_table(source: &crate::table::TableView<'_>, indices: &[usize]) -> Result<Table> {
     let cols: Vec<Column> = indices
         .iter()
@@ -1672,68 +1671,20 @@ fn build_keys_table(source: &crate::table::TableView<'_>, indices: &[usize]) -> 
     Table::from_columns(cols)
 }
 
-/// Deep-copy a `ColumnView` into an owned `Column` via host round-trip.
+/// Deep-copy a `ColumnView` into an owned `Column`.
 ///
-/// Only supports fixed-width types. This is the pragmatic O(n) host-memory
-/// path; a zero-copy device path requires `cudf_table_view_from_column_views`.
+/// Uses `cudf_column_copy_from_view`, which supports fixed-width, string,
+/// and nested types.
 fn copy_column_view_to_owned(
     cv: &ColumnView<'_>,
-    type_id: crate::types::TypeId,
-    len: i32,
+    _type_id: crate::types::TypeId,
+    _len: i32,
 ) -> Result<Column> {
-    use crate::types::{count_nulls, validity_to_bitmask};
-
-    let elem_size = type_id.size_in_bytes()?.ok_or_else(|| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            "only fixed-width types are supported for column copy",
-        )
-        .with_operation("dataframe::copy_column_view")
-        .with_context("type_id", format!("{:?}", type_id).to_lowercase())
-    })? as usize;
-
-    let ulen = len as usize;
-    let byte_len = ulen * elem_size;
-    let mut buf = vec![0u8; byte_len];
-    if byte_len > 0 {
-        crate::error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_view_to_host(
-                    cv.raw_handle(),
-                    buf.as_mut_ptr() as *mut std::os::raw::c_void,
-                    byte_len,
-                )
-            },
-            "dataframe::copy_column_view",
-        )?;
-    }
-
-    let validity = cv.validity()?;
-    let (null_mask, null_count) = match &validity {
-        Some(v) => (validity_to_bitmask(v), count_nulls(v)),
-        None => (vec![], 0),
-    };
-    let null_mask_ptr = if null_mask.is_empty() {
-        std::ptr::null()
-    } else {
-        null_mask.as_ptr()
-    };
-
     let mut handle = std::ptr::null_mut();
     crate::error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_column_create_numeric(
-                type_id.to_raw(),
-                buf.as_ptr() as *const std::os::raw::c_void,
-                len,
-                null_mask_ptr,
-                null_count,
-                &mut handle,
-            )
-        },
+        unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
         "dataframe::copy_column_view",
     )?;
-
     Ok(unsafe { Column::from_raw(handle) })
 }
 
