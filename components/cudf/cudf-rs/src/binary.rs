@@ -24,36 +24,67 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum BinaryOperator {
+    /// Addition (`lhs + rhs`).
     Add = 0,
+    /// Subtraction (`lhs - rhs`).
     Sub = 1,
+    /// Multiplication (`lhs * rhs`).
     Mul = 2,
+    /// Integer division (`lhs / rhs`), truncating toward zero.
     Div = 3,
+    /// True (floating-point) division — always produces a float result.
     TrueDiv = 4,
+    /// Floor division — rounds the quotient toward negative infinity.
     FloorDiv = 5,
+    /// C/C++ modulo (`lhs % rhs`). The result has the sign of `lhs`.
     Mod = 6,
+    /// Positive modulo — the result is always non-negative (`[0, |rhs|)`).
     Pmod = 7,
+    /// Python-style modulo — the result has the sign of `rhs`.
     Pymod = 8,
+    /// Exponentiation (`pow(lhs, rhs)`), producing a float result.
     Pow = 9,
+    /// Integer exponentiation (`pow(lhs, rhs)`), keeping the integer type.
     IntPow = 10,
+    /// Logarithm of `lhs` with base `rhs` (`log_rhs(lhs)`).
     LogBase = 11,
+    /// Two-argument arctangent (`atan2(lhs, rhs)`), in radians.
     Atan2 = 12,
+    /// Bitwise left shift (`lhs << rhs`).
     ShiftLeft = 13,
+    /// Arithmetic (sign-extending) right shift (`lhs >> rhs`).
     ShiftRight = 14,
+    /// Logical (zero-filling) right shift (`lhs >>> rhs`).
     ShiftRightUnsigned = 15,
+    /// Bitwise AND (`lhs & rhs`).
     BitwiseAnd = 16,
+    /// Bitwise OR (`lhs | rhs`).
     BitwiseOr = 17,
+    /// Bitwise XOR (`lhs ^ rhs`).
     BitwiseXor = 18,
+    /// Logical AND (`lhs && rhs`). Operates on `Bool8` columns.
     LogicalAnd = 19,
+    /// Logical OR (`lhs || rhs`). Operates on `Bool8` columns.
     LogicalOr = 20,
+    /// Equality comparison (`lhs == rhs`). Null compared to anything is null.
     Equal = 21,
+    /// Inequality comparison (`lhs != rhs`). Null compared to anything is null.
     NotEqual = 22,
+    /// Less-than comparison (`lhs < rhs`).
     Less = 23,
+    /// Greater-than comparison (`lhs > rhs`).
     Greater = 24,
+    /// Less-than-or-equal comparison (`lhs <= rhs`).
     LessEqual = 25,
+    /// Greater-than-or-equal comparison (`lhs >= rhs`).
     GreaterEqual = 26,
+    /// Null-aware equality: `null == null` evaluates to `true` (not null).
     NullEquals = 27,
+    /// Null-aware inequality: `null != null` evaluates to `false` (not null).
     NullNotEquals = 28,
+    /// Element-wise max, treating nulls as missing (returns the non-null operand).
     NullMax = 29,
+    /// Element-wise min, treating nulls as missing (returns the non-null operand).
     NullMin = 30,
 }
 

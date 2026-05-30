@@ -1,4 +1,32 @@
 //! GPU-accelerated reduction and scan operations.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::{column::Column, reduction, types::DataType, types::TypeId};
+//!
+//! let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+//! let view = col.view().unwrap();
+//!
+//! // Reduce to a single scalar.
+//! let total = reduction::reduce(
+//!     &view,
+//!     &reduction::ReduceAggregation::Sum,
+//!     &DataType::new(TypeId::Int32),
+//! )
+//! .unwrap();
+//! assert_eq!(total.value::<i32>().unwrap(), 60);
+//!
+//! // Cumulative (prefix) sum.
+//! let cumsum = reduction::scan(
+//!     &view,
+//!     reduction::ScanAggregation::Sum,
+//!     reduction::ScanType::Inclusive,
+//!     reduction::NullPolicy::Exclude,
+//! )
+//! .unwrap();
+//! // cumsum: [10, 30, 60]
+//! ```
 
 use std::{os::raw::c_void, ptr};
 

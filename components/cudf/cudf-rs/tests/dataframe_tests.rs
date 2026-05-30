@@ -165,3 +165,45 @@ fn test_empty_dataframe() {
     assert_eq!(df.num_columns(), 0);
     assert!(df.column_names().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// dataframe! macro
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_dataframe_macro_basic() {
+    let x_col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let y_col = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+
+    let df = cudf::dataframe! { "x" => x_col, "y" => y_col }.unwrap();
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names(), &["x", "y"]);
+    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.column("x").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_dataframe_macro_single_column() {
+    let col = Column::from_slice(&[1i32, 2]).unwrap();
+
+    let df = cudf::dataframe! { "only" => col }.unwrap();
+
+    assert_eq!(df.num_columns(), 1);
+    assert_eq!(df.column_names(), &["only"]);
+}
+
+#[test]
+fn test_dataframe_macro_trailing_comma() {
+    let a = Column::from_slice(&[1i32]).unwrap();
+    let b = Column::from_slice(&[2i32]).unwrap();
+
+    let df = cudf::dataframe! {
+        "a" => a,
+        "b" => b,
+    }
+    .unwrap();
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names(), &["a", "b"]);
+}

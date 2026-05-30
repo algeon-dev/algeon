@@ -120,6 +120,33 @@ cudf_status_t cudf_table_view_column(cudf_table_view_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_table_view_from_column_views(
+    cudf_column_view_handle* column_views, int32_t num_columns,
+    cudf_table_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) {
+    CUDF_RUST_NULL_CHECK(column_views, "column_views is null");
+  }
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    std::vector<cudf::column_view> views;
+    views.reserve(num_columns);
+    for (int32_t i = 0; i < num_columns; ++i) {
+      CUDF_RUST_NULL_CHECK(column_views[i], "column_view handle is null");
+      views.push_back(
+          *static_cast<cudf::column_view*>(column_views[i]));
+    }
+    auto* tv = new cudf::table_view(views);
+    *out = static_cast<cudf_table_view_handle>(tv);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_table_release_columns(cudf_table_handle table,
                                          cudf_column_handle** out_columns,
                                          int32_t* out_count) {

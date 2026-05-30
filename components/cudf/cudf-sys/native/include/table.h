@@ -48,6 +48,15 @@ cudf_status_t cudf_table_view_column(cudf_table_view_handle handle,
                                      int32_t index,
                                      cudf_column_view_handle* out);
 
+/// Construct a table_view from an array of column_view handles.
+/// The returned table_view is heap-allocated and must be freed with
+/// cudf_table_view_destroy. It borrows from the column_views, which
+/// must remain alive for the lifetime of the returned table_view.
+cudf_status_t cudf_table_view_from_column_views(
+    cudf_column_view_handle* column_views,
+    int32_t num_columns,
+    cudf_table_view_handle* out);
+
 /// Release all columns from a table, destroying the table in the process.
 ///
 /// The table is consumed: after a successful call, `table` is destroyed and

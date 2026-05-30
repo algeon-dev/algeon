@@ -47,6 +47,7 @@ pub mod hashing;
 pub mod io;
 pub mod join;
 pub mod memory;
+pub mod ops;
 pub mod reduction;
 pub mod replace;
 pub mod scalar;

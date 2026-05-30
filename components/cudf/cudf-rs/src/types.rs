@@ -10,34 +10,63 @@ use crate::error::{self, Result};
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeId {
+    /// Placeholder for columns with no data or unknown type.
     Empty = 0,
+    /// Signed 8-bit integer.
     Int8,
+    /// Signed 16-bit integer.
     Int16,
+    /// Signed 32-bit integer.
     Int32,
+    /// Signed 64-bit integer.
     Int64,
+    /// Unsigned 8-bit integer.
     UInt8,
+    /// Unsigned 16-bit integer.
     UInt16,
+    /// Unsigned 32-bit integer.
     UInt32,
+    /// Unsigned 64-bit integer.
     UInt64,
+    /// 32-bit IEEE 754 floating point.
     Float32,
+    /// 64-bit IEEE 754 floating point.
     Float64,
+    /// Boolean stored as 8-bit value (`0` = false, non-zero = true).
     Bool8,
+    /// Timestamp with day resolution (days since Unix epoch).
     TimestampDays,
+    /// Timestamp with second resolution (seconds since Unix epoch).
     TimestampSeconds,
+    /// Timestamp with millisecond resolution (ms since Unix epoch).
     TimestampMilliseconds,
+    /// Timestamp with microsecond resolution (us since Unix epoch).
     TimestampMicroseconds,
+    /// Timestamp with nanosecond resolution (ns since Unix epoch).
     TimestampNanoseconds,
+    /// Duration with day resolution (number of days).
     DurationDays,
+    /// Duration with second resolution (number of seconds).
     DurationSeconds,
+    /// Duration with millisecond resolution (number of ms).
     DurationMilliseconds,
+    /// Duration with microsecond resolution (number of us).
     DurationMicroseconds,
+    /// Duration with nanosecond resolution (number of ns).
     DurationNanoseconds,
+    /// Dictionary-encoded column with `Int32` indices.
     Dictionary32,
+    /// Variable-length UTF-8 string.
     String,
+    /// Variable-length list (each element is a sub-list of another type).
     List,
+    /// 32-bit fixed-point decimal (requires a scale via [`DataType::fixed_point`]).
     Decimal32,
+    /// 64-bit fixed-point decimal (requires a scale via [`DataType::fixed_point`]).
     Decimal64,
+    /// 128-bit fixed-point decimal (requires a scale via [`DataType::fixed_point`]).
     Decimal128,
+    /// A column of structs (each element is a row of child columns).
     Struct,
 }
 

@@ -1,4 +1,19 @@
 //! GPU-accelerated filtering operations.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::{column::Column, filter, table::Table};
+//!
+//! let col = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
+//! let table = Table::from_columns(vec![col]).unwrap();
+//! let mask = Column::from_slice(&[true, false, true, false]).unwrap();
+//!
+//! let result =
+//!     filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap())
+//!         .unwrap();
+//! // result contains rows 0 and 2: [10, 30]
+//! ```
 
 use std::ptr;
 

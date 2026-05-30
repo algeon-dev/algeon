@@ -153,6 +153,11 @@ impl Error {
         &self.message
     }
 
+    /// Returns the error status (permanent, temporary, or persistent).
+    pub fn status(&self) -> ErrorStatus {
+        self.status
+    }
+
     /// Returns the operation that was being performed.
     pub fn operation(&self) -> &'static str {
         self.operation
@@ -340,6 +345,18 @@ mod tests {
         assert_eq!(err.context().len(), 2);
         assert_eq!(err.context()[0], ("dtype", "float64".to_string()));
         assert_eq!(err.context()[1], ("rows", "1000000".to_string()));
+    }
+
+    #[test]
+    fn status_accessor_reflects_status() {
+        let err = Error::new(ErrorKind::TypeError, "bad type");
+        assert_eq!(err.status(), ErrorStatus::Permanent);
+
+        let tmp = Error::new(ErrorKind::CudaError, "oom").set_temporary();
+        assert_eq!(tmp.status(), ErrorStatus::Temporary);
+
+        let persistent = Error::new(ErrorKind::FatalCudaError, "device lost").set_persistent();
+        assert_eq!(persistent.status(), ErrorStatus::Persistent);
     }
 
     #[test]

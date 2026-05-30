@@ -125,3 +125,44 @@ fn test_trig_sin() {
     let values = rv.to_vec::<f64>().unwrap();
     assert!((values[0] - 0.0).abs() < 1e-10);
 }
+
+// --- logical_not tests ---
+
+#[test]
+fn test_logical_not_basic() {
+    let col = Column::from_slice(&[true, false, true]).unwrap();
+    let view = col.view().unwrap();
+
+    let result = unary::logical_not(&view).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_logical_not_with_nulls() {
+    let col = Column::from_slice_nullable(&[true, false, true], &[true, true, false]).unwrap();
+    let view = col.view().unwrap();
+
+    let result = unary::logical_not(&view).unwrap();
+    let rv = result.view().unwrap();
+    let values = rv.to_vec::<bool>().unwrap();
+    assert_eq!(values[0], false);
+    assert_eq!(values[1], true);
+    // Index 2 is null — value is undefined, just check null mask
+    let validity = rv.validity().unwrap().unwrap();
+    assert!(validity[0]);
+    assert!(validity[1]);
+    assert!(!validity[2]);
+}
+
+#[test]
+fn test_logical_not_empty() {
+    let col = Column::from_slice::<bool>(&[]).unwrap();
+    let view = col.view().unwrap();
+
+    let result = unary::logical_not(&view).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.len().unwrap(), 0);
+    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
+}

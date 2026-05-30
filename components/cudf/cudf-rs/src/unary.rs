@@ -12,29 +12,53 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum UnaryOperator {
+    /// Trigonometric sine.
     Sin = 0,
+    /// Trigonometric cosine.
     Cos,
+    /// Trigonometric tangent.
     Tan,
+    /// Inverse sine (arcsin).
     ArcSin,
+    /// Inverse cosine (arccos).
     ArcCos,
+    /// Inverse tangent (arctan).
     ArcTan,
+    /// Hyperbolic sine.
     Sinh,
+    /// Hyperbolic cosine.
     Cosh,
+    /// Hyperbolic tangent.
     Tanh,
+    /// Inverse hyperbolic sine.
     ArcSinh,
+    /// Inverse hyperbolic cosine.
     ArcCosh,
+    /// Inverse hyperbolic tangent.
     ArcTanh,
+    /// Natural exponential (`e^x`).
     Exp,
+    /// Natural logarithm (`ln(x)`).
     Log,
+    /// Square root.
     Sqrt,
+    /// Cube root.
     Cbrt,
+    /// Ceiling — smallest integer >= x.
     Ceil,
+    /// Floor — largest integer <= x.
     Floor,
+    /// Absolute value.
     Abs,
+    /// Round to nearest integer (half-to-even / banker's rounding).
     Rint,
+    /// Population count — number of `1`-bits in the binary representation.
     BitCount,
+    /// Bitwise inversion (flips every bit). For integer types.
     BitInvert,
+    /// Logical NOT. For `Bool8` columns: `true` becomes `false` and vice versa.
     Not,
+    /// Arithmetic negation (`-x`). For numeric types.
     Negate,
 }
 
@@ -47,6 +71,13 @@ pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Colu
         [("operator", format!("{:?}", op).to_lowercase())],
     )?;
     Ok(unsafe { Column::from_raw(out) })
+}
+
+/// Return a boolean column with each element logically negated.
+///
+/// Input must be Bool8. Equivalent to `unary_operation(input, UnaryOperator::Not)`.
+pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
+    unary_operation(input, UnaryOperator::Not)
 }
 
 /// Return a boolean column: `true` where elements are null.

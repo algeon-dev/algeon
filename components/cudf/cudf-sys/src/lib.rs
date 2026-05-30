@@ -214,6 +214,12 @@ extern "C" {
         out: *mut cudf_column_view_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_table_view_from_column_views(
+        column_views: *mut cudf_column_view_handle,
+        num_columns: i32,
+        out: *mut cudf_table_view_handle,
+    ) -> cudf_status_t;
+
     /// Release all columns from a table, destroying the table.
     ///
     /// On success, `table` is consumed and must not be used again.

@@ -1,4 +1,20 @@
 //! GPU-accelerated concatenation of columns and tables.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::{column::Column, concatenate};
+//!
+//! let a = Column::from_slice(&[1i32, 2]).unwrap();
+//! let b = Column::from_slice(&[3i32, 4, 5]).unwrap();
+//!
+//! let combined = concatenate::concatenate_columns(&[
+//!     &a.view().unwrap(),
+//!     &b.view().unwrap(),
+//! ])
+//! .unwrap();
+//! // combined: [1, 2, 3, 4, 5]
+//! ```
 
 use std::ptr;
 
