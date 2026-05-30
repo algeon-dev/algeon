@@ -232,6 +232,8 @@ pub struct QueryMetrics {
     pub aggregate_strategy_decisions: Vec<AggregateStrategyDecisionMetrics>,
     /// Dynamic-filter runtime event rows in observation order.
     pub dynamic_filter_runtime_rows: Vec<DynamicFilterRuntimeMetrics>,
+    /// Source-read runtime event rows in observation order.
+    pub source_read_runtime_rows: Vec<SourceReadRuntimeMetrics>,
     /// Memory policy used by the native phase-C/bounded executor.
     pub phase_c_memory_control_policy: MemoryControlPolicy,
     /// Boundary policy used for host/device materialization.
@@ -599,8 +601,26 @@ impl QueryMetrics {
         self.dynamic_filter_runtime_rows.push(DynamicFilterRuntimeMetrics::source_reader_predicate_rows(
             route,
             filter,
-            source_file_index,
-            source_chunk_index,
+            Some(source_file_index),
+            Some(source_chunk_index),
+            rows_before,
+            rows_after,
+        ));
+    }
+
+    /// Records source-reader row evidence for a batched dynamic-filter reader predicate.
+    pub fn record_dynamic_filter_source_reader_predicate_batch_rows(
+        &mut self,
+        route: &DynamicFilterRoute,
+        filter: &DynamicFilter,
+        rows_before: Option<u64>,
+        rows_after: Option<u64>,
+    ) {
+        self.dynamic_filter_runtime_rows.push(DynamicFilterRuntimeMetrics::source_reader_predicate_rows(
+            route,
+            filter,
+            None,
+            None,
             rows_before,
             rows_after,
         ));
@@ -624,6 +644,11 @@ impl QueryMetrics {
             self.dynamic_filter_reader_predicate_rows_filtered =
                 self.dynamic_filter_reader_predicate_rows_filtered.saturating_add(rows_filtered);
         }
+    }
+
+    /// Records one local-Parquet source read or source-batch read.
+    pub fn record_source_read_runtime(&mut self, metrics: SourceReadRuntimeMetrics) {
+        self.source_read_runtime_rows.push(metrics);
     }
 
     fn record_dynamic_filter_post_decode_reduction(
@@ -1185,6 +1210,7 @@ impl QueryMetrics {
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
         self.dynamic_filter_runtime_rows.extend(other.dynamic_filter_runtime_rows);
+        self.source_read_runtime_rows.extend(other.source_read_runtime_rows);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
         self.peak_device_memory_bytes = max_optional(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
@@ -1532,8 +1558,8 @@ impl DynamicFilterRuntimeMetrics {
     fn source_reader_predicate_rows(
         route: &DynamicFilterRoute,
         filter: &DynamicFilter,
-        source_file_index: usize,
-        source_chunk_index: usize,
+        source_file_index: Option<usize>,
+        source_chunk_index: Option<usize>,
         rows_before: Option<u64>,
         rows_after: Option<u64>,
     ) -> Self {
@@ -1559,8 +1585,8 @@ impl DynamicFilterRuntimeMetrics {
             selected_row_groups_after: None,
             selected_source_bytes_before: None,
             selected_source_bytes_after: None,
-            source_file_index: Some(source_file_index as u64),
-            source_chunk_index: Some(source_chunk_index as u64),
+            source_file_index: source_file_index.map(|index| index as u64),
+            source_chunk_index: source_chunk_index.map(|index| index as u64),
             reader_predicate_rows_before: rows_before,
             reader_predicate_rows_after: rows_after,
             reader_predicate_rows_filtered: rows_filtered,
@@ -1698,6 +1724,95 @@ impl DynamicFilterRuntimeMetrics {
             self.post_decode_rows_filtered,
             self.row_groups_pruned,
             self.source_bytes_pruned,
+        )
+    }
+}
+
+/// Runtime evidence for one local-Parquet source read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceReadRuntimeMetrics {
+    /// Native source node id.
+    pub source_node_id: String,
+    /// Source read shape, for example `chunk` or `chunk_batch`.
+    pub read_kind: String,
+    /// Parquet read strategy used by the chunk or batch.
+    pub read_strategy: String,
+    /// Batch index within the source stream, or the chunk index for singleton reads.
+    pub batch_index: u64,
+    /// Number of source chunks represented by this read.
+    pub chunk_count: u64,
+    /// First source chunk index represented by this read.
+    pub first_chunk_index: u64,
+    /// Last source chunk index represented by this read.
+    pub last_chunk_index: u64,
+    /// First source file index represented by this read.
+    pub first_file_index: u64,
+    /// Last source file index represented by this read.
+    pub last_file_index: u64,
+    /// Number of distinct files represented by this read.
+    pub file_count: u64,
+    /// Selected row groups represented by this read.
+    pub row_group_count: u64,
+    /// Number of physical read columns per represented file.
+    pub read_columns_per_file: u64,
+    /// Sum of physical read-column selections across represented files.
+    pub read_columns_total: u64,
+    /// Sum of known file bytes for represented files, when available.
+    pub known_file_bytes: u64,
+    /// Best available source-read byte estimate for represented chunks.
+    pub estimated_source_read_bytes: u64,
+    /// Sum of known selected row-group bytes, when available.
+    pub known_row_group_bytes: u64,
+    /// Sum of known projected compressed bytes, when available.
+    pub known_projected_compressed_bytes: u64,
+    /// Sum of known projected uncompressed bytes, when available.
+    pub known_projected_uncompressed_bytes: u64,
+    /// Sum of known pure-filter compressed bytes, when available.
+    pub known_pure_filter_compressed_bytes: u64,
+    /// Sum of known pure-filter uncompressed bytes, when available.
+    pub known_pure_filter_uncompressed_bytes: u64,
+    /// Number of output rows materialized by the read after reader predicates.
+    pub output_rows: u64,
+    /// Whether this read carried a source reader predicate.
+    pub reader_predicate: bool,
+    /// Number of dynamic-filter reader predicate routes attached to this read.
+    pub reader_dynamic_filter_count: u64,
+    /// Stable diagnostic reason for the source chunk batching decision.
+    pub source_batching_reason: String,
+    /// Elapsed time spent in the source read.
+    pub elapsed: Duration,
+}
+
+impl SourceReadRuntimeMetrics {
+    /// Serializes this row as stable comma-separated key/value pairs.
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},elapsed_ns={}",
+            self.source_node_id,
+            self.read_kind,
+            self.read_strategy,
+            self.batch_index,
+            self.chunk_count,
+            self.first_chunk_index,
+            self.last_chunk_index,
+            self.first_file_index,
+            self.last_file_index,
+            self.file_count,
+            self.row_group_count,
+            self.read_columns_per_file,
+            self.read_columns_total,
+            self.known_file_bytes,
+            self.estimated_source_read_bytes,
+            self.known_row_group_bytes,
+            self.known_projected_compressed_bytes,
+            self.known_projected_uncompressed_bytes,
+            self.known_pure_filter_compressed_bytes,
+            self.known_pure_filter_uncompressed_bytes,
+            self.output_rows,
+            self.reader_predicate,
+            self.reader_dynamic_filter_count,
+            self.source_batching_reason,
+            self.elapsed.as_nanos().min(u128::from(u64::MAX)),
         )
     }
 }

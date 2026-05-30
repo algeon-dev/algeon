@@ -39,6 +39,44 @@ pub(super) fn lower_source_reader_predicate(
     lower_source_reader_ast_expr(context, source, predicate, None).map(Arc::new).map(Some)
 }
 
+pub(super) fn lower_source_reader_batch_predicate(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    cudf_source: &cudf::io::source::LocalParquetSource,
+    cudf_chunks: &[cudf::io::source::SourceChunk],
+) -> Result<Option<Arc<AstExpression>>> {
+    let Some(predicate) = &source.reader_predicate else {
+        return Ok(None);
+    };
+    if !source.reader_predicate_is_supported(predicate) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            OP_READER_PREDICATE,
+            "local parquet reader predicate is not supported by the cudf reader contract",
+        )
+        .with_fact("predicate", predicate));
+    }
+    if source.reader_predicate_requires_source_contract(predicate) {
+        let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
+        return cudf::io::source::build_local_parquet_reader_batch_predicate(
+            context.runtime(),
+            cudf_source,
+            cudf_chunks,
+            &predicate,
+        )
+        .map_err(|error| {
+            QueryError::from_cudf(
+                OP_READER_PREDICATE,
+                "failed to build batch-stable source-aware local parquet reader predicate",
+                error,
+            )
+        })
+        .map(Arc::new)
+        .map(Some);
+    }
+    lower_source_reader_ast_expr(context, source, predicate, None).map(Arc::new).map(Some)
+}
+
 fn lower_source_reader_predicate_with_cudf_contract(
     context: &ExecutionContext,
     source: &LocalParquetSource,

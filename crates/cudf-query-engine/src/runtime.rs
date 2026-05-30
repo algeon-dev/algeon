@@ -49,6 +49,7 @@ pub use io_capability::{
     SourceGdsEligibility, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
 };
 pub(crate) use object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey};
+pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
 use object_store::{SourceObjectStoreRegistry, default_source_fetch_runtime};
 pub use policy::{DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind};
 pub use query_service::{
@@ -580,6 +581,8 @@ pub struct ExecutionContextBuilder {
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Optional service-level source IO configuration.
     source_fetch_config: Option<SourceFetchConfig>,
+    /// Source object-store profiles available to execution-time fetches.
+    source_storage_profiles: Vec<SourceStorageProfile>,
     /// Optional caller-owned service stream pool.
     service_stream_pool: Option<ServiceStreamPool>,
     /// Pool size for the default process-global service stream pool.
@@ -676,6 +679,13 @@ impl ExecutionContextBuilder {
     /// config so older call sites can keep using their narrower knobs.
     pub fn with_source_fetch_config(mut self, source_fetch_config: SourceFetchConfig) -> Self {
         self.source_fetch_config = Some(source_fetch_config);
+        self
+    }
+
+    /// Registers source object-store profiles used by remote host-buffer reads
+    /// and local-cache miss fills.
+    pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
+        self.source_storage_profiles = profiles.into_iter().collect();
         self
     }
 
@@ -794,7 +804,7 @@ impl ExecutionContextBuilder {
             SourceFetchConcurrencyGate::new(source_fetch_config.host_fetch_max_concurrent_ops)?;
         let gds_concurrency = GdsConcurrencyGate::new(source_fetch_config.gds_max_concurrent_ops)?;
         let source_fetch_runtime = default_source_fetch_runtime();
-        let source_object_stores = Arc::new(SourceObjectStoreRegistry::new());
+        let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
         if let Some(runtime) = self.runtime {
             let service_stream_pool_size = self
                 .service_stream_pool_size

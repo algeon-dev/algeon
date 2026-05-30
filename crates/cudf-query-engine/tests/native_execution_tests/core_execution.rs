@@ -651,6 +651,71 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
 }
 
 #[test]
+fn bounded_generic_local_parquet_source_batches_adjacent_files() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-generic-source-batch");
+    let paths = [dir.join("input-0.parquet"), dir.join("input-1.parquet"), dir.join("input-2.parquet")];
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    write_input_parquet(&runtime, &paths[0]);
+    write_input_parquet(&runtime, &paths[1]);
+    write_input_parquet(&runtime, &paths[2]);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+
+    let files = paths
+        .iter()
+        .map(|path| {
+            LocalParquetFile::new(path)
+                .with_file_size_bytes(fs::metadata(path).unwrap().len())
+                .with_row_group_rows(vec![4])
+        })
+        .collect::<Vec<_>>();
+    let source = LocalParquetSource::from_files(files, source_schema, vec!["key".to_string(), "payload".to_string()]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.row_groups_planned, 3);
+    assert_eq!(metrics.row_groups_committed, 3);
+    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+    let source_read_row = &metrics.source_read_runtime_rows[0];
+    assert_eq!(source_read_row.read_kind, "chunk_batch");
+    assert_eq!(source_read_row.read_strategy, "local_kvikio");
+    assert_eq!(source_read_row.chunk_count, 3);
+    assert_eq!(source_read_row.file_count, 3);
+    assert_eq!(source_read_row.row_group_count, 3);
+    assert_eq!(source_read_row.read_columns_per_file, 2);
+    assert_eq!(source_read_row.read_columns_total, 6);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 12);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3, 1, 2, 1, 3, 1, 2, 1, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[5, 10, 20, 20, 5, 10, 20, 20, 5, 10, 20, 20]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_generic_local_parquet_source_scan_limit_trims_to_required_row_group_prefix() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-source-scan-limit");
     let path = dir.join("input.parquet");

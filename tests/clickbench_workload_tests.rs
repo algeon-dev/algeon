@@ -6,8 +6,9 @@ use std::{
 
 use datafusion_cudf::{
     CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout,
-    DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, clickbench_query_ids,
-    describe_clickbench_dataset, discover_clickbench_layout,
+    DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
+    DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, clickbench_query_ids, describe_clickbench_dataset,
+    discover_clickbench_layout,
 };
 
 #[test]
@@ -42,25 +43,73 @@ fn clickbench_table_names_are_stable() {
     assert_eq!(CLICKBENCH_RAW_TABLE, "hits_raw");
 }
 
+/// Locate an in-repo single-file ClickBench fixture, accepting either the
+/// flat `tests/data/clickbench/hits.parquet` layout or the
+/// `tests/data/clickbench/single/hits.parquet` directory layout. Returns the
+/// path to pass to `discover_clickbench_layout` (a file path for the flat
+/// layout, a directory path for the `single/` layout) together with the
+/// resolved `hits.parquet` file, or `None` when no fixture is present.
+fn local_single_fixture() -> Option<(PathBuf, PathBuf)> {
+    let flat = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET);
+    if flat.is_file() {
+        return Some((flat.clone(), flat));
+    }
+    let dir = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR);
+    let nested = dir.join("hits.parquet");
+    if nested.is_file() {
+        return Some((dir, nested));
+    }
+    None
+}
+
 #[test]
 fn discover_clickbench_layout_recognizes_single_file() {
-    let single = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET);
-    if !single.is_file() {
-        eprintln!("skipping: {} not present", single.display());
+    let Some((root, expected_file)) = local_single_fixture() else {
+        eprintln!("skipping: no single-file ClickBench fixture present");
         return;
-    }
-    let layout = discover_clickbench_layout(&single).expect("single-file layout");
+    };
+    let layout = discover_clickbench_layout(&root).expect("single-file layout");
     match layout {
-        ClickbenchLayout::Single { file } => assert_eq!(file, single),
+        ClickbenchLayout::Single { file } => assert_eq!(file, expected_file),
         other => panic!("expected single layout, got {other:?}"),
     }
 }
 
 #[test]
+fn describe_clickbench_dataset_reads_single_metadata_when_present() {
+    let Some((root, _)) = local_single_fixture() else {
+        eprintln!("skipping: no single-file ClickBench fixture present");
+        return;
+    };
+    let metadata = describe_clickbench_dataset(&root, "test_local_single", "tests/clickbench_workload_tests.rs")
+        .expect("describe single");
+    assert_eq!(metadata.layout_label(), "single");
+    assert_eq!(metadata.file_count, 1);
+    assert!(metadata.total_rows > 0);
+    assert!(metadata.total_bytes > 0);
+    assert_eq!(metadata.row_group_rows.iter().sum::<u64>(), metadata.total_rows);
+    assert!(metadata.metadata_fingerprint.starts_with("metadata-fnv1a64:"));
+    assert!(metadata.content_fingerprint.is_none());
+}
+
+/// True when `dir` contains at least one canonical `hits_*.parquet` shard.
+/// The in-repo `partitioned/` directory may exist but be empty (the large
+/// shards are gitignored and only present on machines that downloaded them),
+/// so partitioned tests must check for shards, not just directory existence.
+fn has_partitioned_shards(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_name().to_str().map(|name| name.starts_with("hits_") && name.ends_with(".parquet")).unwrap_or(false)
+    })
+}
+
+#[test]
 fn discover_clickbench_layout_recognizes_partitioned_dir() {
     let dir = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR);
-    if !dir.is_dir() {
-        eprintln!("skipping: {} not present", dir.display());
+    if !has_partitioned_shards(&dir) {
+        eprintln!("skipping: no partitioned shards under {}", dir.display());
         return;
     }
     let layout = discover_clickbench_layout(&dir).expect("partitioned layout");
@@ -126,8 +175,8 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 #[test]
 fn describe_clickbench_dataset_reads_partitioned_metadata_when_present() {
     let dir = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR);
-    if !dir.is_dir() {
-        eprintln!("skipping: {} not present", dir.display());
+    if !has_partitioned_shards(&dir) {
+        eprintln!("skipping: no partitioned shards under {}", dir.display());
         return;
     }
     let metadata = describe_clickbench_dataset(&dir, "test_local_partitioned", "tests/clickbench_workload_tests.rs")

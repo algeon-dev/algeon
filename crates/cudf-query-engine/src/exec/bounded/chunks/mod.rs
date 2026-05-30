@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use super::{
     super::source::{
         ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, local_parquet_execution_frame_schema,
-        read_local_parquet_chunk,
+        read_local_parquet_chunk, read_local_parquet_chunk_batch,
     },
     *,
 };
@@ -11,6 +11,8 @@ use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSource
 
 const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
 const SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES: u64 = 8 * 1024 * 1024;
+pub(in crate::exec::bounded) const SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 512 * 1024 * 1024;
+const SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 mod retry;
 mod scheduling;
@@ -23,8 +25,9 @@ pub(in crate::exec) use retry::record_chunk_retry_error;
 pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
 pub(super) use scheduling::execute_bounded_chunks_with_source_scheduler;
 pub(super) use source_read::{
-    concatenate_source_read_outputs, read_local_parquet_chunks_required_only,
-    read_local_parquet_chunks_required_only_with_observation, release_source_read_outputs_reverse,
+    concatenate_source_read_outputs, read_local_parquet_chunk_batch_required_only_no_commit,
+    read_local_parquet_chunks_required_only, read_local_parquet_chunks_required_only_with_observation,
+    release_source_read_outputs_reverse,
 };
 pub(in crate::exec::bounded) use source_read::{
     insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk,
@@ -127,6 +130,238 @@ fn retry_after_chunk_error(
     Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
 }
 
+fn bounded_source_adjacent_chunk_batching_enabled(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+) -> bool {
+    bounded.has_source_adjacent_stages()
+        && context.local_parquet_source_cache().is_none()
+        && bounded.source.partition_columns.is_empty()
+        && bounded.source.scan_limit.is_none()
+        && bounded
+            .source
+            .reader_predicate
+            .as_ref()
+            .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate))
+        && bounded_source_adjacent_chunk_batches(context, chunks).iter().any(|batch| batch.chunk_count() > 1)
+}
+
+fn bounded_source_adjacent_chunk_batches(context: &ExecutionContext, chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
+    let max_batch_source_read_bytes = match context.memory_control_policy() {
+        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
+            Some(max_source_chunk_bytes.min(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES))
+        },
+        MemoryControlPolicy::Unbounded => Some(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES),
+    };
+    plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+}
+
+fn execute_bounded_source_adjacent_chunk_batches_serial(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<CommittedPartial>> {
+    let batches = bounded_source_adjacent_chunk_batches(context, chunks);
+    let mut partials = Vec::with_capacity(batches.len());
+    for batch in batches {
+        context.check_cancellation("cudf_query_engine.exec.bounded.source_adjacent_chunk_batch")?;
+        match execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, batch, reservations, metrics) {
+            Ok(mut batch_partials) => partials.append(&mut batch_partials),
+            Err(error) => {
+                release_committed_partials_reverse(reservations, partials, metrics);
+                return Err(error);
+            },
+        }
+    }
+    Ok(partials)
+}
+
+fn execute_bounded_source_adjacent_chunk_batch_or_split(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    batch: SourceChunkBatch,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<CommittedPartial>> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
+    if batch.is_singleton() {
+        let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
+        return execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics);
+    }
+    match execute_bounded_source_adjacent_chunk_batch_attempt(context, bounded, &batch, reservations, metrics) {
+        Ok(partial) => Ok(vec![partial]),
+        Err(error) if is_retryable_chunk_error(&error) => {
+            record_chunk_retry_error(&error, metrics);
+            metrics.record_source_chunk_retry();
+            let Some((left, right)) = batch.split_for_retry() else {
+                return Err(error);
+            };
+            let mut partials =
+                execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, left, reservations, metrics)?;
+            match execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, right, reservations, metrics) {
+                Ok(mut right_partials) => {
+                    partials.append(&mut right_partials);
+                    Ok(partials)
+                },
+                Err(error) => {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    Err(error)
+                },
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn execute_bounded_source_adjacent_chunk_batch_attempt(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    batch: &SourceChunkBatch,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let output = read_local_parquet_chunk_batch_required_only_no_commit(
+        context,
+        bounded.source,
+        batch,
+        reservations,
+        metrics,
+        "source_chunk_read",
+        false,
+    )?;
+    execute_bounded_chunk_batch_operator_from_source(context, bounded, batch, output, reservations, metrics)
+}
+
+fn execute_bounded_chunk_batch_operator_from_source(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    batch: &SourceChunkBatch,
+    source: ScheduledLocalParquetReadOutput,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let ScheduledLocalParquetReadOutput { frame, reservation: source_reservation, observed_bytes: _, .. } = source;
+    if let Err(error) = context.check_cancellation("cudf_query_engine.exec.bounded.chunk_batch_operator") {
+        drop(frame);
+        reservations.release(source_reservation, metrics);
+        return Err(error);
+    }
+    let mut input = CommittedPartial { frame, reservation: source_reservation };
+    input = execute_source_adjacent_chunk_stages(context, bounded, first_chunk, input, reservations, metrics, 1, 1)?;
+    let CommittedPartial { frame, reservation: source_reservation } = input;
+
+    let operator_request = chunk_reservation_request(
+        ReservationKind::ChunkOperator,
+        "chunk_operator",
+        source_reservation.bytes().min(reservations.remaining_bytes()),
+        reservations.budget(),
+        first_chunk,
+        1,
+        1,
+    );
+    let operator_reservation = match reservations.try_reserve(operator_request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(frame);
+            reservations.release(source_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let operator_token_budget = reservations.available_bytes_including(&operator_reservation);
+    let operator_token = match execution_budget_token_for_boundary(
+        context,
+        operator_token_budget,
+        "chunk_operator",
+        "cudf_query_engine.chunk_operator.budget_token",
+        "failed to create bounded native chunk batch operator budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(operator_reservation, metrics);
+            reservations.release(source_reservation, metrics);
+            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, metrics));
+        },
+    };
+
+    let partial_input_rows = frame.num_rows() as u64;
+    let input_evidence = PartialAggregateInputEvidence {
+        source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(&batch.chunks),
+        source_adjacent_partial: true,
+        source_chunk_row_group_count: batch.row_group_count() as u64,
+        source_chunk_reads_all_row_groups: batch.chunks.iter().all(|chunk| chunk.reads_all_row_groups),
+        source_chunk_known_row_count: sum_optional_u64(batch.chunks.iter().map(|chunk| chunk.known_row_count)),
+        source_chunk_estimated_source_read_bytes: batch
+            .estimated_source_read_bytes
+            .or_else(|| sum_optional_u64(batch.chunks.iter().map(|chunk| chunk.estimated_source_read_bytes))),
+        source_chunk_size_estimate_based: batch.chunks.iter().any(|chunk| chunk.size_estimate_based),
+        source_adjacent_partition_strategy: "none",
+        source_adjacent_partition_count: None,
+        source_adjacent_non_empty_partition_count: None,
+        source_adjacent_partition_key_count: None,
+        source_adjacent_max_partition_fan_in: Some(batch.chunk_count() as u64),
+    };
+    let chunk_operator_timer = Instant::now();
+    let chunk_output = execute_partial_aggregate_with_budget(
+        context,
+        Some(bounded.aggregate_id),
+        bounded.aggregate.0,
+        bounded.aggregate_input_schema,
+        bounded.aggregate.1,
+        frame,
+        &operator_token,
+        Some(input_evidence),
+        metrics,
+    );
+    metrics.chunk_operator_time += chunk_operator_timer.elapsed();
+    let frame = match chunk_output {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(operator_reservation, metrics);
+            reservations.release(source_reservation, metrics);
+            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, metrics));
+        },
+    };
+
+    reservations.release(operator_reservation, metrics);
+    reservations.release(source_reservation, metrics);
+
+    let partial_bytes = observe_device_memory_bytes(&frame, metrics)
+        .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "partial_state", 1, 1, metrics))?;
+    let partial_request = chunk_reservation_request(
+        ReservationKind::PartialState,
+        "partial_state",
+        partial_bytes,
+        reservations.budget(),
+        first_chunk,
+        1,
+        1,
+    );
+    let partial_reservation = reservations.try_reserve(partial_request, metrics)?;
+    metrics.record_source_chunk_commit(batch.row_group_count() as u64);
+    metrics.record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_reservation.bytes());
+
+    Ok(CommittedPartial { frame, reservation: partial_reservation })
+}
+
+fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    values.into_iter().try_fold(0u64, |total, value| value.map(|value| total.saturating_add(value)))
+}
+
+fn release_committed_partials_reverse(
+    reservations: &mut ReservationTracker,
+    mut partials: Vec<CommittedPartial>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(partial) = partials.pop() {
+        drop(partial.frame);
+        reservations.release(partial.reservation, metrics);
+    }
+}
+
 /// Reads a source chunk with its pre-aggregate filter and projection stages
 /// applied, without running a partial aggregate. Returns the raw filtered and
 /// projected data as a [`CommittedPartial`].
@@ -154,6 +389,29 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, metrics))?;
     let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
     execute_source_adjacent_chunk_stages(context, bounded, chunk, input, reservations, metrics, 1, 1)
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    batch: &SourceChunkBatch,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.raw_source_chunk_batch")?;
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let source = read_local_parquet_chunk_batch_required_only_no_commit(
+        context,
+        bounded.source,
+        batch,
+        reservations,
+        metrics,
+        "source_chunk_read",
+        !bounded.has_source_adjacent_stages(),
+    )
+    .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "source_chunk_read", 1, 1, metrics))?;
+    let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
+    execute_source_adjacent_chunk_stages(context, bounded, first_chunk, input, reservations, metrics, 1, 1)
 }
 
 pub(super) fn execute_bounded_chunk_attempt(

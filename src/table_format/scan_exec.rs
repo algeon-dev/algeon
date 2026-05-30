@@ -59,7 +59,7 @@ impl DisplayAs for CudfTableFormatScanExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CudfTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, direct_device_read_disposition={}",
+                "CudfTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, source_read_strategy={}, source_decode_input={}, credential_mode={}, lakehouse_cache_status={}, direct_device_read_disposition={}",
                 diagnostics.table_format,
                 diagnostics.snapshot_id.as_deref().unwrap_or_default(),
                 diagnostics.catalog_type.as_deref().unwrap_or_default(),
@@ -67,6 +67,10 @@ impl DisplayAs for CudfTableFormatScanExec {
                 diagnostics.planned_delete_file_count,
                 diagnostics.admitted_native_source_file_count,
                 diagnostics.native_source_read_capability,
+                diagnostics.source_read_strategy,
+                diagnostics.source_decode_input,
+                diagnostics.credential_mode,
+                diagnostics.lakehouse_cache_status,
                 diagnostics.direct_device_read_disposition.code(),
             ),
             DisplayFormatType::TreeRender => {
@@ -77,6 +81,10 @@ impl DisplayAs for CudfTableFormatScanExec {
                 writeln!(f, "planned_delete_file_count={}", diagnostics.planned_delete_file_count)?;
                 writeln!(f, "admitted_native_source_file_count={}", diagnostics.admitted_native_source_file_count)?;
                 writeln!(f, "native_source_read_capability={}", diagnostics.native_source_read_capability)?;
+                writeln!(f, "source_read_strategy={}", diagnostics.source_read_strategy)?;
+                writeln!(f, "source_decode_input={}", diagnostics.source_decode_input)?;
+                writeln!(f, "credential_mode={}", diagnostics.credential_mode)?;
+                writeln!(f, "lakehouse_cache_status={}", diagnostics.lakehouse_cache_status)?;
                 writeln!(f, "direct_device_read_disposition={}", diagnostics.direct_device_read_disposition.code())
             },
         }

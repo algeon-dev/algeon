@@ -270,6 +270,14 @@ pub struct NativeJoinDiagnosticSummary {
 pub struct NativeSourceDiagnosticSummary {
     /// Source format label.
     pub format: String,
+    /// High-level source read strategy summary.
+    pub source_read_strategy: String,
+    /// cuDF decode input summary.
+    pub source_decode_input: String,
+    /// Credential mode summary.
+    pub credential_mode: String,
+    /// Lakehouse byte-cache status summary.
+    pub lakehouse_cache_status: String,
     /// Whether direct device read is enabled for this source.
     pub direct_device_read: bool,
     /// Number of source files.

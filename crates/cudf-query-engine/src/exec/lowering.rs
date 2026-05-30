@@ -223,33 +223,24 @@ fn lower_filter_binary_expr(
     right: &Expr,
     output_type: Option<&ArrowDataType>,
 ) -> Result<cudf::Expr> {
+    // Filter predicates lower AND/OR through the null-aware AST operators so the
+    // post-read FilterNode path matches SQL/Spark 3-valued logic exactly (e.g.
+    // `true OR null` is `true`, `false AND null` is `false`). This is the same
+    // semantics libcudf's reader_predicate uses (NULL_LOGICAL_*), so a predicate
+    // replayed as a FilterNode by `local_parquet_source_reuse` keeps the same row
+    // set it would have had as a reader-side filter.
     match op {
         BinaryOp::And => Ok(cudf_binary_expr(
             lower_filter_predicate_expr(left)?,
-            BinaryOperator::LogicalAnd,
+            BinaryOperator::NullLogicalAnd,
             lower_filter_predicate_expr(right)?,
         )),
-        BinaryOp::Or if filter_or_can_use_row_logical(left, right) => Ok(cudf_binary_expr(
+        BinaryOp::Or => Ok(cudf_binary_expr(
             lower_filter_predicate_expr(left)?,
-            BinaryOperator::LogicalOr,
+            BinaryOperator::NullLogicalOr,
             lower_filter_predicate_expr(right)?,
         )),
         _ => lower_binary_expr(left, op, right, output_type),
-    }
-}
-
-fn filter_or_can_use_row_logical(left: &Expr, right: &Expr) -> bool {
-    !filter_expr_is_bare_nullable_boolean_value(left) && !filter_expr_is_bare_nullable_boolean_value(right)
-}
-
-fn filter_expr_is_bare_nullable_boolean_value(expr: &Expr) -> bool {
-    match expr {
-        Expr::Column(_) => true,
-        Expr::Literal(LiteralValue::Boolean(_) | LiteralValue::Null(ArrowDataType::Boolean)) => true,
-        Expr::Not(expr) | Expr::Alias { expr, .. } => filter_expr_is_bare_nullable_boolean_value(expr),
-        Expr::Cast { target_type, .. } => matches!(target_type, ArrowDataType::Boolean),
-        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => false,
-        _ => false,
     }
 }
 
@@ -626,7 +617,7 @@ fn lower_filter_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cud
     };
 
     let op = if negated { BinaryOp::NotEq } else { BinaryOp::Eq };
-    let combine_op = if negated { BinaryOperator::LogicalAnd } else { BinaryOperator::LogicalOr };
+    let combine_op = if negated { BinaryOperator::NullLogicalAnd } else { BinaryOperator::NullLogicalOr };
     let mut lowered = lower_filter_binary_expr(expr, op, first, Some(&ArrowDataType::Boolean))?;
     for item in rest {
         lowered = cudf_binary_expr(

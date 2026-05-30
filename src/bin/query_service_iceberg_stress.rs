@@ -13,11 +13,11 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_cudf::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GlueIcebergTableConfig, GpuFallbackPolicy, IcebergTableFormatPlanner, NativeCudfExecutionConfig,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-    NativeDataFusionPostNativeExecutionPath, TableFormatScanRequest, load_glue_table, register_glue_table,
-    tpch_report_session_config,
+    CudfIcebergTableProvider, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
+    Error as AdapterError, GlueIcebergCatalogConfig, GlueIcebergTableConfig, GpuFallbackPolicy,
+    IcebergTableFormatPlanner, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    TableFormatScanRequest, load_glue_table, tpch_report_session_config,
 };
 use tokio::sync::Barrier;
 
@@ -127,6 +127,7 @@ impl StressConfig {
 
     fn service_config(&self) -> QueryServiceConfig {
         QueryServiceConfig {
+            source_storage_profiles: vec![glue_catalog_config(&self.glue).source_storage_profile_from_env()],
             max_concurrent_queries: self.max_concurrent_queries,
             max_admission_queue_len: self.max_admission_queue_len,
             admission_wait_timeout: self.admission_wait_timeout,
@@ -437,7 +438,14 @@ async fn collect_native_with_handle(
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_glue_table(&ctx, config.table_alias.as_str(), config.glue.clone()).await?;
+    let loaded = load_glue_table(config.glue.clone()).await.map_err(DataFusionError::from)?;
+    let provider = CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+        loaded.table,
+        glue_catalog_config(&config.glue).parquet_read_strategy_config(),
+    )
+    .map_err(DataFusionError::from)?
+    .with_catalog_type("glue");
+    ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
     let df = ctx.sql(&config.sql).await?;
     let plan = df.create_physical_plan().await?;
     let planning_report =
@@ -462,6 +470,18 @@ async fn collect_native_with_handle(
     };
     let measurement = measure_native_output(&batches)?;
     Ok(NativeCollectOutcome::Succeeded { planning_row, measurement })
+}
+
+fn glue_catalog_config(config: &GlueIcebergTableConfig) -> GlueIcebergCatalogConfig {
+    let mut catalog_config =
+        GlueIcebergCatalogConfig::new(config.catalog_name.clone(), config.warehouse.clone(), config.region.clone());
+    if let Some(catalog_id) = config.catalog_id.as_ref() {
+        catalog_config = catalog_config.with_catalog_id(catalog_id.clone());
+    }
+    if let Some(profile) = config.profile.as_ref() {
+        catalog_config = catalog_config.with_profile(profile.clone());
+    }
+    catalog_config
 }
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {

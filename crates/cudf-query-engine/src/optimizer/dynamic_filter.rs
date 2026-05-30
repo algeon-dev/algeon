@@ -348,7 +348,6 @@ fn join_shape_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && join.spec.keys.len() == 1
         && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
-        && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
         && join.spec.build_artifact_id.is_none()
 }

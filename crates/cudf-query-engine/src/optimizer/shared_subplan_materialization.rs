@@ -3,13 +3,13 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr},
     plan::{
-        FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput,
-        QueryNode, QueryPlan, ResultSink, SchemaBehavior, UnionNode,
+        AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
+        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior, UnionNode,
     },
     source::{LocalParquetSource, ParquetSourceLocation, SourceNode},
 };
@@ -125,8 +125,48 @@ pub(crate) fn optimize_shared_subplan_materialization(
         };
     }
 
-    let discovery = discover_shared_subplan_materialization_candidates(&plan);
+    let scalar_derivation = optimize_scalar_aggregate_from_grouped_aggregate(plan);
+    let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan);
     if discovery.families.is_empty() {
+        if scalar_derivation.change.changed() || !scalar_derivation.diagnostics.is_empty() {
+            return scalar_derivation;
+        }
+        return SharedSubplanMaterializationResult {
+            plan: scalar_derivation.plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics: discovery.diagnostics,
+        };
+    }
+
+    let root_id = scalar_derivation.plan.root_id();
+    let sink = scalar_derivation.plan.sink().clone();
+    let mut rewriter =
+        SharedSubplanMaterializationRewriter::new(&scalar_derivation.plan, discovery.families, discovery.diagnostics);
+    let new_root = rewriter.rewrite_subtree(root_id);
+    let mut diagnostics = scalar_derivation.diagnostics;
+    diagnostics.merge(rewriter.diagnostics);
+    let changed = rewriter.changed;
+    let new_sink = sink_with_input(&sink, new_root);
+    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
+    let change = if changed || scalar_derivation.change.changed() {
+        super::NativeOptimizerChange::Changed
+    } else {
+        super::NativeOptimizerChange::Unchanged
+    };
+    diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
+    SharedSubplanMaterializationResult { plan: rewritten_plan, change, diagnostics }
+}
+
+#[derive(Debug, Clone)]
+struct ScalarAggregateDerivationRewrite {
+    scalar_aggregate_node_id: NodeId,
+    grouped_aggregate_node_id: NodeId,
+    derived_spec: AggregateSpec,
+}
+
+fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSubplanMaterializationResult {
+    let discovery = discover_scalar_aggregate_from_grouped_aggregate_candidates(&plan);
+    if discovery.rewrites.is_empty() {
         return SharedSubplanMaterializationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
@@ -134,17 +174,378 @@ pub(crate) fn optimize_shared_subplan_materialization(
         };
     }
 
-    let mut rewriter = SharedSubplanMaterializationRewriter::new(&plan, discovery.families, discovery.diagnostics);
-    let new_root = rewriter.rewrite_subtree(plan.root_id());
-    let mut diagnostics = rewriter.diagnostics;
-    let changed = rewriter.changed;
-    let new_sink = sink_with_input(plan.sink(), new_root);
+    let root = plan.root_id();
+    let sink = plan.sink().clone();
+    let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
+    let new_root = rewriter.rewrite_subtree(root);
+    let new_sink = sink_with_input(&sink, new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
-    let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
-    if changed {
-        diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
+    SharedSubplanMaterializationResult {
+        plan: rewritten_plan,
+        change: super::NativeOptimizerChange::Changed,
+        diagnostics: discovery.diagnostics,
     }
-    SharedSubplanMaterializationResult { plan: rewritten_plan, change, diagnostics }
+}
+
+struct ScalarAggregateDerivationDiscovery {
+    diagnostics: SharedSubplanMaterializationDiagnostics,
+    rewrites: Vec<ScalarAggregateDerivationRewrite>,
+}
+
+fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan) -> ScalarAggregateDerivationDiscovery {
+    let reachable = sink_reachable_nodes(plan);
+    let aggregates = plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) if reachable.contains(&node.id) => Some((node.id, aggregate)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let grouped =
+        aggregates.iter().filter(|(_, aggregate)| derivable_grouped_aggregate(aggregate)).copied().collect::<Vec<_>>();
+    let mut rowset_signatures = BTreeMap::new();
+    let mut diagnostics = SharedSubplanMaterializationDiagnostics::default();
+    let mut rewrites = Vec::new();
+
+    for (scalar_id, scalar_aggregate) in aggregates {
+        if !derivable_scalar_aggregate(scalar_aggregate) {
+            continue;
+        }
+        diagnostics.considered_count += 1;
+        let Some(scalar_rowset_signature) =
+            rowset_signature(plan, scalar_aggregate.input, &mut rowset_signatures, &mut BTreeSet::new())
+        else {
+            continue;
+        };
+        for (grouped_id, grouped_aggregate) in &grouped {
+            if *grouped_id == scalar_id {
+                continue;
+            }
+            let Some(grouped_rowset_signature) =
+                rowset_signature(plan, grouped_aggregate.input, &mut rowset_signatures, &mut BTreeSet::new())
+            else {
+                continue;
+            };
+            if grouped_rowset_signature != scalar_rowset_signature {
+                continue;
+            }
+            let Some(derived_spec) =
+                derived_scalar_aggregate_spec(plan, *grouped_id, grouped_aggregate, scalar_id, scalar_aggregate)
+            else {
+                continue;
+            };
+
+            let repeated_selected_source_bytes = sum_optional_u64([
+                selected_source_bytes_below(plan, grouped_aggregate.input),
+                selected_source_bytes_below(plan, scalar_aggregate.input),
+            ]);
+            let duplicate_selected_source_bytes = repeated_selected_source_bytes
+                .zip(
+                    selected_source_bytes_below(plan, grouped_aggregate.input)
+                        .max(selected_source_bytes_below(plan, scalar_aggregate.input)),
+                )
+                .map(|(total, largest)| total.saturating_sub(largest));
+            let exact_source_variant_count =
+                exact_source_variant_count_for_inputs(plan, grouped_aggregate.input, scalar_aggregate.input);
+
+            diagnostics.candidate_count += 1;
+            diagnostics.applied_count += 1;
+            diagnostics.candidates.push(SharedSubplanMaterializationCandidateDiagnostics {
+                rule_name: SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+                family_key: format!(
+                    "shared-grouped-scalar-v1-fnv64-{:016x}",
+                    stable_fnv1a64(scalar_rowset_signature.as_bytes())
+                ),
+                aggregate_node_ids: vec![*grouped_id, scalar_id],
+                reuse_count: 2,
+                group_exprs: grouped_aggregate.spec.group_exprs.iter().map(ToString::to_string).collect(),
+                aggregate_exprs: scalar_aggregate.spec.aggr_exprs.iter().map(aggregate_expr_signature).collect(),
+                source_fingerprints: vec![scalar_rowset_signature],
+                exact_source_variant_count,
+                repeated_selected_source_bytes,
+                duplicate_selected_source_bytes,
+                applied: true,
+                rejected_reason: None,
+            });
+            rewrites.push(ScalarAggregateDerivationRewrite {
+                scalar_aggregate_node_id: scalar_id,
+                grouped_aggregate_node_id: *grouped_id,
+                derived_spec,
+            });
+            break;
+        }
+    }
+
+    ScalarAggregateDerivationDiscovery { diagnostics, rewrites }
+}
+
+fn derivable_grouped_aggregate(aggregate: &AggregateNode) -> bool {
+    !aggregate.spec.group_exprs.is_empty()
+        && aggregate.spec.grouping_sets.is_none()
+        && aggregate.spec.aggr_exprs.iter().any(derivable_sum_expr)
+}
+
+fn derivable_scalar_aggregate(aggregate: &AggregateNode) -> bool {
+    aggregate.spec.group_exprs.is_empty()
+        && aggregate.spec.grouping_sets.is_none()
+        && !aggregate.spec.aggr_exprs.is_empty()
+        && aggregate.spec.aggr_exprs.iter().all(derivable_sum_expr)
+}
+
+fn derivable_sum_expr(expr: &AggregateExpr) -> bool {
+    expr.function == AggregateFunction::Sum && !expr.distinct && expr.filter.is_none()
+}
+
+fn derived_scalar_aggregate_spec(
+    plan: &QueryPlan,
+    grouped_aggregate_node_id: NodeId,
+    grouped_aggregate: &AggregateNode,
+    scalar_aggregate_node_id: NodeId,
+    scalar_aggregate: &AggregateNode,
+) -> Option<AggregateSpec> {
+    let mut used_group_aliases = BTreeSet::new();
+    let mut aggr_exprs = Vec::with_capacity(scalar_aggregate.spec.aggr_exprs.len());
+    for scalar_expr in &scalar_aggregate.spec.aggr_exprs {
+        if !sum_output_is_exact(plan, scalar_aggregate_node_id, &scalar_expr.alias) {
+            return None;
+        }
+        let scalar_arg_signature =
+            normalized_aggregate_argument_signature(plan, scalar_aggregate.input, &scalar_expr.expr);
+        let grouped_expr = grouped_aggregate.spec.aggr_exprs.iter().find(|grouped_expr| {
+            derivable_sum_expr(grouped_expr)
+                && grouped_expr.function == scalar_expr.function
+                && sum_output_is_exact(plan, grouped_aggregate_node_id, &grouped_expr.alias)
+                && normalized_aggregate_argument_signature(plan, grouped_aggregate.input, &grouped_expr.expr)
+                    == scalar_arg_signature
+                && used_group_aliases.insert(grouped_expr.alias.clone())
+        })?;
+        aggr_exprs.push(AggregateExpr::new(
+            AggregateFunction::Sum,
+            Expr::column(grouped_expr.alias.clone()),
+            scalar_expr.alias.clone(),
+        ));
+    }
+    Some(AggregateSpec::new(Vec::new(), aggr_exprs))
+}
+
+fn sum_output_is_exact(plan: &QueryPlan, aggregate_node_id: NodeId, alias: &str) -> bool {
+    let Some(data_type) = plan.node(aggregate_node_id).and_then(|node| {
+        node.output_schema().fields().iter().find(|field| field.name() == alias).map(|field| field.data_type())
+    }) else {
+        return false;
+    };
+    !matches!(data_type, DataType::Float16 | DataType::Float32 | DataType::Float64)
+}
+
+fn normalized_aggregate_argument_signature(plan: &QueryPlan, input: NodeId, expr: &Expr) -> String {
+    if let Expr::Column(column) = expr
+        && let Some(node) = plan.node(input)
+        && let PlanNode::Projection(projection) = &node.kind
+        && let Some(output) = projection.outputs.iter().find(|output| output.field.name() == column.name())
+    {
+        return output.expr.to_string();
+    }
+    expr.to_string()
+}
+
+fn rowset_signature(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    memo: &mut BTreeMap<NodeId, Option<String>>,
+    visiting: &mut BTreeSet<NodeId>,
+) -> Option<String> {
+    if let Some(signature) = memo.get(&node_id) {
+        return signature.clone();
+    }
+    if !visiting.insert(node_id) {
+        memo.insert(node_id, None);
+        return None;
+    }
+    let signature = rowset_signature_uncached(plan, node_id, memo, visiting);
+    visiting.remove(&node_id);
+    memo.insert(node_id, signature.clone());
+    signature
+}
+
+fn rowset_signature_uncached(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    memo: &mut BTreeMap<NodeId, Option<String>>,
+    visiting: &mut BTreeSet<NodeId>,
+) -> Option<String> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => Some(local_parquet_rowset_signature(source)),
+            SourceNode::GpuResident(source) => Some(format!("gpu_resident:{}", source.input_name)),
+            SourceNode::LiteralBatch(source) => Some(format!("literal_batch:{:?}", source.batches)),
+        },
+        PlanNode::Filter(filter) => rowset_signature(plan, filter.input, memo, visiting)
+            .map(|input| format!("filter({input};predicate={})", filter.predicate)),
+        PlanNode::Projection(projection) => rowset_signature(plan, projection.input, memo, visiting),
+        PlanNode::Join(join) => {
+            if !matches!(join.spec.join_type, crate::plan::JoinType::Inner | crate::plan::JoinType::Cross) {
+                return None;
+            }
+            let left = rowset_signature(plan, join.inputs[0], memo, visiting)?;
+            let right = rowset_signature(plan, join.inputs[1], memo, visiting)?;
+            let keys =
+                join.spec.keys.iter().map(|key| format!("{}={}", key.left, key.right)).collect::<Vec<_>>().join(",");
+            let residual =
+                join.spec.residual_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
+            Some(format!(
+                "join(type={},keys={keys},residual={residual},nulls={:?},left={left},right={right})",
+                join.spec.join_type, join.spec.null_equality
+            ))
+        },
+        PlanNode::Sort(sort) => rowset_signature(plan, sort.input, memo, visiting),
+        _ => None,
+    }
+}
+
+fn local_parquet_rowset_signature(source: &LocalParquetSource) -> String {
+    let mut file_signatures = source.files.iter().map(local_parquet_file_rowset_signature).collect::<Vec<_>>();
+    file_signatures.sort();
+    let files = file_signatures.join("+");
+    let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
+    format!(
+        "local_parquet(files={files};predicate={predicate};scan_limit={};zero_column_count={})",
+        source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        source.is_zero_column_count_source(),
+    )
+}
+
+fn local_parquet_file_rowset_signature(file: &crate::source::LocalParquetFile) -> String {
+    let row_groups = file
+        .row_groups
+        .as_ref()
+        .map(|row_groups| row_groups.iter().map(ToString::to_string).collect::<Vec<_>>().join(","))
+        .unwrap_or_else(|| "all".to_string());
+    format!(
+        "stable_id={};location={};row_groups={};partition_values={:?}",
+        file.stable_id,
+        file.location.reader_path(),
+        row_groups,
+        file.partition_values
+    )
+}
+
+fn selected_source_bytes_below(plan: &QueryPlan, input: NodeId) -> Option<u64> {
+    let mut sources = Vec::new();
+    collect_local_parquet_sources(plan, input, &mut BTreeSet::new(), &mut sources);
+    sum_optional_u64(sources.iter().map(|source| source.selected_source_bytes))
+}
+
+fn exact_source_variant_count_for_inputs(plan: &QueryPlan, left: NodeId, right: NodeId) -> usize {
+    let mut variants = BTreeSet::new();
+    for input in [left, right] {
+        let mut sources = Vec::new();
+        collect_local_parquet_sources(plan, input, &mut BTreeSet::new(), &mut sources);
+        variants.insert(sources.iter().map(|source| source.exact_fingerprint.as_str()).collect::<Vec<_>>().join("|"));
+    }
+    variants.len()
+}
+
+struct ScalarAggregateDerivationRewriter<'a> {
+    original: &'a QueryPlan,
+    replacements: BTreeMap<NodeId, ScalarAggregateDerivationRewrite>,
+    nodes: Vec<QueryNode>,
+    memo: BTreeMap<NodeId, NodeId>,
+}
+
+impl<'a> ScalarAggregateDerivationRewriter<'a> {
+    fn new(original: &'a QueryPlan, rewrites: Vec<ScalarAggregateDerivationRewrite>) -> Self {
+        Self {
+            original,
+            replacements: rewrites.into_iter().map(|rewrite| (rewrite.scalar_aggregate_node_id, rewrite)).collect(),
+            nodes: Vec::new(),
+            memo: BTreeMap::new(),
+        }
+    }
+
+    fn rewrite_subtree(&mut self, old_id: NodeId) -> NodeId {
+        if let Some(new_id) = self.memo.get(&old_id) {
+            return *new_id;
+        }
+
+        let old_node = self.original.node(old_id).expect("optimizer input node must exist");
+        let new_kind = if let Some(replacement) = self.replacements.get(&old_id).cloned() {
+            let input = self.rewrite_subtree(replacement.grouped_aggregate_node_id);
+            PlanNode::Aggregate(AggregateNode { input, spec: replacement.derived_spec })
+        } else {
+            self.clone_kind_with_rewritten_inputs(&old_node.kind)
+        };
+        let new_id = self.push_node(new_kind, old_node.facts.clone());
+        self.memo.insert(old_id, new_id);
+        new_id
+    }
+
+    fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
+        match kind {
+            PlanNode::Source(source) => PlanNode::Source(source.clone()),
+            PlanNode::Filter(filter) => {
+                let mut filter = filter.clone();
+                filter.input = self.rewrite_subtree(filter.input);
+                PlanNode::Filter(filter)
+            },
+            PlanNode::Projection(projection) => {
+                let mut projection = projection.clone();
+                projection.input = self.rewrite_subtree(projection.input);
+                PlanNode::Projection(projection)
+            },
+            PlanNode::Aggregate(aggregate) => {
+                let mut aggregate = aggregate.clone();
+                aggregate.input = self.rewrite_subtree(aggregate.input);
+                PlanNode::Aggregate(aggregate)
+            },
+            PlanNode::Window(window) => {
+                let mut window = window.clone();
+                window.input = self.rewrite_subtree(window.input);
+                PlanNode::Window(window)
+            },
+            PlanNode::Sort(sort) => {
+                let mut sort = sort.clone();
+                sort.input = self.rewrite_subtree(sort.input);
+                PlanNode::Sort(sort)
+            },
+            PlanNode::Limit(limit) => {
+                let mut limit = limit.clone();
+                limit.input = self.rewrite_subtree(limit.input);
+                PlanNode::Limit(limit)
+            },
+            PlanNode::Join(join) => {
+                let mut join = join.clone();
+                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
+                PlanNode::Join(join)
+            },
+            PlanNode::Union(union) => {
+                let mut union = union.clone();
+                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
+                PlanNode::Union(union)
+            },
+            PlanNode::EdgeNormalize(edge_normalize) => {
+                let mut edge_normalize = edge_normalize.clone();
+                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
+                PlanNode::EdgeNormalize(edge_normalize)
+            },
+            PlanNode::GraphAlgorithm(graph) => {
+                let mut graph = graph.clone();
+                graph.input = self.rewrite_subtree(graph.input);
+                graph.inputs = graph.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
+                PlanNode::GraphAlgorithm(graph)
+            },
+        }
+    }
+
+    fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
+        if let Some(existing) = self.nodes.iter().find(|node| node.kind == kind && node.facts == facts) {
+            return existing.id;
+        }
+        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        self.nodes.push(QueryNode { id, kind, facts });
+        id
+    }
 }
 
 struct SharedSubplanMaterializationDiscovery {
@@ -324,7 +725,9 @@ fn collect_local_parquet_sources(
 }
 
 fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalSourceMaterializationSignature {
-    let files = source.files.iter().map(file_signature).collect::<Vec<_>>().join("+");
+    let mut file_signatures = source.files.iter().map(file_signature).collect::<Vec<_>>();
+    file_signatures.sort();
+    let files = file_signatures.join("+");
     let read_columns = source.read_columns.join(",");
     let projected_output_columns = source.projected_output_columns.join(",");
     let pure_filter_columns = source.pure_filter_columns.join(",");

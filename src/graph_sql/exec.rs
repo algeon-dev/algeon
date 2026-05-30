@@ -1785,7 +1785,7 @@ fn native_algorithm_params(
         }),
         CugraphAlgorithmParams::Bfs(params) => {
             GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes)))
-        }
+        },
         CugraphAlgorithmParams::Louvain(params) => {
             GraphAlgorithmParams::Louvain(GraphLouvainParams { resolution: params.resolution })
         },

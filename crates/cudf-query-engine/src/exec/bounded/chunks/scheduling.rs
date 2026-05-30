@@ -14,6 +14,9 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     };
     let max_attempts = max_retry_attempts.max(1);
     let min_retry_chunk_row_groups = min_retry_chunk_row_groups.max(1);
+    if bounded_source_adjacent_chunk_batching_enabled(context, bounded, chunks) {
+        return execute_bounded_source_adjacent_chunk_batches_serial(context, bounded, chunks, reservations, metrics);
+    }
     if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
         let mut partials = Vec::with_capacity(chunks.len());
         for chunk in chunks {

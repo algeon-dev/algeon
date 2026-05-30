@@ -19,10 +19,14 @@ pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfi
 #[cfg(feature = "cugraph")]
 pub use config::CugraphServerConfig;
 pub use config::{
-    DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
-    DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
-    DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
-    DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
+    DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
+    DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
+    DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
+    DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+    DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV, DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
+    DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV, DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+    DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
+    DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
     DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
     DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
     DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
@@ -31,6 +35,10 @@ pub use config::{
     DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
     DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV, DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
     ServerSessionProfile,
+};
+#[cfg(feature = "iceberg")]
+pub use config::{
+    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
 };
 pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
 pub use error::{Result, ServerError};
@@ -115,36 +123,42 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
     match &config.iceberg {
-        Some(iceberg) => tracing::info!(
-            bind_addr = %config.bind_addr,
-            max_in_flight = config.max_in_flight,
-            statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
-            log_filter = %config.log_filter,
-            session_profile = %config.session_profile,
-            native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
-            native_memory_control_policy = %native_execution.memory_control_policy(),
-            native_device_budget_bytes = %native_memory.device_budget_bytes,
-            native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
-            native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
-            native_max_retry_attempts = %native_memory.max_retry_attempts,
-            native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
-            native_boundary_policy = %native_execution.boundary_policy(),
-            native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
-            cugraph_enabled = cugraph_enabled(config),
-            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
-            cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
-            cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
-            iceberg_enabled = true,
-            iceberg_catalog_name = %iceberg.catalog_name,
-            iceberg_glue_catalog_handle = %iceberg.glue_catalog_handle,
-            iceberg_namespace = %iceberg.namespace,
-            iceberg_warehouse = %iceberg.warehouse,
-            iceberg_region = %iceberg.region,
-            iceberg_glue_catalog_id = %option_display(iceberg.catalog_id.as_deref()),
-            iceberg_aws_profile = %option_display(iceberg.profile.as_deref()),
-            iceberg_static_table_count = iceberg.tables.len(),
-            "server config snapshot"
-        ),
+        Some(iceberg) => {
+            let snapshot = iceberg_backend_snapshot(&iceberg.backend);
+            tracing::info!(
+                bind_addr = %config.bind_addr,
+                max_in_flight = config.max_in_flight,
+                statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
+                log_filter = %config.log_filter,
+                session_profile = %config.session_profile,
+                native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
+                native_memory_control_policy = %native_execution.memory_control_policy(),
+                native_device_budget_bytes = %native_memory.device_budget_bytes,
+                native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
+                native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
+                native_max_retry_attempts = %native_memory.max_retry_attempts,
+                native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
+                native_boundary_policy = %native_execution.boundary_policy(),
+                native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
+                cugraph_enabled = cugraph_enabled(config),
+                cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+                cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
+                cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
+                iceberg_enabled = true,
+                iceberg_catalog_name = %iceberg.catalog_name,
+                iceberg_catalog_type = %snapshot.catalog_type,
+                iceberg_namespace = %iceberg.namespace,
+                iceberg_warehouse = %snapshot.warehouse,
+                iceberg_glue_catalog_handle = %snapshot.glue_catalog_handle,
+                iceberg_glue_region = %snapshot.glue_region,
+                iceberg_glue_catalog_id = %snapshot.glue_catalog_id,
+                iceberg_aws_profile = %snapshot.aws_profile,
+                iceberg_rest_uri = %snapshot.rest_uri,
+                iceberg_rest_s3_endpoint = %snapshot.rest_s3_endpoint,
+                iceberg_static_table_count = iceberg.tables.len(),
+                "server config snapshot"
+            )
+        },
         None => tracing::info!(
             bind_addr = %config.bind_addr,
             max_in_flight = config.max_in_flight,
@@ -284,6 +298,47 @@ impl From<MemoryControlPolicy> for NativeMemorySnapshot {
 #[cfg(feature = "iceberg")]
 fn option_display(value: Option<&str>) -> &str {
     value.unwrap_or("none")
+}
+
+/// Borrowed, secret-redacted view of an Iceberg backend config for the startup
+/// snapshot log. Backend-specific fields are `"none"` for the other backend.
+/// Secret values (`token`, `s3.secret-access-key`) are never included.
+#[cfg(feature = "iceberg")]
+struct IcebergBackendSnapshot<'a> {
+    catalog_type: &'a str,
+    warehouse: &'a str,
+    glue_catalog_handle: &'a str,
+    glue_region: &'a str,
+    glue_catalog_id: &'a str,
+    aws_profile: &'a str,
+    rest_uri: &'a str,
+    rest_s3_endpoint: &'a str,
+}
+
+#[cfg(feature = "iceberg")]
+fn iceberg_backend_snapshot(backend: &config::IcebergCatalogBackendConfig) -> IcebergBackendSnapshot<'_> {
+    match backend {
+        config::IcebergCatalogBackendConfig::Glue(glue) => IcebergBackendSnapshot {
+            catalog_type: "glue",
+            warehouse: &glue.warehouse,
+            glue_catalog_handle: &glue.catalog_handle,
+            glue_region: &glue.region,
+            glue_catalog_id: option_display(glue.catalog_id.as_deref()),
+            aws_profile: option_display(glue.profile.as_deref()),
+            rest_uri: "none",
+            rest_s3_endpoint: "none",
+        },
+        config::IcebergCatalogBackendConfig::Rest(rest) => IcebergBackendSnapshot {
+            catalog_type: "rest",
+            warehouse: &rest.warehouse,
+            glue_catalog_handle: "none",
+            glue_region: "none",
+            glue_catalog_id: "none",
+            aws_profile: "none",
+            rest_uri: &rest.uri,
+            rest_s3_endpoint: option_display(rest.s3_endpoint.as_deref()),
+        },
+    }
 }
 
 /// Emit a one-shot startup line summarizing the configured auth mode,
@@ -429,13 +484,15 @@ mod tests {
     fn testing_profile_active_only_for_cpu_fallback_plus_iceberg() {
         let iceberg = config::IcebergServerConfig {
             catalog_name: "glue".to_string(),
-            glue_catalog_handle: "glue".to_string(),
             namespace: "demo_db".to_string(),
-            warehouse: "s3://test/".to_string(),
-            catalog_id: None,
-            region: "us-east-1".to_string(),
-            profile: None,
             tables: Vec::new(),
+            backend: config::IcebergCatalogBackendConfig::Glue(config::GlueServerBackendConfig {
+                catalog_handle: "glue".to_string(),
+                warehouse: "s3://test/".to_string(),
+                region: "us-east-1".to_string(),
+                catalog_id: None,
+                profile: None,
+            }),
         };
 
         let mut config = base_config(ServerSessionProfile::CpuFallback);

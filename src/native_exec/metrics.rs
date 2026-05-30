@@ -49,6 +49,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "native_task_operator_rows",
     "native_task_runtime_rows",
     "native_dynamic_filter_runtime_rows",
+    "native_source_read_runtime_rows",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
@@ -273,6 +274,7 @@ impl NativeCudfMetrics {
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_dynamic_filter_runtime_rows", partition);
+        let _ = summary_counter(metrics, "native_source_read_runtime_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
@@ -594,6 +596,7 @@ impl NativeCudfMetrics {
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
         self.record_dynamic_filter_runtime_rows(metrics);
+        self.record_source_read_runtime_rows(metrics);
         self.record_aggregate_strategy_rows(metrics);
         self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
@@ -777,6 +780,49 @@ impl NativeCudfMetrics {
                 .with_new_label("row_groups_pruned", row.row_groups_pruned.to_string())
                 .with_new_label("source_bytes_pruned", row.source_bytes_pruned.to_string())
                 .global_counter("native_dynamic_filter_runtime_rows")
+                .add(1);
+        }
+    }
+
+    fn record_source_read_runtime_rows(&self, metrics: &QueryMetrics) {
+        for row in &metrics.source_read_runtime_rows {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("source_node_id", row.source_node_id.clone())
+                .with_new_label("read_kind", row.read_kind.clone())
+                .with_new_label("read_strategy", row.read_strategy.clone())
+                .with_new_label("batch_index", row.batch_index.to_string())
+                .with_new_label("chunk_count", row.chunk_count.to_string())
+                .with_new_label("first_chunk_index", row.first_chunk_index.to_string())
+                .with_new_label("last_chunk_index", row.last_chunk_index.to_string())
+                .with_new_label("first_file_index", row.first_file_index.to_string())
+                .with_new_label("last_file_index", row.last_file_index.to_string())
+                .with_new_label("file_count", row.file_count.to_string())
+                .with_new_label("row_group_count", row.row_group_count.to_string())
+                .with_new_label("read_columns_per_file", row.read_columns_per_file.to_string())
+                .with_new_label("read_columns_total", row.read_columns_total.to_string())
+                .with_new_label("known_file_bytes", row.known_file_bytes.to_string())
+                .with_new_label("estimated_source_read_bytes", row.estimated_source_read_bytes.to_string())
+                .with_new_label("known_row_group_bytes", row.known_row_group_bytes.to_string())
+                .with_new_label("known_projected_compressed_bytes", row.known_projected_compressed_bytes.to_string())
+                .with_new_label(
+                    "known_projected_uncompressed_bytes",
+                    row.known_projected_uncompressed_bytes.to_string(),
+                )
+                .with_new_label(
+                    "known_pure_filter_compressed_bytes",
+                    row.known_pure_filter_compressed_bytes.to_string(),
+                )
+                .with_new_label(
+                    "known_pure_filter_uncompressed_bytes",
+                    row.known_pure_filter_uncompressed_bytes.to_string(),
+                )
+                .with_new_label("output_rows", row.output_rows.to_string())
+                .with_new_label("reader_predicate", row.reader_predicate.to_string())
+                .with_new_label("reader_dynamic_filter_count", row.reader_dynamic_filter_count.to_string())
+                .with_new_label("source_batching_reason", row.source_batching_reason.clone())
+                .with_new_label("elapsed_ns", row.elapsed.as_nanos().min(u128::from(u64::MAX)).to_string())
+                .global_counter("native_source_read_runtime_rows")
                 .add(1);
         }
     }
@@ -1174,6 +1220,8 @@ fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partitio
 
 #[cfg(test)]
 mod tests {
+    use cudf_query_engine::SourceReadRuntimeMetrics;
+
     use super::*;
     use crate::native_report::NativeDataFusionExecutionMetrics;
 
@@ -1213,5 +1261,61 @@ mod tests {
         assert_eq!(row.statistical_aggregate_ddof, "stddev_samp:1");
         assert_eq!(row.stddev_samp_execution_mode, "gpu_native_tolerant");
         assert_eq!(row.stddev_samp_ddof, "1");
+    }
+
+    #[test]
+    fn source_read_runtime_rows_bridge_runtime_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+
+        query_metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+            source_node_id: "n7".to_string(),
+            read_kind: "chunk_batch".to_string(),
+            read_strategy: "local_cache_kvikio".to_string(),
+            batch_index: 2,
+            chunk_count: 3,
+            first_chunk_index: 4,
+            last_chunk_index: 6,
+            first_file_index: 10,
+            last_file_index: 12,
+            file_count: 3,
+            row_group_count: 9,
+            read_columns_per_file: 2,
+            read_columns_total: 6,
+            known_file_bytes: 900,
+            estimated_source_read_bytes: 700,
+            known_row_group_bytes: 600,
+            known_projected_compressed_bytes: 500,
+            known_projected_uncompressed_bytes: 800,
+            known_pure_filter_compressed_bytes: 100,
+            known_pure_filter_uncompressed_bytes: 200,
+            output_rows: 42,
+            reader_predicate: true,
+            reader_dynamic_filter_count: 1,
+            source_batching_reason: "batched".to_string(),
+            elapsed: std::time::Duration::from_nanos(1234),
+        });
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+        let row = &metrics.source_read_runtime_rows[0];
+        assert_eq!(row.source_node_id, "n7");
+        assert_eq!(row.read_kind, "chunk_batch");
+        assert_eq!(row.read_strategy, "local_cache_kvikio");
+        assert_eq!(row.batch_index, 2);
+        assert_eq!(row.chunk_count, 3);
+        assert_eq!(row.first_file_index, 10);
+        assert_eq!(row.file_count, 3);
+        assert_eq!(row.row_group_count, 9);
+        assert_eq!(row.read_columns_total, 6);
+        assert_eq!(row.known_projected_uncompressed_bytes, 800);
+        assert_eq!(row.known_pure_filter_uncompressed_bytes, 200);
+        assert_eq!(row.output_rows, 42);
+        assert!(row.reader_predicate);
+        assert_eq!(row.reader_dynamic_filter_count, 1);
+        assert_eq!(row.source_batching_reason, "batched");
+        assert_eq!(row.elapsed_ns, 1234);
     }
 }

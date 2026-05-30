@@ -1,11 +1,16 @@
 #![deny(missing_docs)]
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
+use cudf_query_engine::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource};
 use futures::future::BoxFuture;
 
 use crate::{Result, policy::FallbackReason};
+
+/// Default profile id used when table-format S3 env/config supplies explicit
+/// source object-store settings.
+pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
 
 /// Table format that produced a resolved scan plan.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,6 +176,214 @@ pub enum TableFormatReadCapability {
     },
 }
 
+/// User-selected table-format Parquet strategy preference.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableFormatParquetReadStrategyPreference {
+    /// Choose the safe default for the source location.
+    #[default]
+    Auto,
+    /// Force remote object-store host-buffer fetch/decode.
+    HostBuffer,
+    /// Prefer an existing local byte-cache entry when available.
+    LocalCache,
+    /// Prefer experimental remote KvikIO when explicitly enabled.
+    RemoteKvikio,
+}
+
+impl TableFormatParquetReadStrategyPreference {
+    /// Stable config/report string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::HostBuffer => "host_buffer",
+            Self::LocalCache => "local_cache",
+            Self::RemoteKvikio => "remote_kvikio",
+        }
+    }
+}
+
+/// Lakehouse byte-cache behavior for remote table-format Parquet files.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableFormatLakehouseCachePolicy {
+    /// Do not fill missing local cache entries.
+    #[default]
+    Disabled,
+    /// Fill missing entries from the backing object store before the path-based cuDF read.
+    ReadThrough,
+    /// Require a completed local cache file before the path-based cuDF read starts.
+    FillBeforeRead,
+}
+
+impl TableFormatLakehouseCachePolicy {
+    /// Stable config/report string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ReadThrough => "read_through",
+            Self::FillBeforeRead => "fill_before_read",
+        }
+    }
+
+    /// Whether a cache miss should be materialized before execution opens the cache path.
+    pub const fn fills_before_read(self) -> bool {
+        matches!(self, Self::ReadThrough | Self::FillBeforeRead)
+    }
+}
+
+/// Table-format Parquet read-strategy resolver configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableFormatParquetReadStrategyConfig {
+    /// Preferred strategy for remote Parquet data files.
+    pub preference: TableFormatParquetReadStrategyPreference,
+    /// Whether experimental remote KvikIO is allowed.
+    pub remote_kvikio_experimental: bool,
+    /// Optional lakehouse byte-cache root.
+    pub lakehouse_cache_root: Option<PathBuf>,
+    /// Cache-miss policy for local lakehouse byte-cache entries.
+    pub lakehouse_cache_policy: TableFormatLakehouseCachePolicy,
+    /// Best-effort retained byte target for the lakehouse byte-cache root.
+    pub lakehouse_cache_max_bytes: Option<u64>,
+    /// Optional catalog-native S3 endpoint identity used to scope local-cache entries.
+    ///
+    /// This is endpoint metadata only. It must not include credentials; when
+    /// resolved from environment variables, userinfo, query strings, and
+    /// fragments are stripped before the value is exposed in diagnostics.
+    pub storage_endpoint: Option<String>,
+    /// Execution-time native source storage profile id.
+    ///
+    /// This id references a `cudf-query-engine` profile registered on the native
+    /// execution config. It is not a credential and is safe for diagnostics.
+    pub storage_profile_id: Option<String>,
+    /// Credential mode used for remote object-store reads.
+    pub credential_mode: CredentialMode,
+}
+
+impl Default for TableFormatParquetReadStrategyConfig {
+    fn default() -> Self {
+        Self {
+            preference: TableFormatParquetReadStrategyPreference::Auto,
+            remote_kvikio_experimental: false,
+            lakehouse_cache_root: None,
+            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::Disabled,
+            lakehouse_cache_max_bytes: None,
+            storage_endpoint: None,
+            storage_profile_id: None,
+            credential_mode: CredentialMode::SharedProcessEnv,
+        }
+    }
+}
+
+impl TableFormatParquetReadStrategyConfig {
+    /// Builds a resolver config from the Iceberg-scoped v1 environment knobs.
+    pub fn from_env() -> Self {
+        table_format_parquet_read_strategy_config_from_env(|name| std::env::var(name).ok())
+    }
+}
+
+fn table_format_parquet_read_strategy_config_from_env(
+    mut get: impl FnMut(&str) -> Option<String>,
+) -> TableFormatParquetReadStrategyConfig {
+    let env_nonempty = |get: &mut dyn FnMut(&str) -> Option<String>, name: &str| {
+        get(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    };
+    let preference = match get("CUDF_ICEBERG_PARQUET_READ_STRATEGY")
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "host_buffer" => TableFormatParquetReadStrategyPreference::HostBuffer,
+        "local_cache" => TableFormatParquetReadStrategyPreference::LocalCache,
+        "remote_kvikio" => TableFormatParquetReadStrategyPreference::RemoteKvikio,
+        _ => TableFormatParquetReadStrategyPreference::Auto,
+    };
+    let remote_kvikio_experimental = get("CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL")
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+    let lakehouse_cache_root = env_nonempty(&mut get, "CUDF_LAKEHOUSE_CACHE_ROOT").map(PathBuf::from);
+    let lakehouse_cache_policy = match get("CUDF_LAKEHOUSE_CACHE_POLICY")
+        .unwrap_or_else(|| "disabled".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "read_through" => TableFormatLakehouseCachePolicy::ReadThrough,
+        "fill_before_read" => TableFormatLakehouseCachePolicy::FillBeforeRead,
+        _ => TableFormatLakehouseCachePolicy::Disabled,
+    };
+    let lakehouse_cache_max_bytes =
+        get("CUDF_LAKEHOUSE_CACHE_MAX_BYTES").and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
+    let storage_endpoint = env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT")
+        .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL_S3"))
+        .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL"))
+        .map(|endpoint| credential_free_endpoint_identity(&endpoint));
+    let storage_profile_id = if storage_endpoint.is_some()
+        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_REGION").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_SESSION_TOKEN").is_some()
+    {
+        Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string())
+    } else {
+        None
+    };
+    TableFormatParquetReadStrategyConfig {
+        preference,
+        remote_kvikio_experimental,
+        lakehouse_cache_root,
+        lakehouse_cache_policy,
+        lakehouse_cache_max_bytes,
+        storage_endpoint,
+        storage_profile_id,
+        ..Default::default()
+    }
+}
+
+/// Immutable object metadata used when resolving a table-format Parquet source.
+///
+/// The resolver uses these facts to scope lakehouse byte-cache entries. The
+/// identity fields are diagnostic/cache keys only and must not contain secrets,
+/// signed query strings, bearer tokens, or credential material.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TableFormatParquetSourceMetadata {
+    /// File size in bytes from table-format metadata, when known.
+    pub size_bytes: Option<u64>,
+    /// File row count from table-format metadata, when known.
+    pub row_count: Option<u64>,
+    /// Optional caller-provided content identity such as an object ETag.
+    pub content_identity: Option<String>,
+    /// Optional caller-provided storage domain such as an endpoint/bucket scope.
+    pub storage_domain: Option<String>,
+}
+
+impl TableFormatParquetSourceMetadata {
+    /// Builds metadata from optional size and row-count facts.
+    pub fn from_size_and_row_count(size_bytes: Option<u64>, row_count: Option<u64>) -> Self {
+        Self { size_bytes, row_count, ..Default::default() }
+    }
+
+    /// Records file size in bytes.
+    pub fn with_size_bytes(mut self, size_bytes: u64) -> Self {
+        self.size_bytes = Some(size_bytes);
+        self
+    }
+
+    /// Records file row count.
+    pub fn with_row_count(mut self, row_count: u64) -> Self {
+        self.row_count = Some(row_count);
+        self
+    }
+
+    /// Records a caller-provided content identity such as an object ETag.
+    pub fn with_content_identity(mut self, content_identity: impl Into<String>) -> Self {
+        self.content_identity = Some(content_identity.into());
+        self
+    }
+
+    /// Records a caller-provided storage domain such as an endpoint/bucket scope.
+    pub fn with_storage_domain(mut self, storage_domain: impl Into<String>) -> Self {
+        self.storage_domain = Some(storage_domain.into());
+        self
+    }
+}
+
 impl TableFormatReadCapability {
     /// Local filesystem read capability.
     pub fn local_file_system() -> Self {
@@ -229,6 +442,239 @@ impl TableFormatReadCapability {
     /// pipeline before bounded native execution can safely read them.
     pub fn is_direct_native_parquet_capable(&self) -> bool {
         matches!(self, Self::LocalFileSystem)
+    }
+}
+
+/// Resolves a table-format Parquet data-file location into the native reader contract.
+pub fn resolve_table_format_parquet_source(
+    location: &str,
+    read_capability: &TableFormatReadCapability,
+    config: &TableFormatParquetReadStrategyConfig,
+) -> Result<ResolvedParquetSource> {
+    resolve_table_format_parquet_source_with_metadata(
+        location,
+        read_capability,
+        config,
+        &TableFormatParquetSourceMetadata::default(),
+    )
+}
+
+/// Resolves a table-format Parquet data-file location with object metadata.
+pub fn resolve_table_format_parquet_source_with_metadata(
+    location: &str,
+    read_capability: &TableFormatReadCapability,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> Result<ResolvedParquetSource> {
+    match read_capability {
+        TableFormatReadCapability::LocalFileSystem => {
+            Ok(ResolvedParquetSource::local_kvikio(table_format_local_path_text(location)))
+        },
+        TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3" => {
+            resolve_s3_table_format_parquet_source(location, config, metadata)
+        },
+        TableFormatReadCapability::ObjectStore { scheme } => Err(crate::Error::new(
+            crate::ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.table_format.resolve_parquet_source",
+            "unsupported table-format object-store parquet source scheme",
+        )
+        .with_fact("source_location_scheme", scheme.as_str())),
+        TableFormatReadCapability::Unsupported { reason } => Err(crate::Error::new(
+            crate::ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.table_format.resolve_parquet_source",
+            "unsupported table-format parquet source location",
+        )
+        .with_fact("reason", reason.as_str())),
+    }
+}
+
+fn resolve_s3_table_format_parquet_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> Result<ResolvedParquetSource> {
+    let resolved = match config.preference {
+        TableFormatParquetReadStrategyPreference::Auto | TableFormatParquetReadStrategyPreference::HostBuffer => {
+            Ok(ResolvedParquetSource::remote_host_buffer(
+                location,
+                object_store_reader_path(location),
+                config.credential_mode,
+            ))
+        },
+        TableFormatParquetReadStrategyPreference::RemoteKvikio if config.remote_kvikio_experimental => {
+            Ok(ResolvedParquetSource::remote_kvikio_experimental(location, config.credential_mode))
+        },
+        TableFormatParquetReadStrategyPreference::RemoteKvikio => Ok(ResolvedParquetSource::remote_host_buffer(
+            location,
+            object_store_reader_path(location),
+            config.credential_mode,
+        )
+        .with_fallback_reason("remote_kvikio_experimental_disabled")),
+        TableFormatParquetReadStrategyPreference::LocalCache => {
+            resolve_local_cache_table_format_parquet_source(location, config, metadata)
+        },
+    }?;
+    Ok(attach_remote_source_identity(resolved, location, config, metadata))
+}
+
+fn resolve_local_cache_table_format_parquet_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> Result<ResolvedParquetSource> {
+    let Some(cache_root) = config.lakehouse_cache_root.as_ref() else {
+        return Ok(ResolvedParquetSource::remote_host_buffer(
+            location,
+            object_store_reader_path(location),
+            config.credential_mode,
+        )
+        .with_cache_status(LakehouseCacheStatus::Skipped)
+        .with_fallback_reason("lakehouse_cache_root_unset"));
+    };
+    let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
+    if cache_path.is_file() {
+        return Ok(ResolvedParquetSource::local_cache_kvikio(
+            location,
+            cache_path.display().to_string(),
+            config.credential_mode,
+            LakehouseCacheStatus::Hit,
+        )
+        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes));
+    }
+    if config.lakehouse_cache_policy.fills_before_read() {
+        return Ok(ResolvedParquetSource::local_cache_kvikio(
+            location,
+            cache_path.display().to_string(),
+            config.credential_mode,
+            LakehouseCacheStatus::FillBeforeRead,
+        )
+        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes));
+    }
+    Ok(ResolvedParquetSource::remote_host_buffer(location, object_store_reader_path(location), config.credential_mode)
+        .with_cache_status(LakehouseCacheStatus::Miss)
+        .with_fallback_reason("lakehouse_cache_miss_fill_disabled"))
+}
+
+fn table_format_local_path_text(location: &str) -> String {
+    location.strip_prefix("file://").unwrap_or(location).to_string()
+}
+
+fn object_store_reader_path(uri: &str) -> String {
+    uri.to_string()
+}
+
+fn attach_remote_source_identity(
+    resolved: ResolvedParquetSource,
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> ResolvedParquetSource {
+    resolved
+        .with_storage_domain(storage_domain_identity(location, config, metadata))
+        .with_content_identity(content_identity(metadata))
+        .with_optional_storage_profile_id(config.storage_profile_id.clone())
+}
+
+fn cache_relative_path(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> PathBuf {
+    let scheme = location.split_once("://").map(|(scheme, _)| scheme).unwrap_or("unknown");
+    PathBuf::from("v1")
+        .join(sanitize_cache_component(scheme))
+        .join(sanitize_cache_component(&storage_domain_identity(location, config, metadata)))
+        .join(sanitize_cache_component(&content_identity(metadata)))
+        .join(location_fingerprint(location))
+}
+
+fn storage_domain_identity(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> String {
+    if let Some(storage_domain) = metadata.storage_domain.as_ref().filter(|value| !value.is_empty()) {
+        return storage_domain.clone();
+    }
+    if let Some(rest) = location.strip_prefix("s3://") {
+        let bucket = rest.split('/').next().filter(|bucket| !bucket.is_empty()).unwrap_or("unknown_bucket");
+        return config.storage_endpoint.as_ref().filter(|value| !value.trim().is_empty()).map_or_else(
+            || bucket.to_string(),
+            |endpoint| format!("{bucket}@{}", credential_free_endpoint_identity(endpoint)),
+        );
+    }
+    "unknown_storage_domain".to_string()
+}
+
+/// Returns a credential-free endpoint identity for cache scoping and diagnostics.
+///
+/// Userinfo, query strings, and fragments are stripped so signed URLs and
+/// embedded credentials cannot leak through table-format source facts.
+pub fn credential_free_endpoint_identity(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    let without_query = trimmed.find(['?', '#']).map_or(trimmed, |index| &trimmed[..index]).trim_end_matches('/');
+    if let Some((scheme, rest)) = without_query.split_once("://") {
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        if path.is_empty() { format!("{scheme}://{authority}") } else { format!("{scheme}://{authority}/{path}") }
+    } else {
+        let (authority, path) = without_query.split_once('/').unwrap_or((without_query, ""));
+        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        if path.is_empty() { authority.to_string() } else { format!("{authority}/{path}") }
+    }
+}
+
+fn content_identity(metadata: &TableFormatParquetSourceMetadata) -> String {
+    if let Some(content_identity) = metadata.content_identity.as_ref().filter(|value| !value.is_empty()) {
+        return content_identity.clone();
+    }
+    match (metadata.size_bytes, metadata.row_count) {
+        (Some(size_bytes), Some(row_count)) => format!("size_{size_bytes}_rows_{row_count}"),
+        (Some(size_bytes), None) => format!("size_{size_bytes}"),
+        (None, Some(row_count)) => format!("rows_{row_count}"),
+        (None, None) => "content_unknown".to_string(),
+    }
+}
+
+fn location_fingerprint(location: &str) -> String {
+    let basename = location.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("object");
+    format!("{}__h{:016x}", sanitize_cache_component(basename), fnv1a64(location.as_bytes()))
+}
+
+fn sanitize_cache_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '_' })
+        .collect::<String>();
+    if sanitized.is_empty() { "unknown".to_string() } else { sanitized }
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_from_env_uses_catalog_endpoint_identity() {
+        let env = BTreeMap::from([
+            ("DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
+            ("AWS_ENDPOINT_URL_S3", "https://aws.example.invalid"),
+        ]);
+        let config =
+            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+
+        assert_eq!(config.storage_endpoint.as_deref(), Some("http://rustfs.local:9000/minio"));
+        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
     }
 }
 
@@ -450,6 +896,8 @@ pub struct TableFormatDataFile {
     pub row_groups: Option<Vec<usize>>,
     /// Required read capability for this location.
     pub read_capability: TableFormatReadCapability,
+    /// Resolved Parquet read strategy for native source lowering.
+    pub resolved_parquet_source: Option<ResolvedParquetSource>,
     /// Partition values attached to this data file.
     pub partition_values: Vec<TableFormatPartitionValue>,
 }
@@ -470,6 +918,7 @@ impl TableFormatDataFile {
             row_count: None,
             row_groups: None,
             read_capability,
+            resolved_parquet_source: None,
             partition_values: Vec::new(),
         }
     }
@@ -489,6 +938,12 @@ impl TableFormatDataFile {
     /// Records selected row-group indexes.
     pub fn with_row_groups(mut self, row_groups: Vec<usize>) -> Self {
         self.row_groups = Some(row_groups);
+        self
+    }
+
+    /// Records the resolved Parquet source strategy for this data file.
+    pub fn with_resolved_parquet_source(mut self, resolved_source: ResolvedParquetSource) -> Self {
+        self.resolved_parquet_source = Some(resolved_source);
         self
     }
 
@@ -715,6 +1170,14 @@ pub struct TableFormatScanDiagnostics {
     pub rejected_feature_list: Vec<String>,
     /// Comma-separated stable read-capability codes.
     pub native_source_read_capability: String,
+    /// Comma-separated high-level source read strategies.
+    pub source_read_strategy: String,
+    /// Comma-separated cuDF decode input kinds.
+    pub source_decode_input: String,
+    /// Comma-separated credential modes.
+    pub credential_mode: String,
+    /// Comma-separated local byte-cache statuses.
+    pub lakehouse_cache_status: String,
     /// Direct device-read eligibility.
     pub direct_device_read_disposition: TableFormatDirectDeviceReadDisposition,
 }
@@ -732,6 +1195,10 @@ impl TableFormatScanDiagnostics {
             ("admitted_native_source_file_count", self.admitted_native_source_file_count.to_string()),
             ("rejected_feature_list", self.rejected_feature_list.join(",")),
             ("native_source_read_capability", self.native_source_read_capability.clone()),
+            ("source_read_strategy", self.source_read_strategy.clone()),
+            ("source_decode_input", self.source_decode_input.clone()),
+            ("credential_mode", self.credential_mode.clone()),
+            ("lakehouse_cache_status", self.lakehouse_cache_status.clone()),
             ("direct_device_read_disposition", self.direct_device_read_disposition.code().to_string()),
         ])
     }
@@ -934,6 +1401,42 @@ impl TableFormatScanPlan {
         capabilities.join(",")
     }
 
+    /// Comma-separated high-level source read strategies across data files.
+    pub fn source_read_strategy_summary(&self) -> String {
+        summarize_resolved_source_value(
+            self.data_files
+                .iter()
+                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.read_strategy.as_str())),
+        )
+    }
+
+    /// Comma-separated decode input kinds across data files.
+    pub fn source_decode_input_summary(&self) -> String {
+        summarize_resolved_source_value(
+            self.data_files
+                .iter()
+                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.decode_input.as_str())),
+        )
+    }
+
+    /// Comma-separated credential modes across data files.
+    pub fn credential_mode_summary(&self) -> String {
+        summarize_resolved_source_value(
+            self.data_files
+                .iter()
+                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.credential_mode.as_str())),
+        )
+    }
+
+    /// Comma-separated lakehouse byte-cache statuses across data files.
+    pub fn lakehouse_cache_status_summary(&self) -> String {
+        summarize_resolved_source_value(
+            self.data_files
+                .iter()
+                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.cache_status.as_str())),
+        )
+    }
+
     /// Builds credential-free scan diagnostics for tests and report rows.
     pub fn diagnostics(&self) -> TableFormatScanDiagnostics {
         TableFormatScanDiagnostics {
@@ -946,7 +1449,18 @@ impl TableFormatScanPlan {
             admitted_native_source_file_count: self.admitted_native_source_file_count(),
             rejected_feature_list: self.rejected_feature_codes(),
             native_source_read_capability: self.native_source_read_capability_summary(),
+            source_read_strategy: self.source_read_strategy_summary(),
+            source_decode_input: self.source_decode_input_summary(),
+            credential_mode: self.credential_mode_summary(),
+            lakehouse_cache_status: self.lakehouse_cache_status_summary(),
             direct_device_read_disposition: self.direct_device_read_disposition(),
         }
     }
+}
+
+fn summarize_resolved_source_value<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    if values.is_empty() { "unknown".to_string() } else { values.join(",") }
 }

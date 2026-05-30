@@ -126,61 +126,63 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // in `super::is_testing_profile_active`).
     let provider_kind = iceberg_provider_kind_for(config.session_profile);
 
-    // Build the Glue catalog backend once; it holds a connected catalog handle
-    // that is reused for all namespace/table listing and lazy table loading.
-    let catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
-        iceberg.glue_catalog_handle.clone(),
-        iceberg.warehouse.clone(),
-        iceberg.region.clone(),
-    );
-    let catalog_config = match &iceberg.catalog_id {
-        Some(id) => catalog_config.with_catalog_id(id.clone()),
-        None => catalog_config,
-    };
-    let catalog_config = match &iceberg.profile {
-        Some(p) => catalog_config.with_profile(p.clone()),
-        None => catalog_config,
-    };
-
-    let backend: Arc<dyn crate::iceberg::catalog::IcebergCatalogBackend> = Arc::new(
-        crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_env(catalog_config)
-            .await
-            .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?,
-    );
+    // Build the catalog backend once; it holds a connected catalog handle that
+    // is reused for all namespace/table listing and lazy table loading. The
+    // backend kind is selected by the validated config enum.
+    let (backend, catalog_type): (Arc<dyn crate::iceberg::catalog::IcebergCatalogBackend>, &'static str) =
+        match &iceberg.backend {
+            super::config::IcebergCatalogBackendConfig::Glue(glue) => {
+                let mut catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
+                    glue.catalog_handle.clone(),
+                    glue.warehouse.clone(),
+                    glue.region.clone(),
+                );
+                if let Some(id) = &glue.catalog_id {
+                    catalog_config = catalog_config.with_catalog_id(id.clone());
+                }
+                if let Some(profile) = &glue.profile {
+                    catalog_config = catalog_config.with_profile(profile.clone());
+                }
+                let backend =
+                    crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_env(catalog_config).await.map_err(
+                        |error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error),
+                    )?;
+                (Arc::new(backend), "glue")
+            },
+            super::config::IcebergCatalogBackendConfig::Rest(rest) => {
+                let backend =
+                    crate::iceberg::catalog::RestIcebergCatalogBackend::from_config_env(rest.clone()).await.map_err(
+                        |error| ServerError::session("failed to connect to REST Iceberg catalog backend", error),
+                    )?;
+                (Arc::new(backend), "rest")
+            },
+        };
 
     // Discover only the configured namespace scope. Individual tables are
     // loaded lazily on first SQL access through the backend.
     let catalog_provider = crate::iceberg::catalog::build_scoped_catalog_provider_from_backend(
-        backend,
-        "glue",
+        Arc::clone(&backend),
+        catalog_type,
         &iceberg.namespace,
         provider_kind,
     )
     .await
-    .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from Glue backend", error))?;
+    .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from backend", error))?;
 
     // Seed pre-declared alias mappings before registering the catalog.
     // This makes catalog.namespace.alias resolve in addition to the real name.
+    // Loading routes through the backend-agnostic IcebergCatalogBackend so the
+    // same path serves Glue and REST.
     for table in &iceberg.tables {
-        let mut glue = crate::iceberg::GlueIcebergTableConfig::new(
-            iceberg.glue_catalog_handle.clone(),
-            iceberg.namespace.clone(),
-            table.table.clone(),
-            iceberg.warehouse.clone(),
-            iceberg.region.clone(),
-        );
-        if let Some(catalog_id) = &iceberg.catalog_id {
-            glue = glue.with_catalog_id(catalog_id.clone());
-        }
-        if let Some(profile) = &iceberg.profile {
-            glue = glue.with_profile(profile.clone());
-        }
-
-        let loaded = crate::iceberg::load_glue_table(glue)
+        let table_ident = crate::iceberg::catalog::table_ident_from_flat_name(&iceberg.namespace, &table.table)
+            .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
+        let loaded_table = backend
+            .load_table(&table_ident)
             .await
-            .map_err(|error| ServerError::session("failed to load Glue Iceberg table for alias seeding", error))?;
-        let diagnostics = loaded.diagnostics.clone();
-        let provider = build_alias_provider(loaded.table, provider_kind).await?;
+            .map_err(|error| ServerError::session("failed to load Iceberg table for alias seeding", error))?;
+        let provider =
+            build_alias_provider(loaded_table, provider_kind, catalog_type, backend.parquet_read_strategy_config())
+                .await?;
 
         // Seed the pre-loaded provider into the dynamic schema provider so that:
         //  - catalog.namespace.real_table_name reuses this load (skips a
@@ -224,14 +226,11 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         }
 
         tracing::info!(
-            catalog_type = "glue",
+            catalog_type,
             df_catalog_name = iceberg.catalog_name,
-            glue_catalog_handle = diagnostics.catalog_name,
             namespace = iceberg.namespace,
-            table = diagnostics.table,
+            table = table.table,
             alias = table.alias,
-            region = diagnostics.region,
-            credential_source = %diagnostics.credential_source,
             "registered Iceberg table alias"
         );
     }
@@ -241,8 +240,8 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     ctx.register_catalog(&iceberg.catalog_name, Arc::new(catalog_provider));
 
     tracing::info!(
+        catalog_type,
         df_catalog_name = iceberg.catalog_name,
-        glue_catalog_handle = iceberg.glue_catalog_handle,
         namespace = iceberg.namespace,
         provider_kind = provider_kind.as_str(),
         pre_declared_aliases = iceberg.tables.len(),
@@ -280,17 +279,27 @@ fn iceberg_provider_kind_for(profile: ServerSessionProfile) -> crate::iceberg::c
 async fn build_alias_provider(
     table: iceberg::table::Table,
     kind: crate::iceberg::catalog::IcebergProviderKind,
+    catalog_type: &str,
+    parquet_read_strategy_config: Option<crate::table_format::scan::TableFormatParquetReadStrategyConfig>,
 ) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
     use crate::iceberg::catalog::IcebergProviderKind;
     match kind {
         IcebergProviderKind::Gpu => {
-            let provider = crate::iceberg::table_provider(table)
-                .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
-                .with_catalog_type("glue");
+            let provider = match parquet_read_strategy_config {
+                Some(config) => {
+                    crate::table_format::iceberg::CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+                        table, config,
+                    )
+                },
+                None => crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table),
+            }
+            .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
+            .with_catalog_type(catalog_type);
             Ok(Arc::new(provider))
         },
         #[cfg(feature = "iceberg-cpu")]
         IcebergProviderKind::Cpu => {
+            let _ = parquet_read_strategy_config;
             let provider =
                 iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(|error| {
                     ServerError::session("failed to build iceberg-datafusion CPU table provider", error)

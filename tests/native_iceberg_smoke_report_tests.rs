@@ -6,12 +6,13 @@ use std::collections::HashMap;
 
 use datafusion_cudf::{
     NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
-    TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
-    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
+    TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    resolve_table_format_parquet_source,
 };
 use native_iceberg_smoke_report::{
     CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, ObjectStoreStagingMode,
-    ObjectStoreStagingStatus, ObjectStoreStagingSummary, StagedObjectStoreDataFile,
+    ObjectStoreStagingStatus, ObjectStoreStagingSummary, SmokeQueryExecutionMode, StagedObjectStoreDataFile,
 };
 
 #[test]
@@ -37,6 +38,9 @@ fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_
     assert_eq!(config.tpcds_scale_factor, "sf1");
     assert_eq!(config.custom_workload, None);
     assert_eq!(config.custom_query_file, None);
+    assert!(!config.stream_tsv_rows);
+    assert!(!config.continue_on_query_error);
+    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeAndCpu);
     assert_eq!(
         native_iceberg_smoke_report::tpch_glue_table_name("orders", &config.tpch_scale_factor),
         "tpch_sf1_orders"
@@ -99,6 +103,33 @@ fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
         config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor),
         "demo_db_tpcds_sf10_all_tables"
     );
+}
+
+#[test]
+fn rest_s3_tpcds_query_ids_rewrite_tables_within_rest_namespace() {
+    let env = HashMap::from([
+        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "rest_s3"),
+        ("DATAFUSION_CUDF_ICEBERG_NAMESPACE", "tpcds_sf10"),
+        ("CUDF_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+        ("CUDF_ICEBERG_SMOKE_EXECUTION_MODE", "native_only"),
+        ("CUDF_ICEBERG_SMOKE_STREAM_TSV", "1"),
+        ("CUDF_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR", "true"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert_eq!(config.tpcds_query_ids, vec!["q03", "q42"]);
+    assert_eq!(config.tpcds_scale_factor, "sf10");
+    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeOnly);
+    assert!(config.stream_tsv_rows);
+    assert!(config.continue_on_query_error);
+    let rewritten = config.fixture.with_tpcds_table("store_sales", &config.tpcds_scale_factor).unwrap();
+    let IcebergNativeSmokeFixture::RestS3 { namespace, table, .. } = rewritten else {
+        panic!("expected rest_s3 fixture");
+    };
+    assert_eq!(namespace, "tpcds_sf10");
+    assert_eq!(table, "store_sales");
 }
 
 #[test]
@@ -217,7 +248,15 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
                 TableFormatReadCapability::local_file_system(),
             )
             .with_size_bytes(1024)
-            .with_row_count(7),
+            .with_row_count(7)
+            .with_resolved_parquet_source(
+                resolve_table_format_parquet_source(
+                    "/tmp/iceberg/data-0001.parquet",
+                    &TableFormatReadCapability::local_file_system(),
+                    &TableFormatParquetReadStrategyConfig::default(),
+                )
+                .unwrap(),
+            ),
         );
     let diagnostics = plan.diagnostics();
     let mut row = native_iceberg_smoke_report::IcebergNativeSmokeReportRow::new(
@@ -249,11 +288,15 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         ..Default::default()
     });
     row.finalize_count_parity_if_needed();
-    let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };
+    let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row.clone()] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=5\n"));
+    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=6\n"));
     assert!(tsv.contains("\tnative_source_read_capability\t"));
+    assert!(tsv.contains("\tsource_read_strategy\t"));
+    assert!(tsv.contains("\tsource_decode_input\t"));
+    assert!(tsv.contains("\tcredential_mode\t"));
+    assert!(tsv.contains("\tlakehouse_cache_status\t"));
     assert!(tsv.contains("\tdirect_device_read_disposition\t"));
     assert!(tsv.contains("\tobject_store_staging_mode\t"));
     assert!(tsv.contains("\tobject_store_staging_status\t"));
@@ -272,13 +315,25 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert_eq!(tsv_field(&tsv, "source_fetch_concurrency_wait_time_ms"), "6.000");
     assert_eq!(tsv_field(&tsv, "source_fetch_time_ms"), "7.250");
     assert_eq!(tsv_field(&tsv, "source_decode_time_ms"), "8.500");
-    assert!(
-        tsv.contains("\tlocal_file_system\teligible\tauto\tnot_needed\t0\t0\taccepted_replaced\tnone\tnative\tfalse\ttrue\tsucceeded\t")
-    );
+    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "local_kvikio");
+    assert_eq!(tsv_field(&tsv, "source_decode_input"), "filepath");
+    assert_eq!(tsv_field(&tsv, "credential_mode"), "none");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_status"), "disabled");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "auto");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "not_needed");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
+    assert_eq!(tsv_field(&tsv, "post_native_execution_path"), "native");
     assert_eq!(tsv_field(&tsv, "cpu_runtime_started"), "false");
     assert_eq!(tsv_field(&tsv, "cpu_runtime_outcome"), "not_started");
     assert_eq!(tsv_field(&tsv, "comparison_mode"), "not_applicable");
     assert!(tsv.contains("\tmatched\t"));
+
+    let mut writer = FlushCountingWriter::default();
+    native_iceberg_smoke_report::write_smoke_tsv_header(&mut writer).unwrap();
+    native_iceberg_smoke_report::write_smoke_tsv_row(&mut writer, &row).unwrap();
+    assert_eq!(writer.flushes, 2);
+    let streamed = String::from_utf8(writer.bytes).unwrap();
+    assert_eq!(streamed, tsv);
 }
 
 #[test]
@@ -293,7 +348,15 @@ fn report_tsv_records_direct_s3_as_host_buffer_native_without_staging() {
                 TableFormatDataFileFormat::Parquet,
                 TableFormatReadCapability::object_store("s3"),
             )
-            .with_size_bytes(1024),
+            .with_size_bytes(1024)
+            .with_resolved_parquet_source(
+                resolve_table_format_parquet_source(
+                    "s3://bucket/table/data-0001.parquet",
+                    &TableFormatReadCapability::object_store("s3"),
+                    &TableFormatParquetReadStrategyConfig::default(),
+                )
+                .unwrap(),
+            ),
         );
     let row = native_iceberg_smoke_report::IcebergNativeSmokeReportRow::new(
         "iceberg_smoke".to_string(),
@@ -312,7 +375,12 @@ fn report_tsv_records_direct_s3_as_host_buffer_native_without_staging() {
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.contains("\tobject_store:s3\trejected\tdisabled\tdirect_s3_native\t0\t0\taccepted_replaced\tnone\t"));
+    assert_eq!(tsv_field(&tsv, "native_source_read_capability"), "object_store:s3");
+    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_host_buffer");
+    assert_eq!(tsv_field(&tsv, "source_decode_input"), "host_buffer");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "direct_s3_native");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
     assert!(!tsv.contains("staged_local"));
 }
 
@@ -349,4 +417,22 @@ fn tsv_field<'a>(tsv: &'a str, column: &str) -> &'a str {
     let row = lines.next().expect("data row").split('\t').collect::<Vec<_>>();
     let index = header.iter().position(|field| *field == column).expect("column present");
     row[index]
+}
+
+#[derive(Default)]
+struct FlushCountingWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+}
+
+impl std::io::Write for FlushCountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
 }

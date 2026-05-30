@@ -114,6 +114,10 @@ pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics
     let stats = diagnostics.selected_row_group_stats.as_ref();
     NativeSourceDiagnosticSummary {
         format: format!("{:?}", diagnostics.format),
+        source_read_strategy: diagnostics.source_read_strategy.clone(),
+        source_decode_input: diagnostics.source_decode_input.clone(),
+        credential_mode: diagnostics.credential_mode.clone(),
+        lakehouse_cache_status: diagnostics.lakehouse_cache_status.clone(),
         direct_device_read: diagnostics.direct_device_read,
         file_count: diagnostics.file_count,
         ranged_file_count: diagnostics.ranged_file_count,

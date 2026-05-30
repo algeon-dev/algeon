@@ -1419,6 +1419,24 @@ fn compare_record_batches_unordered_match_across_batch_boundaries() {
 
     assert_eq!(result.status, ParityStatus::Matched);
     assert_eq!(result.mode, ParityComparisonMode::UnorderedExact);
+    assert_eq!(result.cpu_fingerprint, result.native_fingerprint);
+}
+
+#[test]
+fn compare_record_batches_matched_uses_comparison_fingerprints_for_compatible_schema_names() {
+    let cpu_schema = int_string_schema();
+    let native_schema = Arc::new(Schema::new(vec![
+        Field::new("native_id", DataType::Int64, false),
+        Field::new("native_label", DataType::Utf8, true),
+    ]));
+    let cpu = vec![int_string_batch(&cpu_schema, &[1, 2], &[Some("a"), Some("b")])];
+    let native = vec![int_string_batch(&native_schema, &[1, 2], &[Some("a"), Some("b")])];
+
+    let result =
+        compare_record_batches(&cpu_schema, &cpu, &native_schema, &native, true, ParityFloatTolerance::exact());
+
+    assert_eq!(result.status, ParityStatus::Matched);
+    assert_eq!(result.cpu_fingerprint, result.native_fingerprint);
 }
 
 #[test]

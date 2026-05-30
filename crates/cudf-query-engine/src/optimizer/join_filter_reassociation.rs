@@ -327,8 +327,8 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             .residual_predicate
             .as_ref()
             .ok_or(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate)?;
-        let left_filter = derive_side_necessary_filter(residual, JoinSide::Left);
-        let right_filter = derive_side_necessary_filter(residual, JoinSide::Right);
+        let left_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Left);
+        let right_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Right);
         if left_filter.is_none() && right_filter.is_none() {
             return Err(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate);
         }
@@ -695,20 +695,20 @@ fn input_has_top_filter(plan: &QueryPlan, node_id: NodeId, predicate: &Expr) -> 
     matches!(&node.kind, PlanNode::Filter(filter) if filter.predicate == *predicate)
 }
 
-fn derive_side_necessary_filter(expr: &Expr, side: JoinSide) -> Option<Expr> {
-    if expression_scope(expr) == ExpressionScope::Side(side) {
+fn derive_side_necessary_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, side: JoinSide) -> Option<Expr> {
+    if expression_scope(plan, join, expr) == ExpressionScope::Side(side) {
         return Some(strip_input_qualifiers(expr));
     }
 
     match expr {
         Expr::Binary { left, op: BinaryOp::And, right, output_type } => {
-            let left_filter = derive_side_necessary_filter(left, side);
-            let right_filter = derive_side_necessary_filter(right, side);
+            let left_filter = derive_side_necessary_filter(plan, join, left, side);
+            let right_filter = derive_side_necessary_filter(plan, join, right, side);
             combine_optional_filters(left_filter, BinaryOp::And, right_filter, output_type.clone())
         },
         Expr::Binary { left, op: BinaryOp::Or, right, output_type } => {
-            let left_filter = derive_side_necessary_filter(left, side)?;
-            let right_filter = derive_side_necessary_filter(right, side)?;
+            let left_filter = derive_side_necessary_filter(plan, join, left, side)?;
+            let right_filter = derive_side_necessary_filter(plan, join, right, side)?;
             Some(Expr::Binary {
                 left: Box::new(left_filter),
                 op: BinaryOp::Or,
@@ -853,9 +853,9 @@ enum ExpressionScope {
     MixedOrUnknown,
 }
 
-fn expression_scope(expr: &Expr) -> ExpressionScope {
+fn expression_scope(plan: &QueryPlan, join: &JoinNode, expr: &Expr) -> ExpressionScope {
     match expr {
-        Expr::Column(column) => column_scope(column),
+        Expr::Column(column) => column_scope(plan, join, column),
         Expr::Literal(_) => ExpressionScope::NoColumns,
         Expr::Not(expr)
         | Expr::IsNull(expr)
@@ -873,32 +873,49 @@ fn expression_scope(expr: &Expr) -> ExpressionScope {
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
-        | Expr::Alias { expr, .. } => expression_scope(expr),
+        | Expr::Alias { expr, .. } => expression_scope(plan, join, expr),
         Expr::Binary { left, right, .. }
         | Expr::IsDistinctFrom { left, right }
         | Expr::IsNotDistinctFrom { left, right } => {
-            merge_expression_scopes(expression_scope(left), expression_scope(right))
+            merge_expression_scopes(expression_scope(plan, join, left), expression_scope(plan, join, right))
         },
-        Expr::InList { expr, list, .. } => list
-            .iter()
-            .fold(expression_scope(expr), |scope, item| merge_expression_scopes(scope, expression_scope(item))),
-        Expr::Concat(exprs) => exprs
-            .iter()
-            .fold(ExpressionScope::NoColumns, |scope, expr| merge_expression_scopes(scope, expression_scope(expr))),
-        Expr::Case { branches, else_expr } => branches.iter().fold(expression_scope(else_expr), |scope, branch| {
-            merge_expression_scopes(
-                scope,
-                merge_expression_scopes(expression_scope(&branch.when), expression_scope(&branch.then)),
-            )
+        Expr::InList { expr, list, .. } => list.iter().fold(expression_scope(plan, join, expr), |scope, item| {
+            merge_expression_scopes(scope, expression_scope(plan, join, item))
         }),
+        Expr::Concat(exprs) => exprs.iter().fold(ExpressionScope::NoColumns, |scope, expr| {
+            merge_expression_scopes(scope, expression_scope(plan, join, expr))
+        }),
+        Expr::Case { branches, else_expr } => {
+            branches.iter().fold(expression_scope(plan, join, else_expr), |scope, branch| {
+                merge_expression_scopes(
+                    scope,
+                    merge_expression_scopes(
+                        expression_scope(plan, join, &branch.when),
+                        expression_scope(plan, join, &branch.then),
+                    ),
+                )
+            })
+        },
     }
 }
 
-fn column_scope(column: &ColumnRef) -> ExpressionScope {
+fn column_scope(plan: &QueryPlan, join: &JoinNode, column: &ColumnRef) -> ExpressionScope {
     match column.qualifier() {
         Some(ColumnQualifier::Input { index: 0 }) => ExpressionScope::Side(JoinSide::Left),
         Some(ColumnQualifier::Input { index: 1 }) => ExpressionScope::Side(JoinSide::Right),
-        _ => ExpressionScope::MixedOrUnknown,
+        Some(_) => unqualified_column_scope(plan, join, column.name()),
+        None => unqualified_column_scope(plan, join, column.name()),
+    }
+}
+
+fn unqualified_column_scope(plan: &QueryPlan, join: &JoinNode, column_name: &str) -> ExpressionScope {
+    let left = plan.node(join.inputs[0]).is_some_and(|node| node.output_schema().field_with_name(column_name).is_ok());
+    let right = plan.node(join.inputs[1]).is_some_and(|node| node.output_schema().field_with_name(column_name).is_ok());
+    match (left, right) {
+        (true, false) => ExpressionScope::Side(JoinSide::Left),
+        (false, true) => ExpressionScope::Side(JoinSide::Right),
+        (false, false) => ExpressionScope::MixedOrUnknown,
+        (true, true) => ExpressionScope::MixedOrUnknown,
     }
 }
 

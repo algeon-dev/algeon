@@ -102,7 +102,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     );
     assert!(state.is_resource_released(shared_resource));
     assert_eq!(state.live_resource_count(), 0);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 1);
     assert_eq!(compiled_batch.num_rows(), 3);
     assert_eq!(int32_values(&compiled_batch, 0), vec![Some(1), Some(2), Some(4)]);
     assert_eq!(int32_values(&compiled_batch, 1), vec![Some(10), Some(20), Some(40)]);
@@ -294,16 +294,10 @@ fn execute_query_plan_uses_adaptive_task_history_to_lower_repeated_reservations(
         .task_runtime_metrics
         .iter()
         .find_map(|(task_id, row)| {
-            (row.operator_kind == PipelineTaskKind::JoinMaterialize.as_str() && row.reservation_requested_bytes > 8)
+            (row.operator_kind == PipelineTaskKind::JoinProbe.as_str() && row.reservation_requested_bytes > 8)
                 .then_some((task_id.clone(), row.reservation_requested_bytes))
         })
-        .expect("baseline join materialization task should request enough bytes to demonstrate downward refinement");
-    let refined_task = pipeline
-        .tasks()
-        .iter()
-        .find(|task| task.id().to_string() == refined_task_id)
-        .expect("baseline task metrics should reference a compiled task");
-
+        .expect("baseline join probe task should request enough bytes to demonstrate downward refinement");
     let history = Arc::new(AdaptiveMemoryHistory::new());
     history.record_observation(
         AdaptiveMemoryHistoryKey::for_query_plan(&plan),
@@ -313,17 +307,7 @@ fn execute_query_plan_uses_adaptive_task_history_to_lower_repeated_reservations(
             source_chunks_committed: baseline_metrics.source_chunks_committed,
         },
     );
-    let observed_peak_bytes = baseline_requested_bytes / 4;
-    history.record_task_observation(
-        AdaptiveTaskMemoryHistoryKey::for_plan_task(&plan, refined_task, baseline_requested_bytes),
-        cudf_query_engine::AdaptiveTaskMemoryObservation {
-            reservation_requested_bytes: baseline_requested_bytes,
-            reservation_granted_bytes: baseline_requested_bytes,
-            observed_peak_bytes: Some(observed_peak_bytes),
-            retained_bytes: Some(observed_peak_bytes),
-            reservation_released_bytes: baseline_requested_bytes,
-        },
-    );
+    history.record_task_observations_from_query_metrics(&plan, &pipeline, baseline_metrics);
 
     let refined_context = bounded_context_with_mode_and_memory_history(
         Arc::clone(&runtime),

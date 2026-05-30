@@ -105,17 +105,17 @@ impl NativeTpchBenchmarkConfig {
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
-        match self.native_source_cache_policy {
-            NativeTpchSourceCachePolicy::Disabled => {
-                Ok(NativeTpchRuntimeResources { runtime: None, source_cache: None })
+        let runtime = Arc::new(
+            cudf::Runtime::new()
+                .map_err(|error| plan_error(format!("failed to initialize native benchmark runtime: {error}")))?,
+        );
+        let source_cache = match self.native_source_cache_policy {
+            NativeTpchSourceCachePolicy::Disabled => None,
+            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
+                Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
             },
-            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => Ok(NativeTpchRuntimeResources {
-                runtime: Some(Arc::new(cudf::Runtime::new().map_err(|error| {
-                    plan_error(format!("failed to initialize native source-cache runtime: {error}"))
-                })?)),
-                source_cache: Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes))),
-            }),
-        }
+        };
+        Ok(NativeTpchRuntimeResources { runtime: Some(runtime), source_cache })
     }
 }
 

@@ -50,9 +50,9 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
-    assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.partial_aggregate_count, 3);
-    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.partial_aggregate_count, 1);
+    assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_budgeted_success_event_with_contract(

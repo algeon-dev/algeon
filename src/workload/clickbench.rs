@@ -31,8 +31,8 @@ mod dataset;
 pub use dataset::{
     CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV,
     CUDF_CLICKBENCH_GENERATION_COMMAND_ENV, CUDF_CLICKBENCH_PARQUET_DIR_ENV, ClickbenchDatasetMetadata,
-    ClickbenchLayout, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET,
-    DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR, describe_clickbench_dataset,
+    ClickbenchLayout, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
+    DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR, describe_clickbench_dataset,
     describe_clickbench_dataset_with_content_fingerprint, discover_clickbench_layout,
     external_clickbench_dataset_metadata, prepare_clickbench_report_dataset,
 };

@@ -91,7 +91,7 @@ pub(super) fn compare_record_batches_with_options(
             };
         },
     };
-    let native_rows = match collect_canonical_rows(native_schema, native_batches) {
+    let mut native_rows = match collect_canonical_rows(native_schema, native_batches) {
         Ok(rows) => rows,
         Err(detail) => {
             return ParityComparisonResult {
@@ -103,9 +103,14 @@ pub(super) fn compare_record_batches_with_options(
             };
         },
     };
+    let mut cpu_rows = cpu_rows;
+    if !ordered {
+        cpu_rows.sort();
+        native_rows.sort();
+    }
 
     let cpu_fingerprint = fingerprint_rows(cpu_schema, &cpu_rows);
-    let native_fingerprint = fingerprint_rows(native_schema, &native_rows);
+    let native_fingerprint = fingerprint_rows(cpu_schema, &native_rows);
 
     if cpu_rows.len() != native_rows.len() {
         return ParityComparisonResult {
@@ -117,17 +122,7 @@ pub(super) fn compare_record_batches_with_options(
         };
     }
 
-    let (cpu_aligned, native_aligned) = if ordered {
-        (cpu_rows, native_rows)
-    } else {
-        let mut cpu = cpu_rows;
-        let mut native = native_rows;
-        cpu.sort();
-        native.sort();
-        (cpu, native)
-    };
-
-    for (index, (cpu_row, native_row)) in cpu_aligned.iter().zip(native_aligned.iter()).enumerate() {
+    for (index, (cpu_row, native_row)) in cpu_rows.iter().zip(native_rows.iter()).enumerate() {
         if let Some(detail) =
             compare_canonical_rows(cpu_schema, cpu_row, native_row, tolerance, float_tolerant, options)
         {

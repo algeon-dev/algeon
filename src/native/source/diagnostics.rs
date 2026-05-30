@@ -258,6 +258,10 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
 
     NativeSourceDiagnostics {
         format: cudf_query_engine::SourceFormat::Parquet,
+        source_read_strategy: "local_kvikio".to_string(),
+        source_decode_input: "filepath".to_string(),
+        credential_mode: "none".to_string(),
+        lakehouse_cache_status: "disabled".to_string(),
         direct_device_read: rejected_features.is_empty(),
         file_count: diagnostic_files.len(),
         ranged_file_count,

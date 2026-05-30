@@ -460,6 +460,8 @@ pub const DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize = 1024;
 /// pruning work are not expected to pay for themselves.
 pub const LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str = "large_keyset_dimension_sized_local_parquet_consumer";
 
+const MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u128 = 950_000;
+
 /// Extracts integer-like values from a host Arrow column for initial
 /// dynamic-filter payload construction.
 pub fn dynamic_filter_i64_values(array: &dyn Array) -> Option<Vec<Option<i64>>> {
@@ -668,6 +670,86 @@ fn dynamic_filter_reader_predicate(source: &LocalParquetSource, column: &str, fi
     }
     let predicate = dynamic_filter_predicate_for_schema(source.schema.as_ref(), column, filter)?;
     source.reader_predicate_is_supported(&predicate).then_some(predicate)
+}
+
+pub(crate) fn dynamic_filter_reader_predicate_should_merge(
+    source: &LocalParquetSource,
+    column: &str,
+    filter: &DynamicFilter,
+) -> Result<bool> {
+    if dynamic_filter_reader_predicate(source, column, filter).is_none() {
+        return Ok(false);
+    }
+    let DynamicFilter::RangeI64 { min, max } = filter else {
+        return Ok(true);
+    };
+    let Some(source_range) = selected_source_i64_range(source, column)? else {
+        return Ok(true);
+    };
+    let Some(overlap) = range_overlap_width(source_range, I64Range { min: *min, max: *max }) else {
+        return Ok(true);
+    };
+    let Some(source_width) = range_width(source_range) else {
+        return Ok(true);
+    };
+    Ok(overlap.saturating_mul(1_000_000) <= source_width.saturating_mul(MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM))
+}
+
+fn selected_source_i64_range(source: &LocalParquetSource, column: &str) -> Result<Option<I64Range>> {
+    let SourceColumnRef::File(column_index) = source.source_column_ref(column).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.dynamic_filter.reader_predicate_selectivity",
+            "dynamic-filter source column is not represented by the local parquet source",
+        )
+        .with_fact("column", column)
+    })?
+    else {
+        return Ok(None);
+    };
+
+    let mut selected_range = None;
+    for file in &source.files {
+        let Some(path) = file.location.as_local_path() else {
+            return Ok(None);
+        };
+        let reader = SerializedFileReader::try_from(path).map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.dynamic_filter.reader_predicate_selectivity",
+                "failed to read parquet footer for dynamic-filter reader-predicate selectivity",
+            )
+            .with_source(error)
+            .with_fact("path", path.display())
+            .with_fact("column", column)
+        })?;
+        let metadata = reader.metadata();
+        for row_group_index in selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups()) {
+            let row_group = metadata.row_group(row_group_index);
+            let Some(row_group_range) = row_group_i64_range(row_group, column_index) else {
+                return Ok(None);
+            };
+            selected_range = Some(match selected_range {
+                Some(existing) => merge_ranges(existing, row_group_range),
+                None => row_group_range,
+            });
+        }
+    }
+    Ok(selected_range)
+}
+
+fn merge_ranges(left: I64Range, right: I64Range) -> I64Range {
+    I64Range { min: left.min.min(right.min), max: left.max.max(right.max) }
+}
+
+fn range_width(range: I64Range) -> Option<u128> {
+    i128::from(range.max).checked_sub(i128::from(range.min))?.checked_add(1)?.try_into().ok()
+}
+
+fn range_overlap_width(left: I64Range, right: I64Range) -> Option<u128> {
+    let min = left.min.max(right.min);
+    let max = left.max.min(right.max);
+    (min <= max).then(|| range_width(I64Range { min, max })).flatten()
 }
 
 /// Builds a post-decode predicate for a dynamic-filter payload against an

@@ -134,6 +134,7 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         file_index: parent.file_index,
         location: parent.location.clone(),
         path: parent.path.clone(),
+        resolved_source: parent.resolved_source.clone(),
         stable_id: parent.stable_id.clone(),
         row_group_indexes,
         reads_all_row_groups: false,
@@ -159,6 +160,7 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         known_row_count,
         scan_limit_rows: None,
         size_estimate_based: true,
+        source_batching_reason: parent.source_batching_reason.clone(),
     }
 }
 

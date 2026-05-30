@@ -198,6 +198,70 @@ impl SourceChunkPlan {
     }
 }
 
+/// Adjacent source chunks that may be executed as one physical Parquet read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceChunkBatch {
+    /// Zero-based index within the batch plan.
+    pub batch_index: usize,
+    /// Child chunks retained for source identity, metrics, and retry fallback.
+    pub chunks: Vec<SourceChunk>,
+    /// Best available source-read byte estimate for the batch.
+    pub estimated_source_read_bytes: Option<u64>,
+    /// Stable diagnostic reason for this batching decision.
+    ///
+    /// `batched` means the read contains multiple source chunks. Singleton
+    /// values explain why the chunk could not be grouped with its neighbor or
+    /// why batching was disabled before chunk compatibility was evaluated.
+    pub source_batching_reason: String,
+}
+
+impl SourceChunkBatch {
+    /// Returns true when this batch contains exactly one source chunk.
+    pub fn is_singleton(&self) -> bool {
+        self.chunks.len() == 1
+    }
+
+    /// Returns the number of child chunks.
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// Returns the number of explicitly selected row groups across children.
+    pub fn row_group_count(&self) -> usize {
+        self.chunks.iter().map(SourceChunk::row_group_count).sum()
+    }
+
+    /// Splits a retryable multi-source batch into two ordered child batches.
+    ///
+    /// Returns `None` for singleton batches. Child estimates are recomputed from
+    /// the same best-available source-read bytes used by initial batch planning.
+    pub fn split_for_retry(self) -> Option<(Self, Self)> {
+        if self.chunks.len() <= 1 {
+            return None;
+        }
+        let split_index = self.chunks.len() / 2;
+        let mut left_chunks = self.chunks;
+        let right_chunks = left_chunks.split_off(split_index);
+        Some((source_chunk_batch_from_retry_chunks(left_chunks), source_chunk_batch_from_retry_chunks(right_chunks)))
+    }
+}
+
+fn source_chunk_batch_from_retry_chunks(chunks: Vec<SourceChunk>) -> SourceChunkBatch {
+    let batch_index = chunks.first().map_or(0, |chunk| chunk.chunk_index);
+    SourceChunkBatch {
+        batch_index,
+        estimated_source_read_bytes: source_read_bytes_for_batch_chunks(&chunks),
+        source_batching_reason: "retry_split".to_string(),
+        chunks,
+    }
+}
+
+fn source_read_bytes_for_batch_chunks(chunks: &[SourceChunk]) -> Option<u64> {
+    chunks.iter().try_fold(0u64, |total, chunk| {
+        batchable_chunk_source_read_bytes(chunk).map(|bytes| total.saturating_add(bytes))
+    })
+}
+
 /// One executable read range for a local Parquet source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceChunk {
@@ -211,6 +275,8 @@ pub struct SourceChunk {
     pub location: ParquetSourceLocation,
     /// Local path used for diagnostics and footer reads.
     pub path: PathBuf,
+    /// Resolved reader strategy and decode contract for this chunk.
+    pub resolved_source: crate::source::ResolvedParquetSource,
     /// Stable file identifier copied from the source definition.
     pub stable_id: String,
     /// Row groups selected for this chunk when row-group metadata is known.
@@ -261,6 +327,9 @@ pub struct SourceChunk {
     pub scan_limit_rows: Option<usize>,
     /// True when chunk sizing relied on file-size estimates instead of row-group bytes.
     pub size_estimate_based: bool,
+    /// Stable diagnostic reason for the source chunk batching decision that
+    /// applies to this chunk.
+    pub source_batching_reason: Option<String>,
 }
 
 impl SourceChunk {
@@ -268,6 +337,228 @@ impl SourceChunk {
     pub fn row_group_count(&self) -> usize {
         self.row_group_indexes.len()
     }
+
+    /// Returns true when this chunk explicitly selects every known row group
+    /// in its file.
+    pub fn selects_all_known_file_row_groups(&self) -> bool {
+        let selected = self.row_group_indexes.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        if let Some(file_row_groups) = &self.source_file_row_groups {
+            if file_row_groups.is_empty() || selected.len() != file_row_groups.len() {
+                return false;
+            }
+            let known = file_row_groups.iter().copied().collect::<std::collections::BTreeSet<_>>();
+            return selected == known;
+        }
+
+        let Some(row_group_count) = self.known_source_file_row_group_count() else {
+            return false;
+        };
+        if row_group_count == 0 || selected.len() != row_group_count {
+            return false;
+        }
+        selected == (0..row_group_count).collect::<std::collections::BTreeSet<_>>()
+    }
+
+    fn known_source_file_row_group_count(&self) -> Option<usize> {
+        [
+            self.source_file_row_group_rows.as_ref().map(Vec::len),
+            self.source_file_row_group_bytes.as_ref().map(Vec::len),
+            self.source_file_projected_compressed_bytes.as_ref().map(Vec::len),
+            self.source_file_projected_uncompressed_bytes.as_ref().map(Vec::len),
+            self.source_file_pure_filter_compressed_bytes.as_ref().map(Vec::len),
+            self.source_file_pure_filter_uncompressed_bytes.as_ref().map(Vec::len),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|left, right| if left == right { left } else { usize::MAX })
+        .filter(|count| *count != usize::MAX)
+    }
+}
+
+/// Groups compatible adjacent chunks for multi-source Parquet reads.
+///
+/// Incompatible chunks remain singleton batches. `max_batch_source_read_bytes`
+/// is a planning target; chunks without source-read byte estimates are kept as
+/// singleton batches so batching cannot silently defeat bounded memory policy.
+pub fn plan_source_chunk_batches(
+    chunks: &[SourceChunk],
+    max_batch_source_read_bytes: Option<u64>,
+) -> Vec<SourceChunkBatch> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes: Option<u64> = Some(0);
+    let mut current_reason: Option<&'static str> = None;
+
+    for chunk in chunks {
+        let chunk_bytes = batchable_chunk_source_read_bytes(chunk);
+        let extension_rejection = current.last().and_then(|previous| {
+            source_chunk_batch_extension_rejection(
+                previous,
+                current_bytes,
+                chunk,
+                chunk_bytes,
+                max_batch_source_read_bytes,
+            )
+        });
+        let can_extend = current.last().is_some() && extension_rejection.is_none();
+        if !current.is_empty() && !can_extend {
+            if current.len() == 1 && current_reason.is_none() {
+                current_reason = extension_rejection;
+            }
+            push_source_chunk_batch(&mut batches, &mut current, current_bytes, current_reason);
+            current_bytes = Some(0);
+            current_reason = None;
+        }
+
+        if let Some(reason) = chunk_multi_source_batch_rejection(chunk) {
+            current_bytes = None;
+            current_reason.get_or_insert(reason);
+        } else {
+            current_bytes = current_bytes.and_then(|total| chunk_bytes.and_then(|bytes| total.checked_add(bytes)));
+        }
+        current.push(chunk.clone());
+    }
+
+    if !current.is_empty() {
+        push_source_chunk_batch(&mut batches, &mut current, current_bytes, current_reason);
+    }
+    batches
+}
+
+fn push_source_chunk_batch(
+    batches: &mut Vec<SourceChunkBatch>,
+    current: &mut Vec<SourceChunk>,
+    estimated_source_read_bytes: Option<u64>,
+    reason: Option<&'static str>,
+) {
+    if current.is_empty() {
+        return;
+    }
+    let source_batching_reason = if current.len() > 1 { "batched" } else { reason.unwrap_or("trailing_singleton") };
+    batches.push(SourceChunkBatch {
+        batch_index: batches.len(),
+        chunks: std::mem::take(current),
+        estimated_source_read_bytes,
+        source_batching_reason: source_batching_reason.to_string(),
+    });
+}
+
+fn chunk_multi_source_batch_rejection(chunk: &SourceChunk) -> Option<&'static str> {
+    if chunk.zero_column_count {
+        return Some("ineligible_zero_column_count");
+    }
+    if chunk.resolved_source.uses_host_buffer() {
+        return Some("ineligible_host_buffer");
+    }
+    if !matches!(
+        chunk.resolved_source.read_strategy,
+        crate::source::ParquetReadStrategy::LocalKvikio | crate::source::ParquetReadStrategy::LocalCacheKvikio
+    ) {
+        return Some("ineligible_read_strategy");
+    }
+    if chunk.read_columns.is_empty() {
+        return Some("ineligible_empty_read_columns");
+    }
+    if !chunk.partition_values.is_empty() {
+        return Some("ineligible_partition_values");
+    }
+    if chunk.scan_limit_rows.is_some() {
+        return Some("ineligible_scan_limit");
+    }
+    if chunk.reads_all_row_groups {
+        return Some("ineligible_reads_all_row_groups");
+    }
+    if chunk.row_group_indexes.is_empty() {
+        return Some("ineligible_empty_row_groups");
+    }
+    if batchable_chunk_source_read_bytes(chunk).is_none() {
+        return Some("ineligible_missing_source_read_bytes");
+    }
+    None
+}
+
+fn source_chunk_batch_extension_rejection(
+    left: &SourceChunk,
+    current_bytes: Option<u64>,
+    right: &SourceChunk,
+    right_bytes: Option<u64>,
+    max_batch_source_read_bytes: Option<u64>,
+) -> Option<&'static str> {
+    if let Some(reason) = chunk_multi_source_batch_rejection(left) {
+        return Some(reason);
+    }
+    if let Some(reason) = chunk_multi_source_batch_rejection(right) {
+        return Some(reason);
+    }
+    if left.source_node_id != right.source_node_id {
+        return Some("incompatible_source_node");
+    }
+    if left.chunk_index + 1 != right.chunk_index {
+        return Some("incompatible_chunk_index_gap");
+    }
+    if left.file_index == right.file_index {
+        if !source_chunks_have_adjacent_row_groups(left, right) {
+            return Some("incompatible_row_group_gap");
+        }
+    } else if left.file_index + 1 != right.file_index {
+        return Some("incompatible_file_index_gap");
+    }
+    if left.read_columns != right.read_columns {
+        return Some("incompatible_read_columns");
+    }
+    if left.resolved_source.read_strategy != right.resolved_source.read_strategy {
+        return Some("incompatible_read_strategy");
+    }
+    let Some(current_bytes) = current_bytes else {
+        return Some("incompatible_missing_current_bytes");
+    };
+    let Some(right_bytes) = right_bytes else {
+        return Some("incompatible_missing_next_bytes");
+    };
+    if let Some(max_bytes) = max_batch_source_read_bytes
+        && current_bytes.saturating_add(right_bytes) > max_bytes
+    {
+        return Some("byte_target_exceeded");
+    }
+    None
+}
+
+fn source_chunks_have_adjacent_row_groups(left: &SourceChunk, right: &SourceChunk) -> bool {
+    let (Some(left_last), Some(right_first)) = (left.row_group_indexes.last(), right.row_group_indexes.first()) else {
+        return false;
+    };
+    left_last.checked_add(1).is_some_and(|next| next == *right_first)
+}
+
+/// Annotates chunks with the batching decision that would apply under the
+/// provided source-level gate and byte target.
+pub fn annotate_source_chunk_batching_reasons(
+    chunks: &mut [SourceChunk],
+    source_level_reason: Option<&'static str>,
+    max_batch_source_read_bytes: Option<u64>,
+) {
+    if let Some(reason) = source_level_reason {
+        for chunk in chunks {
+            chunk.source_batching_reason = Some(reason.to_string());
+        }
+        return;
+    }
+    let batches = plan_source_chunk_batches(chunks, max_batch_source_read_bytes);
+    for batch in batches {
+        for chunk in batch.chunks {
+            if let Some(target) = chunks.get_mut(chunk.chunk_index) {
+                target.source_batching_reason = Some(batch.source_batching_reason.clone());
+            }
+        }
+    }
+}
+
+fn batchable_chunk_source_read_bytes(chunk: &SourceChunk) -> Option<u64> {
+    chunk
+        .estimated_source_read_bytes
+        .or(chunk.known_row_group_bytes)
+        .or(chunk.estimated_chunk_bytes)
+        .or(chunk.known_file_bytes)
 }
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
@@ -1000,6 +1291,7 @@ fn push_pending_chunk(
         file_index,
         location: file.location.clone(),
         path: file.path.clone(),
+        resolved_source: file.resolved_source.clone(),
         stable_id: file.stable_id.clone(),
         row_group_indexes: std::mem::take(&mut pending.row_groups),
         reads_all_row_groups: false,
@@ -1026,6 +1318,7 @@ fn push_pending_chunk(
         known_row_count,
         scan_limit_rows: None,
         size_estimate_based: known_row_group_bytes.is_none(),
+        source_batching_reason: None,
     });
     pending.clear();
 }
@@ -1147,6 +1440,7 @@ fn single_all_row_groups_chunk(
         file_index,
         location: file.location.clone(),
         path: file.path.clone(),
+        resolved_source: file.resolved_source.clone(),
         stable_id: file.stable_id.clone(),
         row_group_indexes: Vec::new(),
         reads_all_row_groups: true,
@@ -1172,6 +1466,7 @@ fn single_all_row_groups_chunk(
         known_row_count: None,
         scan_limit_rows: None,
         size_estimate_based: true,
+        source_batching_reason: None,
     }
 }
 
@@ -1389,5 +1684,154 @@ impl PendingChunk {
         self.has_unknown_pure_filter_compressed_bytes = false;
         self.has_unknown_pure_filter_uncompressed_bytes = false;
         self.has_unknown_rows = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::{ParquetReadStrategy, ResolvedParquetSource};
+
+    fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
+        SourceChunk {
+            source_node_id: NodeId::from_index_for_internal_use(1),
+            chunk_index: index,
+            file_index,
+            location: ParquetSourceLocation::LocalPath(PathBuf::from(format!("part-{file_index}.parquet"))),
+            path: PathBuf::from(format!("part-{file_index}.parquet")),
+            resolved_source: ResolvedParquetSource::local_kvikio(format!("part-{file_index}.parquet")),
+            stable_id: format!("file-{file_index}"),
+            row_group_indexes: vec![0],
+            reads_all_row_groups: false,
+            known_file_bytes: Some(bytes),
+            known_row_group_bytes: Some(bytes),
+            known_projected_compressed_bytes: Some(bytes),
+            known_projected_uncompressed_bytes: Some(bytes),
+            known_pure_filter_compressed_bytes: Some(0),
+            known_pure_filter_uncompressed_bytes: Some(0),
+            estimated_chunk_bytes: Some(bytes),
+            estimated_source_read_bytes: Some(bytes),
+            exact_source_read_preflight_bytes: Some(bytes),
+            source_file_row_groups: None,
+            source_file_row_group_bytes: Some(vec![bytes]),
+            source_file_projected_compressed_bytes: Some(vec![bytes]),
+            source_file_projected_uncompressed_bytes: Some(vec![bytes]),
+            source_file_pure_filter_compressed_bytes: Some(vec![0]),
+            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
+            source_file_row_group_rows: Some(vec![1]),
+            read_columns: vec!["c0".to_string()],
+            partition_values: vec![],
+            zero_column_count: false,
+            known_row_count: Some(1),
+            scan_limit_rows: None,
+            size_estimate_based: false,
+            source_batching_reason: None,
+        }
+    }
+
+    #[test]
+    fn source_chunk_batches_group_adjacent_compatible_chunks_within_byte_target() {
+        let chunks = vec![batchable_chunk(0, 0, 10), batchable_chunk(1, 1, 20), batchable_chunk(2, 2, 30)];
+
+        let batches = plan_source_chunk_batches(&chunks, Some(35));
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(batches[0].estimated_source_read_bytes, Some(30));
+        assert_eq!(batches[1].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn source_chunk_batches_group_adjacent_row_group_chunks_from_same_file() {
+        let mut chunks = vec![batchable_chunk(0, 0, 10), batchable_chunk(1, 0, 20), batchable_chunk(2, 0, 30)];
+        chunks[0].row_group_indexes = vec![0];
+        chunks[1].row_group_indexes = vec![1];
+        chunks[2].row_group_indexes = vec![2];
+
+        let batches = plan_source_chunk_batches(&chunks, Some(35));
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(batches[0].estimated_source_read_bytes, Some(30));
+        assert_eq!(batches[1].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn source_chunk_batches_keep_ineligible_chunks_singleton() {
+        let mut read_all = batchable_chunk(1, 1, 20);
+        read_all.reads_all_row_groups = true;
+        read_all.row_group_indexes.clear();
+        let mut host_buffer = batchable_chunk(2, 2, 30);
+        host_buffer.resolved_source.read_strategy = ParquetReadStrategy::RemoteHostBuffer;
+
+        let batches = plan_source_chunk_batches(
+            &[batchable_chunk(0, 0, 10), read_all, host_buffer, batchable_chunk(3, 3, 40)],
+            None,
+        );
+
+        assert_eq!(batches.len(), 4);
+        assert!(batches.iter().all(SourceChunkBatch::is_singleton));
+    }
+
+    #[test]
+    fn source_chunk_batch_split_for_retry_bisects_and_recomputes_estimates() {
+        let batch = SourceChunkBatch {
+            batch_index: 0,
+            chunks: vec![
+                batchable_chunk(0, 0, 10),
+                batchable_chunk(1, 1, 20),
+                batchable_chunk(2, 2, 30),
+                batchable_chunk(3, 3, 40),
+                batchable_chunk(4, 4, 50),
+            ],
+            estimated_source_read_bytes: Some(150),
+            source_batching_reason: "batched".to_string(),
+        };
+
+        let (left, right) = batch.split_for_retry().expect("multi-chunk batch should split");
+
+        assert_eq!(left.batch_index, 0);
+        assert_eq!(left.chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(left.estimated_source_read_bytes, Some(30));
+        assert_eq!(right.batch_index, 2);
+        assert_eq!(right.chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(right.estimated_source_read_bytes, Some(120));
+    }
+
+    #[test]
+    fn source_chunk_batch_split_for_retry_rejects_singletons() {
+        let batch = SourceChunkBatch {
+            batch_index: 0,
+            chunks: vec![batchable_chunk(0, 0, 10)],
+            estimated_source_read_bytes: Some(10),
+            source_batching_reason: "trailing_singleton".to_string(),
+        };
+
+        assert!(batch.split_for_retry().is_none());
+    }
+
+    #[test]
+    fn source_chunk_detects_whole_known_file_row_group_coverage() {
+        let mut chunk = batchable_chunk(0, 0, 10);
+        chunk.source_file_row_groups = Some(vec![0, 1, 2]);
+        chunk.row_group_indexes = vec![2, 0, 1];
+
+        assert!(chunk.selects_all_known_file_row_groups());
+
+        chunk.row_group_indexes = vec![0, 2];
+        assert!(!chunk.selects_all_known_file_row_groups());
+
+        chunk.row_group_indexes = vec![0, 1, 2];
+        chunk.source_file_row_groups = None;
+        chunk.source_file_row_group_rows = Some(vec![10, 10, 10]);
+        chunk.source_file_row_group_bytes = Some(vec![1, 1, 1]);
+        chunk.source_file_projected_compressed_bytes = Some(vec![1, 1, 1]);
+        chunk.source_file_projected_uncompressed_bytes = Some(vec![1, 1, 1]);
+        chunk.source_file_pure_filter_compressed_bytes = Some(vec![0, 0, 0]);
+        chunk.source_file_pure_filter_uncompressed_bytes = Some(vec![0, 0, 0]);
+        assert!(chunk.selects_all_known_file_row_groups());
+
+        chunk.row_group_indexes = vec![0, 2];
+        assert!(!chunk.selects_all_known_file_row_groups());
     }
 }

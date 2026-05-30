@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use cudf_query_engine::{
     AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceSchedulerPolicy, StddevSampExecutionMode, TenantQueryContext,
+    ServiceStreamPool, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
 };
 
 use crate::error::Error;
@@ -38,6 +38,7 @@ pub struct NativeCudfExecutionConfig {
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
+    source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
 }
 
@@ -99,6 +100,7 @@ impl NativeCudfExecutionConfig {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            source_storage_profiles: Vec::new(),
             query_service_handle: None,
         }
     }
@@ -169,6 +171,7 @@ impl NativeCudfExecutionConfig {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            source_storage_profiles: Vec::new(),
             query_service_handle: None,
         }
     }
@@ -284,6 +287,25 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Source object-store profiles registered for native remote source
+    /// fetches and local-cache miss fills.
+    pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
+        &self.source_storage_profiles
+    }
+
+    /// Register source object-store profiles used by native remote source
+    /// fetches and local-cache miss fills.
+    pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
+        self.source_storage_profiles = profiles.into_iter().collect();
+        self
+    }
+
+    /// Register one source object-store profile.
+    pub fn with_source_storage_profile(mut self, profile: SourceStorageProfile) -> Self {
+        self.source_storage_profiles.push(profile);
+        self
+    }
+
     /// Execute through an admitted multi-tenant query-service handle.
     ///
     /// The handle supplies the service-owned CUDA stream pool, source-fetch
@@ -291,6 +313,10 @@ impl NativeCudfExecutionConfig {
     /// native execution. The handle must remain unfinished until every plan
     /// node built from this config has completed execution; dropping the final
     /// handle releases the service admission slot.
+    ///
+    /// Source storage profiles are service-owned on this path. Register them
+    /// on `QueryServiceConfig::source_storage_profiles`; profiles attached to
+    /// this per-plan config are used only for standalone execution contexts.
     pub fn with_query_service_handle(mut self, handle: Arc<QueryHandle>) -> Self {
         self.memory_resource_policy = MemoryResourcePolicy::ExternalRuntime;
         self.memory_control_policy = handle.memory_control_policy();
@@ -358,7 +384,8 @@ impl NativeCudfExecutionConfig {
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
-            .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode);
+            .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)
+            .with_source_storage_profiles(self.source_storage_profiles.clone());
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());
         }

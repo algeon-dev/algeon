@@ -67,6 +67,14 @@ impl SelectedRowGroupStats {
 pub struct SourceDiagnostics {
     /// Source file/data format.
     pub format: SourceFormat,
+    /// Comma-separated high-level Parquet read strategies represented by this source.
+    pub source_read_strategy: String,
+    /// Comma-separated cuDF decode input kinds represented by this source.
+    pub source_decode_input: String,
+    /// Comma-separated credential modes represented by this source.
+    pub credential_mode: String,
+    /// Comma-separated local byte-cache statuses represented by this source.
+    pub lakehouse_cache_status: String,
     /// True when no rejected features prevent native direct device read.
     pub direct_device_read: bool,
     /// Number of files represented after any frontend coalescing.
@@ -152,6 +160,10 @@ impl SourceDiagnostics {
             if columns.scan_limit.is_some() { ScanLimitDisposition::Represented } else { ScanLimitDisposition::Absent };
         Self {
             format: SourceFormat::Parquet,
+            source_read_strategy: summarize_source_read_strategy(files),
+            source_decode_input: summarize_source_decode_input(files),
+            credential_mode: summarize_credential_mode(files),
+            lakehouse_cache_status: summarize_lakehouse_cache_status(files),
             direct_device_read: rejected_features.is_empty(),
             file_count: files.len(),
             ranged_file_count: 0,
@@ -170,6 +182,29 @@ impl SourceDiagnostics {
             rejected_features,
         }
     }
+}
+
+fn summarize_source_read_strategy(files: &[LocalParquetFile]) -> String {
+    summarize_file_values(files, |file| file.resolved_source.read_strategy.as_str())
+}
+
+fn summarize_source_decode_input(files: &[LocalParquetFile]) -> String {
+    summarize_file_values(files, |file| file.resolved_source.decode_input.as_str())
+}
+
+fn summarize_credential_mode(files: &[LocalParquetFile]) -> String {
+    summarize_file_values(files, |file| file.resolved_source.credential_mode.as_str())
+}
+
+fn summarize_lakehouse_cache_status(files: &[LocalParquetFile]) -> String {
+    summarize_file_values(files, |file| file.resolved_source.cache_status.as_str())
+}
+
+fn summarize_file_values(files: &[LocalParquetFile], value: impl Fn(&LocalParquetFile) -> &'static str) -> String {
+    let mut values = files.iter().map(value).collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    values.join(",")
 }
 
 fn selected_row_group_stats_for_files(files: &[LocalParquetFile]) -> Option<SelectedRowGroupStats> {

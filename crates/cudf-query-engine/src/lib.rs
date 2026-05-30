@@ -90,7 +90,7 @@ pub use metrics::{
     AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
     DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics,
     MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics,
-    TaskOperatorMetrics, TaskRuntimeMetrics,
+    SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
 };
 pub use mode::{
     AdaptiveExecutionMode, NativePipelineExecutionMode, StatisticalAggregateExecutionMode,
@@ -153,14 +153,16 @@ pub use runtime::{
     KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, MemoryControlPolicy, MemoryReservationRequest,
     MemoryResourcePolicy, MemorySpaceId, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
     ProbeExecutionBoundary, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
-    QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts, ServiceStreamPool,
-    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
-    SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy, StreamLease, TenantId,
-    TenantQueryContext, TenantQueueDepth, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
+    QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts, S3SourceStorageCredential,
+    S3SourceStorageProfile, ServiceStreamPool, SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision,
+    SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy,
+    SourceStorageProfile, StreamLease, TenantId, TenantQueryContext, TenantQueueDepth, source_gds_eligibility,
+    source_gds_eligibility_with_default_mounts,
 };
 pub use source::{
-    ByteRangeDisposition, GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-    ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDiagnostics,
-    SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheStatus, LiteralBatchSource,
+    LocalParquetFile, LocalParquetSource, MissingColumn, ParquetReadStrategy, ParquetSourceLocation, PartitionColumn,
+    PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, ResolvedParquetSource,
+    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput,
+    SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

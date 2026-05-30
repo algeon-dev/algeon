@@ -558,8 +558,8 @@ async fn assert_sql_native_parity(
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.host_to_device_uploaded_rows, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_eq!(metrics.source_chunks_planned, metrics.source_chunks_committed);
     assert!(metrics.source_chunks_committed > 0);
+    assert!(metrics.source_chunks_committed <= metrics.source_chunks_planned);
     assert_eq!(metrics.row_groups_planned, metrics.row_groups_committed);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);

@@ -470,7 +470,7 @@ fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
 #[test]
 fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     let dir = unique_temp_dir("cudf-query-engine-join-ordered-stddev-samp");
-    let left_path = dir.join("left.parquet");
+    let left_paths = [dir.join("left-0.parquet"), dir.join("left-1.parquet"), dir.join("left-2.parquet")];
     let right_path = dir.join("right.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let left_schema =
@@ -480,12 +480,16 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
         Field::new("grp", DataType::Int32, false),
         Field::new("keep", DataType::Int32, false),
     ]));
-    let left_values = vec![1.0e16, 1.0e-16, 1.0, 2.0, 3.0];
-    let left_batch = RecordBatch::try_new(
-        Arc::clone(&left_schema),
-        vec![Arc::new(Int32Array::from(vec![1; left_values.len()])), Arc::new(Float64Array::from(left_values.clone()))],
-    )
-    .unwrap();
+    let left_parts = [vec![1.0e16, 1.0e-16], vec![1.0, 2.0], vec![3.0]];
+    let left_values = left_parts.iter().flat_map(|part| part.iter().copied()).collect::<Vec<_>>();
+    for (path, values) in left_paths.iter().zip(left_parts.iter()) {
+        let left_batch = RecordBatch::try_new(
+            Arc::clone(&left_schema),
+            vec![Arc::new(Int32Array::from(vec![1; values.len()])), Arc::new(Float64Array::from(values.clone()))],
+        )
+        .unwrap();
+        DataFrame::from_record_batch(&runtime, &left_batch).unwrap().write_parquet(path).unwrap();
+    }
     let right_batch = RecordBatch::try_new(
         Arc::clone(&right_schema),
         vec![
@@ -495,11 +499,18 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
         ],
     )
     .unwrap();
-    DataFrame::from_record_batch(&runtime, &left_batch).unwrap().write_parquet(&left_path).unwrap();
     DataFrame::from_record_batch(&runtime, &right_batch).unwrap().write_parquet(&right_path).unwrap();
 
     let left = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        left_paths
+            .iter()
+            .zip(left_parts.iter())
+            .map(|(path, values)| {
+                LocalParquetFile::new(path)
+                    .with_file_size_bytes(fs::metadata(path).unwrap().len())
+                    .with_row_group_rows(vec![values.len() as u64])
+            })
+            .collect(),
         Arc::clone(&left_schema),
         vec!["k".to_string(), "v".to_string()],
     );
@@ -580,7 +591,17 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     );
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::builder().with_shared_runtime(runtime).build().unwrap();
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(runtime)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -596,6 +617,14 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[7]);
     assert_eq!(float64_array(batch, 1).value(0).to_bits(), expected.to_bits());
     assert_eq!(float64_array(batch, 3).value(0).to_bits(), (expected / expected_avg).to_bits());
+    assert!(
+        result
+            .metrics()
+            .source_read_runtime_rows
+            .iter()
+            .any(|row| row.read_kind == "chunk_batch" && row.chunk_count > 1),
+        "order-tracked join stddev should keep multi-file source batching enabled"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

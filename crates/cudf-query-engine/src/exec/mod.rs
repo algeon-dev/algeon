@@ -297,15 +297,15 @@ use self::{
 };
 use crate::{
     chunk::{
-        SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-        plan_local_parquet_source_chunks,
+        SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+        annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks, plan_source_chunk_batches,
     },
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue, SortSpec,
     },
-    metrics::QueryMetrics,
+    metrics::{QueryMetrics, SourceReadRuntimeMetrics},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,

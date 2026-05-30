@@ -2,6 +2,8 @@ use std::{
     collections::BTreeSet,
     error::Error as StdError,
     fmt,
+    io::{self, Write},
+    process::Stdio,
     time::{Duration, Instant},
 };
 
@@ -16,13 +18,14 @@ pub(crate) mod native_iceberg_smoke_report;
 
 use native_iceberg_smoke_report::{
     IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, IcebergNativeSmokeReportRow, ObjectStoreStagingMode,
-    ObjectStoreStagingStatus,
+    ObjectStoreStagingStatus, SmokeQueryExecutionMode,
 };
+use tokio::process::Command;
 
 type BenchmarkResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 2;
-const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
+const REPORT_SCHEMA_VERSION: u32 = 3;
+const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
 
 const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS";
 const WARMUPS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_WARMUPS";
@@ -30,14 +33,28 @@ const ITERATIONS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_ITERATIONS";
 const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_OBJECT_STORE_STAGING";
 const QUERY_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS";
 const ITERATION_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_ITERATION_TIMEOUT_SECS";
+const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_CPU_BASELINE_TIMEOUT_SECS";
+const CPU_CHILD_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_CPU_CHILD";
+const DEFAULT_TIMEOUT_ENABLED_CPU_BASELINE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 
 #[tokio::main]
 async fn main() {
+    if std::env::var(CPU_CHILD_ENV).as_deref() == Ok("1") {
+        match run_cpu_child_from_env().await {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("[native_iceberg_tpch_benchmark] cpu_child_error={}", stable_tsv_field(&error.to_string()));
+                std::process::exit(1);
+            },
+        }
+    }
     match run_from_env_with_config().await {
         Ok((config, report)) => {
             let gate_result = validate_full_sf1_staged_s3_gate_for_config(&report, &config);
-            print!("{}", report.to_tsv());
+            if !config.stream_rows_to_stdout() {
+                print!("{}", report.to_tsv());
+            }
             match gate_result {
                 Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
                 Ok(None) => {},
@@ -70,8 +87,42 @@ async fn run_from_env_with_config() -> BenchmarkResult<(IcebergTpchBenchmarkConf
     Ok((config, report))
 }
 
+async fn run_cpu_child_from_env() -> BenchmarkResult<()> {
+    let config = IcebergTpchBenchmarkConfig::from_env()?;
+    config.validate()?;
+    if config.query_ids.len() != 1 {
+        return Err(benchmark_error(format!(
+            "{CPU_CHILD_ENV}=1 requires exactly one {QUERY_IDS_ENV}, got {}",
+            config.query_ids.join(",")
+        )));
+    }
+    let query_id = config.query_ids[0].clone();
+    let started = Instant::now();
+    let smoke_row = native_iceberg_smoke_report::run_single_tpch_query_report_with_execution_mode(
+        config.smoke_config.clone(),
+        query_id,
+        SmokeQueryExecutionMode::CpuOnly,
+    )
+    .await?;
+    let row = IcebergTpchBenchmarkRow {
+        iteration: 1,
+        tpch_scale_factor: config.smoke_config.tpch_scale_factor.clone(),
+        warmup_iterations: 0,
+        measured_iterations: 1,
+        report_elapsed_ms: started.elapsed().as_millis(),
+        timeout_category: benchmark_timeout_category_from_smoke_row(&smoke_row),
+        smoke_row,
+    };
+    print!("{}", IcebergTpchBenchmarkReport { rows: vec![row] }.to_tsv());
+    Ok(())
+}
+
 pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> BenchmarkResult<IcebergTpchBenchmarkReport> {
     config.validate()?;
+    let stream_rows_to_stdout = config.stream_rows_to_stdout();
+    if stream_rows_to_stdout {
+        write_benchmark_tsv_header_to_stdout()?;
+    }
     for warmup_index in 0..config.warmup_iterations {
         eprintln!(
             "[native_iceberg_tpch_benchmark] phase=warmup_start index={}/{} query_ids={}",
@@ -142,15 +193,20 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
                         smoke_row.cpu_runtime_outcome.as_str(),
                         smoke_row.parity_status.as_str(),
                     );
-                    rows.push(IcebergTpchBenchmarkRow {
+                    let timeout_category = benchmark_timeout_category_from_smoke_row(&smoke_row);
+                    let row = IcebergTpchBenchmarkRow {
                         iteration: iteration_index + 1,
                         tpch_scale_factor: config.smoke_config.tpch_scale_factor.clone(),
                         warmup_iterations: config.warmup_iterations,
                         measured_iterations: config.iterations,
-                        report_elapsed_ms: 0,
-                        timeout_category: None,
+                        report_elapsed_ms: if stream_rows_to_stdout { report_elapsed_ms } else { 0 },
+                        timeout_category,
                         smoke_row,
-                    });
+                    };
+                    if stream_rows_to_stdout {
+                        write_benchmark_tsv_row_to_stdout(&row)?;
+                    }
+                    rows.push(row);
                 },
                 Err(BenchmarkQueryExecutionError::TimedOut { category, timeout_secs }) => {
                     let report_elapsed_ms = query_started.elapsed().as_millis();
@@ -163,26 +219,34 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
                         timeout_secs,
                         report_elapsed_ms,
                     );
-                    rows.push(IcebergTpchBenchmarkRow {
+                    let row = IcebergTpchBenchmarkRow {
                         iteration: iteration_index + 1,
                         tpch_scale_factor: config.smoke_config.tpch_scale_factor.clone(),
                         warmup_iterations: config.warmup_iterations,
                         measured_iterations: config.iterations,
-                        report_elapsed_ms: 0,
+                        report_elapsed_ms: if stream_rows_to_stdout { report_elapsed_ms } else { 0 },
                         timeout_category: Some(category),
                         smoke_row: timeout_smoke_row(&config, query_id, category, timeout_secs),
-                    });
-                    set_iteration_report_elapsed_ms(
-                        &mut rows,
-                        iteration_row_start,
-                        iteration_started.elapsed().as_millis(),
-                    );
+                    };
+                    if stream_rows_to_stdout {
+                        write_benchmark_tsv_row_to_stdout(&row)?;
+                    }
+                    rows.push(row);
+                    if !stream_rows_to_stdout {
+                        set_iteration_report_elapsed_ms(
+                            &mut rows,
+                            iteration_row_start,
+                            iteration_started.elapsed().as_millis(),
+                        );
+                    }
                     return Ok(IcebergTpchBenchmarkReport { rows });
                 },
                 Err(BenchmarkQueryExecutionError::Failed(error)) => return Err(error),
             }
         }
-        set_iteration_report_elapsed_ms(&mut rows, iteration_row_start, iteration_started.elapsed().as_millis());
+        if !stream_rows_to_stdout {
+            set_iteration_report_elapsed_ms(&mut rows, iteration_row_start, iteration_started.elapsed().as_millis());
+        }
     }
 
     Ok(IcebergTpchBenchmarkReport { rows })
@@ -233,6 +297,203 @@ enum BenchmarkQueryExecutionError {
 
 type BenchmarkErrorBox = Box<dyn StdError + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CpuChildResult {
+    pub(crate) elapsed_ms: Option<u128>,
+    pub(crate) output_rows: Option<usize>,
+    pub(crate) output_batches: Option<usize>,
+    pub(crate) output_fingerprint: Option<String>,
+    pub(crate) comparison_mode: ParityComparisonMode,
+    pub(crate) detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CpuChildFailure {
+    pub(crate) elapsed_ms: u128,
+    pub(crate) detail: String,
+    pub(crate) timeout: bool,
+}
+
+async fn run_cpu_child(query_id: &str, timeout_secs: Option<u64>) -> Result<CpuChildResult, CpuChildFailure> {
+    let started = Instant::now();
+    let executable = std::env::current_exe().map_err(|error| CpuChildFailure {
+        elapsed_ms: started.elapsed().as_millis(),
+        detail: format!("cpu_baseline_child_current_exe_error={}", stable_tsv_field(&error.to_string())),
+        timeout: false,
+    })?;
+    let mut child = Command::new(executable);
+    child
+        .env(CPU_CHILD_ENV, "1")
+        .env(QUERY_IDS_ENV, query_id)
+        .env(WARMUPS_ENV, "0")
+        .env(ITERATIONS_ENV, "1")
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = child.spawn().map_err(|error| CpuChildFailure {
+        elapsed_ms: started.elapsed().as_millis(),
+        detail: format!("cpu_baseline_child_spawn_error={}", stable_tsv_field(&error.to_string())),
+        timeout: false,
+    })?;
+    let output_future = child.wait_with_output();
+    let output = match timeout_secs {
+        Some(timeout_secs) => match tokio::time::timeout(Duration::from_secs(timeout_secs), output_future).await {
+            Ok(output) => output,
+            Err(_) => {
+                return Err(CpuChildFailure {
+                    elapsed_ms: started.elapsed().as_millis(),
+                    detail: format!("cpu_baseline_child_timeout_secs={timeout_secs}"),
+                    timeout: true,
+                });
+            },
+        },
+        None => output_future.await,
+    }
+    .map_err(|error| CpuChildFailure {
+        elapsed_ms: started.elapsed().as_millis(),
+        detail: format!("cpu_baseline_child_wait_error={}", stable_tsv_field(&error.to_string())),
+        timeout: false,
+    })?;
+    let elapsed_ms = started.elapsed().as_millis();
+    if !output.status.success() {
+        return Err(CpuChildFailure {
+            elapsed_ms,
+            detail: format!(
+                "cpu_baseline_child_exit_status={};stderr={}",
+                child_exit_status_text(output.status),
+                stable_tsv_field(&String::from_utf8_lossy(&output.stderr))
+            ),
+            timeout: false,
+        });
+    }
+    parse_cpu_child_result(&String::from_utf8_lossy(&output.stdout)).map_err(|error| CpuChildFailure {
+        elapsed_ms,
+        detail: format!("cpu_baseline_child_parse_error={}", stable_tsv_field(&error.to_string())),
+        timeout: false,
+    })
+}
+
+fn merge_cpu_child_result(row: &mut IcebergNativeSmokeReportRow, child: CpuChildResult) {
+    row.cpu_runtime_started = true;
+    row.cpu_runtime_outcome = NativeDataFusionRuntimeOutcome::Succeeded;
+    row.cpu_runtime_elapsed_ms = child.elapsed_ms;
+    row.cpu_output_rows = child.output_rows;
+    row.cpu_output_batches = child.output_batches;
+    row.cpu_output_fingerprint = child.output_fingerprint;
+    row.comparison_mode = child.comparison_mode;
+    row.parity_detail = child.detail;
+    row.parity_status = match (row.cpu_output_fingerprint.as_deref(), row.native_output_fingerprint.as_deref()) {
+        (Some(cpu), Some(native)) if cpu == native => ParityStatus::Matched,
+        (Some(_), Some(_)) => {
+            if row.parity_detail.is_none() {
+                row.parity_detail = Some("child CPU fingerprint differs from native fingerprint".to_string());
+            }
+            ParityStatus::Mismatched
+        },
+        _ => {
+            if row.parity_detail.is_none() {
+                row.parity_detail = Some("child CPU or native fingerprint missing".to_string());
+            }
+            ParityStatus::NotCompared
+        },
+    };
+}
+
+pub(crate) fn apply_cpu_child_failure(row: &mut IcebergNativeSmokeReportRow, failure: CpuChildFailure) {
+    row.cpu_runtime_started = true;
+    row.cpu_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
+    row.cpu_runtime_elapsed_ms = Some(failure.elapsed_ms);
+    row.parity_status = ParityStatus::CpuFailed;
+    let timeout_category = if failure.timeout { "timeout_category=cpu_s3_baseline_timeout;" } else { "" };
+    row.parity_detail = Some(format!("{timeout_category}{}", stable_tsv_field(&failure.detail)));
+    row.comparison_mode = ParityComparisonMode::NotApplicable;
+}
+
+pub(crate) fn parse_cpu_child_result(output: &str) -> BenchmarkResult<CpuChildResult> {
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty() && !line.starts_with('#'));
+    let header = lines.next().ok_or_else(|| benchmark_error("CPU child TSV missing header"))?;
+    let row = lines.next().ok_or_else(|| benchmark_error("CPU child TSV missing row"))?;
+    if lines.next().is_some() {
+        return Err(benchmark_error("CPU child TSV contained multiple rows"));
+    }
+    let headers = header.split('\t').collect::<Vec<_>>();
+    let fields = row.split('\t').collect::<Vec<_>>();
+    if headers.len() != fields.len() {
+        return Err(benchmark_error(format!(
+            "CPU child TSV field count mismatch: header={}, row={}",
+            headers.len(),
+            fields.len()
+        )));
+    }
+    let field = |name: &str| -> BenchmarkResult<&str> {
+        headers
+            .iter()
+            .position(|header| *header == name)
+            .and_then(|index| fields.get(index).copied())
+            .ok_or_else(|| benchmark_error(format!("CPU child TSV missing field {name}")))
+    };
+    if field("cpu_runtime_outcome")? != "succeeded" {
+        return Err(benchmark_error(format!(
+            "CPU child runtime outcome={}; detail={}",
+            field("cpu_runtime_outcome")?,
+            field("parity_detail").unwrap_or("none")
+        )));
+    }
+    Ok(CpuChildResult {
+        elapsed_ms: parse_optional_u128_field(field("cpu_runtime_elapsed_ms")?)?,
+        output_rows: parse_optional_usize_field(field("cpu_output_rows")?)?,
+        output_batches: parse_optional_usize_field(field("cpu_output_batches")?)?,
+        output_fingerprint: parse_optional_string_field(field("cpu_output_fingerprint")?),
+        comparison_mode: parse_comparison_mode(field("comparison_mode")?)?,
+        detail: parse_optional_string_field(field("parity_detail")?),
+    })
+}
+
+fn parse_optional_u128_field(value: &str) -> BenchmarkResult<Option<u128>> {
+    if value == "none" {
+        Ok(None)
+    } else {
+        value.parse::<u128>().map(Some).map_err(|error| benchmark_error(format!("invalid u128 field {value}: {error}")))
+    }
+}
+
+fn parse_optional_usize_field(value: &str) -> BenchmarkResult<Option<usize>> {
+    if value == "none" {
+        Ok(None)
+    } else {
+        value
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|error| benchmark_error(format!("invalid usize field {value}: {error}")))
+    }
+}
+
+fn parse_optional_string_field(value: &str) -> Option<String> {
+    (value != "none").then(|| value.to_string())
+}
+
+fn parse_comparison_mode(value: &str) -> BenchmarkResult<ParityComparisonMode> {
+    match value {
+        "ordered_exact" => Ok(ParityComparisonMode::OrderedExact),
+        "unordered_exact" => Ok(ParityComparisonMode::UnorderedExact),
+        "ordered_float_tolerant" => Ok(ParityComparisonMode::OrderedFloatTolerant),
+        "unordered_float_tolerant" => Ok(ParityComparisonMode::UnorderedFloatTolerant),
+        "not_applicable" => Ok(ParityComparisonMode::NotApplicable),
+        other => Err(benchmark_error(format!("unknown comparison mode {other}"))),
+    }
+}
+
+fn child_exit_status_text(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal:{signal}");
+        }
+    }
+    status.code().map_or_else(|| "unknown".to_string(), |code| format!("code:{code}"))
+}
+
 async fn run_report_with_timeout(
     smoke_config: IcebergNativeSmokeConfig,
     timeout_secs: Option<u64>,
@@ -252,6 +513,9 @@ async fn run_single_query_report_with_timeout(
     query_id: &str,
     timeout: QueryTimeout,
 ) -> Result<IcebergNativeSmokeReportRow, BenchmarkQueryExecutionError> {
+    if config.uses_cpu_child_baseline() {
+        return run_single_query_report_with_child_cpu(config, query_id, timeout).await;
+    }
     let mut smoke_config = config.smoke_config.clone();
     smoke_config.tpch_query_ids = vec![query_id.to_string()];
     let future = native_iceberg_smoke_report::run_report(smoke_config);
@@ -277,6 +541,43 @@ async fn run_single_query_report_with_timeout(
         ))));
     }
     Ok(row)
+}
+
+async fn run_single_query_report_with_child_cpu(
+    config: &IcebergTpchBenchmarkConfig,
+    query_id: &str,
+    timeout: QueryTimeout,
+) -> Result<IcebergNativeSmokeReportRow, BenchmarkQueryExecutionError> {
+    let native_future = native_iceberg_smoke_report::run_single_tpch_query_report_with_execution_mode(
+        config.smoke_config.clone(),
+        query_id.to_string(),
+        SmokeQueryExecutionMode::NativeOnly,
+    );
+    let mut native_row = match timeout.duration {
+        Some(duration) => tokio::time::timeout(duration, native_future)
+            .await
+            .map_err(|_| BenchmarkQueryExecutionError::TimedOut {
+                category: timeout.category,
+                timeout_secs: timeout_secs_for_report(duration),
+            })?
+            .map_err(BenchmarkQueryExecutionError::Failed)?,
+        None => native_future.await.map_err(BenchmarkQueryExecutionError::Failed)?,
+    };
+    if native_row.native_runtime_outcome != NativeDataFusionRuntimeOutcome::Succeeded {
+        return Ok(native_row);
+    }
+    let timeout_secs =
+        config.smoke_config.cpu_baseline_timeout_secs.or(config.query_timeout_secs).or(config.iteration_timeout_secs);
+    match run_cpu_child(query_id, timeout_secs).await {
+        Ok(child) => {
+            merge_cpu_child_result(&mut native_row, child);
+            Ok(native_row)
+        },
+        Err(error) => {
+            apply_cpu_child_failure(&mut native_row, error);
+            Ok(native_row)
+        },
+    }
 }
 
 fn timeout_secs_for_report(duration: Duration) -> u64 {
@@ -372,9 +673,12 @@ impl IcebergTpchBenchmarkConfig {
 
     pub(crate) fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> BenchmarkResult<Self> {
         let mut smoke_config = IcebergNativeSmokeConfig::from_env_get(|name| get(name))?;
-        if !matches!(smoke_config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. }) {
+        if !matches!(
+            smoke_config.fixture,
+            IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }
+        ) {
             return Err(benchmark_error(
-                "native Iceberg TPC-H benchmark requires CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3",
+                "native Iceberg TPC-H benchmark requires CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
             ));
         }
 
@@ -390,6 +694,14 @@ impl IcebergTpchBenchmarkConfig {
         let query_timeout_secs = parse_optional_u64_env(get(QUERY_TIMEOUT_SECS_ENV), QUERY_TIMEOUT_SECS_ENV)?;
         let iteration_timeout_secs =
             parse_optional_u64_env(get(ITERATION_TIMEOUT_SECS_ENV), ITERATION_TIMEOUT_SECS_ENV)?;
+        let cpu_baseline_timeout_secs =
+            parse_optional_u64_env(get(CPU_BASELINE_TIMEOUT_SECS_ENV), CPU_BASELINE_TIMEOUT_SECS_ENV)?;
+        if smoke_config.cpu_baseline_timeout_secs.is_none() {
+            smoke_config.cpu_baseline_timeout_secs = cpu_baseline_timeout_secs.or_else(|| {
+                (query_timeout_secs.is_some() || iteration_timeout_secs.is_some())
+                    .then_some(DEFAULT_TIMEOUT_ENABLED_CPU_BASELINE_TIMEOUT_SECS)
+            });
+        }
         if let Some(value) = get(OBJECT_STORE_STAGING_ENV) {
             smoke_config.object_store_staging = parse_object_store_staging_mode(&value)?;
         }
@@ -417,6 +729,21 @@ impl IcebergTpchBenchmarkConfig {
     fn timeouts_enabled(&self) -> bool {
         self.query_timeout_secs.is_some() || self.iteration_timeout_secs.is_some()
     }
+
+    fn stream_rows_to_stdout(&self) -> bool {
+        self.timeouts_enabled()
+    }
+
+    fn uses_cpu_child_baseline(&self) -> bool {
+        self.timeouts_enabled()
+    }
+}
+
+fn benchmark_timeout_category_from_smoke_row(row: &IcebergNativeSmokeReportRow) -> Option<BenchmarkTimeoutCategory> {
+    row.parity_detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("timeout_category=cpu_s3_baseline_timeout"))
+        .then_some(BenchmarkTimeoutCategory::CpuS3Baseline)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,6 +767,27 @@ impl IcebergTpchBenchmarkReport {
             .collect::<Vec<_>>();
         if failures.is_empty() { None } else { Some(format!("benchmark timeout failures={}", failures.join(","))) }
     }
+}
+
+pub(crate) fn write_benchmark_tsv_header(writer: &mut impl Write) -> io::Result<()> {
+    writeln!(writer, "# native_iceberg_tpch_benchmark_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
+    writeln!(writer, "{REPORT_HEADER}")?;
+    writer.flush()
+}
+
+pub(crate) fn write_benchmark_tsv_row(writer: &mut impl Write, row: &IcebergTpchBenchmarkRow) -> io::Result<()> {
+    writeln!(writer, "{}", row.to_tsv_row())?;
+    writer.flush()
+}
+
+fn write_benchmark_tsv_header_to_stdout() -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_benchmark_tsv_header(&mut stdout)
+}
+
+fn write_benchmark_tsv_row_to_stdout(row: &IcebergTpchBenchmarkRow) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_benchmark_tsv_row(&mut stdout, row)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,6 +817,10 @@ impl IcebergTpchBenchmarkRow {
             optional_u64(row.diagnostics.planned_bytes),
             row.diagnostics.admitted_native_source_file_count.to_string(),
             empty_as_none(&row.diagnostics.native_source_read_capability),
+            empty_as_none(&row.diagnostics.source_read_strategy),
+            empty_as_none(&row.diagnostics.source_decode_input),
+            empty_as_none(&row.diagnostics.credential_mode),
+            empty_as_none(&row.diagnostics.lakehouse_cache_status),
             row.diagnostics.direct_device_read_disposition.code().to_string(),
             object_store_staging_mode_code(row.staging_summary.mode).to_string(),
             object_store_staging_status_code(row.staging_summary.status).to_string(),
