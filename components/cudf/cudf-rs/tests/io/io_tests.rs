@@ -1,6 +1,5 @@
 //! Tests for Parquet and CSV I/O.
-use std::os::unix::ffi::OsStringExt;
-use std::process::Command;
+use std::{os::unix::ffi::OsStringExt, process::Command};
 
 use cudf::{
     ErrorCode, ErrorKind,

@@ -87,7 +87,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_column_view_data_type", "metadata-only accessor"),
     ("cudf_column_view_destroy", "pure lifecycle"),
     ("cudf_column_view_nullable", "metadata-only accessor"),
-    ("cudf_column_view_null_count", "metadata-only accessor"),
+    ("cudf_column_view_null_count", "metadata-only stored null-count accessor"),
     ("cudf_column_view_null_mask_ptr", "raw-pointer-only accessor"),
     ("cudf_column_view_num_children", "metadata-only accessor"),
     ("cudf_column_view_offset", "metadata-only accessor"),

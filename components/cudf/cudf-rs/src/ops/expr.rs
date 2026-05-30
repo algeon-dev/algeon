@@ -84,7 +84,10 @@ use crate::{
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
-    internal::hash::{FastHashMap, fast_hash_map_with_capacity},
+    internal::{
+        hash::{FastHashMap, fast_hash_map_with_capacity},
+        resolve::missing_column_error,
+    },
     runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
@@ -133,15 +136,20 @@ impl<'df> ExprEvalContext<'df> {
             return Ok(series.clone());
         }
 
-        let series = self.df.series(name)?;
-        let column = series.arc();
+        let column =
+            self.df.columns_map().get(name).cloned().ok_or_else(|| missing_column_error(self.operation, name))?;
         let normalized = if ExecutionDomain::same_provenance(column.execution_domain(), &self.output_domain) {
             column
         } else {
-            ExecutionDomain::insert_stream_dependency(column.execution_domain(), &self.output_domain, self.operation)?;
-            Arc::new(column.copy_into_domain(Arc::clone(&self.output_domain), self.operation)?)
+            ExecutionDomain::insert_stream_dependency(column.execution_domain(), &self.output_domain, self.operation)
+                .map_err(|error| error.with_column(name.to_string()))?;
+            Arc::new(
+                column
+                    .copy_into_domain(Arc::clone(&self.output_domain), self.operation)
+                    .map_err(|error| error.with_column(name.to_string()))?,
+            )
         };
-        let normalized = Series::from_column_arc(normalized)?;
+        let normalized = Series::from_column_arc(normalized).map_err(|error| error.with_column(name.to_string()))?;
         self.normalized_columns.borrow_mut().insert(name.to_string(), normalized.clone());
         Ok(normalized)
     }
