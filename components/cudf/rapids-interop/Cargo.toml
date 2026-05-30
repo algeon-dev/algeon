@@ -6,13 +6,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[lints]
-workspace = true
+homepage.workspace = true
+keywords = ["cuda", "gpu", "interop", "rapids"]
+categories = ["api-bindings", "science"]
 
 [lib]
 name = "rapids_interop"
 path = "src/lib.rs"
 
 [dev-dependencies]
-static_assertions = "1"
+static_assertions.workspace = true

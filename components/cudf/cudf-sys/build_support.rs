@@ -57,6 +57,44 @@ pub fn parse_cmake_bool(var_name: &str, value: &str) -> Result<&'static str, Str
     }
 }
 
+pub fn cmake_cache_value<'a>(cache: &'a str, key: &str) -> Option<&'a str> {
+    cache.lines().find_map(|line| {
+        let (cache_name_and_type, value) = line.split_once('=')?;
+        let (cache_name, _) = cache_name_and_type.split_once(':')?;
+        (cache_name == key).then_some(value)
+    })
+}
+
+pub fn cached_cudf_discovery_matches_env(cache: &str) -> bool {
+    if let Some(install_dir) = env_path("CUDF_INSTALL_DIR") {
+        return cmake_cache_path_matches(cache, "CUDF_INSTALL_DIR", &install_dir)
+            && cmake_cache_value(cache, "CUDF_CPP_BUILD_DIR").is_none();
+    }
+
+    if let Some(build_dir) = env_path("CUDF_CPP_BUILD_DIR") {
+        return cmake_cache_path_matches(cache, "CUDF_CPP_BUILD_DIR", &build_dir)
+            && cmake_cache_value(cache, "CUDF_INSTALL_DIR").is_none();
+    }
+
+    true
+}
+
+pub fn cmake_cache_path_matches(cache: &str, key: &str, expected: &Path) -> bool {
+    let Some(cached) = cmake_cache_value(cache, key) else { return false };
+    paths_equivalent(Path::new(cached), expected)
+}
+
+pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn env_path(var_name: &str) -> Option<PathBuf> {
+    env::var(var_name).ok().map(PathBuf::from)
+}
+
 pub fn ensure_supported_target_os(target_os: &str) -> Result<(), String> {
     if target_os == "linux" {
         return Ok(());
@@ -131,14 +169,8 @@ fn collect_clang_lint_files_from_dir(dir: &Path, lint_files: &mut Vec<PathBuf>) 
     Ok(())
 }
 
-#[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
     fs::metadata(path).map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
 }

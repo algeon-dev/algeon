@@ -975,7 +975,7 @@ fn eval_string_op_returns_values() {
 }
 
 // ===========================================================================
-// Phase 2: Null fill + cumulative
+// Null fill and cumulative expressions
 // ===========================================================================
 
 #[test]
@@ -1068,7 +1068,7 @@ fn with_columns_cumsum_no_alias_needed() {
 }
 
 // ===========================================================================
-// Phase 3: Aggregation (broadcast aggregate)
+// Aggregation expressions with broadcast results
 // ===========================================================================
 
 #[test]
@@ -1180,7 +1180,7 @@ fn with_columns_reduce_requires_alias_or_explicit_name() {
 }
 
 // ===========================================================================
-// Phase 4a: String ops
+// String expressions
 // ===========================================================================
 
 #[test]
@@ -1273,7 +1273,7 @@ fn with_columns_str_lower_no_alias() {
 }
 
 // ===========================================================================
-// Phase 4b: Conditional (when / then / otherwise)
+// Conditional expressions
 // ===========================================================================
 
 #[test]

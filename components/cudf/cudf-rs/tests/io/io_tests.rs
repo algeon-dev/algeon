@@ -1,5 +1,4 @@
 //! Tests for Parquet and CSV I/O.
-#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 use std::process::Command;
 
@@ -808,7 +807,6 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
-#[cfg(unix)]
 #[test]
 fn test_csv_read_rejects_non_utf8_path_using_stable_contract() {
     let rt = sample_runtime();

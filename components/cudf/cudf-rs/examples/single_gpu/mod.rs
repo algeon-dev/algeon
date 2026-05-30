@@ -160,7 +160,7 @@ pub async fn run_isolated_runtime_oom() -> cudf::Result<()> {
 
 /// Run the concurrent heavy-allocation experiment: all threads do allocation-
 /// heavy work simultaneously.  A barrier ensures all threads begin their
-/// allocation-heavy phase at the same time.
+/// allocation-heavy section at the same time.
 ///
 /// The 3 healthy threads repeatedly re-read parquet and concat results,
 /// generating continuous GPU allocations that overlap in time with the OOM
@@ -558,7 +558,7 @@ fn workflow_oom_concat_growth_with_barrier(ctx: WorkflowContext, runtime: Runtim
     let df = read_node_subset(&runtime, &ctx, OOM_BASE_NUM_ROWS)?;
     let numeric = inflate_numeric_frame(&df)?;
 
-    // Wait for all threads to be ready before starting the growth phase
+    // Wait for all threads to be ready before starting concat growth.
     ctx.wait_barrier("inflated frame ready, waiting for all threads before concat-doubling");
     ctx.log("OOM_TRIGGER", format!("inflated to {} cols, starting concat-doubling", numeric.num_columns()));
 

@@ -1,5 +1,5 @@
-//! Single-GPU interop validation tests aligned with the active priority-reset
-//! roadmap.
+//! Single-GPU interop validation tests aligned with the current interop
+//! direction.
 //!
 //! These tests keep the validation consumer-neutral while still exercising the
 //! graph-construction-shaped contract the current specs call for:

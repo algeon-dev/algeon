@@ -52,7 +52,7 @@ fn df_series_shares_device_pointer() {
 }
 
 /// `series()` produces an owned value that can outlive the DataFrame.
-/// This proves it's task-portable (can be sent to worker threads).
+/// This proves it is worker-thread portable.
 #[test]
 fn df_series_outlives_dataframe() {
     let s = {

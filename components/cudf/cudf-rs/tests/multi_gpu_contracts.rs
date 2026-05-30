@@ -827,7 +827,7 @@ fn shared_runtime_concurrent_access() {
 }
 
 // ---------------------------------------------------------------------------
-// Handle device provenance tests (Phase 3)
+// Handle device provenance tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -936,7 +936,7 @@ fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
 }
 
 // ---------------------------------------------------------------------------
-// RuntimeBuilder cross-device validation tests (Phase 4)
+// RuntimeBuilder cross-device validation tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1023,7 +1023,7 @@ fn builder_infers_device_from_handles() {
 }
 
 // ---------------------------------------------------------------------------
-// ExecutionDomain provenance + borrowed override tests (Phase 5)
+// ExecutionDomain provenance and borrowed override tests
 // ---------------------------------------------------------------------------
 
 #[test]

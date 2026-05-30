@@ -20,8 +20,8 @@
 //! stream-bound reservations: allocate a [`crate::Runtime`], create an
 //! [`crate::ExecutionBudgetToken`] or [`StreamReservationLease`], and execute
 //! with the lease's stream and manager resource. This keeps one long-lived
-//! allocator adaptor per device while charging allocations to the stream-bound
-//! task.
+//! allocator adaptor per device while charging allocations to the active
+//! stream-bound reservation.
 //!
 //! Explicit CUDA and pool resources remain available for advanced library use,
 //! diagnostics, tests, and non-query workflows. Use
