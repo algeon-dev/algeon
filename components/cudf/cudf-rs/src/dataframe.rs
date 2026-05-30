@@ -459,6 +459,22 @@ impl DataFrame {
         self.schema.get(name).copied()
     }
 
+    /// Factorize a named column into integer codes and unique values.
+    ///
+    /// Returns `(codes, uniques)` where `codes[i]` maps to `uniques[codes[i]]`.
+    /// This is equivalent to `pandas.factorize()` but GPU-accelerated.
+    pub fn factorize(&self, column: &str) -> Result<(Column, Column)> {
+        let cv = self.column(column)?;
+        cv.factorize().map_err(|e| {
+            let err = if e.operation().is_empty() {
+                e.with_operation("dataframe::factorize")
+            } else {
+                e
+            };
+            err.with_context("column_name", column.to_string())
+        })
+    }
+
     /// Returns the schema mapping column names to positional indices.
     pub fn schema(&self) -> &IndexMap<String, usize> {
         &self.schema

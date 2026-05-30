@@ -1009,6 +1009,70 @@ impl DeviceSlice {
     }
 }
 
+impl ColumnView<'_> {
+    /// Encode column values as integer codes with corresponding unique values.
+    ///
+    /// Returns `(codes, uniques)` where:
+    /// - `codes`: Int32 column where `codes[i]` is the index of row `i`'s value
+    ///   in the `uniques` column
+    /// - `uniques`: Column of unique values from this column
+    ///
+    /// Null positions in the input produce null entries in `codes`.
+    pub fn factorize(&self) -> Result<(Column, Column)> {
+        let input_type_id = match self.data_type() {
+            Ok(dt) => dt.id(),
+            Err(e) => return Err(e.with_operation("column_view::factorize")),
+        };
+        let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
+
+        let dict = crate::dictionary::encode(self, TypeId::Int32).map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+        let dict_view = dict.view().map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+
+        let indices_view = crate::dictionary::indices(&dict_view).map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+        let keys_view = crate::dictionary::keys(&dict_view).map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+
+        let codes = copy_view_to_owned(&indices_view).map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+        let uniques = copy_view_to_owned(&keys_view).map_err(|e| {
+            e.with_operation("column_view::factorize")
+                .with_context("input_type_id", input_type_id_str)
+        })?;
+
+        Ok((codes, uniques))
+    }
+}
+
+/// Deep-copy a `ColumnView` into an owned `Column`.
+///
+/// Uses `cudf_column_copy_from_view`, which supports fixed-width, string,
+/// and nested types.
+pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
+    let len = cv.len()?;
+    if len == 0 {
+        return Column::empty(cv.data_type()?.id());
+    }
+    let mut handle = ptr::null_mut();
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
+        "column::copy_view_to_owned",
+    )?;
+    Ok(unsafe { Column::from_raw(handle) })
+}
+
 impl<'a> Drop for ColumnView<'a> {
     fn drop(&mut self) {
         unsafe {
