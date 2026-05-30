@@ -1,8 +1,6 @@
 //! Tests for Table::into_columns.
 
-use cudf::column::Column;
-use cudf::table::Table;
-use cudf::types::TypeId;
+use cudf::{column::Column, table::Table, types::TypeId};
 
 #[test]
 fn test_into_columns_single_column() {

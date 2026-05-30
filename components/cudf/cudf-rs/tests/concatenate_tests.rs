@@ -1,8 +1,6 @@
 //! Tests for concatenation operations.
 
-use cudf::column::Column;
-use cudf::concatenate;
-use cudf::table::Table;
+use cudf::{column::Column, concatenate, table::Table};
 
 #[test]
 fn test_concatenate_columns() {

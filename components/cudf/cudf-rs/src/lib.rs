@@ -17,8 +17,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::column::Column;
-//! use cudf::table::Table;
+//! use cudf::{column::Column, table::Table};
 //!
 //! // Create columns from host data.
 //! let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();

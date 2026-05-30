@@ -1,8 +1,6 @@
 //! Tests for CU-4: replace_nulls (fillna).
 
-use cudf::column::Column;
-use cudf::replace;
-use cudf::scalar::Scalar;
+use cudf::{column::Column, replace, scalar::Scalar};
 
 #[test]
 fn test_replace_nulls_with_scalar_i32() {

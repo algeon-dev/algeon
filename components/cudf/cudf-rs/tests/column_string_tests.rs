@@ -1,7 +1,6 @@
 //! Tests for string column creation and reading.
 
-use cudf::column::Column;
-use cudf::types::TypeId;
+use cudf::{column::Column, types::TypeId};
 
 #[test]
 fn test_from_strings_basic() {

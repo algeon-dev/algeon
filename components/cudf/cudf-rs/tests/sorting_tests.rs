@@ -1,8 +1,10 @@
 //! Tests for sorting operations.
 
-use cudf::column::Column;
-use cudf::sorting::{self, NullOrder, Order};
-use cudf::table::Table;
+use cudf::{
+    column::Column,
+    sorting::{self, NullOrder, Order},
+    table::Table,
+};
 
 #[test]
 fn test_sort_ascending() {
@@ -52,8 +54,7 @@ fn test_sort_with_nulls() {
     let view = table.view().unwrap();
 
     // Nulls before: null should appear first.
-    let sorted =
-        sorting::sort(&view, Some(&[Order::Ascending]), Some(&[NullOrder::Before])).unwrap();
+    let sorted = sorting::sort(&view, Some(&[Order::Ascending]), Some(&[NullOrder::Before])).unwrap();
     let sv = sorted.view().unwrap();
     let validity = sv.column(0).unwrap().validity().unwrap().unwrap();
     // The first element should be null.
@@ -95,9 +96,7 @@ fn test_sort_rejects_mismatched_column_order_len() {
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
-    let err = sorting::sort(&view, Some(&[Order::Ascending]), None)
-        .err()
-        .expect("expected error");
+    let err = sorting::sort(&view, Some(&[Order::Ascending]), None).err().expect("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
@@ -108,13 +107,9 @@ fn test_is_sorted_rejects_mismatched_null_precedence_len() {
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
-    let err = sorting::is_sorted(
-        &view,
-        Some(&[Order::Ascending, Order::Ascending]),
-        Some(&[NullOrder::After]),
-    )
-    .err()
-    .expect("expected error");
+    let err = sorting::is_sorted(&view, Some(&[Order::Ascending, Order::Ascending]), Some(&[NullOrder::After]))
+        .err()
+        .expect("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
@@ -124,9 +119,7 @@ fn test_sort_error_contains_operation_context() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None)
-        .err()
-        .expect("expected error");
+    let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None).err().expect("expected error");
 
     assert_eq!(err.operation(), "sorting::sort");
     let ctx = err.context();

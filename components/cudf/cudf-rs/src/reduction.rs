@@ -1,11 +1,13 @@
 //! GPU-accelerated reduction and scan operations.
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Error, ErrorKind, Result};
-use crate::scalar::Scalar;
-use crate::types::DataType;
-use std::os::raw::c_void;
-use std::ptr;
+use std::{os::raw::c_void, ptr};
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Error, ErrorKind, Result},
+    scalar::Scalar,
+    types::DataType,
+};
 
 /// Aggregation type for reduce operations.
 #[derive(Debug, Clone)]
@@ -79,49 +81,49 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
                 cudf_sys::cudf_reduce_aggregation_create(0, &mut handle),
                 "reduction::create_reduce_agg_handle(sum)",
             )?;
-        }
+        },
         ReduceAggregation::Min => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(1, &mut handle),
                 "reduction::create_reduce_agg_handle(min)",
             )?;
-        }
+        },
         ReduceAggregation::Max => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(2, &mut handle),
                 "reduction::create_reduce_agg_handle(max)",
             )?;
-        }
+        },
         ReduceAggregation::Product => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(3, &mut handle),
                 "reduction::create_reduce_agg_handle(product)",
             )?;
-        }
+        },
         ReduceAggregation::Mean => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(4, &mut handle),
                 "reduction::create_reduce_agg_handle(mean)",
             )?;
-        }
+        },
         ReduceAggregation::Median => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(5, &mut handle),
                 "reduction::create_reduce_agg_handle(median)",
             )?;
-        }
+        },
         ReduceAggregation::Any => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(6, &mut handle),
                 "reduction::create_reduce_agg_handle(any)",
             )?;
-        }
+        },
         ReduceAggregation::All => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(7, &mut handle),
                 "reduction::create_reduce_agg_handle(all)",
             )?;
-        }
+        },
         ReduceAggregation::Variance { ddof } => {
             if *ddof < 0 {
                 return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
@@ -132,7 +134,7 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
                 cudf_sys::cudf_reduce_aggregation_create_variance(*ddof, &mut handle),
                 "reduction::create_reduce_agg_handle(variance)",
             )?;
-        }
+        },
         ReduceAggregation::Std { ddof } => {
             if *ddof < 0 {
                 return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
@@ -143,7 +145,7 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
                 cudf_sys::cudf_reduce_aggregation_create_std(*ddof, &mut handle),
                 "reduction::create_reduce_agg_handle(std)",
             )?;
-        }
+        },
     }
     Ok(handle)
 }
@@ -166,17 +168,12 @@ unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
 }
 
 /// Reduce a column to a single scalar value.
-pub fn reduce(
-    input: &ColumnView<'_>,
-    agg: &ReduceAggregation,
-    output_type: &DataType,
-) -> Result<Scalar> {
+pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &DataType) -> Result<Scalar> {
     let agg_handle = unsafe { create_reduce_agg_handle(agg)? };
     let dtype_handle = output_type.to_raw_handle_for("reduction::reduce")?;
 
     let mut out = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) };
+    let status = unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) };
 
     unsafe {
         cudf_sys::cudf_reduce_aggregation_destroy(agg_handle);
@@ -188,10 +185,7 @@ pub fn reduce(
         "reduction::reduce",
         [
             ("aggregation", reduce_agg_name(agg).to_string()),
-            (
-                "output_type_id",
-                format!("{:?}", output_type.id()).to_lowercase(),
-            ),
+            ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
         ],
     )?;
     Ok(unsafe { Scalar::from_raw(out) })
@@ -207,15 +201,8 @@ pub fn scan(
     let agg_handle = unsafe { create_scan_agg_handle(agg)? };
 
     let mut out = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_scan(
-            input.raw_handle(),
-            agg_handle,
-            scan_type as i32,
-            null_policy as i32,
-            &mut out,
-        )
-    };
+    let status =
+        unsafe { cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type as i32, null_policy as i32, &mut out) };
 
     unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
 

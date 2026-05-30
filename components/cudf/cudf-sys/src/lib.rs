@@ -88,10 +88,7 @@ extern "C" {
 
     // -- DataType ------------------------------------------------------------
 
-    pub fn cudf_data_type_create(
-        type_id: cudf_type_id_t,
-        out: *mut cudf_data_type_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_data_type_create(type_id: cudf_type_id_t, out: *mut cudf_data_type_handle) -> cudf_status_t;
 
     pub fn cudf_data_type_create_fixed_point(
         type_id: cudf_type_id_t,
@@ -101,10 +98,7 @@ extern "C" {
 
     pub fn cudf_data_type_destroy(handle: cudf_data_type_handle);
 
-    pub fn cudf_data_type_id(
-        handle: cudf_data_type_handle,
-        out: *mut cudf_type_id_t,
-    ) -> cudf_status_t;
+    pub fn cudf_data_type_id(handle: cudf_data_type_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
 
     pub fn cudf_data_type_scale(handle: cudf_data_type_handle, out: *mut i32) -> cudf_status_t;
 
@@ -112,10 +106,7 @@ extern "C" {
 
     // -- Column (owning) -----------------------------------------------------
 
-    pub fn cudf_column_create_empty(
-        type_id: cudf_type_id_t,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_column_create_empty(type_id: cudf_type_id_t, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_column_create_numeric(
         type_id: cudf_type_id_t,
@@ -126,46 +117,27 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle)
-        -> cudf_status_t;
+    pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
-    pub fn cudf_column_copy_from_view(
-        src: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_column_copy_from_view(src: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_column_destroy(handle: cudf_column_handle);
 
     // -- ColumnView (non-owning) --------------------------------------------
 
-    pub fn cudf_column_view(
-        handle: cudf_column_handle,
-        out: *mut cudf_column_view_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view(handle: cudf_column_handle, out: *mut cudf_column_view_handle) -> cudf_status_t;
 
     pub fn cudf_column_view_destroy(handle: cudf_column_view_handle);
 
-    pub fn cudf_column_view_type(
-        handle: cudf_column_view_handle,
-        out: *mut cudf_type_id_t,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_type(handle: cudf_column_view_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
 
     pub fn cudf_column_view_size(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
-    pub fn cudf_column_view_null_count(
-        handle: cudf_column_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_null_count(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
-    pub fn cudf_column_view_nullable(
-        handle: cudf_column_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_nullable(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
-    pub fn cudf_column_view_num_children(
-        handle: cudf_column_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_num_children(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_column_view_child(
         handle: cudf_column_view_handle,
@@ -173,13 +145,9 @@ extern "C" {
         out: *mut cudf_column_view_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_column_view_data_ptr(
-        handle: cudf_column_view_handle,
-        out: *mut *const c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_column_view_data_ptr(handle: cudf_column_view_handle, out: *mut *const c_void) -> cudf_status_t;
 
-    pub fn cudf_column_view_offset(handle: cudf_column_view_handle, out: *mut i32)
-        -> cudf_status_t;
+    pub fn cudf_column_view_offset(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_column_view_to_host(
         handle: cudf_column_view_handle,
@@ -232,20 +200,13 @@ extern "C" {
 
     // -- TableView (non-owning) ----------------------------------------------
 
-    pub fn cudf_table_view(
-        handle: cudf_table_handle,
-        out: *mut cudf_table_view_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_table_view(handle: cudf_table_handle, out: *mut cudf_table_view_handle) -> cudf_status_t;
 
     pub fn cudf_table_view_destroy(handle: cudf_table_view_handle);
 
-    pub fn cudf_table_view_num_columns(
-        handle: cudf_table_view_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
+    pub fn cudf_table_view_num_columns(handle: cudf_table_view_handle, out: *mut i32) -> cudf_status_t;
 
-    pub fn cudf_table_view_num_rows(handle: cudf_table_view_handle, out: *mut i32)
-        -> cudf_status_t;
+    pub fn cudf_table_view_num_rows(handle: cudf_table_view_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_table_view_column(
         handle: cudf_table_view_handle,
@@ -305,8 +266,7 @@ extern "C" {
 
     // -- Memory Resource -----------------------------------------------------
 
-    pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle)
-        -> cudf_status_t;
+    pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
 
     pub fn cudf_memory_resource_create_pool(
         initial_pool_size: usize,
@@ -444,21 +404,12 @@ extern "C" {
 
     // -- Unary ---------------------------------------------------------------
 
-    pub fn cudf_unary_operation(
-        input: cudf_column_view_handle,
-        op: i32,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_unary_operation(input: cudf_column_view_handle, op: i32, out: *mut cudf_column_handle)
+    -> cudf_status_t;
 
-    pub fn cudf_is_null(
-        input: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_is_null(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
-    pub fn cudf_is_valid(
-        input: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_is_valid(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_cast(
         input: cudf_column_view_handle,
@@ -472,15 +423,9 @@ extern "C" {
         out: *mut i32,
     ) -> cudf_status_t;
 
-    pub fn cudf_is_nan(
-        input: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_is_nan(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
-    pub fn cudf_is_not_nan(
-        input: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_is_not_nan(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     // -- Binary --------------------------------------------------------------
 
@@ -512,10 +457,7 @@ extern "C" {
 
     pub fn cudf_reduce_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_reduce_aggregation_create_variance(
-        ddof: i32,
-        out: *mut *mut c_void,
-    ) -> cudf_status_t;
+    pub fn cudf_reduce_aggregation_create_variance(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_reduce_aggregation_create_std(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
@@ -568,10 +510,7 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_dictionary_decode(
-        dict_column: cudf_column_view_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
+    pub fn cudf_dictionary_decode(dict_column: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_dictionary_keys(
         dict_column: cudf_column_view_handle,

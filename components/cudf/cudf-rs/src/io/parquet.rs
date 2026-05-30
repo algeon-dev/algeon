@@ -1,11 +1,16 @@
 //! Parquet file I/O.
 
-use crate::error::{self, Result};
-use crate::table::{Table, TableView};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use std::path::Path;
-use std::ptr;
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+    path::Path,
+    ptr,
+};
+
+use crate::{
+    error::{self, Result},
+    table::{Table, TableView},
+};
 
 /// Options for reading a Parquet file.
 pub struct ParquetReaderOptions {
@@ -18,8 +23,7 @@ pub struct ParquetReaderOptions {
 impl ParquetReaderOptions {
     /// Create options to read from the given file path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let filepath =
-            super::path_to_cstring(path.as_ref(), "io::parquet::parquet_reader_options")?;
+        let filepath = super::path_to_cstring(path.as_ref(), "io::parquet::parquet_reader_options")?;
         Ok(Self {
             filepath,
             columns: None,
@@ -30,12 +34,7 @@ impl ParquetReaderOptions {
 
     /// Only read the specified columns (by name).
     pub fn columns(mut self, names: &[&str]) -> Self {
-        self.columns = Some(
-            names
-                .iter()
-                .map(|s| CString::new(*s).expect("column name contains null byte"))
-                .collect(),
-        );
+        self.columns = Some(names.iter().map(|s| CString::new(*s).expect("column name contains null byte")).collect());
         self
     }
 
@@ -57,16 +56,10 @@ pub fn read_parquet(options: &ParquetReaderOptions) -> Result<Table> {
     let mut table_handle = ptr::null_mut();
 
     // Build the pointer array outside the match so it outlives the FFI call.
-    let col_ptrs_vec: Vec<*const std::os::raw::c_char> = options
-        .columns
-        .as_ref()
-        .map(|cols| cols.iter().map(|c| c.as_ptr()).collect())
-        .unwrap_or_default();
-    let (col_ptrs, num_cols) = if col_ptrs_vec.is_empty() {
-        (ptr::null(), 0)
-    } else {
-        (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32)
-    };
+    let col_ptrs_vec: Vec<*const std::os::raw::c_char> =
+        options.columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+    let (col_ptrs, num_cols) =
+        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
         unsafe {
@@ -103,24 +96,16 @@ pub struct ParquetTableWithMetadata {
 /// This is the same as [`read_parquet`] but additionally returns the column
 /// names stored in the Parquet file's schema. This avoids having to hardcode
 /// column indices when working with Parquet files.
-pub fn read_parquet_with_metadata(
-    options: &ParquetReaderOptions,
-) -> Result<ParquetTableWithMetadata> {
+pub fn read_parquet_with_metadata(options: &ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
 
     // Build the pointer array outside the match so it outlives the FFI call.
-    let col_ptrs_vec: Vec<*const std::os::raw::c_char> = options
-        .columns
-        .as_ref()
-        .map(|cols| cols.iter().map(|c| c.as_ptr()).collect())
-        .unwrap_or_default();
-    let (col_ptrs, num_cols) = if col_ptrs_vec.is_empty() {
-        (ptr::null(), 0)
-    } else {
-        (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32)
-    };
+    let col_ptrs_vec: Vec<*const std::os::raw::c_char> =
+        options.columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+    let (col_ptrs, num_cols) =
+        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
         unsafe {
@@ -150,10 +135,7 @@ pub fn read_parquet_with_metadata(
         names?
     };
 
-    Ok(ParquetTableWithMetadata {
-        table: unsafe { Table::from_raw(table_handle) },
-        column_names,
-    })
+    Ok(ParquetTableWithMetadata { table: unsafe { Table::from_raw(table_handle) }, column_names })
 }
 
 unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> Result<Vec<String>> {
@@ -207,22 +189,14 @@ pub struct ParquetWriterOptions {
 impl ParquetWriterOptions {
     /// Create options to write to the given file path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let filepath =
-            super::path_to_cstring(path.as_ref(), "io::parquet::parquet_writer_options")?;
-        Ok(Self {
-            filepath,
-            column_names: None,
-        })
+        let filepath = super::path_to_cstring(path.as_ref(), "io::parquet::parquet_writer_options")?;
+        Ok(Self { filepath, column_names: None })
     }
 
     /// Set column names for the output file.
     pub fn column_names(mut self, names: &[&str]) -> Self {
-        self.column_names = Some(
-            names
-                .iter()
-                .map(|s| CString::new(*s).expect("column name contains null byte"))
-                .collect(),
-        );
+        self.column_names =
+            Some(names.iter().map(|s| CString::new(*s).expect("column name contains null byte")).collect());
         self
     }
 }
@@ -230,26 +204,13 @@ impl ParquetWriterOptions {
 /// Write a table to a Parquet file.
 pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> Result<()> {
     // Build the pointer array outside the match so it outlives the FFI call.
-    let name_ptrs_vec: Vec<*const std::os::raw::c_char> = options
-        .column_names
-        .as_ref()
-        .map(|names| names.iter().map(|c| c.as_ptr()).collect())
-        .unwrap_or_default();
-    let (name_ptrs, num_cols) = if name_ptrs_vec.is_empty() {
-        (ptr::null(), 0)
-    } else {
-        (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32)
-    };
+    let name_ptrs_vec: Vec<*const std::os::raw::c_char> =
+        options.column_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+    let (name_ptrs, num_cols) =
+        if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
-        unsafe {
-            cudf_sys::cudf_io_write_parquet(
-                table.raw_handle(),
-                options.filepath.as_ptr(),
-                name_ptrs,
-                num_cols,
-            )
-        },
+        unsafe { cudf_sys::cudf_io_write_parquet(table.raw_handle(), options.filepath.as_ptr(), name_ptrs, num_cols) },
         "io::parquet::write_parquet",
         [("output_column_name_count", num_cols.to_string())],
     )
@@ -265,10 +226,7 @@ mod tests {
         let err = unsafe { collect_column_names(ptr::null_mut(), -1) }.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
         assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err
-            .context()
-            .iter()
-            .any(|(k, v)| *k == "num_names" && v == "-1"));
+        assert!(err.context().iter().any(|(k, v)| *k == "num_names" && v == "-1"));
     }
 
     #[test]
@@ -276,10 +234,7 @@ mod tests {
         let err = unsafe { collect_column_names(ptr::null_mut(), 1) }.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
         assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err
-            .context()
-            .iter()
-            .any(|(k, v)| *k == "names_ptr_null" && v == "true"));
+        assert!(err.context().iter().any(|(k, v)| *k == "names_ptr_null" && v == "true"));
     }
 
     #[test]
@@ -288,20 +243,13 @@ mod tests {
         let err = unsafe { collect_column_names(ptrs.as_mut_ptr(), 1) }.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
         assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err
-            .context()
-            .iter()
-            .any(|(k, v)| *k == "name_index" && v == "0"));
+        assert!(err.context().iter().any(|(k, v)| *k == "name_index" && v == "0"));
     }
 
     #[test]
     fn test_collect_column_names_success() {
-        let mut raw = [
-            CString::new("alpha").unwrap(),
-            CString::new("beta").unwrap(),
-        ];
-        let mut ptrs: Vec<*mut c_char> =
-            raw.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
+        let mut raw = [CString::new("alpha").unwrap(), CString::new("beta").unwrap()];
+        let mut ptrs: Vec<*mut c_char> = raw.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
         let names = unsafe { collect_column_names(ptrs.as_mut_ptr(), ptrs.len() as i32) }.unwrap();
         assert_eq!(names, vec!["alpha", "beta"]);
     }

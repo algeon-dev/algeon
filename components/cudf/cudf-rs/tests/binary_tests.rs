@@ -1,9 +1,11 @@
 //! Tests for binary operations (numeric and string).
 
-use cudf::binary::{self, BinaryOperator};
-use cudf::column::Column;
-use cudf::scalar::Scalar;
-use cudf::types::{DataType, TypeId};
+use cudf::{
+    binary::{self, BinaryOperator},
+    column::Column,
+    scalar::Scalar,
+    types::{DataType, TypeId},
+};
 
 #[test]
 fn test_add_column_column() {
@@ -12,9 +14,7 @@ fn test_add_column_column() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
-            .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32)).unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![11, 22, 33]);
@@ -26,13 +26,7 @@ fn test_mul_column_scalar() {
     let scalar = Scalar::from_value(10i32).unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::Mul,
-        &DataType::new(TypeId::Int32),
-    )
-    .unwrap();
+    let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Mul, &DataType::new(TypeId::Int32)).unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![20, 30, 40]);
@@ -44,13 +38,8 @@ fn test_div_scalar_column() {
     let col = Column::from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_sv(
-        &scalar,
-        &cv,
-        BinaryOperator::Div,
-        &DataType::new(TypeId::Float64),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_sv(&scalar, &cv, BinaryOperator::Div, &DataType::new(TypeId::Float64)).unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<f64>().unwrap();
     assert_eq!(values, vec![50.0, 25.0, 20.0]);
@@ -63,13 +52,7 @@ fn test_comparison() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::Less,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false]);
@@ -82,10 +65,9 @@ fn test_binary_operation_error_contains_operation_context() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let err =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
-            .err()
-            .expect("expected error");
+    let err = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
+        .err()
+        .expect("expected error");
 
     assert_eq!(err.operation(), "binary::binary_operation_vv");
     assert!(err.context().iter().any(|(k, _)| *k == "operator"));
@@ -98,13 +80,8 @@ fn test_logical_and() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::LogicalAnd,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::LogicalAnd, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false, false]);
@@ -121,9 +98,7 @@ fn test_string_equal_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
-            .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
@@ -135,13 +110,8 @@ fn test_string_not_equal_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::NotEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
@@ -153,9 +123,7 @@ fn test_string_less_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8))
-            .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -168,13 +136,7 @@ fn test_string_greater_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::Greater,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
@@ -187,13 +149,8 @@ fn test_string_less_equal_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::LessEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
@@ -206,13 +163,8 @@ fn test_string_greater_equal_vv() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::GreaterEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
@@ -228,13 +180,8 @@ fn test_string_equal_vs() {
     let scalar = Scalar::from_string("active").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::Equal,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -245,13 +192,8 @@ fn test_string_not_equal_vs() {
     let scalar = Scalar::from_string("active").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::NotEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -262,13 +204,8 @@ fn test_string_less_vs() {
     let scalar = Scalar::from_string("banana").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::Less,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -280,13 +217,8 @@ fn test_string_greater_vs() {
     let scalar = Scalar::from_string("banana").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::Greater,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
@@ -298,13 +230,8 @@ fn test_string_less_equal_vs() {
     let scalar = Scalar::from_string("banana").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::LessEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
@@ -316,13 +243,8 @@ fn test_string_greater_equal_vs() {
     let scalar = Scalar::from_string("banana").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::GreaterEqual,
-        &DataType::new(TypeId::Bool8),
-    )
-    .unwrap();
+    let result =
+        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
@@ -339,9 +261,7 @@ fn test_string_equal_empty() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
-            .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
@@ -353,9 +273,7 @@ fn test_string_equal_case_sensitive() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
-            .unwrap();
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
     let rv = result.view().unwrap();
     // Case-sensitive: "Foo" != "foo", "BAR" != "bar", "baz" == "baz"
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
@@ -372,12 +290,7 @@ fn test_string_add_vv_error() {
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
-    let result = binary::binary_operation_vv(
-        &av,
-        &bv,
-        BinaryOperator::Add,
-        &DataType::new(TypeId::String),
-    );
+    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::String));
     assert!(result.is_err());
 }
 
@@ -387,12 +300,7 @@ fn test_string_sub_vs_error() {
     let scalar = Scalar::from_string("baz").unwrap();
     let cv = col.view().unwrap();
 
-    let result = binary::binary_operation_vs(
-        &cv,
-        &scalar,
-        BinaryOperator::Sub,
-        &DataType::new(TypeId::String),
-    );
+    let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));
     assert!(result.is_err());
 }
 
@@ -432,80 +340,62 @@ fn test_is_comparison_false_for_arithmetic_ops() {
 #[test]
 fn test_infer_same_type_arithmetic() {
     // Int32 + Int32 → Int32
-    let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Int32, BinaryOperator::Add)
-        .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Int32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int32);
 }
 
 #[test]
 fn test_infer_int_float_promotion() {
     // Int32 + Float64 → Float64
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Float64);
 }
 
 #[test]
 fn test_infer_float_float_promotion() {
     // Float32 + Float64 → Float64
-    let dt =
-        binary::infer_binary_output_type(TypeId::Float32, TypeId::Float64, BinaryOperator::Mul)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Float32, TypeId::Float64, BinaryOperator::Mul).unwrap();
     assert_eq!(dt.id(), TypeId::Float64);
 }
 
 #[test]
 fn test_infer_int_int_promotion() {
     // Int16 + Int32 → Int32
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int16, TypeId::Int32, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int16, TypeId::Int32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int32);
 }
 
 #[test]
 fn test_infer_signed_unsigned_promotion() {
     // Int32 + UInt32 → Int64
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int32, TypeId::UInt32, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::UInt32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int64);
 }
 
 #[test]
 fn test_infer_comparison_always_bool() {
     // Any comparison op → Bool8 regardless of input types
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Less)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Less).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int64, TypeId::Int32, BinaryOperator::Equal)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int64, TypeId::Int32, BinaryOperator::Equal).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
 #[test]
 fn test_infer_string_comparison_bool() {
     // String + String comparison → Bool8
-    let dt =
-        binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Equal)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Equal).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 
-    let dt =
-        binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Less)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Less).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
 #[test]
 fn test_infer_string_arithmetic_error() {
     // String + String arithmetic → error
-    let result =
-        binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Add);
+    let result = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Add);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
@@ -515,38 +405,31 @@ fn test_infer_string_arithmetic_error() {
 #[test]
 fn test_infer_string_int_arithmetic_error() {
     // String + Int arithmetic → error
-    let result =
-        binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add);
+    let result = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_infer_non_numeric_error() {
     // Non-numeric types (List, Struct, etc.) → error
-    let result =
-        binary::infer_binary_output_type(TypeId::List, TypeId::Int32, BinaryOperator::Add);
+    let result = binary::infer_binary_output_type(TypeId::List, TypeId::Int32, BinaryOperator::Add);
     assert!(result.is_err());
 
-    let result =
-        binary::infer_binary_output_type(TypeId::Struct, TypeId::Struct, BinaryOperator::Add);
+    let result = binary::infer_binary_output_type(TypeId::Struct, TypeId::Struct, BinaryOperator::Add);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_infer_bool_arithmetic() {
     // Bool8 + Bool8 → Bool8
-    let dt =
-        binary::infer_binary_output_type(TypeId::Bool8, TypeId::Bool8, BinaryOperator::LogicalAnd)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Bool8, TypeId::Bool8, BinaryOperator::LogicalAnd).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
 #[test]
 fn test_infer_error_context_keys() {
     // Verify error context contains lhs_type_id, rhs_type_id, operator
-    let err =
-        binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add)
-            .unwrap_err();
+    let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add).unwrap_err();
     let context_keys: Vec<&str> = err.context().iter().map(|(k, _)| *k).collect();
     assert!(context_keys.contains(&"lhs_type_id"));
     assert!(context_keys.contains(&"rhs_type_id"));
@@ -556,61 +439,48 @@ fn test_infer_error_context_keys() {
 #[test]
 fn test_infer_uint8_uint16_promotion() {
     // UInt8 + UInt16 → UInt16 (wider unsigned)
-    let dt =
-        binary::infer_binary_output_type(TypeId::UInt8, TypeId::UInt16, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::UInt8, TypeId::UInt16, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::UInt16);
 }
 
 #[test]
 fn test_infer_int8_uint8_promotion() {
     // Int8 + UInt8 → Int16 (signed + unsigned same width → next wider signed)
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int8, TypeId::UInt8, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int8, TypeId::UInt8, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int16);
 }
 
 #[test]
 fn test_infer_int64_uint64_error() {
     // Int64 + UInt64 → error (no wider signed integer available)
-    let result =
-        binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt64, BinaryOperator::Add);
+    let result = binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt64, BinaryOperator::Add);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_infer_signed_wider_than_unsigned_keeps_signed() {
     // Int64 + UInt32 should stay Int64 (signed is strictly wider)
-    let dt =
-        binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt32, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int64);
 }
 
 #[test]
 fn test_infer_float32_int64_promotion() {
     // Float32 + Int64 → Float32 (int promotes to float, then wider float wins)
-    let dt =
-        binary::infer_binary_output_type(TypeId::Float32, TypeId::Int64, BinaryOperator::Add)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::Float32, TypeId::Int64, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Float32);
 }
 
 #[test]
 fn test_infer_non_numeric_comparison_is_bool() {
     // Any comparison op should infer Bool8, even for non-numeric pairs.
-    let dt =
-        binary::infer_binary_output_type(TypeId::List, TypeId::List, BinaryOperator::Equal)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::List, TypeId::List, BinaryOperator::Equal).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
 #[test]
 fn test_infer_mixed_string_numeric_comparison_is_bool() {
     // Any comparison op should infer Bool8 for mixed type pairs too.
-    let dt =
-        binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Equal)
-            .unwrap();
+    let dt = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Equal).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }

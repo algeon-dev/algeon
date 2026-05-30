@@ -1,9 +1,6 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
-use cudf::error::ErrorKind;
-use cudf::table::Table;
+use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, table::Table};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
@@ -14,11 +11,7 @@ fn test_new_from_named_columns() {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["id".to_string(), "score".to_string()],
-        vec![ids, scores],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows().unwrap(), 3);
@@ -29,11 +22,7 @@ fn test_column_by_name() {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["id".to_string(), "score".to_string()],
-        vec![ids, scores],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
     let col = df.column("id").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -47,10 +36,7 @@ fn test_reject_duplicate_column_names() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let c2 = Column::from_slice(&[3i32, 4]).unwrap();
 
-    let result = DataFrame::new(
-        vec!["x".to_string(), "x".to_string()],
-        vec![c1, c2],
-    );
+    let result = DataFrame::new(vec!["x".to_string(), "x".to_string()], vec![c1, c2]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -61,10 +47,7 @@ fn test_reject_duplicate_column_names() {
 fn test_reject_mismatched_names_columns_count() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
 
-    let result = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![c1],
-    );
+    let result = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![c1]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -88,11 +71,8 @@ fn test_column_names_preserves_insertion_order() {
     let c2 = Column::from_slice(&[2i32]).unwrap();
     let c3 = Column::from_slice(&[3i32]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["zebra".to_string(), "apple".to_string(), "mango".to_string()],
-        vec![c1, c2, c3],
-    )
-    .unwrap();
+    let df =
+        DataFrame::new(vec!["zebra".to_string(), "apple".to_string(), "mango".to_string()], vec![c1, c2, c3]).unwrap();
 
     let names = df.column_names();
     assert_eq!(names, &["zebra", "apple", "mango"]);
@@ -103,11 +83,7 @@ fn test_column_index() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let c2 = Column::from_slice(&[2i32]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![c1, c2],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![c1, c2]).unwrap();
 
     assert_eq!(df.column_index("a"), Some(0));
     assert_eq!(df.column_index("b"), Some(1));
@@ -119,11 +95,7 @@ fn test_schema() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let c2 = Column::from_slice(&[2.0f64]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["id".to_string(), "val".to_string()],
-        vec![c1, c2],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![c1, c2]).unwrap();
 
     let schema = df.schema();
     assert_eq!(schema.len(), 2);
@@ -166,10 +138,7 @@ fn test_from_table_mismatched_names_count() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
-    let result = DataFrame::from_table(
-        table,
-        vec!["a".to_string(), "b".to_string()],
-    );
+    let result = DataFrame::from_table(table, vec!["a".to_string(), "b".to_string()]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -180,11 +149,7 @@ fn test_from_table_mismatched_names_count() {
 fn test_into_table() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let c2 = Column::from_slice(&[3.0f64, 4.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["x".to_string(), "y".to_string()],
-        vec![c1, c2],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
     let (table, names) = df.into_table();
     assert_eq!(names, vec!["x", "y"]);

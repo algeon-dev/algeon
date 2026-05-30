@@ -1,8 +1,6 @@
 //! Tests for CU-2: contains (isin) and ColumnView::isin.
 
-use cudf::column::Column;
-use cudf::search;
-use cudf::ErrorKind;
+use cudf::{ErrorKind, column::Column, search};
 
 #[test]
 fn test_contains_basic_i32() {
@@ -109,10 +107,7 @@ fn test_isin_i32_some_matches() {
 
     let mask = cv.isin(&vv).unwrap();
     let mv = mask.view().unwrap();
-    assert_eq!(
-        mv.to_vec::<bool>().unwrap(),
-        vec![false, true, false, true, false]
-    );
+    assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
 #[test]
@@ -170,8 +165,7 @@ fn test_isin_empty_values() {
 
 #[test]
 fn test_isin_column_with_nulls() {
-    let col =
-        Column::from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
+    let col = Column::from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
     let values = Column::from_slice(&[1i32, 3]).unwrap();
 
     let cv = col.view().unwrap();

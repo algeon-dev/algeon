@@ -1,7 +1,6 @@
 //! Tests for Column::factorize (Task 1).
 
-use cudf::column::Column;
-use cudf::types::TypeId;
+use cudf::{column::Column, types::TypeId};
 
 #[test]
 fn test_factorize_i32_with_duplicates() {
@@ -30,13 +29,9 @@ fn test_factorize_i32_with_duplicates() {
     // Verify mapping: data[i] == uniques[codes[i]].
     for (i, &code) in codes_host.iter().enumerate() {
         assert_eq!(
-            data[i],
-            uniques_host[code as usize],
+            data[i], uniques_host[code as usize],
             "data[{}]={} should equal uniques[{}]={}",
-            i,
-            data[i],
-            code,
-            uniques_host[code as usize]
+            i, data[i], code, uniques_host[code as usize]
         );
     }
 
@@ -76,13 +71,9 @@ fn test_factorize_string_column() {
     // Verify mapping.
     for (i, &code) in codes_host.iter().enumerate() {
         assert_eq!(
-            strings[i],
-            uniques_host[code as usize],
+            strings[i], uniques_host[code as usize],
             "strings[{}]={} should equal uniques[{}]={}",
-            i,
-            strings[i],
-            code,
-            uniques_host[code as usize]
+            i, strings[i], code, uniques_host[code as usize]
         );
     }
 }
@@ -114,14 +105,7 @@ fn test_factorize_with_nulls() {
     let uniques_host = uniques_view.to_vec::<i32>().unwrap();
     for (i, (&code, &valid)) in codes_host.iter().zip(codes_mask.iter()).enumerate() {
         if valid {
-            assert_eq!(
-                data[i],
-                uniques_host[code as usize],
-                "data[{}]={} should equal uniques[{}]",
-                i,
-                data[i],
-                code,
-            );
+            assert_eq!(data[i], uniques_host[code as usize], "data[{}]={} should equal uniques[{}]", i, data[i], code,);
         }
     }
 }

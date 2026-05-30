@@ -1,7 +1,6 @@
 //! Tests for DataFrame Display and Debug formatting.
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
+use cudf::{column::Column, dataframe::DataFrame};
 
 // ---------------------------------------------------------------------------
 // Display
@@ -11,10 +10,7 @@ use cudf::dataframe::DataFrame;
 fn test_display_produces_readable_output() {
     let df = DataFrame::new(
         vec!["id".to_string(), "score".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[10.5f64, 20.0, 30.5]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10.5f64, 20.0, 30.5]).unwrap()],
     )
     .unwrap();
 
@@ -28,10 +24,16 @@ fn test_display_produces_readable_output() {
     assert!(output.contains("3"), "output should indicate 3 rows: {}", output);
 
     // Must contain type info.
-    assert!(output.contains("Int32") || output.contains("int32") || output.contains("INT32"),
-        "output should contain Int32 type: {}", output);
-    assert!(output.contains("Float64") || output.contains("float64") || output.contains("FLOAT64"),
-        "output should contain Float64 type: {}", output);
+    assert!(
+        output.contains("Int32") || output.contains("int32") || output.contains("INT32"),
+        "output should contain Int32 type: {}",
+        output
+    );
+    assert!(
+        output.contains("Float64") || output.contains("float64") || output.contains("FLOAT64"),
+        "output should contain Float64 type: {}",
+        output
+    );
 
     // Must contain data values from first rows.
     assert!(output.contains("1"), "output should contain value 1: {}", output);
@@ -54,10 +56,7 @@ fn test_display_empty_dataframe() {
 fn test_display_zero_rows() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::empty(cudf::types::TypeId::Int32).unwrap(),
-            Column::empty(cudf::types::TypeId::Float64).unwrap(),
-        ],
+        vec![Column::empty(cudf::types::TypeId::Int32).unwrap(), Column::empty(cudf::types::TypeId::Float64).unwrap()],
     )
     .unwrap();
 
@@ -75,10 +74,7 @@ fn test_display_shows_limited_rows() {
     let vals: Vec<f64> = (0..n).map(|i| i as f64 * 1.1).collect();
     let df = DataFrame::new(
         vec!["id".to_string(), "val".to_string()],
-        vec![
-            Column::from_slice(&ids).unwrap(),
-            Column::from_slice(&vals).unwrap(),
-        ],
+        vec![Column::from_slice(&ids).unwrap(), Column::from_slice(&vals).unwrap()],
     )
     .unwrap();
 
@@ -95,9 +91,7 @@ fn test_display_shows_limited_rows() {
 fn test_display_nullable_column() {
     let df = DataFrame::new(
         vec!["a".to_string()],
-        vec![
-            Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap(),
-        ],
+        vec![Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -113,11 +107,7 @@ fn test_display_nullable_column() {
 
 #[test]
 fn test_display_bool_column() {
-    let df = DataFrame::new(
-        vec!["flag".to_string()],
-        vec![Column::from_slice(&[true, false, true]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["flag".to_string()], vec![Column::from_slice(&[true, false, true]).unwrap()]).unwrap();
 
     let output = format!("{}", df);
     assert!(output.contains("flag"), "output should contain column name: {}", output);
@@ -136,10 +126,7 @@ fn test_display_bool_column() {
 fn test_debug_produces_output() {
     let df = DataFrame::new(
         vec!["id".to_string(), "score".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
     )
     .unwrap();
 
@@ -164,21 +151,14 @@ fn test_debug_produces_output() {
 fn test_debug_contains_types() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32]).unwrap(),
-            Column::from_slice(&[1.0f64]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[1.0f64]).unwrap()],
     )
     .unwrap();
 
     let output = format!("{:?}", df);
 
     // Debug should contain type information.
-    assert!(
-        output.contains("Int32") || output.contains("int32"),
-        "debug output should contain Int32: {}",
-        output
-    );
+    assert!(output.contains("Int32") || output.contains("int32"), "debug output should contain Int32: {}", output);
     assert!(
         output.contains("Float64") || output.contains("float64"),
         "debug output should contain Float64: {}",
@@ -188,11 +168,7 @@ fn test_debug_contains_types() {
 
 #[test]
 fn test_debug_contains_row_count() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap()]).unwrap();
 
     let output = format!("{:?}", df);
 

@@ -1,8 +1,10 @@
 //! Tests for groupby operations.
 
-use cudf::column::Column;
-use cudf::groupby::{self, Aggregation, AggregationRequest, NullPolicy};
-use cudf::table::Table;
+use cudf::{
+    column::Column,
+    groupby::{self, Aggregation, AggregationRequest, NullPolicy},
+    table::Table,
+};
 
 #[test]
 fn test_groupby_sum() {
@@ -15,10 +17,7 @@ fn test_groupby_sum() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[Aggregation::Sum],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Aggregation::Sum] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -31,11 +30,7 @@ fn test_groupby_sum() {
     // Get sums.
     assert_eq!(result.results.len(), 1);
     assert_eq!(result.results[0].len(), 1);
-    let mut sum_vals: Vec<i64> = result.results[0][0]
-        .view()
-        .unwrap()
-        .to_vec::<i64>()
-        .unwrap();
+    let mut sum_vals: Vec<i64> = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
 
     // Sort by key for deterministic comparison.
     let mut pairs: Vec<(i32, i64)> = key_vals.drain(..).zip(sum_vals.drain(..)).collect();
@@ -53,10 +48,7 @@ fn test_groupby_multiple_aggregations() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[Aggregation::Min, Aggregation::Max],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Aggregation::Min, Aggregation::Max] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -68,23 +60,12 @@ fn test_groupby_multiple_aggregations() {
     assert_eq!(result.results[0].len(), 2);
 
     let keys: Vec<i32> = result_kv.column(0).unwrap().to_vec::<i32>().unwrap();
-    let mins: Vec<f64> = result.results[0][0]
-        .view()
-        .unwrap()
-        .to_vec::<f64>()
-        .unwrap();
-    let maxs: Vec<f64> = result.results[0][1]
-        .view()
-        .unwrap()
-        .to_vec::<f64>()
-        .unwrap();
+    let mins: Vec<f64> = result.results[0][0].view().unwrap().to_vec::<f64>().unwrap();
+    let maxs: Vec<f64> = result.results[0][1].view().unwrap().to_vec::<f64>().unwrap();
 
     // Build sorted pairs.
-    let mut triples: Vec<(i32, f64, f64)> = keys
-        .into_iter()
-        .zip(mins.into_iter().zip(maxs))
-        .map(|(k, (mn, mx))| (k, mn, mx))
-        .collect();
+    let mut triples: Vec<(i32, f64, f64)> =
+        keys.into_iter().zip(mins.into_iter().zip(maxs)).map(|(k, (mn, mx))| (k, mn, mx)).collect();
     triples.sort_by_key(|&(k, _, _)| k);
 
     assert_eq!(triples, vec![(1, 10.0, 30.0), (2, 20.0, 40.0)]);
@@ -99,22 +80,14 @@ fn test_groupby_count() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[Aggregation::Count {
-            include_nulls: false,
-        }],
-    }];
+    let requests =
+        [AggregationRequest { values: &vals_view, aggregations: &[Aggregation::Count { include_nulls: false }] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
     let result_kv = result.keys.view().unwrap();
     let keys: Vec<i32> = result_kv.column(0).unwrap().to_vec::<i32>().unwrap();
-    let counts: Vec<i32> = result.results[0][0]
-        .view()
-        .unwrap()
-        .to_vec::<i32>()
-        .unwrap();
+    let counts: Vec<i32> = result.results[0][0].view().unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = keys.into_iter().zip(counts).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -131,14 +104,9 @@ fn test_groupby_rejects_empty_aggregations_in_request() {
     let kv = keys_table.view().unwrap();
     let vals_view = vals_col.view().unwrap();
 
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[] }];
 
-    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
-        .err()
-        .expect("expected error");
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).err().expect("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
@@ -151,14 +119,9 @@ fn test_groupby_rejects_negative_ddof() {
     let kv = keys_table.view().unwrap();
     let vals_view = vals_col.view().unwrap();
 
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[Aggregation::Std { ddof: -1 }],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Aggregation::Std { ddof: -1 }] }];
 
-    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
-        .err()
-        .expect("expected error");
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).err().expect("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
@@ -171,14 +134,9 @@ fn test_groupby_error_contains_operation_context() {
     let kv = keys_table.view().unwrap();
     let vals_view = vals_col.view().unwrap();
 
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[] }];
 
-    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
-        .err()
-        .expect("expected error");
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).err().expect("expected error");
 
     assert_eq!(err.operation(), "groupby::groupby_aggregate");
     let ctx = err.context();
@@ -197,10 +155,7 @@ fn test_groupby_multi_column_keys() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals.view().unwrap();
-    let requests = [AggregationRequest {
-        values: &vals_view,
-        aggregations: &[Aggregation::Sum],
-    }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Aggregation::Sum] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 

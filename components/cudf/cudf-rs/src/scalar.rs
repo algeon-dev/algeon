@@ -1,10 +1,15 @@
 //! Scalar value types.
 
-use crate::error::{self, Error, ErrorKind, Result};
-use crate::types::{CudfType, DataType, TypeId};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_void;
-use std::ptr::{self, NonNull};
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_void,
+    ptr::{self, NonNull},
+};
+
+use crate::{
+    error::{self, Error, ErrorKind, Result},
+    types::{CudfType, DataType, TypeId},
+};
 
 /// An owned scalar value on the GPU.
 ///
@@ -31,9 +36,7 @@ impl Scalar {
             },
             "scalar::from_value",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a null scalar of the given numeric type.
@@ -51,28 +54,21 @@ impl Scalar {
             },
             "scalar::null_numeric",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a valid string scalar.
     pub fn from_string(value: &str) -> Result<Self> {
         let c_str = CString::new(value).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "string contains interior null byte",
-            )
-            .with_operation("scalar::from_string")
+            Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
+                .with_operation("scalar::from_string")
         })?;
         let mut handle = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
             "scalar::from_string",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a null string scalar.
@@ -83,9 +79,7 @@ impl Scalar {
             unsafe { cudf_sys::cudf_scalar_create_string(empty.as_ptr(), 0, &mut handle) },
             "scalar::null_string",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Returns the raw FFI handle. For internal use by operations.
@@ -99,9 +93,7 @@ impl Scalar {
     /// The handle must be a valid `cudf_scalar_handle` and the caller must
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self {
-            handle: NonNull::new(handle).expect("null scalar handle"),
-        }
+        Self { handle: NonNull::new(handle).expect("null scalar handle") }
     }
 
     /// Returns the data type of this scalar.
@@ -130,22 +122,14 @@ impl Scalar {
     pub fn value<T: CudfType>(&self) -> Result<T> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(
-                ErrorKind::TypeError,
-                "scalar type does not match requested type",
-            )
-            .with_operation("scalar::value")
-            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context(
-                "requested_type_id",
-                format!("{:?}", T::TYPE_ID).to_lowercase(),
-            ));
+            return Err(Error::new(ErrorKind::TypeError, "scalar type does not match requested type")
+                .with_operation("scalar::value")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
         let mut out = unsafe { std::mem::zeroed::<T>() };
         error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_scalar_value(self.handle.as_ptr(), &mut out as *mut T as *mut c_void)
-            },
+            unsafe { cudf_sys::cudf_scalar_value(self.handle.as_ptr(), &mut out as *mut T as *mut c_void) },
             "scalar::value",
         )?;
         Ok(out)

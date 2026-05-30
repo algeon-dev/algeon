@@ -1,9 +1,12 @@
 //! GPU-accelerated filtering operations.
 
-use crate::column::ColumnView;
-use crate::error::{self, Result};
-use crate::table::{Table, TableView};
 use std::ptr;
+
+use crate::{
+    column::ColumnView,
+    error::{self, Result},
+    table::{Table, TableView},
+};
 
 /// Filter rows of a table using a boolean mask column.
 ///
@@ -13,9 +16,7 @@ use std::ptr;
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
     let mut out = ptr::null_mut();
     error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out)
-        },
+        unsafe { cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out) },
         "filter::apply_boolean_mask",
     )?;
     Ok(unsafe { Table::from_raw(out) })

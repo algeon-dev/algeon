@@ -1,8 +1,6 @@
 //! Tests for CU-7: gather (take).
 
-use cudf::column::Column;
-use cudf::copying;
-use cudf::table::Table;
+use cudf::{column::Column, copying, table::Table};
 
 #[test]
 fn test_gather_basic() {
@@ -17,10 +15,7 @@ fn test_gather_basic() {
     let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
-    assert_eq!(
-        rv.column(0).unwrap().to_vec::<i32>().unwrap(),
-        vec![50, 30, 10]
-    );
+    assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![50, 30, 10]);
 }
 
 #[test]
@@ -38,10 +33,7 @@ fn test_gather_multi_column() {
     assert_eq!(rv.num_columns().unwrap(), 2);
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![4, 2]);
-    assert_eq!(
-        rv.column(1).unwrap().to_vec::<f64>().unwrap(),
-        vec![40.0, 20.0]
-    );
+    assert_eq!(rv.column(1).unwrap().to_vec::<f64>().unwrap(), vec![40.0, 20.0]);
 }
 
 #[test]
@@ -56,10 +48,7 @@ fn test_gather_identity() {
 
     let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
     let rv = result.view().unwrap();
-    assert_eq!(
-        rv.column(0).unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3]
-    );
+    assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -74,10 +63,7 @@ fn test_gather_with_duplicates() {
 
     let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
     let rv = result.view().unwrap();
-    assert_eq!(
-        rv.column(0).unwrap().to_vec::<i32>().unwrap(),
-        vec![20, 20, 20, 10]
-    );
+    assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 20, 20, 10]);
 }
 
 #[test]

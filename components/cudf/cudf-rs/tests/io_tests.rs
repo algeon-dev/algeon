@@ -1,9 +1,10 @@
 //! Tests for Parquet and CSV I/O.
 
-use cudf::column::Column;
-use cudf::io::{csv, parquet};
-use cudf::table::Table;
-
+use cudf::{
+    column::Column,
+    io::{csv, parquet},
+    table::Table,
+};
 use tempfile::TempDir;
 
 #[test]
@@ -17,9 +18,7 @@ fn test_parquet_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["ids", "values"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["ids", "values"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back
@@ -48,15 +47,11 @@ fn test_parquet_column_selection() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["a", "b", "c"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["a", "b", "c"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only column "b"
-    let read_opts = parquet::ParquetReaderOptions::new(&path)
-        .unwrap()
-        .columns(&["b"]);
+    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().columns(&["b"]);
     let read_table = parquet::read_parquet(&read_opts).unwrap();
     let read_view = read_table.view().unwrap();
 
@@ -75,15 +70,11 @@ fn test_parquet_row_limits() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["x"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["x"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only first 10 rows
-    let read_opts = parquet::ParquetReaderOptions::new(&path)
-        .unwrap()
-        .num_rows(10);
+    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().num_rows(10);
     let read_table = parquet::read_parquet(&read_opts).unwrap();
     let read_view = read_table.view().unwrap();
 
@@ -104,10 +95,7 @@ fn test_csv_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = csv::CsvWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["ids", "values"])
-        .include_header(true);
+    let write_opts = csv::CsvWriterOptions::new(&path).unwrap().column_names(&["ids", "values"]).include_header(true);
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
@@ -131,9 +119,7 @@ fn test_parquet_read_with_metadata_returns_column_names() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["alpha", "beta", "gamma"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["alpha", "beta", "gamma"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back with metadata
@@ -169,15 +155,11 @@ fn test_parquet_read_with_metadata_column_selection() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["x", "y", "z"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["x", "y", "z"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only columns "x" and "z"
-    let read_opts = parquet::ParquetReaderOptions::new(&path)
-        .unwrap()
-        .columns(&["x", "z"]);
+    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().columns(&["x", "z"]);
     let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
 
     // Only the selected columns should appear
@@ -201,9 +183,7 @@ fn test_parquet_read_with_metadata_single_column() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["only_col"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["only_col"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
@@ -222,10 +202,7 @@ fn test_csv_custom_delimiter() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = csv::CsvWriterOptions::new(&path)
-        .unwrap()
-        .column_names(&["x"])
-        .delimiter(b'\t');
+    let write_opts = csv::CsvWriterOptions::new(&path).unwrap().column_names(&["x"]).delimiter(b'\t');
     csv::write_csv(&view, &write_opts).unwrap();
 
     let read_opts = csv::CsvReaderOptions::new(&path).unwrap().delimiter(b'\t');

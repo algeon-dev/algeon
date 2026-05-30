@@ -1,8 +1,11 @@
 //! GPU-accelerated join operations.
 
-use crate::error::{self, Result};
-use crate::table::{Table, TableView};
 use std::ptr;
+
+use crate::{
+    error::{self, Result},
+    table::{Table, TableView},
+};
 
 /// How to compare null keys in join operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,15 +52,9 @@ pub fn inner_join(
             )
         },
         "join::inner_join",
-        [(
-            "null_equality",
-            format!("{:?}", null_equality).to_lowercase(),
-        )],
+        [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
-    Ok(JoinResult {
-        left: unsafe { Table::from_raw(out_left) },
-        right: unsafe { Table::from_raw(out_right) },
-    })
+    Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }
 
 /// Left join: all left rows are preserved; right side is null-padded
@@ -84,15 +81,9 @@ pub fn left_join(
             )
         },
         "join::left_join",
-        [(
-            "null_equality",
-            format!("{:?}", null_equality).to_lowercase(),
-        )],
+        [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
-    Ok(JoinResult {
-        left: unsafe { Table::from_raw(out_left) },
-        right: unsafe { Table::from_raw(out_right) },
-    })
+    Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }
 
 /// Full (outer) join: all rows from both sides are preserved, with
@@ -119,13 +110,7 @@ pub fn full_join(
             )
         },
         "join::full_join",
-        [(
-            "null_equality",
-            format!("{:?}", null_equality).to_lowercase(),
-        )],
+        [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
-    Ok(JoinResult {
-        left: unsafe { Table::from_raw(out_left) },
-        right: unsafe { Table::from_raw(out_right) },
-    })
+    Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }

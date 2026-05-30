@@ -1,13 +1,10 @@
-use std::env;
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 fn main() {
     let native_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("native");
 
     // Build the C++ shim library using CMake.
-    let dst = cmake::Config::new(&native_dir)
-        .define("BUILD_SHARED_LIBS", "ON")
-        .build();
+    let dst = cmake::Config::new(&native_dir).define("BUILD_SHARED_LIBS", "ON").build();
 
     // Tell cargo to link against the built library.
     println!("cargo:rustc-link-search=native={}/lib", dst.display());

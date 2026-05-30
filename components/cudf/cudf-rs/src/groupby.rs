@@ -1,10 +1,12 @@
 //! GPU-accelerated groupby aggregation.
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Error, ErrorKind, Result};
-use crate::table::{Table, TableView};
-use std::os::raw::c_void;
-use std::ptr;
+use std::{os::raw::c_void, ptr};
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Error, ErrorKind, Result},
+    table::{Table, TableView},
+};
 
 /// Aggregation type for groupby operations.
 #[derive(Debug, Clone)]
@@ -63,56 +65,56 @@ unsafe fn create_agg_handle(agg: &Aggregation) -> Result<*mut c_void> {
                 cudf_sys::cudf_aggregation_create(0, &mut handle),
                 "groupby::create_agg_handle(sum)",
             )?;
-        }
+        },
         Aggregation::Min => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(1, &mut handle),
                 "groupby::create_agg_handle(min)",
             )?;
-        }
+        },
         Aggregation::Max => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(2, &mut handle),
                 "groupby::create_agg_handle(max)",
             )?;
-        }
+        },
         Aggregation::Count { include_nulls } => {
             let policy = if *include_nulls { 1 } else { 0 };
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_count(policy, &mut handle),
                 "groupby::create_agg_handle(count)",
             )?;
-        }
+        },
         Aggregation::Mean => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(5, &mut handle),
                 "groupby::create_agg_handle(mean)",
             )?;
-        }
+        },
         Aggregation::Median => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(6, &mut handle),
                 "groupby::create_agg_handle(median)",
             )?;
-        }
+        },
         Aggregation::NUnique => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(7, &mut handle),
                 "groupby::create_agg_handle(nunique)",
             )?;
-        }
+        },
         Aggregation::Std { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_std(*ddof, &mut handle),
                 "groupby::create_agg_handle(std)",
             )?;
-        }
+        },
         Aggregation::Variance { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_variance(*ddof, &mut handle),
                 "groupby::create_agg_handle(variance)",
             )?;
-        }
+        },
     }
     Ok(handle)
 }
@@ -127,12 +129,9 @@ pub fn groupby_aggregate(
     null_policy: NullPolicy,
 ) -> Result<GroupByResult> {
     let num_requests = i32::try_from(requests.len()).map_err(|_| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            "number of aggregation requests exceeds i32::MAX",
-        )
-        .with_operation("groupby::groupby_aggregate")
-        .with_context("num_requests", requests.len().to_string())
+        Error::new(ErrorKind::InvalidOperation, "number of aggregation requests exceeds i32::MAX")
+            .with_operation("groupby::groupby_aggregate")
+            .with_context("num_requests", requests.len().to_string())
     })?;
 
     // Collect values column view handles.
@@ -154,13 +153,10 @@ pub fn groupby_aggregate(
         }
 
         let agg_count = i32::try_from(req.aggregations.len()).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "aggregation count per request exceeds i32::MAX",
-            )
-            .with_operation("groupby::groupby_aggregate")
-            .with_context("request_index", agg_counts.len().to_string())
-            .with_context("agg_count", req.aggregations.len().to_string())
+            Error::new(ErrorKind::InvalidOperation, "aggregation count per request exceeds i32::MAX")
+                .with_operation("groupby::groupby_aggregate")
+                .with_context("request_index", agg_counts.len().to_string())
+                .with_context("agg_count", req.aggregations.len().to_string())
         })?;
         agg_counts.push(agg_count);
 
@@ -171,8 +167,8 @@ pub fn groupby_aggregate(
                         .with_operation("groupby::groupby_aggregate")
                         .with_context("request_index", agg_counts.len().to_string())
                         .with_context("ddof", ddof.to_string()));
-                }
-                _ => {}
+                },
+                _ => {},
             }
             let handle = unsafe { create_agg_handle(agg)? };
             all_agg_handles.push(handle);
@@ -236,8 +232,5 @@ pub fn groupby_aggregate(
     // Free the array itself (not the columns — we took ownership above).
     unsafe { cudf_sys::cudf_free_column_array(out_values) };
 
-    Ok(GroupByResult {
-        keys: keys_table,
-        results,
-    })
+    Ok(GroupByResult { keys: keys_table, results })
 }

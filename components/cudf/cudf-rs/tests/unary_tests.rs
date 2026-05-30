@@ -1,8 +1,10 @@
 //! Tests for unary operations.
 
-use cudf::column::Column;
-use cudf::types::{DataType, TypeId};
-use cudf::unary::{self, UnaryOperator};
+use cudf::{
+    column::Column,
+    types::{DataType, TypeId},
+    unary::{self, UnaryOperator},
+};
 
 #[test]
 fn test_sqrt() {
@@ -107,9 +109,7 @@ fn test_cast_error_contains_operation_context() {
     let view = col.view().unwrap();
 
     let unsupported = DataType::new(TypeId::Struct);
-    let err = unary::cast(&view, &unsupported)
-        .err()
-        .expect("expected error");
+    let err = unary::cast(&view, &unsupported).err().expect("expected error");
 
     assert_eq!(err.operation(), "unary::cast");
     assert!(err.context().iter().any(|(k, _)| *k == "output_type_id"));

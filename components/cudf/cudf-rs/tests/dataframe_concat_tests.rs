@@ -1,26 +1,18 @@
 //! Tests for DataFrame concat, copy, rename, select.
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
-use cudf::error::ErrorKind;
+use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind};
 
 #[test]
 fn test_concat_matching_schemas() {
     let df1 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10.0f64, 20.0]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10.0f64, 20.0]).unwrap()],
     )
     .unwrap();
 
     let df2 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[3i32, 4]).unwrap(),
-            Column::from_slice(&[30.0f64, 40.0]).unwrap(),
-        ],
+        vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30.0f64, 40.0]).unwrap()],
     )
     .unwrap();
 
@@ -41,19 +33,13 @@ fn test_concat_matching_schemas() {
 fn test_concat_mismatched_column_names_returns_error() {
     let df1 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10i32, 20]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
     let df2 = DataFrame::new(
         vec!["a".to_string(), "c".to_string()],
-        vec![
-            Column::from_slice(&[3i32, 4]).unwrap(),
-            Column::from_slice(&[30i32, 40]).unwrap(),
-        ],
+        vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i32, 40]).unwrap()],
     )
     .unwrap();
 
@@ -63,18 +49,11 @@ fn test_concat_mismatched_column_names_returns_error() {
 
 #[test]
 fn test_concat_mismatched_column_count_returns_error() {
-    let df1 = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32, 2]).unwrap()],
-    )
-    .unwrap();
+    let df1 = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
     let df2 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[3i32, 4]).unwrap(),
-            Column::from_slice(&[30i32, 40]).unwrap(),
-        ],
+        vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i32, 40]).unwrap()],
     )
     .unwrap();
 
@@ -86,27 +65,18 @@ fn test_concat_mismatched_column_count_returns_error() {
 fn test_concat_mismatched_column_types_returns_error() {
     let df1 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10i32, 20]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
     // Same schema names/order, but "b" has different type (i64 vs i32).
     let df2 = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[3i32, 4]).unwrap(),
-            Column::from_slice(&[30i64, 40]).unwrap(),
-        ],
+        vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i64, 40]).unwrap()],
     )
     .unwrap();
 
-    let err = df1
-        .concat(&df2)
-        .err()
-        .expect("expected type mismatch error");
+    let err = df1.concat(&df2).err().expect("expected type mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -114,34 +84,22 @@ fn test_concat_mismatched_column_types_returns_error() {
 fn test_rename_owned_is_schema_only_and_preserves_data() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[10i32, 20, 30]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
     )
     .unwrap();
 
     let renamed = df.rename_owned("a", "alpha").unwrap();
 
     assert_eq!(renamed.column_names(), vec!["alpha", "b"]);
-    assert_eq!(
-        renamed.column("alpha").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3]
-    );
-    assert_eq!(
-        renamed.column("b").unwrap().to_vec::<i32>().unwrap(),
-        vec![10, 20, 30]
-    );
+    assert_eq!(renamed.column("alpha").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(renamed.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
 fn test_copy_preserves_schema_and_data() {
     let df = DataFrame::new(
         vec!["x".to_string(), "y".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
     .unwrap();
 
@@ -162,10 +120,7 @@ fn test_copy_preserves_schema_and_data() {
 fn test_rename_column() {
     let df = DataFrame::new(
         vec!["old_name".to_string(), "other".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10i32, 20]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
@@ -186,16 +141,9 @@ fn test_rename_column() {
 
 #[test]
 fn test_rename_nonexistent_column_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
-    let err = df
-        .rename("nonexistent", "new")
-        .err()
-        .expect("expected error");
+    let err = df.rename("nonexistent", "new").err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -203,10 +151,7 @@ fn test_rename_nonexistent_column_returns_error() {
 fn test_rename_to_existing_name_returns_error() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32]).unwrap(),
-            Column::from_slice(&[2i32]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[2i32]).unwrap()],
     )
     .unwrap();
 
@@ -241,16 +186,9 @@ fn test_select_subset_of_columns() {
 
 #[test]
 fn test_select_nonexistent_column_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32, 2]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let err = df
-        .select(&["nonexistent"])
-        .err()
-        .expect("expected error");
+    let err = df.select(&["nonexistent"]).err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -258,17 +196,11 @@ fn test_select_nonexistent_column_returns_error() {
 fn test_select_duplicate_column_names_returns_error() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10i32, 20]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
-    let err = df
-        .select(&["a", "a"])
-        .err()
-        .expect("expected duplicate selection error");
+    let err = df.select(&["a", "a"]).err().expect("expected duplicate selection error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -276,10 +208,7 @@ fn test_select_duplicate_column_names_returns_error() {
 fn test_select_preserves_data() {
     let df = DataFrame::new(
         vec!["x".to_string(), "y".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
     .unwrap();
 
@@ -313,10 +242,7 @@ fn test_rename_preserves_column_order() {
 fn test_rename_same_name_is_schema_only_and_preserves_data() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[10i32, 20, 30]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
     )
     .unwrap();
 
@@ -326,24 +252,65 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
 
     // Data unchanged.
-    assert_eq!(
-        renamed.column("a").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3]
-    );
-    assert_eq!(
-        renamed.column("b").unwrap().to_vec::<i32>().unwrap(),
-        vec![10, 20, 30]
-    );
+    assert_eq!(renamed.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(renamed.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn test_rename_owned_nonexistent_column_returns_error() {
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
+
+    let err = df.rename_owned("nonexistent", "new").err().expect("expected error");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_rename_owned_to_existing_name_returns_error() {
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[2i32]).unwrap()],
+    )
+    .unwrap();
+
+    let err = df.rename_owned("a", "b").err().expect("expected error");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_rename_owned_same_name_noop() {
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
+    )
+    .unwrap();
+
+    let renamed = df.rename_owned("a", "a").unwrap();
+
+    assert_eq!(renamed.column_names(), vec!["a", "b"]);
+    assert_eq!(renamed.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_rename_owned_preserves_column_order() {
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        vec![
+            Column::from_slice(&[1i32]).unwrap(),
+            Column::from_slice(&[2i32]).unwrap(),
+            Column::from_slice(&[3i32]).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let renamed = df.rename_owned("b", "beta").unwrap();
+    assert_eq!(renamed.column_names(), vec!["a", "beta", "c"]);
 }
 
 #[test]
 fn test_select_all_columns_returns_full_copy() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[3i32, 4]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[3i32, 4]).unwrap()],
     )
     .unwrap();
 

@@ -7,11 +7,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::column::Column;
-//! use cudf::dictionary;
-//! use cudf::types::TypeId;
+//! use cudf::{column::Column, dictionary, types::TypeId};
 //!
-//! let col = Column::from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
+//! let col =
+//!     Column::from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
 //! let view = col.view().unwrap();
 //!
 //! let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -22,10 +21,13 @@
 //! let indices = dictionary::indices(&dict_view).unwrap();
 //! ```
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Result};
-use crate::types::TypeId;
 use std::ptr;
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Result},
+    types::TypeId,
+};
 
 /// Encode a column into a dictionary column.
 ///
@@ -42,14 +44,9 @@ use std::ptr;
 pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in_with(
-        unsafe {
-            cudf_sys::cudf_dictionary_encode(input.raw_handle(), indices_type.to_raw(), &mut out)
-        },
+        unsafe { cudf_sys::cudf_dictionary_encode(input.raw_handle(), indices_type.to_raw(), &mut out) },
         "dictionary::encode",
-        [(
-            "indices_type_id",
-            format!("{:?}", indices_type).to_lowercase(),
-        )],
+        [("indices_type_id", format!("{:?}", indices_type).to_lowercase())],
     )?;
     Ok(unsafe { Column::from_raw(out) })
 }
@@ -105,13 +102,7 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_dictionary_set_keys(
-                dict_column.raw_handle(),
-                keys.raw_handle(),
-                &mut out,
-            )
-        },
+        unsafe { cudf_sys::cudf_dictionary_set_keys(dict_column.raw_handle(), keys.raw_handle(), &mut out) },
         "dictionary::set_keys",
     )?;
     Ok(unsafe { Column::from_raw(out) })
@@ -131,20 +122,21 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 /// # Example
 ///
 /// ```no_run
-/// use cudf::column::Column;
-/// use cudf::dictionary;
-/// use cudf::types::TypeId;
+/// use cudf::{column::Column, dictionary, types::TypeId};
 ///
 /// let src = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let dst = Column::from_slice(&[20i32, 30, 40]).unwrap();
 ///
-/// let src_dict = dictionary::encode(&src.view().unwrap(), TypeId::Int32).unwrap();
-/// let dst_dict = dictionary::encode(&dst.view().unwrap(), TypeId::Int32).unwrap();
+/// let src_dict =
+///     dictionary::encode(&src.view().unwrap(), TypeId::Int32).unwrap();
+/// let dst_dict =
+///     dictionary::encode(&dst.view().unwrap(), TypeId::Int32).unwrap();
 ///
 /// let matched = dictionary::match_dictionaries(&[
 ///     &src_dict.view().unwrap(),
 ///     &dst_dict.view().unwrap(),
-/// ]).unwrap();
+/// ])
+/// .unwrap();
 /// // matched[0] and matched[1] now share keys [10, 20, 30, 40].
 /// ```
 pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column>> {
@@ -161,19 +153,10 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
     let mut out: Vec<*mut std::ffi::c_void> = vec![ptr::null_mut(); n];
 
     error::check_status_in_with(
-        unsafe {
-            cudf_sys::cudf_dictionary_match_dictionaries(
-                handles.as_ptr(),
-                n as i32,
-                out.as_mut_ptr(),
-            )
-        },
+        unsafe { cudf_sys::cudf_dictionary_match_dictionaries(handles.as_ptr(), n as i32, out.as_mut_ptr()) },
         "dictionary::match_dictionaries",
         [("num_columns", n.to_string())],
     )?;
 
-    Ok(out
-        .into_iter()
-        .map(|h| unsafe { Column::from_raw(h) })
-        .collect())
+    Ok(out.into_iter().map(|h| unsafe { Column::from_raw(h) }).collect())
 }

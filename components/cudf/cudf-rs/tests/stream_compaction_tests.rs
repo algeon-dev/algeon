@@ -1,8 +1,6 @@
 //! Tests for CU-1 (unique), CU-3 (drop_nulls), CU-8 (drop_duplicates / distinct).
 
-use cudf::column::Column;
-use cudf::stream_compaction;
-use cudf::table::Table;
+use cudf::{column::Column, stream_compaction, table::Table};
 
 // ===== CU-3: drop_nulls =====================================================
 
@@ -19,10 +17,7 @@ fn test_drop_nulls_basic() {
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
-    assert_eq!(
-        rv.column(1).unwrap().to_vec::<f64>().unwrap(),
-        vec![10.0, 30.0]
-    );
+    assert_eq!(rv.column(1).unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0]);
 }
 
 #[test]
@@ -58,14 +53,8 @@ fn test_drop_nulls_empty_keys_returns_unchanged_table() {
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
     assert_eq!(rv.num_columns().unwrap(), 2);
-    assert_eq!(
-        rv.column(0).unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3]
-    );
-    assert_eq!(
-        rv.column(1).unwrap().to_vec::<i32>().unwrap(),
-        vec![10, 20, 30]
-    );
+    assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(rv.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]

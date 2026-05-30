@@ -6,9 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::column::Column;
-//! use cudf::table::Table;
-//! use cudf::hashing;
+//! use cudf::{column::Column, hashing, table::Table};
 //!
 //! let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
 //! let table = Table::from_columns(vec![col]).unwrap();
@@ -18,10 +16,13 @@
 //! // hashes is a UINT32 column with one hash per row.
 //! ```
 
-use crate::column::Column;
-use crate::error::{self, Result};
-use crate::table::TableView;
 use std::ptr;
+
+use crate::{
+    column::Column,
+    error::{self, Result},
+    table::TableView,
+};
 
 /// Default hash seed (matches cudf::hashing::DEFAULT_HASH_SEED).
 pub const DEFAULT_HASH_SEED: u32 = 0;

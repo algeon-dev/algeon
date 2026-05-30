@@ -1,9 +1,12 @@
 //! GPU-accelerated unary operations.
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Result};
-use crate::types::DataType;
 use std::ptr;
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Result},
+    types::DataType,
+};
 
 /// Unary operators matching `cudf::unary_operator`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,20 +52,14 @@ pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Colu
 /// Return a boolean column: `true` where elements are null.
 pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) },
-        "unary::is_null",
-    )?;
+    error::check_status_in(unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) }, "unary::is_null")?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
 pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) },
-        "unary::is_valid",
-    )?;
+    error::check_status_in(unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) }, "unary::is_valid")?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -75,10 +72,7 @@ pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
     error::check_status_in_with(
         status,
         "unary::cast",
-        [(
-            "output_type_id",
-            format!("{:?}", output_type.id()).to_lowercase(),
-        )],
+        [("output_type_id", format!("{:?}", output_type.id()).to_lowercase())],
     )?;
     Ok(unsafe { Column::from_raw(out) })
 }
@@ -107,19 +101,13 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
 /// Return a boolean column: `true` where elements are NaN.
 pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) },
-        "unary::is_nan",
-    )?;
+    error::check_status_in(unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) }, "unary::is_nan")?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are not NaN.
 pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) },
-        "unary::is_not_nan",
-    )?;
+    error::check_status_in(unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) }, "unary::is_not_nan")?;
     Ok(unsafe { Column::from_raw(out) })
 }

@@ -1,8 +1,10 @@
 //! Tests for join operations.
 
-use cudf::column::Column;
-use cudf::join::{self, NullEquality};
-use cudf::table::Table;
+use cudf::{
+    column::Column,
+    join::{self, NullEquality},
+    table::Table,
+};
 
 /// Helper to create an empty table (0 columns) for use as an empty payload.
 fn empty_payload() -> Table {
@@ -47,11 +49,8 @@ fn test_inner_join() {
     let left_vals: Vec<i32> = lv.column(1).unwrap().to_vec::<i32>().unwrap();
     let right_vals: Vec<i32> = rv.column(1).unwrap().to_vec::<i32>().unwrap();
 
-    let mut triples: Vec<(i32, i32, i32)> = left_keys
-        .into_iter()
-        .zip(left_vals.into_iter().zip(right_vals))
-        .map(|(k, (lv, rv))| (k, lv, rv))
-        .collect();
+    let mut triples: Vec<(i32, i32, i32)> =
+        left_keys.into_iter().zip(left_vals.into_iter().zip(right_vals)).map(|(k, (lv, rv))| (k, lv, rv)).collect();
     triples.sort_by_key(|&(k, _, _)| k);
 
     assert_eq!(triples, vec![(2, 20, 200), (3, 30, 300)]);
@@ -122,9 +121,7 @@ fn test_join_error_contains_operation_context() {
     let lpv = lp_bad.view().unwrap();
     let rpv = rp.view().unwrap();
 
-    let err = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal)
-        .err()
-        .expect("expected error");
+    let err = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).err().expect("expected error");
     assert_eq!(err.operation(), "join::inner_join");
     assert!(err.context().iter().any(|(k, _)| *k == "null_equality"));
 }
