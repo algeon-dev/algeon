@@ -330,9 +330,7 @@ fn test_from_device_ptr_i32_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap() as usize;
 
-    let new_col = unsafe {
-        Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap()
-    };
+    let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() };
 
     let new_view = new_col.view().unwrap();
     assert_eq!(new_view.len().unwrap(), 5);
@@ -352,9 +350,7 @@ fn test_from_device_ptr_f64_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap() as usize;
 
-    let new_col = unsafe {
-        Column::from_device_ptr(device_ptr, len, TypeId::Float64).unwrap()
-    };
+    let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Float64).unwrap() };
 
     let host_data = new_col.view().unwrap().to_vec::<f64>().unwrap();
     assert_eq!(host_data, original_data);
@@ -369,9 +365,7 @@ fn test_from_device_ptr_i64_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap() as usize;
 
-    let new_col = unsafe {
-        Column::from_device_ptr(device_ptr, len, TypeId::Int64).unwrap()
-    };
+    let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int64).unwrap() };
 
     let host_data = new_col.view().unwrap().to_vec::<i64>().unwrap();
     assert_eq!(host_data, original_data);
@@ -389,9 +383,7 @@ fn test_from_device_ptr_independent_of_source() {
         let device_ptr = src_view.device_data_ptr().unwrap();
         let len = src_view.len().unwrap() as usize;
 
-        unsafe {
-            Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap()
-        }
+        unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() }
         // src_col is dropped here
     };
 
@@ -408,9 +400,7 @@ fn test_from_device_ptr_empty() {
     let src_view = src_col.view().unwrap();
     let device_ptr = src_view.device_data_ptr().unwrap();
 
-    let new_col = unsafe {
-        Column::from_device_ptr(device_ptr, 0, TypeId::Int32).unwrap()
-    };
+    let new_col = unsafe { Column::from_device_ptr(device_ptr, 0, TypeId::Int32).unwrap() };
 
     let new_view = new_col.view().unwrap();
     assert_eq!(new_view.len().unwrap(), 0);
@@ -421,9 +411,7 @@ fn test_from_device_ptr_empty() {
 #[test]
 fn test_from_device_ptr_null_pointer_with_zero_len() {
     // Null pointer with len 0 should succeed (no data to copy).
-    let new_col = unsafe {
-        Column::from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap()
-    };
+    let new_col = unsafe { Column::from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap() };
 
     let new_view = new_col.view().unwrap();
     assert_eq!(new_view.len().unwrap(), 0);
@@ -432,9 +420,7 @@ fn test_from_device_ptr_null_pointer_with_zero_len() {
 #[test]
 fn test_from_device_ptr_null_pointer_with_nonzero_len() {
     // Null pointer with len > 0 should fail.
-    let result = unsafe {
-        Column::from_device_ptr(std::ptr::null(), 5, TypeId::Int32)
-    };
+    let result = unsafe { Column::from_device_ptr(std::ptr::null(), 5, TypeId::Int32) };
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::NullError);
@@ -447,7 +433,12 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_i8).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Int8).unwrap()
+        Column::from_device_ptr(
+            v.device_data_ptr().unwrap(),
+            v.len().unwrap() as usize,
+            TypeId::Int8,
+        )
+        .unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
@@ -456,7 +447,12 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_u32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::UInt32).unwrap()
+        Column::from_device_ptr(
+            v.device_data_ptr().unwrap(),
+            v.len().unwrap() as usize,
+            TypeId::UInt32,
+        )
+        .unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
@@ -465,7 +461,12 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_f32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Float32).unwrap()
+        Column::from_device_ptr(
+            v.device_data_ptr().unwrap(),
+            v.len().unwrap() as usize,
+            TypeId::Float32,
+        )
+        .unwrap()
     };
     let result = new_col.view().unwrap().to_vec::<f32>().unwrap();
     assert_eq!(result, data_f32);
@@ -474,12 +475,9 @@ fn test_from_device_ptr_various_types() {
 #[test]
 fn test_from_device_ptr_rejects_non_fixed_width_type() {
     // from_device_ptr must only accept fixed-width primitive types.
-    let result = unsafe {
-        Column::from_device_ptr(std::ptr::null(), 0, TypeId::String)
-    };
+    let result = unsafe { Column::from_device_ptr(std::ptr::null(), 0, TypeId::String) };
 
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
-

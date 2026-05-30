@@ -33,10 +33,13 @@
 //! assert_eq!(view.num_rows().unwrap(), 3);
 //! ```
 
+#[cfg(feature = "arrow")]
+pub mod arrow;
 pub mod binary;
 pub mod column;
 pub mod concatenate;
 pub mod copying;
+pub mod dataframe;
 pub mod dictionary;
 pub mod error;
 pub mod filter;
@@ -58,6 +61,7 @@ pub mod unary;
 
 // Re-export key types at crate root for convenience.
 pub use column::{Column, ColumnView, DeviceSlice};
+pub use dataframe::DataFrame;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use scalar::Scalar;
 pub use stream::CudaStream;

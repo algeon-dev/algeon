@@ -1,4 +1,4 @@
-//! Tests for string column creation and reading (Task 11).
+//! Tests for string column creation and reading.
 
 use cudf::column::Column;
 use cudf::types::TypeId;
