@@ -695,6 +695,31 @@ impl DataFrame {
         })
     }
 
+    /// Drop rows where **any** of the specified `subset` columns contain nulls.
+    ///
+    /// Equivalent to `self.drop_nulls(subset, subset.len() as i32)` — every
+    /// column in `subset` must be non-null for a row to be kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `subset` is not in the schema.
+    pub fn drop_nulls_any(&self, subset: &[&str]) -> Result<Self> {
+        let subset_count = subset.len();
+        let keep_threshold = i32::try_from(subset_count).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                "subset length exceeds i32::MAX",
+            )
+            .with_operation("dataframe::drop_nulls_any")
+            .with_context("subset_count", subset_count.to_string())
+        })?;
+
+        self.drop_nulls(subset, keep_threshold).map_err(|e| {
+            e.with_operation("dataframe::drop_nulls_any")
+                .with_context("subset_count", subset_count.to_string())
+        })
+    }
+
     // -- Joins ---------------------------------------------------------------
 
     /// Inner join: returns only rows with matching keys in both DataFrames.
