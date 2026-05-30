@@ -552,6 +552,25 @@ impl DataFrame {
         })
     }
 
+    /// Filter rows to those where `column` values appear in `values`.
+    ///
+    /// This is a convenience wrapper around [`crate::search::contains`] +
+    /// [`DataFrame::filter`], equivalent to pandas `df[df[column].isin(values)]`.
+    ///
+    /// `values` is the haystack (the set to test membership against).
+    /// The column and values must have the same data type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema, or if the
+    /// `contains` / `filter` operation fails.
+    pub fn filter_isin(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
+        let col_view = self.column(column)?;
+        let mask = crate::search::contains(values, &col_view)?;
+        let mask_view = mask.view()?;
+        self.filter(&mask_view)
+    }
+
     /// Sort rows by the given column names and orders.
     ///
     /// `by` and `orders` must have the same length. The schema is preserved.
@@ -668,7 +687,7 @@ impl DataFrame {
     /// If a right payload name collides with an existing output column name,
     /// `"_right"` is appended (and numbered if needed).
     pub fn inner_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Inner)
+        self.join_merged_impl(right, on, JoinKind::Inner, "dataframe::inner_join")
     }
 
     /// Left join: all left rows are preserved; the right side is null-padded
@@ -676,7 +695,7 @@ impl DataFrame {
     ///
     /// Output schema is: `left_keys + left_payload + right_payload`.
     pub fn left_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Left)
+        self.join_merged_impl(right, on, JoinKind::Left, "dataframe::left_join")
     }
 
     /// Full (outer) join: all rows from both sides are preserved, with
@@ -687,7 +706,7 @@ impl DataFrame {
     /// For right-only rows, key columns are coalesced from right keys when
     /// left keys are null.
     pub fn full_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Full)
+        self.join_merged_impl(right, on, JoinKind::Full, "dataframe::full_join")
     }
 
     /// Compatibility API: return split left/right join outputs.
@@ -696,7 +715,7 @@ impl DataFrame {
         right: &DataFrame,
         on: &[&str],
     ) -> Result<DataFrameJoinResult> {
-        self.join_split_impl(right, on, JoinKind::Inner)
+        self.join_split_on_impl(right, on, on, JoinKind::Inner, "dataframe::inner_join_split")
     }
 
     /// Compatibility API: return split left/right join outputs.
@@ -705,7 +724,7 @@ impl DataFrame {
         right: &DataFrame,
         on: &[&str],
     ) -> Result<DataFrameJoinResult> {
-        self.join_split_impl(right, on, JoinKind::Left)
+        self.join_split_on_impl(right, on, on, JoinKind::Left, "dataframe::left_join_split")
     }
 
     /// Compatibility API: return split left/right join outputs.
@@ -714,37 +733,116 @@ impl DataFrame {
         right: &DataFrame,
         on: &[&str],
     ) -> Result<DataFrameJoinResult> {
-        self.join_split_impl(right, on, JoinKind::Full)
+        self.join_split_on_impl(right, on, on, JoinKind::Full, "dataframe::full_join_split")
+    }
+
+    /// Inner join with asymmetric key names.
+    ///
+    /// `left_on` names columns in `self`, `right_on` names columns in
+    /// `right`. Both slices must have the same length (each pair is matched
+    /// positionally). Output key columns use the **left** key names.
+    ///
+    /// Output schema is: `left_keys + left_payload + right_payload`.
+    pub fn inner_join_on(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+    ) -> Result<Self> {
+        self.join_merged_on_impl(
+            right,
+            left_on,
+            right_on,
+            JoinKind::Inner,
+            "dataframe::inner_join_on",
+        )
+    }
+
+    /// Left join with asymmetric key names.
+    ///
+    /// All left rows are preserved; the right side is null-padded for
+    /// non-matching rows. Output key columns use the **left** key names.
+    pub fn left_join_on(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+    ) -> Result<Self> {
+        self.join_merged_on_impl(
+            right,
+            left_on,
+            right_on,
+            JoinKind::Left,
+            "dataframe::left_join_on",
+        )
+    }
+
+    /// Full (outer) join with asymmetric key names.
+    ///
+    /// All rows from both sides are preserved, with null-padding where
+    /// there is no match. Key columns are coalesced and use the **left**
+    /// key names.
+    pub fn full_join_on(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+    ) -> Result<Self> {
+        self.join_merged_on_impl(
+            right,
+            left_on,
+            right_on,
+            JoinKind::Full,
+            "dataframe::full_join_on",
+        )
     }
 
     /// Internal merged-join implementation.
-    fn join_merged_impl(&self, right: &DataFrame, on: &[&str], kind: JoinKind) -> Result<Self> {
-        let operation = match kind {
-            JoinKind::Inner => "dataframe::inner_join",
-            JoinKind::Left => "dataframe::left_join",
-            JoinKind::Full => "dataframe::full_join",
-        };
-
-        let split = self.join_split_impl(right, on, kind)?;
-        merge_join_result(split, on, kind == JoinKind::Full, operation)
-    }
-
-    /// Internal split-join dispatch.
-    fn join_split_impl(
+    fn join_merged_impl(
         &self,
         right: &DataFrame,
         on: &[&str],
         kind: JoinKind,
+        operation: &'static str,
+    ) -> Result<Self> {
+        self.join_merged_on_impl(right, on, on, kind, operation)
+    }
+
+    /// Internal merged-join implementation with asymmetric keys.
+    fn join_merged_on_impl(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+        kind: JoinKind,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let split = self.join_split_on_impl(right, left_on, right_on, kind, operation)?;
+        merge_join_result(split, left_on, kind == JoinKind::Full, operation)
+    }
+
+    /// Internal split-join dispatch with asymmetric keys.
+    fn join_split_on_impl(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+        kind: JoinKind,
+        operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
-        let operation = match kind {
-            JoinKind::Inner => "dataframe::inner_join",
-            JoinKind::Left => "dataframe::left_join",
-            JoinKind::Full => "dataframe::full_join",
-        };
+        if left_on.len() != right_on.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "left_on and right_on must have the same number of key columns",
+            )
+            .with_operation(operation)
+            .with_context("left_on_count", left_on.len().to_string())
+            .with_context("right_on_count", right_on.len().to_string()));
+        }
 
         // Resolve key column names in both sides.
-        let left_key_indices = resolve_column_names(&self.schema, on, operation)?;
-        let right_key_indices = resolve_column_names(&right.schema, on, operation)?;
+        let left_key_indices = resolve_column_names(&self.schema, left_on, operation)?;
+        let right_key_indices = resolve_column_names(&right.schema, right_on, operation)?;
 
         // Compute payload indices (all columns not in keys, preserving order).
         let left_payload_indices = payload_indices(&self.schema, &left_key_indices);
@@ -776,7 +874,7 @@ impl DataFrame {
             }
         };
 
-        // Build schemas: key columns + payload columns for each side.
+        // Build schemas: left side uses left key names, right side uses right key names.
         let left_schema_names = build_join_schema_names(
             &self.schema, &left_key_indices, &left_payload_indices,
         );

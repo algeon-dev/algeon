@@ -1,4 +1,15 @@
 //! GPU-accelerated binary operations.
+//!
+//! # Supported types
+//!
+//! Binary operations work on both numeric and string columns:
+//!
+//! - **Numeric columns**: All arithmetic (`Add`, `Sub`, `Mul`, `Div`, …),
+//!   comparison (`Equal`, `Less`, …), bitwise, and logical operators.
+//! - **String columns**: Comparison operators only (`Equal`, `NotEqual`,
+//!   `Less`, `Greater`, `LessEqual`, `GreaterEqual`). String comparisons
+//!   are lexicographic and case-sensitive. Arithmetic and bitwise operators
+//!   on strings will return an error.
 
 use crate::column::{Column, ColumnView};
 use crate::error::{self, Result};
@@ -44,6 +55,10 @@ pub enum BinaryOperator {
 }
 
 /// Binary operation: column op column.
+///
+/// Works with both numeric and string columns. For strings, only comparison
+/// operators (`Equal`, `NotEqual`, `Less`, `Greater`, `LessEqual`,
+/// `GreaterEqual`) are supported — arithmetic operators return an error.
 pub fn binary_operation_vv(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
@@ -71,6 +86,9 @@ pub fn binary_operation_vv(
 }
 
 /// Binary operation: column op scalar.
+///
+/// Works with both numeric and string columns. For strings, only comparison
+/// operators are supported — arithmetic operators return an error.
 pub fn binary_operation_vs(
     lhs: &ColumnView<'_>,
     rhs: &Scalar,
@@ -98,6 +116,9 @@ pub fn binary_operation_vs(
 }
 
 /// Binary operation: scalar op column.
+///
+/// Works with both numeric and string columns. For strings, only comparison
+/// operators are supported — arithmetic operators return an error.
 pub fn binary_operation_sv(
     lhs: &Scalar,
     rhs: &ColumnView<'_>,

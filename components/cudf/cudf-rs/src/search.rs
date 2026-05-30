@@ -4,13 +4,16 @@ use crate::column::{Column, ColumnView};
 use crate::error::{self, Result};
 use std::ptr;
 
-/// Check if elements of `needles` exist in `haystack`.
+/// Check if elements of `needles` exist in `haystack` (set membership / "isin").
 ///
 /// Returns a `BOOL8` column with the same size as `needles`. Element `i`
 /// is `true` if `needles[i]` is found anywhere in `haystack`, `false`
 /// otherwise. Null rows in `needles` produce null rows in the output.
 ///
 /// Both columns must have the same data type.
+///
+/// This is the building block for [`DataFrame::filter_isin`](crate::dataframe::DataFrame::filter_isin),
+/// which wraps `contains` + `filter` into a one-liner convenience method.
 ///
 /// # Example
 /// ```no_run

@@ -1,4 +1,4 @@
-//! Tests for DataFrame filter, sort, deduplicate.
+//! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
 use cudf::column::Column;
 use cudf::dataframe::DataFrame;
@@ -61,6 +61,93 @@ fn test_filter_all_false() {
 
     assert_eq!(filtered.num_rows().unwrap(), 0);
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
+}
+
+// ---------------------------------------------------------------------------
+// filter_isin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_filter_isin_basic() {
+    let df = sample_df(); // ids: 3,1,4,1,5
+    let values = Column::from_slice(&[1i32, 5]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("id", &values_view).unwrap();
+
+    assert_eq!(filtered.num_rows().unwrap(), 3); // rows with id 1,1,5
+    let mut ids = filtered.column("id").unwrap().to_vec::<i32>().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![1, 1, 5]);
+}
+
+#[test]
+fn test_filter_isin_no_matches() {
+    let df = sample_df(); // ids: 3,1,4,1,5
+    let values = Column::from_slice(&[99i32, 100]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("id", &values_view).unwrap();
+
+    assert_eq!(filtered.num_rows().unwrap(), 0);
+}
+
+#[test]
+fn test_filter_isin_all_match() {
+    let df = sample_df(); // ids: 3,1,4,1,5
+    let values = Column::from_slice(&[1i32, 3, 4, 5]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("id", &values_view).unwrap();
+
+    assert_eq!(filtered.num_rows().unwrap(), 5);
+}
+
+#[test]
+fn test_filter_isin_preserves_schema() {
+    let df = sample_df();
+    let values = Column::from_slice(&[1i32]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("id", &values_view).unwrap();
+
+    assert_eq!(filtered.column_names(), vec!["id", "score"]);
+    assert_eq!(filtered.column_index("id"), Some(0));
+    assert_eq!(filtered.column_index("score"), Some(1));
+}
+
+#[test]
+fn test_filter_isin_nonexistent_column() {
+    let df = sample_df();
+    let values = Column::from_slice(&[1i32]).unwrap();
+    let values_view = values.view().unwrap();
+    let result = df.filter_isin("nonexistent", &values_view);
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_filter_isin_float64() {
+    let df = sample_df(); // scores: 30.0, 10.0, 40.0, 15.0, 50.0
+    let values = Column::from_slice(&[10.0f64, 50.0]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("score", &values_view).unwrap();
+
+    assert_eq!(filtered.num_rows().unwrap(), 2);
+    let mut scores = filtered
+        .column("score")
+        .unwrap()
+        .to_vec::<f64>()
+        .unwrap();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(scores, vec![10.0, 50.0]);
+}
+
+#[test]
+fn test_filter_isin_empty_values() {
+    let df = sample_df();
+    let values = Column::from_slice::<i32>(&[]).unwrap();
+    let values_view = values.view().unwrap();
+    let filtered = df.filter_isin("id", &values_view).unwrap();
+
+    assert_eq!(filtered.num_rows().unwrap(), 0);
 }
 
 // ---------------------------------------------------------------------------
