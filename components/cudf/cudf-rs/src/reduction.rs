@@ -3,7 +3,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{column::Column, reduction, types::DataType, types::TypeId};
+//! use cudf::{
+//!     column::Column,
+//!     reduction,
+//!     types::{DataType, TypeId},
+//! };
 //!
 //! let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
 //! let view = col.view().unwrap();

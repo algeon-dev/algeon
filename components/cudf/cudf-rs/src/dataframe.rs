@@ -1,8 +1,8 @@
-//! A named-column wrapper around [`Table`] for ergonomic GPU DataFrame operations.
+//! A named-column wrapper around GPU columns for ergonomic DataFrame operations.
 //!
-//! [`DataFrame`] pairs a [`Table`] with an ordered column-name schema backed by
-//! [`IndexMap`], giving O(1) name-based column lookup while preserving insertion
-//! order.
+//! [`DataFrame`] stores columns individually as `Arc<Column>`, enabling
+//! zero-copy operations like rename, select, and copy that share GPU memory
+//! via reference counting instead of deep-copying all column data.
 //!
 //! # Example
 //!
@@ -22,7 +22,7 @@
 //! let col = df.column("score").unwrap();
 //! ```
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use indexmap::IndexMap;
 
@@ -37,7 +37,7 @@ use crate::{
     scalar::Scalar,
     sorting::{self, Order},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
-    table::Table,
+    table::{Table, TableView},
     types::DataType,
     unary,
 };
@@ -46,9 +46,13 @@ use crate::{
 ///
 /// `DataFrame` is an immutable value — every mutating operation returns a
 /// **new** `DataFrame` rather than modifying in place.
+///
+/// Columns are stored as `Arc<Column>`, so operations that don't change
+/// column data (rename, select, copy, with_column for unchanged columns)
+/// share GPU memory via reference counting.
 pub struct DataFrame {
-    table: Table,
-    schema: IndexMap<String, usize>,
+    columns: IndexMap<String, Arc<Column>>,
+    row_count: i32,
 }
 
 /// Result of a split DataFrame join operation.
@@ -66,7 +70,7 @@ pub struct DataFrameJoinResult {
 impl std::fmt::Debug for DataFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Debug shows schema, row count, and column types — NO GPU data copy.
-        let num_cols = self.schema.len();
+        let num_cols = self.columns.len();
         let num_rows = self.num_rows().unwrap_or(-1);
 
         let mut ds = f.debug_struct("DataFrame");
@@ -75,7 +79,7 @@ impl std::fmt::Debug for DataFrame {
 
         // Build a columns summary: [(name, type)] without GPU data copy.
         let columns_info: Vec<(&str, String)> = self
-            .schema
+            .columns
             .keys()
             .map(|name| {
                 let type_str = self
@@ -281,7 +285,7 @@ impl DataFrame {
     /// Returns an error if:
     /// - `names.len() != columns.len()`
     /// - Any name is duplicated
-    /// - Columns have different row counts (enforced by [`Table::from_columns`])
+    /// - Columns have different row counts
     pub fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
         if names.len() != columns.len() {
             return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
@@ -290,17 +294,34 @@ impl DataFrame {
                 .with_context("columns_count", columns.len().to_string()));
         }
 
-        let schema = build_schema(&names, "dataframe::new")?;
+        validate_no_duplicate_names(&names, "dataframe::new")?;
 
         if columns.is_empty() {
-            // Table::from_columns with an empty vec is valid and yields a
-            // zero-column, zero-row table.
-            let table = Table::from_columns(columns)?;
-            return Ok(Self { table, schema });
+            return Ok(Self { columns: IndexMap::new(), row_count: 0 });
         }
 
-        let table = Table::from_columns(columns)?;
-        Ok(Self { table, schema })
+        // Validate all columns have the same row count.
+        let first_rows = columns[0].view()?.len()?;
+        for (i, col) in columns.iter().enumerate().skip(1) {
+            let rows = col.view()?.len()?;
+            if rows != first_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows),
+                )
+                .with_operation("dataframe::new")
+                .with_context("column_index", i.to_string())
+                .with_context("column_rows", rows.to_string())
+                .with_context("expected_rows", first_rows.to_string()));
+            }
+        }
+
+        let mut map = IndexMap::with_capacity(names.len());
+        for (name, col) in names.into_iter().zip(columns) {
+            map.insert(name, Arc::new(col));
+        }
+
+        Ok(Self { columns: map, row_count: first_rows })
     }
 
     /// Wrap an existing [`Table`] with column names.
@@ -310,7 +331,11 @@ impl DataFrame {
     /// Returns an error if `names.len()` does not match the table's column
     /// count, or if names contain duplicates.
     pub fn from_table(table: Table, names: Vec<String>) -> Result<Self> {
-        let num_cols = table.view()?.num_columns()?;
+        let view = table.view()?;
+        let num_cols = view.num_columns()?;
+        let row_count = if num_cols > 0 { view.num_rows()? } else { 0 };
+        drop(view);
+
         let expected = names.len() as i32;
         if expected != num_cols {
             return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of table columns")
@@ -319,26 +344,30 @@ impl DataFrame {
                 .with_context("table_columns", num_cols.to_string()));
         }
 
-        let schema = build_schema(&names, "dataframe::from_table")?;
-        Ok(Self { table, schema })
+        validate_no_duplicate_names(&names, "dataframe::from_table")?;
+
+        let cols = table.into_columns()?;
+        let mut map = IndexMap::with_capacity(names.len());
+        for (name, col) in names.into_iter().zip(cols) {
+            map.insert(name, Arc::new(col));
+        }
+
+        Ok(Self { columns: map, row_count })
     }
 
     /// Returns the number of columns.
     pub fn num_columns(&self) -> usize {
-        self.schema.len()
+        self.columns.len()
     }
 
     /// Returns the number of rows.
     pub fn num_rows(&self) -> Result<i32> {
-        if self.schema.is_empty() {
-            return Ok(0);
-        }
-        self.table.view()?.num_rows()
+        Ok(self.row_count)
     }
 
     /// Returns column names in insertion (schema) order.
     pub fn column_names(&self) -> Vec<&str> {
-        self.schema.keys().map(|s| s.as_str()).collect()
+        self.columns.keys().map(|s| s.as_str()).collect()
     }
 
     /// Borrow a column view by name.
@@ -347,24 +376,18 @@ impl DataFrame {
     ///
     /// Returns an error if `name` is not in the schema.
     pub fn column(&self, name: &str) -> Result<ColumnView<'_>> {
-        let &idx = self.schema.get(name).ok_or_else(|| {
+        let col = self.columns.get(name).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                 .with_operation("dataframe::column")
                 .with_context("column_name", name.to_string())
         })?;
 
-        let view = self.table.view()?;
-        // We must ensure the ColumnView outlives the TableView. The
-        // TableView's internal handle is freed on drop, but the ColumnView
-        // returned by `table_view.column()` only references the parent
-        // Table's memory (not the TableView wrapper). The lifetime `'a` on
-        // ColumnView is tied to `&self`, which keeps the Table alive.
-        view.column(idx as i32)
+        col.view()
     }
 
     /// Look up the positional index of a column by name.
     pub fn column_index(&self, name: &str) -> Option<usize> {
-        self.schema.get(name).copied()
+        self.columns.get_index_of(name)
     }
 
     /// Factorize a named column into integer codes and unique values.
@@ -383,20 +406,83 @@ impl DataFrame {
         })
     }
 
-    /// Returns the schema mapping column names to positional indices.
-    pub fn schema(&self) -> &IndexMap<String, usize> {
-        &self.schema
+    /// Build an owned [`Table`] by deep-copying each column.
+    ///
+    /// This is useful when calling APIs that operate on `Table` directly.
+    pub fn to_table(&self) -> Result<Table> {
+        let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
+        for (name, arc_col) in &self.columns {
+            let col = arc_col
+                .copy()
+                .map_err(|e| e.with_operation("dataframe::to_table").with_context("column_name", name.clone()))?;
+            cols.push(col);
+        }
+
+        Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table"))
     }
 
-    /// Returns a reference to the underlying [`Table`].
-    pub fn table(&self) -> &Table {
-        &self.table
+    /// Consume the `DataFrame`, returning an owned table and column names.
+    ///
+    /// If any columns are shared via `Arc`, shared columns are deep-copied.
+    pub fn into_table(self) -> Result<(Table, Vec<String>)> {
+        let mut names: Vec<String> = Vec::with_capacity(self.columns.len());
+        let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
+
+        for (name, arc_col) in self.columns {
+            let col = match Arc::try_unwrap(arc_col) {
+                Ok(col) => col,
+                Err(shared) => shared
+                    .copy()
+                    .map_err(|e| e.with_operation("dataframe::into_table").with_context("column_name", name.clone()))?,
+            };
+            names.push(name);
+            cols.push(col);
+        }
+
+        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::into_table"))?;
+        Ok((table, names))
     }
 
-    /// Consume the `DataFrame`, returning the underlying table and names.
-    pub fn into_table(self) -> (Table, Vec<String>) {
-        let names: Vec<String> = self.schema.into_keys().collect();
-        (self.table, names)
+    // -- Internal helpers ----------------------------------------------------
+
+    /// Build a `TableView` from the individual `Arc<Column>`s.
+    ///
+    /// Returns the column views vector (which must be kept alive) and the
+    /// table view built from them.
+    fn build_table_view(&self) -> Result<(Vec<ColumnView<'_>>, TableView<'_>)> {
+        let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
+
+        let view_refs: Vec<&ColumnView<'_>> = views.iter().collect();
+        let table_view = TableView::from_column_views(&view_refs)?;
+        Ok((views, table_view))
+    }
+
+    /// Create a DataFrame from a Table and column names, decomposing the
+    /// table into Arc-wrapped columns.
+    fn from_table_with_names(table: Table, names: Vec<String>) -> Result<Self> {
+        let view = table.view()?;
+        let row_count = if view.num_columns()? > 0 { view.num_rows()? } else { 0 };
+        drop(view);
+
+        let cols = table.into_columns()?;
+        if cols.len() != names.len() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "column count does not match name count")
+                .with_operation("dataframe::from_table_with_names")
+                .with_context("columns_count", cols.len().to_string())
+                .with_context("names_count", names.len().to_string()));
+        }
+
+        let mut map = IndexMap::with_capacity(names.len());
+        for (name, col) in names.into_iter().zip(cols) {
+            map.insert(name, Arc::new(col));
+        }
+
+        Ok(Self { columns: map, row_count })
+    }
+
+    /// Returns owned column names.
+    fn column_names_owned(&self) -> Vec<String> {
+        self.columns.keys().cloned().collect()
     }
 
     // -- I/O (Parquet) -------------------------------------------------------
@@ -424,8 +510,8 @@ impl DataFrame {
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         let names: Vec<&str> = self.column_names();
         let opts = ParquetWriterOptions::new(path)?.column_names(&names);
-        let view = self.table.view()?;
-        parquet::write_parquet(&view, &opts)
+        let (_views, table_view) = self.build_table_view()?;
+        parquet::write_parquet(&table_view, &opts)
     }
 
     // -- Row slicing ---------------------------------------------------------
@@ -475,9 +561,9 @@ impl DataFrame {
         if indices.is_empty()? {
             return self.empty_with_same_schema();
         }
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
         let result_table = copying::gather(&table_view, indices, copying::OutOfBoundsPolicy::Nullify)?;
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     // -- Filter, sort, deduplicate -------------------------------------------
@@ -492,9 +578,9 @@ impl DataFrame {
     /// Returns an error if `mask` is not `Bool8`, or if its row count
     /// does not match the DataFrame's row count.
     pub fn filter(&self, mask: &ColumnView<'_>) -> Result<Self> {
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
         let result_table = filter::apply_boolean_mask(&table_view, mask)?;
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Filter rows to those where `column` values appear in `values`.
@@ -532,26 +618,26 @@ impl DataFrame {
                 .with_context("orders_count", orders.len().to_string()));
         }
 
-        let key_indices = resolve_column_names(&self.schema, by, "dataframe::sort")?;
+        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort")?;
 
         // Check whether `by` names are exactly all columns in table order.
         let all_in_order =
-            key_indices.len() == self.schema.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
+            key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
 
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
 
         let result_table = if all_in_order {
             sorting::sort(&table_view, Some(orders), None)?
         } else {
             // Build a keys-only table, get sorted_order, then gather.
-            let keys_table = build_keys_table(&table_view, &key_indices)?;
+            let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
             let keys_view = keys_table.view()?;
             let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
             let order_view = order_col.view()?;
             copying::gather(&table_view, &order_view, copying::OutOfBoundsPolicy::DontCheck)?
         };
 
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Return the `n` rows with the largest values in `column`.
@@ -585,12 +671,12 @@ impl DataFrame {
     ///
     /// Returns an error if any name in `subset` is not in the schema.
     pub fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
-        let key_indices = resolve_column_names(&self.schema, subset, "dataframe::distinct")?;
+        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::distinct")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
         let result_table =
             stream_compaction::distinct(&table_view, &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?;
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Drop rows where the specified columns contain nulls.
@@ -603,11 +689,11 @@ impl DataFrame {
     ///
     /// Returns an error if any name in `subset` is not in the schema.
     pub fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
-        let key_indices = resolve_column_names(&self.schema, subset, "dataframe::drop_nulls")?;
+        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
         let result_table = stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?;
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Drop rows where **any** of the specified `subset` columns contain nulls.
@@ -802,21 +888,18 @@ impl DataFrame {
         }
 
         // Resolve key column names in both sides.
-        let left_key_indices = resolve_column_names(&self.schema, left_on, operation)?;
-        let right_key_indices = resolve_column_names(&right.schema, right_on, operation)?;
+        let left_key_indices = resolve_column_names(&self.columns, left_on, operation)?;
+        let right_key_indices = resolve_column_names(&right.columns, right_on, operation)?;
 
         // Compute payload indices (all columns not in keys, preserving order).
-        let left_payload_indices = payload_indices(&self.schema, &left_key_indices);
-        let right_payload_indices = payload_indices(&right.schema, &right_key_indices);
+        let left_payload_indices = payload_indices(&self.columns, &left_key_indices);
+        let right_payload_indices = payload_indices(&right.columns, &right_key_indices);
 
         // Build keys and payload tables via deep-copy from column views.
-        let left_tv = self.table.view()?;
-        let right_tv = right.table.view()?;
-
-        let lk_table = build_keys_table(&left_tv, &left_key_indices)?;
-        let rk_table = build_keys_table(&right_tv, &right_key_indices)?;
-        let lp_table = build_keys_table(&left_tv, &left_payload_indices)?;
-        let rp_table = build_keys_table(&right_tv, &right_payload_indices)?;
+        let lk_table = build_keys_table_from_columns(&self.columns, &left_key_indices)?;
+        let rk_table = build_keys_table_from_columns(&right.columns, &right_key_indices)?;
+        let lp_table = build_keys_table_from_columns(&self.columns, &left_payload_indices)?;
+        let rp_table = build_keys_table_from_columns(&right.columns, &right_payload_indices)?;
 
         let lkv = lk_table.view()?;
         let rkv = rk_table.view()?;
@@ -830,8 +913,8 @@ impl DataFrame {
         };
 
         // Build schemas: left side uses left key names, right side uses right key names.
-        let left_schema_names = build_join_schema_names(&self.schema, &left_key_indices, &left_payload_indices);
-        let right_schema_names = build_join_schema_names(&right.schema, &right_key_indices, &right_payload_indices);
+        let left_schema_names = build_join_schema_names(&self.columns, &left_key_indices, &left_payload_indices);
+        let right_schema_names = build_join_schema_names(&right.columns, &right_key_indices, &right_payload_indices);
 
         Ok(DataFrameJoinResult {
             left: DataFrame::from_table(result.left, left_schema_names)?,
@@ -878,17 +961,17 @@ impl DataFrame {
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
         // Validate schemas match: same names, same order.
-        if self.schema.len() != other.schema.len() {
+        if self.columns.len() != other.columns.len() {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "cannot concatenate DataFrames with different column counts",
             )
             .with_operation("dataframe::concat")
-            .with_context("left_columns", self.schema.len().to_string())
-            .with_context("right_columns", other.schema.len().to_string()));
+            .with_context("left_columns", self.columns.len().to_string())
+            .with_context("right_columns", other.columns.len().to_string()));
         }
 
-        for (left_name, right_name) in self.schema.keys().zip(other.schema.keys()) {
+        for (left_name, right_name) in self.columns.keys().zip(other.columns.keys()) {
             if left_name != right_name {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
@@ -901,13 +984,10 @@ impl DataFrame {
         }
 
         // Validate matching types column-by-column up front for clearer errors.
-        let left_view = self.table.view()?;
-        let right_view = other.table.view()?;
-        for i in 0..self.schema.len() {
-            let left_type = left_view.column(i as i32)?.data_type()?.id();
-            let right_type = right_view.column(i as i32)?.data_type()?.id();
+        for (i, ((name, left_col), (_, right_col))) in self.columns.iter().zip(other.columns.iter()).enumerate() {
+            let left_type = left_col.view()?.data_type()?.id();
+            let right_type = right_col.view()?.data_type()?.id();
             if left_type != right_type {
-                let name = self.schema.get_index(i).map(|(n, _)| n.as_str()).unwrap_or("<unknown>");
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
                     "cannot concatenate DataFrames with mismatched column types",
@@ -920,35 +1000,37 @@ impl DataFrame {
             }
         }
 
-        let result_table = crate::concatenate::concatenate_tables(&[&left_view, &right_view])?;
+        let (_left_views, left_tv) = self.build_table_view()?;
+        let (_right_views, right_tv) = other.build_table_view()?;
+        let result_table = crate::concatenate::concatenate_tables(&[&left_tv, &right_tv])?;
 
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
-    /// Deep-copy this DataFrame (both the GPU table data and the schema).
+    /// Deep-copy this DataFrame (both the GPU column data and the schema).
+    ///
+    /// With `Arc<Column>` storage, this is a cheap clone of the `IndexMap`
+    /// and `Arc::clone` for each column — no GPU data is copied.
     pub fn copy(&self) -> Result<Self> {
-        let table_copy = self.table.copy()?;
-        Ok(Self { table: table_copy, schema: self.schema.clone() })
+        Ok(Self { columns: self.columns.clone(), row_count: self.row_count })
     }
 
     /// Return a new DataFrame with one column renamed.
     ///
-    /// This borrowed variant deep-copies the underlying table to preserve
-    /// immutable value semantics from `&self`. For a zero-GPU-work rename,
-    /// use [`DataFrame::rename_owned`] which consumes `self`.
+    /// This borrowed variant clones the `Arc` references (no GPU copy).
     ///
     /// # Errors
     ///
     /// Returns an error if `old` is not in the schema, or if `new` already
     /// exists in the schema.
     pub fn rename(&self, old: &str, new: &str) -> Result<Self> {
-        if !self.schema.contains_key(old) {
+        if !self.columns.contains_key(old) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
                 .with_operation("dataframe::rename")
                 .with_context("column_name", old.to_string()));
         }
 
-        if old != new && self.schema.contains_key(new) {
+        if old != new && self.columns.contains_key(new) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 format!("cannot rename '{}' to '{}': target name already exists", old, new),
@@ -958,18 +1040,16 @@ impl DataFrame {
             .with_context("new_name", new.to_string()));
         }
 
-        // Rebuild schema with the renamed column, preserving order.
-        let mut new_schema = IndexMap::with_capacity(self.schema.len());
-        for (name, &idx) in &self.schema {
+        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        for (name, col) in &self.columns {
             if name == old {
-                new_schema.insert(new.to_string(), idx);
+                new_columns.insert(new.to_string(), Arc::clone(col));
             } else {
-                new_schema.insert(name.clone(), idx);
+                new_columns.insert(name.clone(), Arc::clone(col));
             }
         }
 
-        let table_copy = self.table.copy()?;
-        Ok(Self { table: table_copy, schema: new_schema })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame with one column renamed, consuming `self`.
@@ -981,13 +1061,13 @@ impl DataFrame {
     /// Returns an error if `old` is not in the schema, or if `new` already
     /// exists in the schema.
     pub fn rename_owned(self, old: &str, new: &str) -> Result<Self> {
-        if !self.schema.contains_key(old) {
+        if !self.columns.contains_key(old) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
                 .with_operation("dataframe::rename_owned")
                 .with_context("column_name", old.to_string()));
         }
 
-        if old != new && self.schema.contains_key(new) {
+        if old != new && self.columns.contains_key(new) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 format!("cannot rename '{}' to '{}': target name already exists", old, new),
@@ -997,22 +1077,22 @@ impl DataFrame {
             .with_context("new_name", new.to_string()));
         }
 
-        let mut new_schema = IndexMap::with_capacity(self.schema.len());
-        for (name, &idx) in &self.schema {
+        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        for (name, col) in self.columns {
             if name == old {
-                new_schema.insert(new.to_string(), idx);
+                new_columns.insert(new.to_string(), col);
             } else {
-                new_schema.insert(name.clone(), idx);
+                new_columns.insert(name, col);
             }
         }
 
-        Ok(Self { table: self.table, schema: new_schema })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// The columns appear in the order given in `columns`. Each selected
-    /// column is deep-copied from its column view.
+    /// column is shared via `Arc::clone` (zero GPU copy).
     ///
     /// # Errors
     ///
@@ -1030,17 +1110,17 @@ impl DataFrame {
             }
         }
 
-        let indices = resolve_column_names(&self.schema, columns, "dataframe::select")?;
-
-        let table_view = self.table.view()?;
-        let selected_table = build_keys_table(&table_view, &indices)?;
-
-        let mut new_schema = IndexMap::with_capacity(columns.len());
-        for (i, &name) in columns.iter().enumerate() {
-            new_schema.insert(name.to_string(), i);
+        let mut new_columns = IndexMap::with_capacity(columns.len());
+        for &name in columns {
+            let col = self.columns.get(name).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                    .with_operation("dataframe::select")
+                    .with_context("column_name", name.to_string())
+            })?;
+            new_columns.insert(name.to_string(), Arc::clone(col));
         }
 
-        Ok(Self { table: selected_table, schema: new_schema })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     // -- Column-level convenience --------------------------------------------
@@ -1057,8 +1137,10 @@ impl DataFrame {
     ///
     /// Returns an error if the row counts do not match.
     pub fn with_column(&self, name: &str, col: Column) -> Result<Self> {
-        let col_view = col.view()?;
-        let col_rows = col_view.len()?;
+        let col_rows = {
+            let col_view = col.view()?;
+            col_view.len()?
+        };
         let self_rows = self.num_rows()?;
 
         if self.num_columns() > 0 && col_rows != self_rows {
@@ -1072,50 +1154,12 @@ impl DataFrame {
             .with_context("dataframe_rows", self_rows.to_string()));
         }
 
-        // Determine whether this is a replacement or an append.
-        let replace_idx = self.schema.get(name).copied();
+        let mut new_columns = self.columns.clone();
+        new_columns.insert(name.to_string(), Arc::new(col));
 
-        let table_view = self.table.view()?;
-        let num_existing = self.schema.len();
-        let new_count = if replace_idx.is_some() { num_existing } else { num_existing + 1 };
+        let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
 
-        let mut columns: Vec<Column> = Vec::with_capacity(new_count);
-        let mut schema = IndexMap::with_capacity(new_count);
-
-        for (col_name, &idx) in &self.schema {
-            if Some(idx) == replace_idx {
-                // Replace: use the new column (deep-copy so we own it).
-                let cv = col.view()?;
-                let type_id = cv.data_type()?.id();
-                let len = cv.len()?;
-                let owned =
-                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
-                schema.insert(name.to_string(), columns.len());
-                columns.push(owned);
-            } else {
-                // Copy existing column.
-                let cv = table_view.column(idx as i32)?;
-                let type_id = cv.data_type()?.id();
-                let len = cv.len()?;
-                let owned =
-                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
-                schema.insert(col_name.clone(), columns.len());
-                columns.push(owned);
-            }
-        }
-
-        // Append if this is a new column.
-        if replace_idx.is_none() {
-            let cv = col.view()?;
-            let type_id = cv.data_type()?.id();
-            let len = cv.len()?;
-            let owned = if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
-            schema.insert(name.to_string(), columns.len());
-            columns.push(owned);
-        }
-
-        let table = Table::from_columns(columns)?;
-        Ok(Self { table, schema })
+        Ok(Self { columns: new_columns, row_count })
     }
 
     /// Return a new DataFrame with null values in the named column replaced
@@ -1128,15 +1172,19 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
-        let &target_idx = self.schema.get(column).ok_or_else(|| {
+        let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
                 .with_operation("dataframe::replace_nulls")
                 .with_context("column_name", column.to_string())
         })?;
 
-        self.rebuild_with_replaced_column(target_idx, "dataframe::replace_nulls", |cv| {
-            replace::replace_nulls(cv, value)
-        })
+        let cv = col.view()?;
+        let new_col = replace::replace_nulls(&cv, value)?;
+
+        let mut new_columns = self.columns.clone();
+        new_columns.insert(column.to_string(), Arc::new(new_col));
+
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame with the named column cast to a different type.
@@ -1148,43 +1196,19 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the cast
     /// is unsupported.
     pub fn cast_column(&self, column: &str, target_type: &DataType) -> Result<Self> {
-        let &target_idx = self.schema.get(column).ok_or_else(|| {
+        let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
                 .with_operation("dataframe::cast_column")
                 .with_context("column_name", column.to_string())
         })?;
 
-        self.rebuild_with_replaced_column(target_idx, "dataframe::cast_column", |cv| unary::cast(cv, target_type))
-    }
+        let cv = col.view()?;
+        let new_col = unary::cast(&cv, target_type)?;
 
-    /// Internal helper: rebuild the table, replacing one column by applying
-    /// a transformation function `f` to its view. All other columns are
-    /// deep-copied.
-    fn rebuild_with_replaced_column<F>(&self, target_idx: usize, _operation: &'static str, f: F) -> Result<Self>
-    where
-        F: FnOnce(&ColumnView<'_>) -> Result<Column>,
-    {
-        let table_view = self.table.view()?;
-        let num_cols = self.schema.len();
-        let mut columns: Vec<Column> = Vec::with_capacity(num_cols);
-        let mut f_opt = Some(f);
+        let mut new_columns = self.columns.clone();
+        new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        for (_, &idx) in &self.schema {
-            let cv = table_view.column(idx as i32)?;
-            if idx == target_idx {
-                let f = f_opt.take().expect("rebuild_with_replaced_column: target_idx matched twice");
-                columns.push(f(&cv)?);
-            } else {
-                let type_id = cv.data_type()?.id();
-                let len = cv.len()?;
-                let owned =
-                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
-                columns.push(owned);
-            }
-        }
-
-        let table = Table::from_columns(columns)?;
-        Ok(Self { table, schema: self.schema.clone() })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 }
 
@@ -1227,7 +1251,7 @@ impl<'a> GroupByBuilder<'a> {
 
         // Resolve key column names to indices.
         let key_indices = resolve_column_names(
-            &self.df.schema,
+            &self.df.columns,
             &self.key_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             "dataframe::groupby::execute",
         )?;
@@ -1237,29 +1261,21 @@ impl<'a> GroupByBuilder<'a> {
 
         // Validate all value column names exist.
         for &name in &value_col_names {
-            if !self.df.schema.contains_key(name) {
+            if !self.df.columns.contains_key(name) {
                 return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                     .with_operation("dataframe::groupby::execute")
                     .with_context("column_name", name.to_string()));
             }
         }
 
-        // Build keys table.
-        let table_view = self.df.table.view()?;
-        let keys_table = build_keys_table(&table_view, &key_indices)?;
+        // Build keys table from the Arc columns.
+        let keys_table = build_keys_table_from_columns(&self.df.columns, &key_indices)?;
         let keys_view = keys_table.view()?;
 
         // Group aggregation requests by value column. Each unique value
         // column gets one AggregationRequest with potentially multiple
         // aggregations. We preserve the order of first appearance for
         // output column naming.
-        //
-        // We need to track: for each request, which aggs, and what
-        // names they produce.
-        //
-        // Strategy: build one AggregationRequest per (column_name, agg)
-        // pair — this is the simplest approach and works with the existing
-        // groupby API which returns one Column per aggregation per request.
 
         let mut owned_value_cols: Vec<Column> = Vec::new();
         let mut request_meta: Vec<(usize, Vec<Aggregation>)> = Vec::new(); // (owned_col_index, aggs)
@@ -1274,15 +1290,11 @@ impl<'a> GroupByBuilder<'a> {
         let mut output_order: Vec<(usize, usize)> = Vec::new();
 
         for (col_name, agg) in &self.agg_requests {
-            let schema_idx = *self.df.schema.get(col_name.as_str()).unwrap();
             let owned_idx = if let Some(&idx) = col_name_to_owned_idx.get(col_name.as_str()) {
                 idx
             } else {
-                let cv = table_view.column(schema_idx as i32)?;
-                let type_id = cv.data_type()?.id();
-                let len = cv.len()?;
-                let owned =
-                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
+                let arc_col = self.df.columns.get(col_name.as_str()).unwrap();
+                let owned = arc_col.copy()?;
                 let idx = owned_value_cols.len();
                 owned_value_cols.push(owned);
                 col_name_to_owned_idx.insert(col_name.clone(), idx);
@@ -1357,19 +1369,11 @@ impl<'a> GroupByBuilder<'a> {
             all_result_cols.push(col);
         }
 
-        // Build the key columns from the keys table via deep-copy.
-        let result_keys_view = gb_result.keys.view()?;
-        let num_key_cols = result_keys_view.num_columns()?;
-        let mut final_cols: Vec<Column> = Vec::with_capacity(num_key_cols as usize + all_result_cols.len());
+        // Build the key columns from the groupby result keys table.
+        let result_keys_cols = gb_result.keys.into_columns()?;
 
-        for i in 0..num_key_cols {
-            let cv = result_keys_view.column(i)?;
-            let type_id = cv.data_type()?.id();
-            let len = cv.len()?;
-            let owned = if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
-            final_cols.push(owned);
-        }
-
+        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
+        final_cols.extend(result_keys_cols);
         final_cols.extend(all_result_cols);
 
         // Build schema: key names + result names.
@@ -1400,18 +1404,17 @@ fn agg_suffix(agg: &Aggregation) -> &'static str {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build an `IndexMap` from column names, detecting duplicates.
-fn build_schema(names: &[String], operation: &'static str) -> Result<IndexMap<String, usize>> {
-    let mut schema = IndexMap::with_capacity(names.len());
-    for (i, name) in names.iter().enumerate() {
-        if schema.contains_key(name) {
+/// Validate that `names` contains no duplicates.
+fn validate_no_duplicate_names(names: &[String], operation: &'static str) -> Result<()> {
+    let mut seen = std::collections::HashSet::with_capacity(names.len());
+    for name in names {
+        if !seen.insert(name) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
                 .with_operation(operation)
                 .with_context("duplicate_name", name.clone()));
         }
-        schema.insert(name.clone(), i);
     }
-    Ok(schema)
+    Ok(())
 }
 
 impl DataFrame {
@@ -1424,41 +1427,36 @@ impl DataFrame {
 
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
         let map = Column::from_slice(&indices)?;
-        let table_view = self.table.view()?;
+        let (_views, table_view) = self.build_table_view()?;
         let result_table = copying::gather(&table_view, &map.view()?, copying::OutOfBoundsPolicy::DontCheck)?;
 
-        Ok(Self { table: result_table, schema: self.schema.clone() })
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Internal: build an empty DataFrame with the same schema (column names
     /// and types, zero rows).
     fn empty_with_same_schema(&self) -> Result<Self> {
-        let empty_cols: Vec<Column> = {
-            let view = self.table.view()?;
-            let n = view.num_columns()?;
-            (0..n)
-                .map(|i| {
-                    let cv = view.column(i)?;
-                    Column::empty(cv.data_type()?.id())
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
-        let table = Table::from_columns(empty_cols)?;
-        Ok(Self { table, schema: self.schema.clone() })
+        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        for (name, col) in &self.columns {
+            let cv = col.view()?;
+            let type_id = cv.data_type()?.id();
+            new_columns.insert(name.clone(), Arc::new(Column::empty(type_id)?));
+        }
+        Ok(Self { columns: new_columns, row_count: 0 })
     }
 }
 
 /// Resolve a slice of column name strings to their positional indices,
 /// returning an error if any name is missing.
 fn resolve_column_names(
-    schema: &IndexMap<String, usize>,
+    columns: &IndexMap<String, Arc<Column>>,
     names: &[&str],
     operation: &'static str,
 ) -> Result<Vec<usize>> {
     names
         .iter()
         .map(|&name| {
-            schema.get(name).copied().ok_or_else(|| {
+            columns.get_index_of(name).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                     .with_operation(operation)
                     .with_context("column_name", name.to_string())
@@ -1467,39 +1465,18 @@ fn resolve_column_names(
         .collect()
 }
 
-/// Build an owned `Table` containing only the columns at the given indices
-/// from `source`. This deep-copies each selected column from its
-/// `ColumnView`.
-fn build_keys_table(source: &crate::table::TableView<'_>, indices: &[usize]) -> Result<Table> {
+/// Build an owned `Table` containing only the columns at the given positional
+/// indices from the `IndexMap`. This deep-copies each selected column.
+fn build_keys_table_from_columns(columns: &IndexMap<String, Arc<Column>>, indices: &[usize]) -> Result<Table> {
     let cols: Vec<Column> = indices
         .iter()
         .map(|&idx| {
-            let cv = source.column(idx as i32)?;
-            let type_id = cv.data_type()?.id();
-            let len = cv.len()?;
-
-            if len == 0 {
-                return Column::empty(type_id);
-            }
-
-            copy_column_view_to_owned(&cv, type_id, len)
+            let (_, col) = columns.get_index(idx).expect("index out of bounds");
+            col.copy()
         })
         .collect::<Result<Vec<_>>>()?;
 
     Table::from_columns(cols)
-}
-
-/// Deep-copy a `ColumnView` into an owned `Column`.
-///
-/// Uses `cudf_column_copy_from_view`, which supports fixed-width, string,
-/// and nested types.
-fn copy_column_view_to_owned(cv: &ColumnView<'_>, _type_id: crate::types::TypeId, _len: i32) -> Result<Column> {
-    let mut handle = std::ptr::null_mut();
-    crate::error::check_status_in(
-        unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
-        "dataframe::copy_column_view",
-    )?;
-    Ok(unsafe { Column::from_raw(handle) })
 }
 
 /// Internal join type dispatch tag.
@@ -1510,33 +1487,28 @@ enum JoinKind {
     Full,
 }
 
-/// Compute payload column indices: all schema positions NOT in `key_indices`,
-/// in schema insertion order.
-fn payload_indices(schema: &IndexMap<String, usize>, key_indices: &[usize]) -> Vec<usize> {
+/// Compute payload column indices: all positions NOT in `key_indices`,
+/// in insertion order.
+fn payload_indices(columns: &IndexMap<String, Arc<Column>>, key_indices: &[usize]) -> Vec<usize> {
     let key_set: std::collections::HashSet<usize> = key_indices.iter().copied().collect();
-    schema.values().copied().filter(|idx| !key_set.contains(idx)).collect()
+    (0..columns.len()).filter(|idx| !key_set.contains(idx)).collect()
 }
 
 /// Build the schema name list for a join result side:
 /// key column names (in `on` order) followed by payload column names.
 fn build_join_schema_names(
-    schema: &IndexMap<String, usize>,
+    columns: &IndexMap<String, Arc<Column>>,
     key_indices: &[usize],
     payload_indices: &[usize],
 ) -> Vec<String> {
-    // Build reverse map: positional index → name.
-    let idx_to_name: Vec<&str> = {
-        let mut pairs: Vec<(usize, &str)> = schema.iter().map(|(k, &v)| (v, k.as_str())).collect();
-        pairs.sort_by_key(|(idx, _)| *idx);
-        pairs.into_iter().map(|(_, name)| name).collect()
-    };
+    let keys_iter = columns.keys().collect::<Vec<_>>();
 
     let mut names = Vec::with_capacity(key_indices.len() + payload_indices.len());
     for &idx in key_indices {
-        names.push(idx_to_name[idx].to_string());
+        names.push(keys_iter[idx].clone());
     }
     for &idx in payload_indices {
-        names.push(idx_to_name[idx].to_string());
+        names.push(keys_iter[idx].clone());
     }
     names
 }
@@ -1551,14 +1523,13 @@ fn merge_join_result(
 ) -> Result<DataFrame> {
     let DataFrameJoinResult { left, right } = split;
 
-    // Extract join-side columns.
-    let left_cols = left.table.into_columns()?;
-    let right_cols = right.table.into_columns()?;
-
-    let left_names: Vec<String> = left.schema.into_keys().collect();
-    let right_names: Vec<String> = right.schema.into_keys().collect();
-
     let key_count = on.len();
+
+    // Extract columns from both sides.
+    let left_names: Vec<String> = left.columns.keys().cloned().collect();
+    let right_names: Vec<String> = right.columns.keys().cloned().collect();
+    let left_cols: Vec<Arc<Column>> = left.columns.into_values().collect();
+    let right_cols: Vec<Arc<Column>> = right.columns.into_values().collect();
 
     if left_cols.len() != left_names.len() || right_cols.len() != right_names.len() {
         return Err(Error::new(ErrorKind::InvalidOperation, "join result schema/column count mismatch")

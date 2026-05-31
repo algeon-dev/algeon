@@ -91,27 +91,29 @@ fn test_column_index() {
 }
 
 #[test]
-fn test_schema() {
+fn test_column_names_and_index_give_equivalent_info() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let c2 = Column::from_slice(&[2.0f64]).unwrap();
 
     let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![c1, c2]).unwrap();
 
-    let schema = df.schema();
-    assert_eq!(schema.len(), 2);
-    assert_eq!(schema["id"], 0);
-    assert_eq!(schema["val"], 1);
+    let names = df.column_names();
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[0], "id");
+    assert_eq!(names[1], "val");
+    assert_eq!(df.column_index("id"), Some(0));
+    assert_eq!(df.column_index("val"), Some(1));
 }
 
 #[test]
-fn test_table_accessor() {
+fn test_column_accessor_validates_data() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c1]).unwrap();
 
-    let table = df.table();
-    let view = table.view().unwrap();
-    assert_eq!(view.num_columns().unwrap(), 1);
-    assert_eq!(view.num_rows().unwrap(), 2);
+    let col = df.column("x").unwrap();
+    assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(df.num_columns(), 1);
+    assert_eq!(df.num_rows().unwrap(), 2);
 }
 
 #[test]
@@ -151,7 +153,7 @@ fn test_into_table() {
     let c2 = Column::from_slice(&[3.0f64, 4.0]).unwrap();
     let df = DataFrame::new(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
-    let (table, names) = df.into_table();
+    let (table, names) = df.into_table().unwrap();
     assert_eq!(names, vec!["x", "y"]);
 
     let view = table.view().unwrap();
