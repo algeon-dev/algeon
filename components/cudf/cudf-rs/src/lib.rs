@@ -1,12 +1,18 @@
 //! Safe Rust bindings for cuDF — GPU-accelerated DataFrames.
 //!
 //! This crate provides an idiomatic Rust API over the cuDF C++ library via
-//! the `cudf-sys` FFI crate. It follows the same architecture as the Java
-//! JNI bindings: a C shim layer wraps C++ calls with `extern "C"` linkage,
-//! and Rust consumes them through FFI.
+//! the `cudf-sys` FFI crate. The primary user-facing types are [`DataFrame`]
+//! and [`Series`], which provide a cuDF-Python-like experience with zero-copy
+//! metadata operations and GPU-only data operations.
 //!
 //! # Key Types
 //!
+//! **Façade layer** (start here):
+//! - [`DataFrame`] — A named, ordered collection of GPU columns with
+//!   immutable-value semantics.
+//! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
+//!
+//! **Core layer** (for advanced / low-level use):
 //! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
 //! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
 //! - [`Table`] — An owned GPU table (collection of columns).
@@ -17,19 +23,21 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{column::Column, table::Table};
+//! use cudf::{DataFrame, Series};
 //!
-//! // Create columns from host data.
-//! let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-//! let values = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+//! // Create named Series from host data.
+//! let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
+//! let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
 //!
-//! // Create a table from columns.
-//! let table = Table::from_columns(vec![ids, values]).unwrap();
+//! // Build a DataFrame from Series.
+//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
-//! // Query the table through a view.
-//! let view = table.view().unwrap();
-//! assert_eq!(view.num_columns().unwrap(), 2);
-//! assert_eq!(view.num_rows().unwrap(), 3);
+//! assert_eq!(df.num_columns(), 2);
+//! assert_eq!(df.num_rows().unwrap(), 3);
+//!
+//! // Retrieve a column back as a Series (zero-copy, Arc-shared).
+//! let score = df.series("score").unwrap();
+//! assert_eq!(score.len().unwrap(), 3);
 //! ```
 
 #[cfg(feature = "arrow")]
@@ -60,7 +68,10 @@ pub mod table;
 pub mod types;
 pub mod unary;
 
-// Re-export key types at crate root for convenience.
+// Re-export façade types at crate root.
+// Future phases will add: SortOptions, MergeOptions, JoinType, Agg, AggSpec, GroupBy, etc.
+
+// Re-export core types at crate root.
 pub use column::{Column, ColumnView, DeviceSlice};
 pub use dataframe::DataFrame;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
