@@ -52,6 +52,7 @@ pub mod error;
 pub mod filter;
 pub mod groupby;
 pub mod hashing;
+pub(crate) mod internal;
 pub mod io;
 pub mod join;
 pub mod memory;

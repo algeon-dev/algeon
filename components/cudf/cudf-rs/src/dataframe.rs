@@ -35,7 +35,7 @@ use crate::{
     series::Series,
     sorting::{self, Order},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
-    table::{Table, TableView},
+    table::Table,
     types::DataType,
     unary,
 };
@@ -433,6 +433,29 @@ impl DataFrame {
         Ok(Self { columns: map, row_count: first_rows })
     }
 
+    /// Construct a `DataFrame` directly from pre-validated parts.
+    ///
+    /// This skips all validation (duplicate names, row-count consistency)
+    /// and is intended for internal reassembly helpers that have already
+    /// performed those checks.
+    ///
+    /// # Safety contract (logic, not memory)
+    ///
+    /// The caller must ensure:
+    /// - No duplicate keys in `columns`
+    /// - All columns have `row_count` rows
+    pub(crate) fn from_raw_parts(columns: IndexMap<String, Arc<Column>>, row_count: i32) -> Self {
+        Self { columns, row_count }
+    }
+
+    /// Returns a reference to the internal column map.
+    ///
+    /// This is for internal helpers that need access to the columns by
+    /// index (e.g., resolve, join splitting).
+    pub(crate) fn columns_map(&self) -> &IndexMap<String, Arc<Column>> {
+        &self.columns
+    }
+
     /// Returns the number of columns.
     pub fn num_columns(&self) -> usize {
         self.columns.len()
@@ -541,39 +564,20 @@ impl DataFrame {
 
     // -- Internal helpers ----------------------------------------------------
 
-    /// Build a `TableView` from the individual `Arc<Column>`s.
+    /// Build a [`TempTableView`] from the individual `Arc<Column>`s.
     ///
-    /// Returns the column views vector (which must be kept alive) and the
-    /// table view built from them.
-    fn build_table_view(&self) -> Result<(Vec<ColumnView<'_>>, TableView<'_>)> {
+    /// The returned value owns the column views and the table view,
+    /// solving the lifetime management problem where column views must
+    /// outlive the table view.
+    fn build_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
-
-        let view_refs: Vec<&ColumnView<'_>> = views.iter().collect();
-        let table_view = TableView::from_column_views(&view_refs)?;
-        Ok((views, table_view))
+        crate::internal::temp_table::TempTableView::from_column_views(views)
     }
 
     /// Create a DataFrame from a Table and column names, decomposing the
     /// table into Arc-wrapped columns.
     fn from_table_with_names(table: Table, names: Vec<String>) -> Result<Self> {
-        let view = table.view()?;
-        let row_count = if view.num_columns()? > 0 { view.num_rows()? } else { 0 };
-        drop(view);
-
-        let cols = table.into_columns()?;
-        if cols.len() != names.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "column count does not match name count")
-                .with_operation("dataframe::from_table_with_names")
-                .with_context("columns_count", cols.len().to_string())
-                .with_context("names_count", names.len().to_string()));
-        }
-
-        let mut map = IndexMap::with_capacity(names.len());
-        for (name, col) in names.into_iter().zip(cols) {
-            map.insert(name, Arc::new(col));
-        }
-
-        Ok(Self { columns: map, row_count })
+        crate::internal::reassemble::dataframe_from_table_and_names(table, names)
     }
 
     /// Returns owned column names.
@@ -605,8 +609,8 @@ impl DataFrame {
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         let names: Vec<&str> = self.column_names();
         let opts = ParquetWriterOptions::new(path).column_names(&names);
-        let (_views, table_view) = self.build_table_view()?;
-        parquet::write_parquet(&table_view, &opts)
+        let tv = self.build_table_view()?;
+        parquet::write_parquet(tv.table(), &opts)
     }
 
     // -- Row slicing ---------------------------------------------------------
@@ -679,8 +683,8 @@ impl DataFrame {
         if indices.is_empty()? {
             return self.empty_with_same_schema();
         }
-        let (_views, table_view) = self.build_table_view()?;
-        let result_table = copying::gather(&table_view, indices, copying::OutOfBoundsPolicy::Nullify)?;
+        let tv = self.build_table_view()?;
+        let result_table = copying::gather(tv.table(), indices, copying::OutOfBoundsPolicy::Nullify)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -696,8 +700,8 @@ impl DataFrame {
     /// Returns an error if `mask` is not `Bool8`, or if its row count
     /// does not match the DataFrame's row count.
     pub fn filter(&self, mask: &ColumnView<'_>) -> Result<Self> {
-        let (_views, table_view) = self.build_table_view()?;
-        let result_table = filter::apply_boolean_mask(&table_view, mask)?;
+        let tv = self.build_table_view()?;
+        let result_table = filter::apply_boolean_mask(tv.table(), mask)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -709,8 +713,8 @@ impl DataFrame {
     pub fn filter_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
         let names = self.column_names_owned();
         let result_table = {
-            let (_views, table_view) = self.build_table_view()?;
-            filter::apply_boolean_mask(&table_view, mask)?
+            let tv = self.build_table_view()?;
+            filter::apply_boolean_mask(tv.table(), mask)?
         };
         Self::from_table_with_names(result_table, names)
     }
@@ -771,17 +775,17 @@ impl DataFrame {
         let all_in_order =
             key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
 
-        let (_views, table_view) = self.build_table_view()?;
+        let tv = self.build_table_view()?;
 
         let result_table = if all_in_order {
-            sorting::sort(&table_view, Some(orders), None)?
+            sorting::sort(tv.table(), Some(orders), None)?
         } else {
             // Build a keys-only table, get sorted_order, then gather.
             let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
             let keys_view = keys_table.view()?;
             let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
             let order_view = order_col.view()?;
-            copying::gather(&table_view, &order_view, copying::OutOfBoundsPolicy::DontCheck)?
+            copying::gather(tv.table(), &order_view, copying::OutOfBoundsPolicy::DontCheck)?
         };
 
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -807,16 +811,16 @@ impl DataFrame {
             key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
 
         let result_table = {
-            let (_views, table_view) = self.build_table_view()?;
+            let tv = self.build_table_view()?;
 
             if all_in_order {
-                sorting::sort(&table_view, Some(orders), None)?
+                sorting::sort(tv.table(), Some(orders), None)?
             } else {
                 let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
                 let keys_view = keys_table.view()?;
                 let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
                 let order_view = order_col.view()?;
-                copying::gather(&table_view, &order_view, copying::OutOfBoundsPolicy::DontCheck)?
+                copying::gather(tv.table(), &order_view, copying::OutOfBoundsPolicy::DontCheck)?
             }
         };
 
@@ -856,9 +860,9 @@ impl DataFrame {
     pub fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::distinct")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
-        let (_views, table_view) = self.build_table_view()?;
+        let tv = self.build_table_view()?;
         let result_table =
-            stream_compaction::distinct(&table_view, &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?;
+            stream_compaction::distinct(tv.table(), &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -874,8 +878,8 @@ impl DataFrame {
     pub fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
-        let (_views, table_view) = self.build_table_view()?;
-        let result_table = stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?;
+        let tv = self.build_table_view()?;
+        let result_table = stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -919,8 +923,8 @@ impl DataFrame {
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
 
         let result_table = {
-            let (_views, table_view) = self.build_table_view()?;
-            stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?
+            let tv = self.build_table_view()?;
+            stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?
         };
 
         Self::from_table_with_names(result_table, names)
@@ -1209,9 +1213,9 @@ impl DataFrame {
             }
         }
 
-        let (_left_views, left_tv) = self.build_table_view()?;
-        let (_right_views, right_tv) = other.build_table_view()?;
-        let result_table = crate::concatenate::concatenate_tables(&[&left_tv, &right_tv])?;
+        let left_tv = self.build_table_view()?;
+        let right_tv = other.build_table_view()?;
+        let result_table = crate::concatenate::concatenate_tables(&[left_tv.table(), right_tv.table()])?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1855,21 +1859,12 @@ fn agg_suffix(agg: &Aggregation) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — thin wrappers delegating to `internal` module
 // ---------------------------------------------------------------------------
 
-/// Validate that `names` contains no duplicates.
-fn validate_no_duplicate_names(names: &[String], operation: &'static str) -> Result<()> {
-    let mut seen = std::collections::HashSet::with_capacity(names.len());
-    for name in names {
-        if !seen.insert(name) {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
-                .with_operation(operation)
-                .with_context("duplicate_name", name.clone()));
-        }
-    }
-    Ok(())
-}
+use crate::internal::resolve::{
+    build_keys_table_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
+};
 
 impl DataFrame {
     /// Internal: gather a contiguous range of rows into a new `DataFrame`,
@@ -1881,8 +1876,8 @@ impl DataFrame {
 
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
         let map = Column::from_slice(&indices)?;
-        let (_views, table_view) = self.build_table_view()?;
-        let result_table = copying::gather(&table_view, &map.view()?, copying::OutOfBoundsPolicy::DontCheck)?;
+        let tv = self.build_table_view()?;
+        let result_table = copying::gather(tv.table(), &map.view()?, copying::OutOfBoundsPolicy::DontCheck)?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1900,52 +1895,12 @@ impl DataFrame {
     }
 }
 
-/// Resolve a slice of column name strings to their positional indices,
-/// returning an error if any name is missing.
-fn resolve_column_names(
-    columns: &IndexMap<String, Arc<Column>>,
-    names: &[&str],
-    operation: &'static str,
-) -> Result<Vec<usize>> {
-    names
-        .iter()
-        .map(|&name| {
-            columns.get_index_of(name).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation(operation)
-                    .with_context("column_name", name.to_string())
-            })
-        })
-        .collect()
-}
-
-/// Build an owned `Table` containing only the columns at the given positional
-/// indices from the `IndexMap`. This deep-copies each selected column.
-fn build_keys_table_from_columns(columns: &IndexMap<String, Arc<Column>>, indices: &[usize]) -> Result<Table> {
-    let cols: Vec<Column> = indices
-        .iter()
-        .map(|&idx| {
-            let (_, col) = columns.get_index(idx).expect("index out of bounds");
-            col.copy()
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Table::from_columns(cols)
-}
-
 /// Internal join type dispatch tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JoinKind {
     Inner,
     Left,
     Full,
-}
-
-/// Compute payload column indices: all positions NOT in `key_indices`,
-/// in insertion order.
-fn payload_indices(columns: &IndexMap<String, Arc<Column>>, key_indices: &[usize]) -> Vec<usize> {
-    let key_set: std::collections::HashSet<usize> = key_indices.iter().copied().collect();
-    (0..columns.len()).filter(|idx| !key_set.contains(idx)).collect()
 }
 
 /// Build the schema name list for a join result side:

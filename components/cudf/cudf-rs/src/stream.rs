@@ -1,8 +1,4 @@
 //! CUDA stream wrapper.
-//!
-//! Per CLAUDE.md: no async runtime in bindings. Users control their own
-//! runtime and can call `stream.synchronize()` from within
-//! `tokio::task::spawn_blocking` or similar if desired.
 
 use std::ptr::{self, NonNull};
 
