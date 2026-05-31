@@ -40,7 +40,6 @@ fn emit_runtime_rpath(dir: &str) {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{dir}");
     println!("cargo:rustc-link-arg-tests=-Wl,-rpath,{dir}");
-    println!("cargo:rustc-link-arg-examples=-Wl,-rpath,{dir}");
 }
 
 fn extract_metadata_value(metadata: Option<&str>, key: &str) -> Option<String> {
