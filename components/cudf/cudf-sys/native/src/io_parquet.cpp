@@ -22,6 +22,21 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (skip_rows < 0) {
+    set_error("skip_rows must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_rows < -1) {
+    set_error("num_rows must be >= -1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) {
+    CUDF_RUST_NULL_CHECK(columns, "columns is null");
+  }
   CUDF_RUST_TRY {
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
@@ -59,6 +74,13 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
                                     int32_t num_columns) {
   CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) {
+    CUDF_RUST_NULL_CHECK(column_names, "column_names is null");
+  }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(table);
     auto sink = cudf::io::sink_info(std::string(filepath));
@@ -93,6 +115,21 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
   CUDF_RUST_NULL_CHECK(out_names, "out_names is null");
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (skip_rows < 0) {
+    set_error("skip_rows must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_rows < -1) {
+    set_error("num_rows must be >= -1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) {
+    CUDF_RUST_NULL_CHECK(columns, "columns is null");
+  }
   CUDF_RUST_TRY {
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);

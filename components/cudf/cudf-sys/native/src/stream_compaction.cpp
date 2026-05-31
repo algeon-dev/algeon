@@ -23,6 +23,10 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
+  if (keep_threshold < 0) {
+    set_error("keep_threshold must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   if (num_keys > 0) {
     CUDF_RUST_NULL_CHECK(keys, "keys is null");
   }

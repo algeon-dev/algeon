@@ -1,0 +1,227 @@
+//! Tests for `SortOptions` and the façade `DataFrame::sort_values`.
+
+use cudf::{
+    column::Column,
+    dataframe::DataFrame,
+    error::ErrorKind,
+    series::Series,
+    sorting::{Order, SortOptions},
+};
+
+/// Helper: build a 5-row DataFrame with id (i32) and score (f64) columns.
+fn sample_df() -> DataFrame {
+    let ids = Series::new::<i32>("id", &[3, 1, 4, 1, 5]).unwrap();
+    let scores = Series::new::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
+    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// SortOptions defaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_options_defaults() {
+    let opts = SortOptions::new();
+    assert!(opts.descending.is_empty(), "default descending should be empty (= all ascending)");
+    assert!(opts.nulls_first.is_empty(), "default nulls_first should be empty (= all nulls last)");
+    assert!(!opts.stable, "default should be unstable sort");
+}
+
+// ---------------------------------------------------------------------------
+// SortOptions builder
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_options_builder() {
+    let opts =
+        SortOptions::new().with_descending(vec![true, false]).with_nulls_first(vec![false, true]).with_stable(true);
+
+    assert_eq!(opts.descending, vec![true, false]);
+    assert_eq!(opts.nulls_first, vec![false, true]);
+    assert!(opts.stable);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — single column ascending (default)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_single_column_ascending() {
+    let df = sample_df();
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+
+    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.column_names(), vec!["id", "score"]);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — single column descending
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_single_column_descending() {
+    let df = sample_df();
+    let sorted = df.sort_values(&["score"], SortOptions::new().with_descending(vec![true])).unwrap();
+
+    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — multi-column
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_multi_column() {
+    // Sort by id ascending, then score descending within each id group.
+    let ids = Series::new::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = Series::new::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+
+    let sorted = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
+
+    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — stable sort preserves insertion order for ties
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_stable_preserves_order() {
+    // All ids are the same — stable sort should preserve original row order.
+    let ids = Series::new::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = Series::new::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("tag", tags)]).unwrap();
+
+    let sorted = df.sort_values(&["id"], SortOptions::new().with_stable(true)).unwrap();
+
+    // Tags should remain in original insertion order since all ids are equal.
+    assert_eq!(sorted.column("tag").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — rejects mismatched descending length
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_rejects_mismatched_descending_length() {
+    let df = sample_df();
+    // 1 sort key but 2 descending flags
+    let result = df.sort_values(&["id"], SortOptions::new().with_descending(vec![true, false]));
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — rejects mismatched nulls_first length
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_rejects_mismatched_nulls_first_length() {
+    let df = sample_df();
+    // 1 sort key but 3 nulls_first flags
+    let result = df.sort_values(&["id"], SortOptions::new().with_nulls_first(vec![true, false, true]));
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — preserves schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_preserves_schema() {
+    let df = sample_df();
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+
+    assert_eq!(sorted.column_names(), vec!["id", "score"]);
+    assert_eq!(sorted.column_index("id"), Some(0));
+    assert_eq!(sorted.column_index("score"), Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — nonexistent column returns error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_nonexistent_column() {
+    let df = sample_df();
+    let result = df.sort_values(&["missing"], SortOptions::new());
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — empty descending vec means all ascending (defaults)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_empty_options_means_defaults() {
+    let df = sample_df();
+    // Empty descending + empty nulls_first → all ascending, nulls last.
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+
+    // Should be same as explicit ascending.
+    let expected = df.sort(&["id"], &[Order::Ascending]).unwrap();
+    assert_eq!(
+        sorted.column("id").unwrap().to_vec::<i32>().unwrap(),
+        expected.column("id").unwrap().to_vec::<i32>().unwrap(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — nulls_first controls null placement
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_nulls_first() {
+    let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+
+    // Sort by id ascending, nulls first.
+    let sorted = df.sort_values(&["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
+
+    let id_vals = sorted.column("id").unwrap().to_vec::<i32>().unwrap();
+    // Nulls should appear first (their host value is 0, but they're null).
+    // Then the non-null values in ascending order: 1, 2.
+    // The null positions have undefined data values, but the validity mask marks them null.
+    // We check that non-null values appear at the end in correct order.
+    assert_eq!(id_vals[2], 1);
+    assert_eq!(id_vals[3], 2);
+}
+
+// ---------------------------------------------------------------------------
+// sort_values — with_stable(false) is the default (unstable sort)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_values_unstable_by_default() {
+    let df = sample_df();
+    // Default unstable sort should still produce correct ordering.
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+
+    let ids = sorted.column("id").unwrap().to_vec::<i32>().unwrap();
+    // Check monotonically non-decreasing.
+    for w in ids.windows(2) {
+        assert!(w[0] <= w[1], "unstable sort produced incorrect order: {:?}", ids);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Low-level sort still works (backward compat)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_low_level_sort_still_works() {
+    let df = sample_df();
+    let sorted = df.sort(&["id"], &[Order::Ascending]).unwrap();
+    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+}

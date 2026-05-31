@@ -358,6 +358,15 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_stable_sort_by_key(
+        values: cudf_table_view_handle,
+        keys: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_key_columns: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_sorted_order(
         input: cudf_table_view_handle,
         column_order: *const i32,

@@ -33,7 +33,7 @@ use crate::{
     join, replace,
     scalar::Scalar,
     series::Series,
-    sorting::{self, Order},
+    sorting::{self, Order, SortOptions},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     table::Table,
     types::DataType,
@@ -448,14 +448,6 @@ impl DataFrame {
         Self { columns, row_count }
     }
 
-    /// Returns a reference to the internal column map.
-    ///
-    /// This is for internal helpers that need access to the columns by
-    /// index (e.g., resolve, join splitting).
-    pub(crate) fn columns_map(&self) -> &IndexMap<String, Arc<Column>> {
-        &self.columns
-    }
-
     /// Returns the number of columns.
     pub fn num_columns(&self) -> usize {
         self.columns.len()
@@ -714,6 +706,7 @@ impl DataFrame {
     /// Returns an error if `mask` is not `Bool8`, or if its row count
     /// does not match the DataFrame's row count.
     pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
+        self.validate_mask_view(mask, "dataframe::filter_by_mask")?;
         let tv = self.build_table_view()?;
         let result_table = filter::apply_boolean_mask(tv.table(), mask)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -725,6 +718,7 @@ impl DataFrame {
     /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
     /// sooner when they are the last reference.
     pub fn filter_by_mask_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
+        self.validate_mask_view(mask, "dataframe::filter_by_mask_owned")?;
         let names = self.column_names_owned();
         let result_table = {
             let tv = self.build_table_view()?;
@@ -772,26 +766,32 @@ impl DataFrame {
     /// Returns the `ColumnView` if valid, or an appropriate error.
     fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
         let mask_view = mask.view()?;
-        let mask_dtype = mask_view.data_type()?;
+        self.validate_mask_view(&mask_view, "dataframe::filter")?;
+        Ok(mask_view)
+    }
+
+    /// Validate that a low-level column view is a valid boolean mask.
+    fn validate_mask_view(&self, mask: &ColumnView<'_>, operation: &'static str) -> Result<()> {
+        let mask_dtype = mask.data_type()?;
         if mask_dtype.id() != crate::types::TypeId::Bool8 {
             return Err(Error::new(
                 ErrorKind::TypeError,
                 format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
             )
-            .with_operation("dataframe::filter")
+            .with_operation(operation)
             .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
         }
-        let mask_len = mask_view.len()?;
+        let mask_len = mask.len()?;
         if mask_len != self.row_count {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 format!("filter mask length ({}) does not match DataFrame row count ({})", mask_len, self.row_count),
             )
-            .with_operation("dataframe::filter")
+            .with_operation(operation)
             .with_context("mask_length", mask_len.to_string())
             .with_context("row_count", self.row_count.to_string()));
         }
-        Ok(mask_view)
+        Ok(())
     }
 
     /// Sort rows by the given column names and orders.
@@ -866,6 +866,59 @@ impl DataFrame {
         };
 
         Self::from_table_with_names(result_table, names)
+    }
+
+    /// Sort rows using cuDF-style [`SortOptions`].
+    ///
+    /// This is the façade equivalent of [`sort`](Self::sort), accepting
+    /// column names and a `SortOptions` struct instead of raw `&[Order]`
+    /// slices.
+    ///
+    /// # Option vector lengths
+    ///
+    /// `descending` and `nulls_first` vectors in `SortOptions` must be
+    /// either empty (meaning defaults for all keys) or exactly equal in
+    /// length to the number of `by` columns. Any other length produces an
+    /// `InvalidOperation` error.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::{DataFrame, Series, sorting::SortOptions};
+    ///
+    /// let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    /// let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    ///
+    /// let sorted = df
+    ///     .sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
+    ///     .unwrap();
+    /// ```
+    pub fn sort_values(&self, by: &[&str], options: SortOptions) -> Result<Self> {
+        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort_values")?;
+        let (orders, null_orders) = options.resolve(by.len())?;
+
+        let null_order_ref = null_orders.as_deref();
+
+        // Check whether `by` names are exactly all columns in table order.
+        let all_in_order =
+            key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
+
+        let tv = self.build_table_view()?;
+
+        let result_table = if all_in_order {
+            let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
+            sort_fn(tv.table(), Some(&orders), null_order_ref)?
+        } else {
+            // Build a keys-only table and use sort_by_key to reorder the
+            // full table according to those keys.
+            let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
+            let keys_view = keys_table.view()?;
+
+            let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
+            sort_by_key_fn(tv.table(), &keys_view, Some(&orders), null_order_ref)?
+        };
+
+        Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Return the `n` rows with the largest values in `column`.
