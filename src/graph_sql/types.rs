@@ -740,7 +740,7 @@ pub struct CugraphLeidenParams {
     pub max_level: u32,
     /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
     pub resolution: f64,
-    /// Modularity-gain scaling for the refinement phase. Must be > 0.
+    /// Modularity-gain scaling for the refinement stage. Must be > 0.
     pub theta: f64,
     /// RNG seed. Default 0 gives a deterministic run.
     pub seed: u64,

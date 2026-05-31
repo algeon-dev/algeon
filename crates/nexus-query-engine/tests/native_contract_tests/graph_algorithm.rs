@@ -318,7 +318,7 @@ fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
 }
 
 #[test]
-fn graph_operation_registry_pins_phase1_baseline_inventory() {
+fn graph_operation_registry_pins_baseline_inventory() {
     let inventory: Vec<_> =
         GRAPH_OPERATION_REGISTRY.iter().map(|def| (def.algorithm, def.name, def.layout_requirement)).collect();
     assert_eq!(
@@ -468,7 +468,7 @@ fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc
 ///
 /// Only primary methods are listed here. Variant suffixes (`_with`,
 /// `_strict`, `_strict_with`, `_checked`, `_all_checked`, `_all`) are
-/// handled by separate registry entries or by Phase 2/3 auxiliary-input
+/// handled by separate registry entries or by Milestone 2/3 auxiliary-input
 /// flow work; they are NOT separate primary methods for the purpose of this
 /// drift test.
 const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
@@ -496,9 +496,9 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
 ];
 
 /// cugraph-rs `Graph` method names that are intentionally absent from the
-/// registry today, pinned by phase.
+/// registry today, pinned by stage.
 ///
-/// **Phase 2** (need auxiliary inputs):
+/// **Milestone 2** (need auxiliary inputs):
 ///   personalized_pagerank, hits_with_initial_hubs,
 ///   betweenness_centrality(_all), edge_betweenness_centrality(_all),
 ///   vertex_pairs, jaccard/sorensen/overlap/cosine (pair+all_pairs),
@@ -506,17 +506,17 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
 ///   analyze_clustering_*, degrees/in_degrees/out_degrees (with vertex selection),
 ///   select_random_vertices
 ///
-/// **Phase 3** (stochastic / sampling / layout):
+/// **Milestone 3** (stochastic / sampling / layout):
 ///   uniform_random_walks, biased_random_walks, node2vec_random_walks,
 ///   homogeneous_*_neighbor_sample, homogeneous_*_temporal_neighbor_sample,
 ///   force_atlas2
 ///
 /// When a new method is added to cugraph-rs and it is not yet implemented,
-/// add it here with a comment indicating the planned phase. When it is
+/// add it here with a comment indicating the planned stage. When it is
 /// implemented, move it to `CUGRAPH_RS_METHOD_TO_REGISTRY` above and add
 /// the registry entry.
 const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
-    // Phase 2 — auxiliary inputs or variant forms of registered algorithms
+    // Milestone 2 — auxiliary inputs or variant forms of registered algorithms
     "pagerank_with",
     "pagerank_strict_with",
     "personalized_pagerank",
@@ -550,9 +550,9 @@ const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
     "analyze_clustering_edge_cut",
     "analyze_clustering_ratio_cut",
     "select_random_vertices",
-    // Phase 2 — vertex-selection variant of triangle_count_all
+    // Milestone 2 — vertex-selection variant of triangle_count_all
     "triangle_count",
-    // Phase 3 — stochastic / sampling / layout
+    // Milestone 3 — stochastic / sampling / layout
     "uniform_random_walks",
     "biased_random_walks",
     "node2vec_random_walks",
@@ -578,7 +578,7 @@ const CUGRAPH_RS_NON_ALGORITHM_METHODS: &[&str] = &[
     "has_weights",
     // registered algorithm variants represented by auxiliary-input IR, not separate registry entries
     "bfs_with_predicates",
-    // vertex-selection entry points that are Phase 2 variants of registered algorithms
+    // vertex-selection entry points that are Milestone 2 variants of registered algorithms
     // (already listed in KNOWN_MISSING) - excluded here so they don't appear as unknown
 ];
 
@@ -665,7 +665,7 @@ fn graph_operation_registry_covers_cugraph_rs_surface_without_unknown_gaps() {
     // Every public Graph method in graph.rs must be accounted for in one of
     // the three lists.  An entry here that appears in none of them means
     // cugraph-rs added a new method that datafusion-nexus has not yet planned
-    // for.  Add it to KNOWN_MISSING_CUGRAPH_RS_METHODS (with a phase comment)
+    // for.  Add it to KNOWN_MISSING_CUGRAPH_RS_METHODS (with a stage comment)
     // or implement it in the registry.
     let mut unknown: Vec<&str> = Vec::new();
     for method in &extracted {
@@ -686,7 +686,7 @@ fn graph_operation_registry_covers_cugraph_rs_surface_without_unknown_gaps() {
         "cugraph-rs graph.rs contains public Graph methods not accounted for in \
          CUGRAPH_RS_METHOD_TO_REGISTRY, KNOWN_MISSING_CUGRAPH_RS_METHODS, or \
          CUGRAPH_RS_NON_ALGORITHM_METHODS.\n\
-         Add each new method to KNOWN_MISSING with a phase comment, or implement it.\n\
+         Add each new method to KNOWN_MISSING with a stage comment, or implement it.\n\
          Unknown: {unknown:?}",
     );
 

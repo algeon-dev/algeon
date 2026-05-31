@@ -1,7 +1,7 @@
 //! Tests for three-part Iceberg catalog namespace registration.
 //!
 //! These tests exercise the catalog/schema wiring and table registration logic
-//! introduced in Phase 1 of the Iceberg namespace DSL.  They use MemTable
+//! introduced in Milestone 1 of the Iceberg namespace DSL.  They use MemTable
 //! providers instead of real Glue credentials so they can run in CI without AWS
 //! access.
 

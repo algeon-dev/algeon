@@ -28,7 +28,7 @@ pub struct NativeStrictBoundedContractDiagnostics {
 }
 
 impl NativeStrictBoundedContractDiagnostics {
-    /// Appends accepted/rejected candidate evidence from another optimizer phase.
+    /// Appends accepted/rejected candidate evidence from another optimizer stage.
     pub fn merge(&mut self, other: Self) {
         self.accepted_candidates.extend(other.accepted_candidates);
         self.rejected_candidates.extend(other.rejected_candidates);

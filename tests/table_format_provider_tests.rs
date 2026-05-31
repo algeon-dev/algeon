@@ -202,7 +202,7 @@ fn native_lowering_lowers_table_format_scan_to_local_parquet_source() {
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
     let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
-        panic!("expected table-format scan to be rewritten by Phase D lowering");
+        panic!("expected table-format scan to be rewritten by Milestone D lowering");
     };
     assert_eq!(candidate.shape, "TableFormatScan(iceberg)");
     let source = native_local_parquet_source(&result.plans[0]);
@@ -467,7 +467,7 @@ fn table_format_scan_preserves_unsupported_feature_reason_and_never_executes_cpu
     let plan =
         native_admissible_scan_plan(Arc::clone(&schema)).with_unsupported_feature(TableFormatUnsupportedFeature::new(
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
-            "delete files require Phase 2 row-level semantics",
+            "delete files require Milestone 2 row-level semantics",
         ));
     let scan = Arc::new(CudfTableFormatScanExec::new(plan, schema));
 

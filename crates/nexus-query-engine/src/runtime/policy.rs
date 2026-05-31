@@ -20,7 +20,7 @@ pub enum DevicePlacement {
 
 /// Memory space accounted by bounded reservation events.
 ///
-/// Phase 1 models only the device memory owned by the current cudf runtime.
+/// Milestone 1 models only the device memory owned by the current cudf runtime.
 /// The display form is a stable metric value and must not inherit debug output
 /// from runtime placement types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

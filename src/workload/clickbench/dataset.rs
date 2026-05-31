@@ -241,7 +241,7 @@ fn ensure_parquet_extension(path: &Path) -> ClickbenchWorkloadResult<()> {
 /// Collect canonical partitioned shards. The upstream
 /// `download-hits-parquet-partitioned` script always names shards
 /// `hits_<u32>.parquet`, so we admit only that pattern and silently drop any
-/// other Parquet file in the directory — e.g. user samples, ad-hoc exports,
+/// other Parquet file in the directory — e.g. user samples, user-managed exports,
 /// or `.parquet.tmp` half-writes. Anything that does not match is ignored
 /// rather than rejected, since `partitioned/` directories are routinely
 /// shared with unrelated data on staging volumes.

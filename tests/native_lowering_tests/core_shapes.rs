@@ -326,7 +326,7 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
 }
 
 #[test]
-fn phase5_sort_without_fetch_over_aggregate_lowers_without_native_limit() {
+fn sort_without_fetch_over_aggregate_lowers_without_native_limit() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-sort-no-fetch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);

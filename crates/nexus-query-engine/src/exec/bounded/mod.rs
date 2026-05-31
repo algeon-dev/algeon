@@ -3,7 +3,7 @@ use super::{
     *,
 };
 
-// Phase E ownership boundary:
+// Milestone E ownership boundary:
 // - adaptive: adaptive-only admission/report/execution facade.
 // - strict: strict bounded admission/report/execution facade.
 // - compiled: shared compiled pipeline runtime and graph-support checks.

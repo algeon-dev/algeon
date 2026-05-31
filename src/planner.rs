@@ -1,7 +1,7 @@
 //! DataFusion physical optimizer integration for native cuDF execution.
 //!
 //! The planner exposes one public optimizer rule, but session integration
-//! inserts it in two phases: a count-only probe before DataFusion aggregate
+//! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
 //! statistics and the final native rewrite immediately before final plan
 //! validation. `GpuPreferred` keeps DataFusion CPU fallback available during
 //! planning; `GpuOnly` turns native candidate rejection into an optimizer

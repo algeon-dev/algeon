@@ -9,7 +9,7 @@
 //!
 //! ```bash
 //! nerdctl compose -f docker/iceberg-local/docker-compose.yml up -d
-//! docker/iceberg-local/load.sh            # loader (Phase 3c)
+//! docker/iceberg-local/load.sh            # loader (Milestone 3c)
 //! CUDF_ICEBERG_REST_E2E=1 \
 //!   DATAFUSION_NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
 //!   DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
@@ -168,7 +168,7 @@ async fn rest_datafusion_scan_live() {
 /// and assert (1) the Iceberg schema field names match the TPC-H `nation`
 /// columns and (2) the table root and metadata pointer live under `s3://`
 /// (i.e. the write actually landed in RustFS, not on the REST fixture's local
-/// disk). This closes Phase 3d steps 2 and 4 without needing a GPU or the
+/// disk). This closes Milestone 3d steps 2 and 4 without needing a GPU or the
 /// `iceberg-cpu` reader.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
@@ -217,7 +217,7 @@ async fn rest_table_metadata_contract_live() {
     );
 }
 
-/// Phase 4: assert the native **planning rewrite** plus **CPU-reader
+/// Milestone 4: assert the native **planning rewrite** plus **CPU-reader
 /// stability** over a live REST table, with GPU-native correctness as an
 /// explicit opt-in.
 ///

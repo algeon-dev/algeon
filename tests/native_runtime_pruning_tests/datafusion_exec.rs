@@ -195,7 +195,7 @@ async fn native_datafusion_exec_resource_failure_preserves_adapter_facts() {
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
-    assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
+    assert_eq!(adapter_error.fact_value("native_datafusion_stage"), Some("runtime_execution"));
     assert_eq!(adapter_error.fact_value("cpu_fallback_after_native_start"), Some("false"));
     assert!(adapter_error.fact_value("native_operation").is_some());
     assert!(adapter_error.fact_value("memory_boundary").is_some());

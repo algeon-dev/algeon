@@ -457,7 +457,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
 }
 
 #[test]
-fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
+fn nested_loop_join_filter_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-nlj-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -495,7 +495,7 @@ fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
 }
 
 #[test]
-fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
+fn full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-full-nlj-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -527,7 +527,7 @@ fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() 
 }
 
 #[test]
-fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
+fn inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-nlj-cross");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -611,7 +611,7 @@ fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_
 }
 
 #[test]
-fn phase5_right_nested_loop_join_filter_lowers_to_swapped_native_left_join() {
+fn right_nested_loop_join_filter_lowers_to_swapped_native_left_join() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-nlj");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");

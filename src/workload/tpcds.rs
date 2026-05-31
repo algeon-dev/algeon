@@ -34,7 +34,7 @@ pub use dataset::{
 };
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, tpcds_parity_workload_items,
-    tpcds_parity_workload_items_with_external_oracles,
+    tpcds_parity_workload_items_with_external_oracles, tpcds_parity_workload_items_with_session_configs,
 };
 pub use tiny::write_tiny_tpcds_parquet_dataset;
 

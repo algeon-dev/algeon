@@ -241,7 +241,7 @@ impl IcebergTableFormatPlanner {
         if row_selection_enabled {
             plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
                 TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,
-                "Iceberg row selection/page-index semantics are not represented by Phase B native scan facts",
+                "Iceberg row selection/page-index semantics are not represented by Milestone B native scan facts",
             ));
         }
         Ok(plan)
@@ -361,7 +361,7 @@ fn append_task_facts(
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported,
             file_id.clone(),
-            "Iceberg reader predicate pushdown is not represented by Phase B native scan facts",
+            "Iceberg reader predicate pushdown is not represented by Milestone B native scan facts",
         ));
     }
 
@@ -453,7 +453,7 @@ fn append_delete_file_facts(
     plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
         TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
         delete_id,
-        format!("Iceberg {} delete files require Phase 2 row-level semantics", content.code()),
+        format!("Iceberg {} delete files require Milestone 2 row-level semantics", content.code()),
     ));
 }
 

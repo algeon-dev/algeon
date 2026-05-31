@@ -385,7 +385,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
-    assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
+    assert_eq!(adapter_error.fact_value("native_datafusion_stage"), Some("runtime_execution"));
     assert_eq!(adapter_error.fact_value("bounded_join_execution_family"), None);
     assert!(adapter_error.fact_value("compiled_task_id").is_some());
     for fact in [

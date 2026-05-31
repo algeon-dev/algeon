@@ -7,7 +7,7 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     max_per_frame_reservation_bytes: u64,
     /// Sum of per-frame reservation bytes across the whole stream.
     /// Diagnostic / sanity-check only; not consumed by the scheduler.
-    /// Wired in Phase 4.B for the upcoming Phase 4.E.3b metadata
+    /// Wired in Milestone 4.B for the upcoming Milestone 4.E.3b metadata
     /// forecast pass; the dead-code allowance disappears once that
     /// pass starts populating it from the closed-form upper bound.
     #[allow(dead_code)]

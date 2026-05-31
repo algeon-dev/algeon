@@ -32,7 +32,7 @@ pub(super) fn benchmark_query_progress_line(
         NativeTpchMemoryPolicy::Unbounded => ("unbounded".to_string(), "unbounded".to_string()),
     };
     format!(
-        "[native_tpch_benchmark] phase=query_start query={} index={}/{} dataset_mode={} execution_mode={} memory_policy={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
+        "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} memory_policy={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
         query.id,
         query_index.saturating_add(1),
         query_count,

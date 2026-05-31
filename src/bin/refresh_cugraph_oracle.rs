@@ -362,7 +362,7 @@ mod tests {
         let pagerank_karate = CUGRAPH_PARITY_SPECS
             .iter()
             .find(|spec| spec.label.starts_with("pagerank/karate"))
-            .expect("Phase 1a registry must include karate PageRank");
+            .expect("Milestone 1a registry must include karate PageRank");
         assert!(spec_matches(&opts, pagerank_karate));
         let other = CUGRAPH_PARITY_SPECS
             .iter()

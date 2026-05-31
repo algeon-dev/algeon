@@ -205,7 +205,7 @@ impl SourceFetchConfig {
     /// Selects the source IO strategy for a location and optional chunk-size estimate.
     ///
     /// This decision is intentionally pure and does not start IO. It centralizes
-    /// the Phase 5 contract: remote object-store/network sources remain
+    /// the Milestone 5 contract: remote object-store/network sources remain
     /// host-buffer reads, `HostBuffer` forces that path, and `Auto` /
     /// `DirectDevice` select direct-device only when GDS eligibility succeeds.
     pub fn decide_source_fetch_strategy(

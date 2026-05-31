@@ -15,7 +15,7 @@ pub struct NativeAdaptivePipelineDiagnostics {
 }
 
 impl NativeAdaptivePipelineDiagnostics {
-    /// Appends candidate reports from another optimizer phase.
+    /// Appends candidate reports from another optimizer stage.
     pub fn merge(&mut self, other: Self) {
         self.candidates.extend(other.candidates);
     }

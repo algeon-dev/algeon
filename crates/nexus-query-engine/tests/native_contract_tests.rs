@@ -109,6 +109,8 @@ fn execution_cancellation_default_is_independent_of_other_instances() {
 pub(crate) mod bounded_join_admission;
 #[path = "native_contract_tests/bounded_join_sizing.rs"]
 mod bounded_join_sizing;
+#[path = "native_contract_tests/capability_module_boundaries.rs"]
+mod capability_module_boundaries;
 #[path = "native_contract_tests/expr_contracts.rs"]
 mod expr_contracts;
 #[path = "native_contract_tests/graph_algorithm.rs"]
@@ -117,8 +119,6 @@ mod graph_algorithm;
 mod optimizer_contracts;
 #[path = "native_contract_tests/partial_aggregate_sizing.rs"]
 mod partial_aggregate_sizing;
-#[path = "native_contract_tests/phase_e_module_boundaries.rs"]
-mod phase_e_module_boundaries;
 #[path = "native_contract_tests/pipeline_compiled_execution.rs"]
 mod pipeline_compiled_execution;
 #[path = "native_contract_tests/pipeline_compiler.rs"]

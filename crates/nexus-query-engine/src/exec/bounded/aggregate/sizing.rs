@@ -9,7 +9,7 @@
 //   - Grouped aggregate output: at most `input_rows` rows (every input
 //     row could be a unique group key). Without a libcudf-level
 //     grouped-aggregate output-row-count preflight, this is the only
-//     deterministic ceiling; design v8 risk #7 / Phase 4.G tracks the
+//     deterministic ceiling; design v8 risk #7 / Milestone 4.G tracks the
 //     follow-up to tighten it.
 //
 // Caller responsibility: build the per-column descriptors from the
@@ -19,7 +19,7 @@
 // columns. For string-typed group keys the caller must supply
 // `input_max_string_length_bytes` from the input frame. See
 // `docs/design/2026-05-20-tpcds-sf100-q72-join-materialize-fix.md`
-// Phase 4.A.2.
+// Milestone 4.A.2.
 
 use std::collections::BTreeMap;
 
@@ -32,7 +32,7 @@ pub enum PartialAggregateShape {
     Global,
     /// Grouped — partial output has at most `input_rows` rows. This is
     /// the conservative bound used in strict mode until a libcudf
-    /// grouped-aggregate row-count preflight lands (Phase 4.G follow-up
+    /// grouped-aggregate row-count preflight lands (Milestone 4.G follow-up
     /// per the q72 design doc).
     Grouped {
         /// Input row count used as the conservative grouped-output upper bound.

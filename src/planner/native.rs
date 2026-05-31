@@ -65,7 +65,7 @@ pub struct NativePlanningDiagnostics {
 #[derive(Debug)]
 pub struct CudfNativePhysicalOptimizerRule {
     config: CudfOptimizerConfig,
-    phase: NativeOptimizerPhase,
+    stage: NativeOptimizerStage,
     state: Arc<CudfNativePhysicalOptimizerRuleState>,
 }
 
@@ -81,7 +81,7 @@ struct CudfNativePhysicalOptimizerRuleState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeOptimizerPhase {
+enum NativeOptimizerStage {
     CountOnlyProbe,
     Final,
 }
@@ -91,7 +91,7 @@ impl CudfNativePhysicalOptimizerRule {
     pub fn new(config: CudfOptimizerConfig) -> Self {
         Self {
             config,
-            phase: NativeOptimizerPhase::Final,
+            stage: NativeOptimizerStage::Final,
             state: Arc::new(CudfNativePhysicalOptimizerRuleState {
                 last_input_plan_root: Mutex::new(None),
                 last_input_plan_shape: Mutex::new(None),
@@ -112,7 +112,7 @@ impl CudfNativePhysicalOptimizerRule {
     pub(crate) fn count_only_probe_rule(&self) -> Self {
         Self {
             config: self.config.clone(),
-            phase: NativeOptimizerPhase::CountOnlyProbe,
+            stage: NativeOptimizerStage::CountOnlyProbe,
             state: Arc::clone(&self.state),
         }
     }
@@ -195,14 +195,14 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         let native_optimizer_options = self.config.native_optimizer_options();
         let native_plan_preference_options = self.config.native_plan_preference_options();
 
-        let optimized = match self.phase {
-            NativeOptimizerPhase::CountOnlyProbe => optimize_count_only_native_plan(
+        let optimized = match self.stage {
+            NativeOptimizerStage::CountOnlyProbe => optimize_count_only_native_plan(
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
                 native_plan_preference_options,
             )?,
-            NativeOptimizerPhase::Final => optimize_final_native_plan(
+            NativeOptimizerStage::Final => optimize_final_native_plan(
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
@@ -227,9 +227,9 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     }
 
     fn name(&self) -> &str {
-        match self.phase {
-            NativeOptimizerPhase::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
-            NativeOptimizerPhase::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        match self.stage {
+            NativeOptimizerStage::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerStage::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
         }
     }
 

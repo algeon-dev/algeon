@@ -175,7 +175,7 @@ impl DatafusionCudfFlightSqlService {
             self.native_optimizer_config.native_execution_config().clone().with_cancellation(cancellation);
         let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
         // Retain the native rule so we can read its `last_report` for the
-        // Phase 4 planning-report log after physical optimization runs.
+        // Milestone 4 planning-report log after physical optimization runs.
         let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
         let state = SessionStateBuilder::new_from_existing(self.ctx.state())
             .with_cudf_native_rule(Arc::clone(&native_rule))
@@ -389,7 +389,7 @@ impl DatafusionCudfFlightSqlService {
         };
         let schema = df.schema().as_arrow().clone();
         // `df.execute_stream()` calls `create_physical_plan()` internally,
-        // which runs the cudf native physical optimizer rule plus the Phase 1
+        // which runs the cudf native physical optimizer rule plus the Milestone 1
         // GPU-only leaf guard. Both branches below read `last_report` after
         // that point so the planning report log reflects whatever physical
         // planning produced. The leaf-guard warn line only fires on the
@@ -492,7 +492,7 @@ impl DatafusionCudfFlightSqlService {
             std::str::from_utf8(&query_id_bytes).map_err(|error| Status::invalid_argument(error.to_string()))?;
         if let Some((_, ticket)) = self.tickets.remove(query_id) {
             ticket.native_cancellation.cancel();
-            tracing::info!(query_id, outcome = "cancelled", phase = "ticket", "cancelled Flight SQL statement ticket");
+            tracing::info!(query_id, outcome = "cancelled", stage = "ticket", "cancelled Flight SQL statement ticket");
             return Ok(true);
         }
         Ok(self.cancellations.cancel(query_id))
@@ -1032,7 +1032,7 @@ impl QueryLifecycle {
             tracing::info!(
                 query_id = self.query_id,
                 outcome = "succeeded",
-                phase = "stream",
+                stage = "stream",
                 elapsed_ms = self.started_at.elapsed().as_millis(),
                 "finished Flight SQL statement"
             );
@@ -1044,17 +1044,17 @@ impl QueryLifecycle {
             tracing::warn!(
                 query_id = self.query_id,
                 outcome = "dropped",
-                phase = "stream",
+                stage = "stream",
                 elapsed_ms = self.started_at.elapsed().as_millis(),
                 "finished Flight SQL statement"
             );
         }
     }
 
-    fn finish_status(&self, phase: &'static str, status: &Status) {
+    fn finish_status(&self, stage: &'static str, status: &Status) {
         let outcome = status_outcome(status.code());
         if self.try_finish(outcome) {
-            log_statement_status(&self.query_id, phase, self.started_at, status);
+            log_statement_status(&self.query_id, stage, self.started_at, status);
         }
     }
 
@@ -1280,12 +1280,12 @@ fn status_outcome(code: Code) -> &'static str {
     if code == Code::Cancelled { "cancelled" } else { "failed" }
 }
 
-fn log_statement_status(query_id: &str, phase: &'static str, started_at: Instant, status: &Status) {
+fn log_statement_status(query_id: &str, stage: &'static str, started_at: Instant, status: &Status) {
     let outcome = status_outcome(status.code());
     tracing::warn!(
         query_id,
         outcome,
-        phase,
+        stage,
         grpc_code = ?status.code(),
         elapsed_ms = started_at.elapsed().as_millis(),
         error = status.message(),

@@ -30,7 +30,7 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
-pub(super) fn write_ad_hoc_full_gpu_gaps_parquet_file(path: &std::path::Path) {
+pub(super) fn write_full_gpu_gap_analysis_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("key", DataType::Int32, false),

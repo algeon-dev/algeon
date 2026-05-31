@@ -18,7 +18,7 @@ fn native_plan_can_represent_proven_benchmark_shape() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_file_size_bytes(3_235_196_281)],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_file_size_bytes(3_235_196_281)],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
     );

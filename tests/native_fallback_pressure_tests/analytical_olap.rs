@@ -1,18 +1,18 @@
 use super::*;
 
 #[tokio::test]
-async fn native_pipeline_ad_hoc_olap_fallback_report_pins_lowering_diagnostics() {
-    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-fallback-report");
+async fn native_pipeline_analytical_olap_fallback_report_pins_lowering_diagnostics() {
+    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-fallback-report");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
-    let items = ad_hoc_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let items = analytical_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), AD_HOC_OLAP_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), AD_HOC_OLAP_QUERY_COUNT);
+    assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(report.rewritten_count(), ANALYTICAL_OLAP_QUERY_COUNT);
     assert_eq!(report.rejected_count(), 0);
 
-    for query in AD_HOC_OLAP_QUERIES {
+    for query in ANALYTICAL_OLAP_QUERIES {
         let row = report_row(&report, query.id);
         assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rewritten, "unexpected outcome for {}", query.id);
         assert_eq!(row.reason_code, None, "unexpected reason for {}", query.id);
@@ -30,22 +30,22 @@ async fn native_pipeline_ad_hoc_olap_fallback_report_pins_lowering_diagnostics()
 }
 
 #[tokio::test]
-async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_first_admission_surface() {
-    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-strict-planning");
+async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_first_admission_surface() {
+    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-strict-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
-    let items = ad_hoc_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let items = analytical_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let report = NativeDataFusionPlanningReport::collect(items);
 
-    assert_eq!(report.rows.len(), AD_HOC_OLAP_QUERY_COUNT);
+    assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
     assert!(
-        AD_HOC_OLAP_QUERIES
-            .iter()
-            .any(|query| query.capability_first_admission == AdHocOlapCapabilityFirstAdmission::ExpectedSupersetWin),
-        "Phase F.2 supplement must include a planned capability-first superset win"
+        ANALYTICAL_OLAP_QUERIES.iter().any(
+            |query| query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
+        ),
+        "Milestone F.2 supplement must include a planned capability-first superset win"
     );
 
-    for query in AD_HOC_OLAP_QUERIES {
+    for query in ANALYTICAL_OLAP_QUERIES {
         let row = planning_row(&report, query.id);
         assert!(
             row.adaptive_pipeline_rows.is_empty(),
@@ -56,14 +56,14 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
 
         match query.current_strict_admission {
-            AdHocOlapCurrentStrictAdmission::Accepted => {
+            AnalyticalOlapCurrentStrictAdmission::Accepted => {
                 assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
                 assert_eq!(row.reason_code, None, "{}", query.id);
                 assert!(!row.rejected_before_execution, "{}", query.id);
                 assert!(!row.strict_bounded_contract_rows.is_empty(), "{} should emit strict gate rows", query.id);
                 assert!(!row.strict_bounded_compiled_graphs.is_empty(), "{} should emit compiled graph rows", query.id);
             },
-            AdHocOlapCurrentStrictAdmission::RejectedBeforeExecution => {
+            AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution => {
                 assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution, "{}", query.id);
                 assert_eq!(
                     row.reason_code.as_deref(),
@@ -78,10 +78,13 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
                     "{} should not emit compiled graph rows",
                     query.id
                 );
-                assert_eq!(query.capability_first_admission, AdHocOlapCapabilityFirstAdmission::ExpectedSupersetWin);
+                assert_eq!(
+                    query.capability_first_admission,
+                    AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
+                );
             },
         }
-        if query.capability_first_admission == AdHocOlapCapabilityFirstAdmission::ExpectedSupersetWin {
+        if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
                 row.outcome,
                 NativeDataFusionPlanningOutcome::AcceptedReplaced,
@@ -95,19 +98,19 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
             );
         }
     }
-    assert_no_legacy_rejection_terms("ad_hoc_olap_strict_planning_tsv", &report.to_tsv());
+    assert_no_legacy_rejection_terms("analytical_olap_strict_planning_tsv", &report.to_tsv());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
-async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows() {
-    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-adaptive-planning");
+async fn native_pipeline_analytical_olap_adaptive_planning_report_uses_adaptive_rows() {
+    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-adaptive-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let optimizer_config =
         tpch_native_optimizer_config().with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let items = ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config(
+    let items = analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
         &dir,
         tpch_report_session_config(),
         optimizer_config,
@@ -116,8 +119,8 @@ async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows
     .unwrap();
     let report = NativeDataFusionPlanningReport::collect(items);
 
-    assert_eq!(report.rows.len(), AD_HOC_OLAP_QUERY_COUNT);
-    for query in AD_HOC_OLAP_QUERIES {
+    assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
+    for query in ANALYTICAL_OLAP_QUERIES {
         let row = planning_row(&report, query.id);
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
         assert!(
@@ -139,7 +142,7 @@ async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows
             query.id
         );
     }
-    assert_no_legacy_rejection_terms("ad_hoc_olap_adaptive_planning_tsv", &report.to_tsv());
+    assert_no_legacy_rejection_terms("analytical_olap_adaptive_planning_tsv", &report.to_tsv());
 
     fs::remove_dir_all(dir).unwrap();
 }

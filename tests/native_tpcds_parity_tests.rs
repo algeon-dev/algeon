@@ -25,7 +25,7 @@ use datafusion_nexus::{
     TpcdsWorkloadResult, compare_record_batches, default_tpcds_sf1_parquet_root, discover_tpcds_table_layout,
     lower_physical_plan_to_native, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     tpcds_datafusion_planning_workload_items_with_optimizer_config,
-    tpcds_parity_workload_items as raw_tpcds_parity_workload_items, tpcds_report_session_config,
+    tpcds_parity_workload_items_with_session_configs as raw_tpcds_parity_workload_items, tpcds_report_session_config,
 };
 
 static TPCDS_NATIVE_PARITY_WORKLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -152,7 +152,7 @@ async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
     let query_filter = vec!["q06".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -195,7 +195,7 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
     let query_filter = vec!["q85".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -233,7 +233,7 @@ async fn tpcds_sf1_q93_matches_after_outer_join_filter_reassociation() {
     let query_filter = vec!["q93".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -269,7 +269,7 @@ async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admiss
     let query_filter = vec!["q04".to_string(), "q11".to_string(), "q31".to_string(), "q74".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -308,7 +308,7 @@ async fn tpcds_sf1_q15_nullable_or_residual_matches_after_post_filter_admission(
     let query_filter = vec!["q15".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -354,7 +354,7 @@ async fn tpcds_sf1_global_limit_join_aggregate_queries_match_after_limit_admissi
     ];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -415,7 +415,7 @@ async fn tpcds_sf1_q61_matches_after_physical_cross_join_admission() {
     let query_filter = vec!["q61".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -453,7 +453,7 @@ async fn tpcds_sf1_q09_matches_after_scalar_nested_loop_left_join_cross_admissio
     let query_filter = vec!["q09".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -542,7 +542,7 @@ async fn tpcds_sf1_q44_keyless_outer_cross_join_matches_as_whole_native() {
     let query_filter = vec!["q44".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -583,7 +583,7 @@ async fn tpcds_sf1_bitwise_grouping_window_queries_match_as_whole_native() {
     let query_filter = vec!["q70".to_string(), "q86".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -623,7 +623,7 @@ async fn tpcds_sf1_abs_window_filter_queries_match_as_whole_native() {
     let query_filter = vec!["q53".to_string(), "q63".to_string(), "q89".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -663,7 +663,7 @@ async fn tpcds_sf1_rank_window_queries_match_as_whole_native() {
     let query_filter = vec!["q36".to_string(), "q47".to_string(), "q57".to_string(), "q67".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -703,7 +703,7 @@ async fn tpcds_sf1_partition_aggregate_window_queries_match_as_whole_native() {
     let query_filter = vec!["q12".to_string(), "q20".to_string(), "q98".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -743,7 +743,7 @@ async fn tpcds_sf1_cumulative_aggregate_window_queries_match_as_whole_native() {
     let query_filter = vec!["q51".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -782,7 +782,7 @@ async fn tpcds_sf1_rank_window_union_query_matches_as_whole_native() {
     let query_filter = vec!["q49".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -822,7 +822,7 @@ async fn tpcds_sf1_round_decimal_segment_query_matches_as_whole_native() {
     let query_filter = vec!["q54".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -860,7 +860,7 @@ async fn tpcds_sf1_mark_join_queries_match_as_whole_native() {
     let query_filter = vec!["q10".to_string(), "q35".to_string(), "q45".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -900,7 +900,7 @@ async fn tpcds_sf1_host_arrow_join_boundary_queries_match_with_partial_native_ch
     let query_filter = vec!["q17".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -928,7 +928,7 @@ async fn tpcds_sf1_host_arrow_join_boundary_queries_match_with_partial_native_ch
 }
 
 #[tokio::test]
-async fn tpcds_sf1_phase3_distributed_aggregate_queries_match_as_whole_native() {
+async fn tpcds_sf1_distributed_aggregate_queries_match_as_whole_native() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -945,7 +945,7 @@ async fn tpcds_sf1_phase3_distributed_aggregate_queries_match_as_whole_native() 
     ];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -977,7 +977,7 @@ async fn tpcds_sf1_phase3_distributed_aggregate_queries_match_as_whole_native() 
 }
 
 #[tokio::test]
-async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_grouping_sets() {
+async fn tpcds_sf1_distributed_aggregate_lowering_admits_shared_resident_grouping_sets() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -1014,7 +1014,7 @@ async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_
 }
 
 #[tokio::test]
-async fn tpcds_sf1_phase2_union_queries_match_as_whole_native() {
+async fn tpcds_sf1_union_queries_match_as_whole_native() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -1034,7 +1034,7 @@ async fn tpcds_sf1_phase2_union_queries_match_as_whole_native() {
     ];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1086,7 +1086,7 @@ async fn tpcds_sf1_projection_scalar_queries_match_as_whole_native() {
     let query_filter = vec!["q02".to_string(), "q78".to_string(), "q84".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1141,7 +1141,7 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
     let query_filter = vec!["q28".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1172,7 +1172,7 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
 }
 
 #[tokio::test]
-async fn tpcds_sf1_phase1_hash_join_queries_match_as_whole_native() {
+async fn tpcds_sf1_hash_join_queries_match_as_whole_native() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -1189,7 +1189,7 @@ async fn tpcds_sf1_phase1_hash_join_queries_match_as_whole_native() {
     ];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1238,7 +1238,7 @@ async fn tpcds_sf1_outer_hash_join_query_matches_as_whole_native() {
     let query_filter = vec!["q72".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         q72_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1307,6 +1307,8 @@ async fn tpcds_sf1_precision_sensitive_stddev_matches_with_native_order_contract
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
     let query_filter = vec!["q39".to_string()];
+    // q39 pins an exact floating statistical aggregate contract; changing CPU
+    // partitions changes DataFusion's merge order and invalidates exact parity.
     let items = tpcds_parity_workload_items(
         root,
         tpcds_report_session_config(),
@@ -1346,7 +1348,7 @@ async fn tpcds_sf1_cross_join_count_subplans_match_after_hidden_join_output_proj
     let query_filter = vec!["q88".to_string(), "q90".to_string()];
     let items = tpcds_parity_workload_items(
         root,
-        tpcds_report_session_config(),
+        sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
         Some(&query_filter),
     )
@@ -1725,7 +1727,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
 
 async fn tpcds_parity_workload_items(
     root: &Path,
-    session_config: SessionConfig,
+    cpu_session_config: SessionConfig,
     optimizer_config: CudfOptimizerConfig,
     query_filter: Option<&[String]>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
@@ -1733,7 +1735,14 @@ async fn tpcds_parity_workload_items(
     // process-global CUDA/RMM state, so parallel libtest workers in this one test
     // binary can crash the process even when each individual query is valid.
     let _guard = TPCDS_NATIVE_PARITY_WORKLOAD_LOCK.lock().await;
-    raw_tpcds_parity_workload_items(root, session_config, optimizer_config, query_filter).await
+    raw_tpcds_parity_workload_items(
+        root,
+        cpu_session_config,
+        tpcds_report_session_config(),
+        optimizer_config,
+        query_filter,
+    )
+    .await
 }
 
 async fn plain_tpcds_physical_plan(root: &Path, query_id: &str) -> Arc<dyn ExecutionPlan> {
@@ -1747,14 +1756,61 @@ async fn plain_tpcds_physical_plan(root: &Path, query_id: &str) -> Arc<dyn Execu
     df.create_physical_plan().await.unwrap()
 }
 
+fn sf1_tpcds_test_session_config() -> SessionConfig {
+    tpcds_report_session_config().with_target_partitions(tpcds_test_target_partitions())
+}
+
+// This controls only the CPU DataFusion oracle. The native side keeps the
+// report session's single DataFusion partition; GPU chunking is owned by the
+// native/libcudf execution config below.
+fn tpcds_test_target_partitions() -> usize {
+    test_threads_from_args()
+        .or_else(test_threads_from_env)
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|count| count.get()).unwrap_or(1))
+}
+
+fn test_threads_from_args() -> Option<usize> {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--test-threads=") {
+            return parse_positive_usize(value);
+        }
+        if arg == "--test-threads" {
+            return args.next().and_then(|value| parse_positive_usize(&value));
+        }
+    }
+    None
+}
+
+fn test_threads_from_env() -> Option<usize> {
+    std::env::var("RUST_TEST_THREADS").ok().and_then(|value| parse_positive_usize(&value))
+}
+
+fn parse_positive_usize(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok().filter(|value| *value > 0)
+}
+
 fn sf1_native_optimizer_config() -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(94_489_280_512, 64 * 1024 * 1024, 1, 3, 1))
+    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+        NativeCudfExecutionConfig::bounded(
+            NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
+            4 * 1024 * 1024 * 1024,
+            1024,
+            3,
+            1,
+        ),
+    )
 }
 
 fn q72_native_optimizer_config() -> CudfOptimizerConfig {
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded(13_958_643_712, 4 * 1024 * 1024 * 1024, 1024, 3, 1),
+        NativeCudfExecutionConfig::bounded(
+            NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
+            4 * 1024 * 1024 * 1024,
+            1024,
+            3,
+            1,
+        ),
     )
 }
 

@@ -917,7 +917,7 @@ pub struct GraphLeidenParams {
     pub max_level: u32,
     /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
     pub resolution: f64,
-    /// Modularity-gain scaling for the refinement phase. Must be > 0.
+    /// Modularity-gain scaling for the refinement stage. Must be > 0.
     pub theta: f64,
     /// RNG seed for the Leiden algorithm. Default 0 gives a deterministic run.
     pub seed: u64,
@@ -1124,7 +1124,7 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("core_number", arrow::datatypes::DataType::Int64, false),
         ],
         // KCore and MST return an edge list; column names follow the
-        // graph-SQL `src`/`dst` convention. Weight is deferred to Phase 2.
+        // graph-SQL `src`/`dst` convention. Weight is deferred to Milestone 2.
         GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => vec![
             Field::new("src", arrow::datatypes::DataType::Int64, false),
             Field::new("dst", arrow::datatypes::DataType::Int64, false),

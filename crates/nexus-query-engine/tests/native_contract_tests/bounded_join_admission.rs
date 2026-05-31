@@ -1054,7 +1054,7 @@ fn bounded_capability_analysis_preserves_status_quality_separation() {
 }
 
 #[test]
-fn bounded_capability_analysis_classifies_phase2_reservation_scopes() {
+fn bounded_capability_analysis_classifies_reservation_scopes() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -1095,7 +1095,7 @@ fn bounded_capability_analysis_decomposes_probe_side_into_edge_and_build_before_
 }
 
 #[test]
-fn bounded_capability_analysis_extracts_phase4_multi_join_edge_contracts() {
+fn bounded_capability_analysis_extracts_multi_join_edge_contracts() {
     let plan = serial_aggregate_multi_join_spine_plan();
     let analysis = plan.capability_analysis();
     assert!(analysis.edges.iter().all(|edge| edge.decision == CapabilityDecision::Satisfied));
@@ -1141,7 +1141,7 @@ fn bounded_capability_analysis_extracts_phase4_multi_join_edge_contracts() {
 }
 
 #[test]
-fn bounded_capability_analysis_solves_phase5_multi_join_invariants() {
+fn bounded_capability_analysis_solves_multi_join_invariants() {
     let plan = serial_aggregate_multi_join_spine_plan();
     let analysis = plan.capability_analysis();
 
@@ -1170,7 +1170,7 @@ fn bounded_capability_analysis_solves_phase5_multi_join_invariants() {
 }
 
 #[test]
-fn bounded_multi_join_phase6_admission_uses_closed_subgraph_capability_proof() {
+fn bounded_multi_join_admission_uses_closed_subgraph_capability_proof() {
     let plan = serial_aggregate_multi_join_spine_plan();
     let analysis = plan.capability_analysis();
 
@@ -1181,7 +1181,7 @@ fn bounded_multi_join_phase6_admission_uses_closed_subgraph_capability_proof() {
 }
 
 #[test]
-fn bounded_capability_analysis_rejects_phase5_multi_join_admission_without_family_recognizer() {
+fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recognizer() {
     let plan = multi_join_candidate_with_aggregate_inside_join_subtree_plan();
 
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
@@ -1594,17 +1594,17 @@ fn multi_join_candidate_with_aggregate_inside_join_subtree_plan() -> nexus_query
 
     let mut builder = QueryPlanBuilder::new();
     let partsupp = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/phase5-partsupp.parquet",
+        "/tmp/multi-join-partsupp.parquet",
         partsupp_schema,
         vec!["ps_partkey".into(), "ps_suppkey".into()],
     )));
     let part = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/phase5-part.parquet",
+        "/tmp/multi-join-part.parquet",
         part_schema,
         vec!["p_partkey".into()],
     )));
     let supplier = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/phase5-supplier.parquet",
+        "/tmp/multi-join-supplier.parquet",
         supplier_schema,
         vec!["s_suppkey".into()],
     )));
@@ -1736,7 +1736,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
 }
 
 #[test]
-fn bounded_keyed_hash_join_resident_subplan_phase6_admission_uses_capability_proof() {
+fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_proof() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -1951,7 +1951,7 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_exe
 }
 
 #[test]
-fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_phase8_admission_uses_capability_proof() {
+fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_proof() {
     let plan = resident_grouped_aggregate_subquery_filter_plan();
     let analysis = plan.capability_analysis();
 
@@ -2009,7 +2009,7 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
 }
 
 #[test]
-fn bounded_hash_join_resident_grouped_aggregate_topk_phase6_admission_uses_capability_proof() {
+fn bounded_hash_join_resident_grouped_aggregate_topk_admission_uses_capability_proof() {
     let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_plan();
     let analysis = plan.capability_analysis();
 
@@ -2120,7 +2120,7 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
 }
 
 #[test]
-fn bounded_keyless_conditional_join_input_subplan_phase8_admission_uses_capability_proof() {
+fn bounded_keyless_conditional_join_input_subplan_admission_uses_capability_proof() {
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted);
     let analysis = plan.capability_analysis();
 
@@ -2136,7 +2136,7 @@ fn bounded_keyless_conditional_join_input_subplan_phase8_admission_uses_capabili
 }
 
 #[test]
-fn bounded_keyless_conditional_join_input_subplan_phase8_rejects_non_input_subplan_shape() {
+fn bounded_keyless_conditional_join_input_subplan_rejects_non_input_subplan_shape() {
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::InnerJoinInput);
     let analysis = plan.capability_analysis();
 

@@ -60,7 +60,7 @@ async fn main() {
                 Ok(None) => {},
                 Err(error) => {
                     eprintln!(
-                        "[native_iceberg_tpch_benchmark] phase=full_sf1_staged_s3_gate outcome=failed error={}",
+                        "[native_iceberg_tpch_benchmark] stage=full_sf1_staged_s3_gate outcome=failed error={}",
                         stable_tsv_field(&error.to_string())
                     );
                     std::process::exit(1);
@@ -68,7 +68,7 @@ async fn main() {
             }
             if let Some(error) = report.timeout_failure_message() {
                 eprintln!(
-                    "[native_iceberg_tpch_benchmark] phase=timeout_gate outcome=failed error={}",
+                    "[native_iceberg_tpch_benchmark] stage=timeout_gate outcome=failed error={}",
                     stable_tsv_field(&error)
                 );
                 std::process::exit(1);
@@ -125,7 +125,7 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
     }
     for warmup_index in 0..config.warmup_iterations {
         eprintln!(
-            "[native_iceberg_tpch_benchmark] phase=warmup_start index={}/{} query_ids={}",
+            "[native_iceberg_tpch_benchmark] stage=warmup_start index={}/{} query_ids={}",
             warmup_index + 1,
             config.warmup_iterations,
             config.query_ids.join(","),
@@ -143,7 +143,7 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
         let iteration_started = Instant::now();
         let iteration_row_start = rows.len();
         eprintln!(
-            "[native_iceberg_tpch_benchmark] phase=iteration_start index={}/{} query_ids={}",
+            "[native_iceberg_tpch_benchmark] stage=iteration_start index={}/{} query_ids={}",
             iteration_index + 1,
             config.iterations,
             config.query_ids.join(","),
@@ -171,7 +171,7 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
             };
             let query_started = Instant::now();
             eprintln!(
-                "[native_iceberg_tpch_benchmark] phase=query_start iteration={}/{} query_index={}/{} query_id={} timeout_category={} timeout_secs={}",
+                "[native_iceberg_tpch_benchmark] stage=query_start iteration={}/{} query_index={}/{} query_id={} timeout_category={} timeout_secs={}",
                 iteration_index + 1,
                 config.iterations,
                 query_index + 1,
@@ -184,7 +184,7 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
                 Ok(smoke_row) => {
                     let report_elapsed_ms = query_started.elapsed().as_millis();
                     eprintln!(
-                        "[native_iceberg_tpch_benchmark] phase=query_finish iteration={}/{} query_id={} elapsed_ms={} native_runtime_outcome={} cpu_runtime_outcome={} parity_status={}",
+                        "[native_iceberg_tpch_benchmark] stage=query_finish iteration={}/{} query_id={} elapsed_ms={} native_runtime_outcome={} cpu_runtime_outcome={} parity_status={}",
                         iteration_index + 1,
                         config.iterations,
                         query_id,
@@ -211,7 +211,7 @@ pub(crate) async fn run_benchmark(config: IcebergTpchBenchmarkConfig) -> Benchma
                 Err(BenchmarkQueryExecutionError::TimedOut { category, timeout_secs }) => {
                     let report_elapsed_ms = query_started.elapsed().as_millis();
                     eprintln!(
-                        "[native_iceberg_tpch_benchmark] phase=query_timeout iteration={}/{} query_id={} timeout_category={} timeout_secs={} elapsed_ms={}",
+                        "[native_iceberg_tpch_benchmark] stage=query_timeout iteration={}/{} query_id={} timeout_category={} timeout_secs={} elapsed_ms={}",
                         iteration_index + 1,
                         config.iterations,
                         query_id,
@@ -865,7 +865,7 @@ pub(crate) struct FullSf1DirectS3GateSummary {
 impl FullSf1DirectS3GateSummary {
     fn progress_line(&self) -> String {
         format!(
-            "[native_iceberg_tpch_benchmark] phase=full_sf1_staged_s3_gate outcome=passed query_count={} measured_iterations={} native_runtime_elapsed_ms_total={} cpu_runtime_elapsed_ms_total={} report_elapsed_ms={}",
+            "[native_iceberg_tpch_benchmark] stage=full_sf1_staged_s3_gate outcome=passed query_count={} measured_iterations={} native_runtime_elapsed_ms_total={} cpu_runtime_elapsed_ms_total={} report_elapsed_ms={}",
             self.query_count,
             self.measured_iterations,
             self.native_runtime_elapsed_ms_total,

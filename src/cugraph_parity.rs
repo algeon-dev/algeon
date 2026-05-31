@@ -141,7 +141,7 @@ pub struct ParitySpec {
 
 /// Source-of-truth list of cuGraph parity rows.
 ///
-/// Phase 1a coverage: the existing three algorithms (PageRank, BFS,
+/// Milestone 1a coverage: the existing three algorithms (PageRank, BFS,
 /// Louvain) on the smallest deterministic baseline (Karate). New
 /// algorithms must add a registry row here in the same registry order
 /// as [`crate::CUGRAPH_OPERATION_REGISTRY`].
@@ -239,7 +239,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance::exact(),
     },
     // ──────────────────────────────────────────────────────────────────────
-    // Phase 1 batch 2: SSSP, degrees, WCC, SCC, triangle count, core,
+    // Milestone 1 batch 2: SSSP, degrees, WCC, SCC, triangle count, core,
     // k-core, MST.  Oracle JSON files are generated on a RAPIDS host via
     // `refresh_cugraph_oracle`; the harness reports each missing file as
     // "needs refresh" until then.
@@ -369,7 +369,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance::exact(),
     },
     // ──────────────────────────────────────────────────────────────────────
-    // Phase 1 batch 3: PageRank strict, Leiden, ECG,
+    // Milestone 1 batch 3: PageRank strict, Leiden, ECG,
     // SpectralModularityMaximization, BalancedCutClustering.
     // Oracle JSON files are generated on a RAPIDS host via
     // `refresh_cugraph_oracle`; the harness reports each missing file as

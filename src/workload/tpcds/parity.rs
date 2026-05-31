@@ -56,6 +56,28 @@ pub async fn tpcds_parity_workload_items(
     tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
 }
 
+/// Build parity workload items using distinct CPU and native session configs.
+///
+/// This is useful for tests that want a more parallel CPU oracle while keeping
+/// native physical-plan coverage pinned to the report surface's shape contract.
+pub async fn tpcds_parity_workload_items_with_session_configs(
+    root: &Path,
+    cpu_session_config: SessionConfig,
+    native_session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    tpcds_parity_workload_items_with_session_configs_and_external_oracles(
+        root,
+        cpu_session_config,
+        native_session_config,
+        optimizer_config,
+        query_filter,
+        None,
+    )
+    .await
+}
+
 /// Build TPC-DS parity items and optionally run external oracles.
 ///
 /// `query_filter` matches exact query ids and silently skips unknown ids.
@@ -69,12 +91,31 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
-    let cpu_ctx = SessionContext::new_with_config(session_config.clone());
+    tpcds_parity_workload_items_with_session_configs_and_external_oracles(
+        root,
+        session_config.clone(),
+        session_config,
+        optimizer_config,
+        query_filter,
+        external_oracles,
+    )
+    .await
+}
+
+async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
+    root: &Path,
+    cpu_session_config: SessionConfig,
+    native_session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
     register_tpcds_tables(&cpu_ctx, root).await?;
 
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let native_state = SessionStateBuilder::new_with_default_features()
-        .with_config(native_tpcds_session_config(session_config))
+        .with_config(native_tpcds_session_config(native_session_config))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let native_ctx = SessionContext::new_with_state(native_state);

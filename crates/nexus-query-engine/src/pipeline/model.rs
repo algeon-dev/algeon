@@ -250,7 +250,7 @@ pub enum PipelineTaskKind {
     Window,
     /// Prepare the resident build side of a join.
     JoinBuild,
-    /// Execute the probe phase against a prepared join build side.
+    /// Execute the probe stage against a prepared join build side.
     JoinProbe,
     /// Materialize join indices or prepared join state into an output frame.
     JoinMaterialize,

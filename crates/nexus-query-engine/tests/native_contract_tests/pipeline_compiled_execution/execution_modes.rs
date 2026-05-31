@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn phase_e2_native_pipeline_modes_are_explicit_and_report_construction_stays_strict_only() {
+fn native_pipeline_modes_are_explicit_and_report_construction_stays_strict_only() {
     assert_eq!(NativePipelineExecutionMode::StrictBounded.as_str(), "strict_bounded");
     assert_eq!(NativePipelineExecutionMode::Adaptive.as_str(), "adaptive");
     assert_eq!(
@@ -22,7 +22,7 @@ fn phase_e2_native_pipeline_modes_are_explicit_and_report_construction_stays_str
 }
 
 #[test]
-fn phase_e2_strict_execution_uses_strict_admission_evidence() {
+fn strict_execution_uses_strict_admission_evidence() {
     let plan = root_join_plan();
     let admission = strict_bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
@@ -42,7 +42,7 @@ fn phase_e2_strict_execution_uses_strict_admission_evidence() {
 }
 
 #[test]
-fn phase_e3_adaptive_admission_reports_use_adaptive_rows_not_strict_contract_rows() {
+fn adaptive_admission_reports_use_adaptive_rows_not_strict_contract_rows() {
     let plan = root_join_plan();
     let admission = adaptive_bounded_pipeline_admission(&plan)
         .expect("adaptive admission should not fail")
@@ -78,7 +78,7 @@ fn phase_e3_adaptive_admission_reports_use_adaptive_rows_not_strict_contract_row
 }
 
 #[test]
-fn phase_e3_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evidence() {
+fn adaptive_admission_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evidence() {
     let plan = unsupported_cross_key_join_plan();
     let admission = adaptive_bounded_pipeline_admission(&plan)
         .expect("adaptive admission should not fail")
@@ -108,7 +108,7 @@ fn phase_e3_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evide
 }
 
 #[test]
-fn phase_e6_adaptive_memory_history_lookup_miss_is_adaptive_evidence_only() {
+fn adaptive_memory_history_lookup_miss_is_adaptive_evidence_only() {
     let plan = root_join_plan();
     let memory_history = AdaptiveMemoryHistory::new();
     let admission = adaptive_bounded_pipeline_admission_with_memory_history(&plan, Some(&memory_history))
@@ -134,7 +134,7 @@ fn phase_e6_adaptive_memory_history_lookup_miss_is_adaptive_evidence_only() {
 }
 
 #[test]
-fn phase_e6_adaptive_memory_history_hit_reports_observed_summary_without_changing_strict_admission() {
+fn adaptive_memory_history_hit_reports_observed_summary_without_changing_strict_admission() {
     let plan = root_join_plan();
     let memory_history = AdaptiveMemoryHistory::new();
     let key = AdaptiveMemoryHistoryKey::for_query_plan(&plan);
@@ -179,7 +179,7 @@ fn phase_e6_adaptive_memory_history_hit_reports_observed_summary_without_changin
 }
 
 #[test]
-fn phase_e8_adaptive_diagnostic_failure_rows_are_visible_without_strict_labels() {
+fn adaptive_diagnostic_failure_rows_are_visible_without_strict_labels() {
     let plan = root_join_plan();
     let report = AdaptivePipelineReport::diagnostic_failure(&plan, ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON);
     let row = report.row();
@@ -197,7 +197,7 @@ fn phase_e8_adaptive_diagnostic_failure_rows_are_visible_without_strict_labels()
 }
 
 #[test]
-fn phase_e8_adaptive_memory_history_key_distinguishes_memory_shape_factors() {
+fn adaptive_memory_history_key_distinguishes_memory_shape_factors() {
     let int_sum_gt = adaptive_memory_history_key_probe_plan(DataType::Int32, AggregateFunction::Sum, BinaryOp::Gt);
     let decimal_sum_gt =
         adaptive_memory_history_key_probe_plan(DataType::Decimal128(20, 2), AggregateFunction::Sum, BinaryOp::Gt);
@@ -215,7 +215,7 @@ fn phase_e8_adaptive_memory_history_key_distinguishes_memory_shape_factors() {
 }
 
 #[test]
-fn workstream5_adaptive_task_memory_history_records_compiled_task_observations() {
+fn adaptive_task_memory_history_records_compiled_task_observations() {
     let plan = root_join_plan();
     let strict_admission = strict_bounded_pipeline_admission(&plan)
         .expect("strict admission should compile")
@@ -252,7 +252,7 @@ fn workstream5_adaptive_task_memory_history_records_compiled_task_observations()
 }
 
 #[test]
-fn workstream5_adaptive_task_memory_history_recommends_lower_reservation_with_headroom() {
+fn adaptive_task_memory_history_recommends_lower_reservation_with_headroom() {
     let plan = root_join_plan();
     let strict_admission = strict_bounded_pipeline_admission(&plan)
         .expect("strict admission should compile")
