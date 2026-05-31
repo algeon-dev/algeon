@@ -69,12 +69,12 @@ fn test_drop_nonexistent_column_returns_error() {
 }
 
 #[test]
-fn test_drop_all_columns_produces_empty_df() {
+fn test_drop_all_columns_preserves_row_count() {
     let df = sample_df();
     let result = df.drop(["id", "score", "flag"]).unwrap();
 
     assert_eq!(result.num_columns(), 0);
-    assert_eq!(result.num_rows().unwrap(), 0);
+    assert_eq!(result.num_rows().unwrap(), 3);
 }
 
 #[test]
@@ -183,12 +183,12 @@ fn test_select_accepts_iterators() {
 }
 
 #[test]
-fn test_select_accepts_empty_iterator() {
+fn test_select_empty_preserves_row_count() {
     let df = sample_df();
     let result = df.select(std::iter::empty::<&str>()).unwrap();
 
     assert_eq!(result.num_columns(), 0);
-    assert_eq!(result.num_rows().unwrap(), 0);
+    assert_eq!(result.num_rows().unwrap(), 3);
 }
 
 // ===========================================================================

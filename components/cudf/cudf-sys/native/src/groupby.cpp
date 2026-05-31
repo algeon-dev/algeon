@@ -14,6 +14,26 @@
 #include <memory>
 #include <vector>
 
+namespace {
+
+cudf_status_t to_cudf_null_policy(cudf_null_policy_t input,
+                                  cudf::null_policy* out,
+                                  const char* param_name) {
+  switch (input) {
+    case CUDF_NULL_POLICY_EXCLUDE:
+      *out = cudf::null_policy::EXCLUDE;
+      return CUDF_SUCCESS;
+    case CUDF_NULL_POLICY_INCLUDE:
+      *out = cudf::null_policy::INCLUDE;
+      return CUDF_SUCCESS;
+    default:
+      set_error(std::string("invalid ") + param_name);
+      return CUDF_ERROR_INVALID_OPERATION;
+  }
+}
+
+}  // namespace
+
 extern "C" {
 
 cudf_status_t cudf_aggregation_create(cudf_aggregation_kind_t kind,
@@ -68,10 +88,13 @@ cudf_status_t cudf_aggregation_create(cudf_aggregation_kind_t kind,
 cudf_status_t cudf_aggregation_create_count(cudf_null_policy_t null_policy,
                                             cudf_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::null_policy policy;
+  auto status = to_cudf_null_policy(null_policy, &policy, "null_policy");
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
-    auto policy = (null_policy == CUDF_NULL_POLICY_INCLUDE)
-                      ? cudf::null_policy::INCLUDE
-                      : cudf::null_policy::EXCLUDE;
     auto agg =
         cudf::make_count_aggregation<cudf::groupby_aggregation>(policy);
     *out = static_cast<cudf_aggregation_handle>(agg.release());
@@ -141,11 +164,13 @@ cudf_status_t cudf_groupby_aggregate(
   if (num_aggregations > 0) {
     CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null");
   }
+  cudf::null_policy null_policy;
+  auto status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* keys_view = static_cast<cudf::table_view*>(keys);
-    auto null_policy = (keys_null_policy == CUDF_NULL_POLICY_INCLUDE)
-                           ? cudf::null_policy::INCLUDE
-                           : cudf::null_policy::EXCLUDE;
 
     cudf::groupby::groupby gb(*keys_view, null_policy);
 

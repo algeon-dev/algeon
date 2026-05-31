@@ -154,11 +154,57 @@ impl Series {
         Ok(Self::from_column(col))
     }
 
+    // -- String scalar comparison ops ----------------------------------------
+
     /// Element-wise `self == string_scalar`. Returns an unnamed `BOOL8` Series.
-    pub fn eq_scalar_string(&self, rhs: &str) -> Result<Series> {
+    pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.eq_scalar(&s)?;
         Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self != string_scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.ne_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self > string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.gt_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self < string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.lt_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self >= string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.ge_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self <= string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.le_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Deprecated: use [`eq_scalar_str`](Self::eq_scalar_str) instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "renamed to `eq_scalar_str` for consistency with the full `_str` comparison set"
+    )]
+    pub fn eq_scalar_string(&self, rhs: &str) -> Result<Series> {
+        self.eq_scalar_str(rhs)
     }
 
     // -- Extended scalar comparison ops (B2b) --------------------------------

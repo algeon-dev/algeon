@@ -8,6 +8,20 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+namespace {
+
+cudf_status_t to_unary_operator(cudf_unary_operator_t input,
+                                cudf::unary_operator* out) {
+  if (input < CUDF_UNARY_SIN || input > CUDF_UNARY_NEGATE) {
+    set_error("invalid unary operator");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  *out = static_cast<cudf::unary_operator>(input);
+  return CUDF_SUCCESS;
+}
+
+}  // namespace
+
 extern "C" {
 
 cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
@@ -15,9 +29,14 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
                                    cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::unary_operator cudf_op;
+  auto status = to_unary_operator(op, &cudf_op);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
-    auto cudf_op = static_cast<cudf::unary_operator>(op);
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
 
