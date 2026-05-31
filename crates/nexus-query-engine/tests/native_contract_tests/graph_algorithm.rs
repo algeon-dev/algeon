@@ -395,7 +395,7 @@ fn graph_construction_policy_label_round_trips() {
 }
 
 #[test]
-fn graph_algorithm_capability_validates_edge_column_types_and_nullability() {
+fn graph_algorithm_capability_validates_edge_column_types_but_allows_nullable_schema() {
     let valid = graph_plan(
         GraphAlgorithm::Louvain,
         GraphAlgorithmParams::Louvain(Default::default()),
@@ -417,7 +417,36 @@ fn graph_algorithm_capability_validates_edge_column_types_and_nullability() {
         GraphAlgorithmParams::Louvain(Default::default()),
         edge_schema(DataType::Int64, DataType::Float64, true),
     );
-    assert_graph_rejection_contains(&nullable_weight, "nullable_edge_column", "weight");
+    let nullable_weight_capability = nullable_weight
+        .capability_analysis()
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == nullable_weight.root_id())
+        .unwrap();
+    assert_eq!(nullable_weight_capability.executable, CapabilityDecision::Satisfied);
+
+    let nullable_vertices = graph_plan(
+        GraphAlgorithm::Louvain,
+        GraphAlgorithmParams::Louvain(Default::default()),
+        edge_schema_with_vertex_nullability(DataType::Int64, DataType::Float64),
+    );
+    let nullable_vertices_capability = nullable_vertices
+        .capability_analysis()
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == nullable_vertices.root_id())
+        .unwrap();
+    assert_eq!(nullable_vertices_capability.executable, CapabilityDecision::Satisfied);
+
+    let nullable_edge_id =
+        graph_plan_with_edge_id(edge_schema_with_nullable_edge_id(DataType::Int64, DataType::Float64));
+    let nullable_edge_id_capability = nullable_edge_id
+        .capability_analysis()
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == nullable_edge_id.root_id())
+        .unwrap();
+    assert_eq!(nullable_edge_id_capability.executable, CapabilityDecision::Satisfied);
 }
 
 fn assert_graph_rejection_contains(plan: &QueryPlan, reason: &str, role: &str) {
@@ -442,11 +471,41 @@ fn graph_plan(algorithm: GraphAlgorithm, params: GraphAlgorithmParams, input_sch
     builder.finish_with_host_sink(graph)
 }
 
+fn graph_plan_with_edge_id(input_schema: Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", input_schema)));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")).with_edge_id("edge_id"),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(input, spec);
+    builder.finish_with_host_sink(graph)
+}
+
 fn edge_schema(vertex_type: DataType, weight_type: DataType, weight_nullable: bool) -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("src", vertex_type.clone(), false),
         Field::new("dst", vertex_type, false),
         Field::new("weight", weight_type, weight_nullable),
+    ]))
+}
+
+fn edge_schema_with_vertex_nullability(vertex_type: DataType, weight_type: DataType) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("src", vertex_type.clone(), true),
+        Field::new("dst", vertex_type, true),
+        Field::new("weight", weight_type, false),
+    ]))
+}
+
+fn edge_schema_with_nullable_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("src", vertex_type.clone(), false),
+        Field::new("dst", vertex_type.clone(), false),
+        Field::new("weight", weight_type, false),
+        Field::new("edge_id", vertex_type, true),
     ]))
 }
 

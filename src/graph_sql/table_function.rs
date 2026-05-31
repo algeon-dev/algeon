@@ -220,20 +220,11 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
             spec.table_name, spec.dst_col
         ))
     })?;
-    if src.is_nullable() {
-        return Err(plan_error(format!("cuGraph source column '{}' must be non-null", spec.src_col)));
-    }
-    if dst.is_nullable() {
-        return Err(plan_error(format!("cuGraph destination column '{}' must be non-null", spec.dst_col)));
-    }
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
     if let Some(edge_id_col) = &spec.edge_id_col {
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
             plan_error(format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name))
         })?;
-        if edge_id.is_nullable() {
-            return Err(plan_error(format!("cuGraph edge-id column '{edge_id_col}' must be non-null")));
-        }
         if domain.is_string_logical() {
             return Err(plan_error("cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col"));
         }

@@ -98,6 +98,52 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
+    let addr = free_local_addr();
+    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = unique_temp_dir("datafusion-nexus-server-cugraph-nullable-flight");
+    let parquet_path = dir.join("edges.parquet");
+    write_nullable_edge_parquet(&parquet_path);
+
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE nullable_edges STORED AS PARQUET LOCATION '{}'",
+            parquet_path.to_string_lossy()
+        ),
+    )
+    .await;
+
+    let batches = execute_batches(
+        &mut client,
+        r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
+           FROM cugraph_validate_call(
+             'cugraph_bfs',
+             'nullable_edges',
+             '{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"depth_limit":2}}'
+           )"#,
+    )
+    .await;
+    let batch = single_batch(&batches);
+
+    server.abort();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(bool_value(batch, 2, 0));
+    assert_eq!(string_value(batch, 3, 0), "Int64");
+    assert_eq!(string_value(batch, 4, 0), "Int64");
+    assert_eq!(string_value(batch, 5, 0), "Float64");
+    assert!(bool_value(batch, 6, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
     let addr = free_local_addr();
     let env = BTreeMap::from([
@@ -138,6 +184,28 @@ fn write_edge_parquet(path: &Path) {
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
         Field::new("weight", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![
+            std::sync::Arc::new(Int64Array::from(vec![0_i64, 1, 0])) as ArrayRef,
+            std::sync::Arc::new(Int64Array::from(vec![1_i64, 2, 3])) as ArrayRef,
+            std::sync::Arc::new(Float64Array::from(vec![1.0_f64, 1.0, 1.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_nullable_edge_parquet(path: &Path) {
+    let schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, true),
+        Field::new("dst", DataType::Int64, true),
+        Field::new("weight", DataType::Float64, true),
     ]));
     let batch = RecordBatch::try_new(
         std::sync::Arc::clone(&schema),

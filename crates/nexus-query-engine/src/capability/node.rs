@@ -494,17 +494,6 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         };
-        if field.is_nullable() {
-            return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
-                [
-                    ("node_id", node_id.to_string()),
-                    ("reason", "nullable_edge_column".to_string()),
-                    ("edge_column_role", role.to_string()),
-                    ("column", column.to_string()),
-                ],
-            );
-        }
         if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
             return CapabilityDecision::rejected(
                 "unsupported_graph_algorithm_node_capability",
@@ -531,17 +520,6 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         };
-        if field.is_nullable() {
-            return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
-                [
-                    ("node_id", node_id.to_string()),
-                    ("reason", "nullable_edge_column".to_string()),
-                    ("edge_column_role", "weight".to_string()),
-                    ("column", weight_col.to_string()),
-                ],
-            );
-        }
         if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
             return CapabilityDecision::rejected(
                 "unsupported_graph_algorithm_node_capability",
@@ -568,17 +546,6 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         };
-        if field.is_nullable() {
-            return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
-                [
-                    ("node_id", node_id.to_string()),
-                    ("reason", "nullable_edge_column".to_string()),
-                    ("edge_column_role", "edge_id".to_string()),
-                    ("column", edge_id_col.to_string()),
-                ],
-            );
-        }
         let source_type = input
             .output_schema()
             .field_with_name(&graph.spec.edge_columns.source)
