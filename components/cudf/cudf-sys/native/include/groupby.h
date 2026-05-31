@@ -81,10 +81,6 @@ cudf_status_t cudf_groupby_aggregate(
     cudf_column_handle** out_values,
     int32_t* out_total_columns);
 
-/// Free the column handle array allocated by cudf_groupby_aggregate.
-/// Does NOT destroy the individual columns — caller must do that first.
-void cudf_free_column_array(cudf_column_handle* array);
-
 #ifdef __cplusplus
 }
 #endif

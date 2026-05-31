@@ -64,12 +64,17 @@ cudf_status_t cudf_table_view_from_column_views(
 /// `out_columns`, which is a heap-allocated array of `out_count` column
 /// handles. Each column must be individually destroyed with
 /// `cudf_column_destroy`. The array itself must be freed with
-/// `cudf_free_column_array`.
+/// `cudf_free_column_array` declared below.
 ///
 /// On failure, `table` is NOT consumed (caller must still destroy it).
 cudf_status_t cudf_table_release_columns(cudf_table_handle table,
                                          cudf_column_handle** out_columns,
                                          int32_t* out_count);
+
+/// Free a heap-allocated array of column handles returned by APIs such as
+/// cudf_table_release_columns and cudf_groupby_aggregate.
+/// Does NOT destroy the individual columns — caller must do that first.
+void cudf_free_column_array(cudf_column_handle* array);
 
 #ifdef __cplusplus
 }

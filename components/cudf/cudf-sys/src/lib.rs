@@ -27,6 +27,11 @@ pub type cudf_status_t = i32;
 
 // ---------------------------------------------------------------------------
 // Type IDs (mirrors cudf::type_id)
+//
+// FFI enums use `#[repr(i32)]` to make the Rust-side ABI explicitly 32-bit.
+// The C/C++ shim must preserve that contract and validates enum sizes and
+// discriminants in `native/src/abi_checks.cpp`. Update those checks whenever
+// changing an FFI enum.
 // ---------------------------------------------------------------------------
 
 #[repr(i32)]

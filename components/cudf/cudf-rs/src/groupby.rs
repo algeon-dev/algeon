@@ -235,3 +235,283 @@ pub fn groupby_aggregate(
 
     Ok(GroupByResult { keys: keys_table, results })
 }
+
+// ===========================================================================
+// Façade types: cuDF-Python-like groupby API
+// ===========================================================================
+
+/// High-level aggregation type for the façade groupby API.
+///
+/// This mirrors cuDF-Python's aggregation names. Internally each variant maps
+/// to the corresponding [`Aggregation`] for the low-level
+/// [`groupby_aggregate`] call.
+#[derive(Debug, Clone)]
+pub enum Agg {
+    Sum,
+    Min,
+    Max,
+    Mean,
+    Count { include_nulls: bool },
+}
+
+impl Agg {
+    /// Convert to the low-level [`Aggregation`] type.
+    fn to_aggregation(&self) -> Aggregation {
+        match self {
+            Agg::Sum => Aggregation::Sum,
+            Agg::Min => Aggregation::Min,
+            Agg::Max => Aggregation::Max,
+            Agg::Mean => Aggregation::Mean,
+            Agg::Count { include_nulls } => Aggregation::Count { include_nulls: *include_nulls },
+        }
+    }
+
+    /// Return the default output column suffix for this aggregation.
+    fn suffix(&self) -> &'static str {
+        match self {
+            Agg::Sum => "sum",
+            Agg::Min => "min",
+            Agg::Max => "max",
+            Agg::Mean => "mean",
+            Agg::Count { .. } => "count",
+        }
+    }
+}
+
+/// A single aggregation specification: which column, which aggregation,
+/// and an optional output alias.
+///
+/// If no alias is set the output column is named `"{column}_{agg}"`,
+/// e.g. `"price_sum"`.
+#[derive(Debug, Clone)]
+pub struct AggSpec {
+    column: String,
+    agg: Agg,
+    alias: Option<String>,
+}
+
+impl AggSpec {
+    /// Create a new aggregation specification for `column` with `agg`.
+    pub fn new(column: impl Into<String>, agg: Agg) -> Self {
+        Self { column: column.into(), agg, alias: None }
+    }
+
+    /// Set an output alias for this aggregation result column.
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
+    }
+
+    /// The output column name: alias if set, otherwise `"{column}_{suffix}"`.
+    fn output_name(&self) -> String {
+        match &self.alias {
+            Some(alias) => alias.clone(),
+            None => format!("{}_{}", self.column, self.agg.suffix()),
+        }
+    }
+}
+
+/// Options for the façade groupby operation.
+#[derive(Debug, Clone)]
+pub struct GroupByOptions {
+    null_policy: NullPolicy,
+}
+
+impl Default for GroupByOptions {
+    fn default() -> Self {
+        Self { null_policy: NullPolicy::Exclude }
+    }
+}
+
+impl GroupByOptions {
+    /// Set whether null keys are included in the groupby output.
+    pub fn include_null_keys(mut self, include: bool) -> Self {
+        self.null_policy = if include { NullPolicy::Include } else { NullPolicy::Exclude };
+        self
+    }
+}
+
+/// A pending groupby operation on a [`DataFrame`][crate::dataframe::DataFrame].
+///
+/// Created via [`DataFrame::facade_groupby`][crate::dataframe::DataFrame::facade_groupby].
+/// Call [`.agg()`][GroupBy::agg] with [`AggSpec`] items, or use the shortcut
+/// methods [`.sum()`][GroupBy::sum], [`.mean()`][GroupBy::mean],
+/// [`.count()`][GroupBy::count] to execute.
+pub struct GroupBy<'a> {
+    df: &'a crate::dataframe::DataFrame,
+    keys: Vec<String>,
+    options: GroupByOptions,
+}
+
+impl<'a> GroupBy<'a> {
+    /// Create a new `GroupBy` for the given DataFrame and key column names.
+    pub(crate) fn new(df: &'a crate::dataframe::DataFrame, keys: Vec<String>) -> Self {
+        Self { df, keys, options: GroupByOptions::default() }
+    }
+
+    /// Override the default groupby options.
+    pub fn options(mut self, options: GroupByOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Execute the groupby with the given aggregation specifications.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `specs` is empty
+    /// - Any key or value column name is not in the DataFrame's schema
+    pub fn agg(self, specs: &[AggSpec]) -> Result<crate::dataframe::DataFrame> {
+        use indexmap::IndexMap;
+
+        use crate::{
+            dataframe::DataFrame,
+            internal::resolve::{build_keys_table_from_columns, resolve_column_names},
+        };
+
+        if specs.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")
+                .with_operation("groupby::GroupBy::agg"));
+        }
+
+        let columns = self.df.columns_map();
+
+        // Resolve key column names to indices.
+        let key_refs: Vec<&str> = self.keys.iter().map(|s| s.as_str()).collect();
+        let key_indices = resolve_column_names(columns, &key_refs, "groupby::GroupBy::agg")?;
+
+        // Validate all value column names exist.
+        for spec in specs {
+            if !columns.contains_key(spec.column.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column '{}' not found in schema", spec.column),
+                )
+                .with_operation("groupby::GroupBy::agg")
+                .with_context("column_name", spec.column.clone()));
+            }
+        }
+
+        // Build keys table.
+        let keys_table = build_keys_table_from_columns(columns, &key_indices)?;
+        let keys_view = keys_table.view()?;
+
+        // Group specs by value column (preserving request order).
+        let mut owned_value_cols: Vec<Column> = Vec::new();
+        let mut request_meta: Vec<(usize, Vec<Aggregation>)> = Vec::new();
+        let mut result_names: Vec<String> = Vec::new();
+
+        let mut col_name_to_owned_idx: IndexMap<String, usize> = IndexMap::new();
+        let mut owned_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
+        let mut output_order: Vec<(usize, usize)> = Vec::new();
+
+        for spec in specs {
+            let owned_idx = if let Some(&idx) = col_name_to_owned_idx.get(spec.column.as_str()) {
+                idx
+            } else {
+                let arc_col = columns.get(spec.column.as_str()).unwrap();
+                let owned = arc_col.copy()?;
+                let idx = owned_value_cols.len();
+                owned_value_cols.push(owned);
+                col_name_to_owned_idx.insert(spec.column.clone(), idx);
+                idx
+            };
+
+            let group_idx = if let Some(&idx) = owned_idx_to_group_idx.get(&owned_idx) {
+                idx
+            } else {
+                let idx = request_meta.len();
+                request_meta.push((owned_idx, Vec::new()));
+                owned_idx_to_group_idx.insert(owned_idx, idx);
+                idx
+            };
+
+            let agg_idx_within_group = request_meta[group_idx].1.len();
+            request_meta[group_idx].1.push(spec.agg.to_aggregation());
+            output_order.push((group_idx, agg_idx_within_group));
+
+            result_names.push(spec.output_name());
+        }
+
+        // Build AggregationRequests.
+        let value_views: Vec<_> = owned_value_cols.iter().map(|c| c.view()).collect::<Result<Vec<_>>>()?;
+
+        let agg_slices: Vec<Vec<Aggregation>> = request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
+
+        let requests: Vec<AggregationRequest<'_>> = request_meta
+            .iter()
+            .enumerate()
+            .map(|(i, (owned_idx, _))| AggregationRequest {
+                values: &value_views[*owned_idx],
+                aggregations: &agg_slices[i],
+            })
+            .collect();
+
+        let gb_result = groupby_aggregate(&keys_view, &requests, self.options.null_policy)?;
+
+        // Reorder result columns to match original spec order.
+        let mut grouped_results: Vec<Vec<Option<Column>>> =
+            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
+
+        let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
+        for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
+            let group_count = grouped_results.len();
+            let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, "groupby result group index out of bounds")
+                    .with_operation("groupby::GroupBy::agg")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("group_index", group_idx.to_string())
+                    .with_context("group_count", group_count.to_string())
+            })?;
+
+            let col_slot = group.get_mut(*agg_idx).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, "groupby result index out of bounds")
+                    .with_operation("groupby::GroupBy::agg")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("agg_index", agg_idx.to_string())
+            })?;
+
+            let col = col_slot.take().ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, "groupby result column consumed more than once")
+                    .with_operation("groupby::GroupBy::agg")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("agg_index", agg_idx.to_string())
+            })?;
+
+            all_result_cols.push(col);
+        }
+
+        // Build the result DataFrame.
+        let result_keys_cols = gb_result.keys.into_columns()?;
+
+        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
+        final_cols.extend(result_keys_cols);
+        final_cols.extend(all_result_cols);
+
+        let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + result_names.len());
+        schema_names.extend(self.keys);
+        schema_names.extend(result_names);
+
+        DataFrame::new(schema_names, final_cols)
+    }
+
+    /// Shortcut: compute the sum of each named column per group.
+    pub fn sum(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
+        let specs: Vec<AggSpec> = columns.iter().map(|&col| AggSpec::new(col, Agg::Sum)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the mean of each named column per group.
+    pub fn mean(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
+        let specs: Vec<AggSpec> = columns.iter().map(|&col| AggSpec::new(col, Agg::Mean)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: count non-null values of each named column per group.
+    pub fn count(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
+        let specs: Vec<AggSpec> =
+            columns.iter().map(|&col| AggSpec::new(col, Agg::Count { include_nulls: false })).collect();
+        self.agg(&specs)
+    }
+}
