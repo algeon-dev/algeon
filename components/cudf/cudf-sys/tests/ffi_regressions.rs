@@ -338,6 +338,7 @@ fn test_groupby_negative_num_requests_rejected() {
             ptr::null(),
             -1,
             0,
+            0,
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
@@ -350,6 +351,55 @@ fn test_groupby_negative_num_requests_rejected() {
     assert_eq!(out_total, 0);
 
     unsafe {
+        cudf_sys::cudf_table_view_destroy(keys_view);
+        cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
+#[test]
+fn test_groupby_aggregation_count_mismatch_rejected() {
+    let key_col = make_i32_column(&[1, 1, 2]);
+    let val_col = make_i32_column(&[10, 20, 30]);
+    let keys_tbl = make_table_from_one_column(key_col);
+    let keys_view = make_table_view(keys_tbl);
+    let val_view = make_column_view(val_col);
+
+    let values = [val_view];
+    let agg_counts = [1i32];
+    let mut agg: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(0, &mut agg) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!agg.is_null());
+    let aggregations = [agg];
+
+    let mut out_keys: *mut c_void = ptr::null_mut();
+    let mut out_vals: *mut *mut c_void = ptr::null_mut();
+    let mut out_total: i32 = -1;
+
+    let status = unsafe {
+        cudf_sys::cudf_groupby_aggregate(
+            keys_view,
+            values.as_ptr(),
+            aggregations.as_ptr(),
+            agg_counts.as_ptr(),
+            1,
+            0,
+            0,
+            &mut out_keys,
+            &mut out_vals,
+            &mut out_total,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_keys.is_null());
+    assert!(out_vals.is_null());
+    assert_eq!(out_total, 0);
+
+    unsafe {
+        cudf_sys::cudf_aggregation_destroy(agg);
+        cudf_sys::cudf_column_view_destroy(val_view);
+        cudf_sys::cudf_column_destroy(val_col);
         cudf_sys::cudf_table_view_destroy(keys_view);
         cudf_sys::cudf_table_destroy(keys_tbl);
     }
@@ -474,6 +524,41 @@ fn test_table_release_columns_null_out_count_rejected() {
 
     // Table was not consumed on error — must still be destroyed.
     unsafe { cudf_sys::cudf_table_destroy(tbl) };
+}
+
+#[test]
+fn test_table_release_columns_failure_does_not_consume_table() {
+    let col = make_i32_column(&[7, 8, 9]);
+    let tbl = make_table_from_one_column(col);
+
+    let mut out_count: i32 = -1;
+    let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, ptr::null_mut(), &mut out_count) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert_eq!(out_count, -1);
+
+    // Regression check: on failure, the table must remain valid and usable.
+    let tv = make_table_view(tbl);
+    let mut num_cols: i32 = -1;
+    let st = unsafe { cudf_sys::cudf_table_view_num_columns(tv, &mut num_cols) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(num_cols, 1);
+
+    let mut released_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut released_count: i32 = -1;
+    let st = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut released_columns, &mut released_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(released_count, 1);
+    assert!(!released_columns.is_null());
+
+    let released_col = unsafe { *released_columns };
+    let data = read_i32_column_data(released_col, 3);
+    assert_eq!(data, vec![7, 8, 9]);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_column_destroy(released_col);
+        cudf_sys::cudf_free_column_array(released_columns);
+    }
 }
 
 // ===========================================================================

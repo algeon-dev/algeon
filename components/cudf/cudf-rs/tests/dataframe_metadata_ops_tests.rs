@@ -1,4 +1,4 @@
-//! Integration tests for Task A3 — zero-copy metadata ops (cuDF-style signatures).
+//! Integration tests for zero-copy metadata ops (cuDF-style signatures).
 //!
 //! Tests: drop, rename_columns, with_column_series, assign, and Arc sharing verification.
 //!

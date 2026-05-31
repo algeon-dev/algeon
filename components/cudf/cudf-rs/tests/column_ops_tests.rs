@@ -8,7 +8,7 @@ use cudf::{
 };
 
 // ---------------------------------------------------------------------------
-// Task 14: Arithmetic methods on Column
+// Arithmetic methods on Column
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -144,7 +144,7 @@ fn test_column_floor_div_f64() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: Comparison methods on Column
+// Comparison methods on Column
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -246,7 +246,7 @@ fn test_column_comparison_nullable() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 16: Scalar arithmetic and comparison on Column
+// Scalar arithmetic and comparison on Column
 // ---------------------------------------------------------------------------
 
 #[test]

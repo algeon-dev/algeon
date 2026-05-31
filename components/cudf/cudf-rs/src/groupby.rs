@@ -188,6 +188,7 @@ pub fn groupby_aggregate(
             all_agg_handles.as_ptr(),
             agg_counts.as_ptr(),
             num_requests,
+            i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
             null_policy as i32,
             &mut out_keys,
             &mut out_values,
