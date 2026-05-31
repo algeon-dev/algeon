@@ -57,3 +57,28 @@ fn test_replace_nulls_empty_column() {
     let rv = result.view().unwrap();
     assert_eq!(rv.len().unwrap(), 0);
 }
+
+// -- Column-to-column replace_nulls tests ------------------------------------
+
+#[test]
+fn test_replace_nulls_column_basic() {
+    let left = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
+    let right = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let lv = left.view().unwrap();
+    let rv = right.view().unwrap();
+    let result = replace::replace_nulls_column(&lv, &rv).unwrap();
+    let out = result.view().unwrap();
+    assert_eq!(out.to_vec::<i32>().unwrap(), vec![1, 20, 3]);
+    assert_eq!(out.null_count().unwrap(), 0);
+}
+
+#[test]
+fn test_replace_nulls_column_both_null() {
+    let left = Column::from_slice_nullable(&[0i32], &[false]).unwrap();
+    let right = Column::from_slice_nullable(&[0i32], &[false]).unwrap();
+    let lv = left.view().unwrap();
+    let rv = right.view().unwrap();
+    let result = replace::replace_nulls_column(&lv, &rv).unwrap();
+    let out = result.view().unwrap();
+    assert_eq!(out.null_count().unwrap(), 1);
+}

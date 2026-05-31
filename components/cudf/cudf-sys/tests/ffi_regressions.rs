@@ -20,6 +20,14 @@ fn make_i32_column(data: &[i32]) -> *mut c_void {
     out
 }
 
+fn make_empty_i32_column() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_create_empty(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
 fn make_column_view(col: *mut c_void) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view(col, &mut out) };
@@ -55,6 +63,18 @@ fn make_table_view(tbl: *mut c_void) -> *mut c_void {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
+}
+
+fn last_error_message() -> String {
+    let ptr = unsafe { cudf_sys::cudf_last_error_message() };
+    if ptr.is_null() {
+        return String::new();
+    }
+    unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+}
+
+unsafe extern "C" {
+    fn cudf_test_fail_next_table_release_columns_handle_array_alloc();
 }
 
 #[test]
@@ -678,6 +698,42 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
 }
 
 // ===========================================================================
+// cudf_table_create tests
+// ===========================================================================
+
+#[test]
+fn test_table_create_failure_does_not_partially_consume_columns() {
+    let c1 = make_i32_column(&[1, 2, 3]);
+    let c2 = make_i32_column(&[4, 5, 6]);
+    let mut columns = [c1, ptr::null_mut(), c2];
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+    assert_eq!(columns[0], c1);
+    assert!(columns[1].is_null());
+    assert_eq!(columns[2], c2);
+    assert!(last_error_message().contains("column handle is null"));
+
+    let data1 = read_i32_column_data(columns[0], 3);
+    assert_eq!(data1, vec![1, 2, 3]);
+
+    let data2 = read_i32_column_data(columns[2], 3);
+    assert_eq!(data2, vec![4, 5, 6]);
+
+    let mut valid_columns = [columns[0], columns[2]];
+    let mut tbl: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(valid_columns.as_mut_ptr(), valid_columns.len() as i32, &mut tbl) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!tbl.is_null());
+    assert!(valid_columns.iter().all(|col| col.is_null()));
+
+    unsafe { cudf_sys::cudf_table_destroy(tbl) };
+}
+
+// ===========================================================================
 // cudf_table_release_columns tests
 // ===========================================================================
 
@@ -819,6 +875,53 @@ fn test_table_release_columns_failure_does_not_consume_table() {
     unsafe {
         cudf_sys::cudf_table_view_destroy(tv);
         cudf_sys::cudf_column_destroy(released_col);
+        cudf_sys::cudf_free_column_array(released_columns);
+    }
+}
+
+#[test]
+fn test_table_release_columns_allocation_failure_does_not_consume_table() {
+    const NUM_COLUMNS: usize = 2;
+
+    let mut columns: Vec<*mut c_void> = (0..NUM_COLUMNS).map(|_| make_empty_i32_column()).collect();
+    let mut tbl: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), NUM_COLUMNS as i32, &mut tbl) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!tbl.is_null());
+    assert!(columns.iter().all(|col| col.is_null()));
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = -1;
+    unsafe { cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out_columns.is_null());
+    assert_eq!(out_count, 0);
+    assert!(last_error_message().contains("failed to allocate column handle array"));
+
+    // Regression check: a failure after entering the function body must not
+    // consume the table; the caller should still own and be able to use it.
+    let tv = make_table_view(tbl);
+    let mut num_cols: i32 = -1;
+    let st = unsafe { cudf_sys::cudf_table_view_num_columns(tv, &mut num_cols) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(num_cols, NUM_COLUMNS as i32);
+
+    let mut released_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut released_count: i32 = -1;
+    let st = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut released_columns, &mut released_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(released_count, NUM_COLUMNS as i32);
+    assert!(!released_columns.is_null());
+
+    let released = unsafe { std::slice::from_raw_parts(released_columns, released_count as usize) };
+    for &col in released {
+        unsafe { cudf_sys::cudf_column_destroy(col) };
+    }
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
         cudf_sys::cudf_free_column_array(released_columns);
     }
 }

@@ -892,7 +892,7 @@ impl DataFrame {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{DataFrame, Series, sorting::SortOptions};
+    /// use cudf::{DataFrame, Series, SortOptions};
     ///
     /// let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
     /// let df = DataFrame::from_columns([("id", ids)]).unwrap();
@@ -1164,7 +1164,7 @@ impl DataFrame {
     /// Merge (join) two DataFrames with cuDF-style options.
     ///
     /// This is the unified façade entry point for joins. Configure the merge
-    /// via [`MergeOptions`](crate::join::MergeOptions).
+    /// via [`MergeOptions`](crate::MergeOptions).
     ///
     /// # Key modes
     ///
@@ -1331,11 +1331,34 @@ impl DataFrame {
 
     // -- Groupby aggregation -------------------------------------------------
 
-    /// Start building a groupby aggregation.
+    /// Start a groupby operation.
     ///
-    /// `keys` specifies the column names to group by. Returns a
-    /// [`GroupByBuilder`] on which you chain `.agg()` calls, then
-    /// `.execute()` to run the aggregation.
+    /// Returns a [`GroupBy`] on which you call [`.agg()`][groupby::GroupBy::agg]
+    /// with [`AggSpec`][groupby::AggSpec] items, or use shortcut methods like
+    /// `.sum()`, `.mean()`, `.count()`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cudf::{Agg, AggSpec, DataFrame, column::Column};
+    /// # let df = DataFrame::new(
+    /// #     vec!["key".into(), "val".into()],
+    /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
+    /// #          Column::from_slice(&[10i64,20]).unwrap()],
+    /// # ).unwrap();
+    /// let result =
+    ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
+    /// ```
+    pub fn groupby<'a>(&'a self, keys: &[&str]) -> groupby::GroupBy<'a> {
+        groupby::GroupBy::new(self, keys.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Low-level groupby using [`GroupByBuilder`] with [`Aggregation`] variants.
+    ///
+    /// Prefer [`groupby`][DataFrame::groupby] for new code. This method is
+    /// retained for callers that need direct access to the low-level
+    /// [`Aggregation`] enum (e.g. `Median`, `Std`, `Variance`, `NUnique`).
+    /// It will be removed once the façade [`Agg`] enum reaches parity.
     ///
     /// # Example
     ///
@@ -1348,37 +1371,14 @@ impl DataFrame {
     /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
     /// #          Column::from_slice(&[10i64,20]).unwrap()],
     /// # ).unwrap();
-    /// let result =
-    ///     df.groupby(&["key"]).agg("val", Aggregation::Sum).execute().unwrap();
-    /// ```
-    pub fn groupby<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
-        GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
-    }
-
-    /// Start a façade-style groupby operation.
-    ///
-    /// Returns a [`GroupBy`] on which you call [`.agg()`][groupby::GroupBy::agg]
-    /// with [`AggSpec`][groupby::AggSpec] items, or use shortcut methods like
-    /// `.sum()`, `.mean()`, `.count()`.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cudf::column::Column;
-    /// # use cudf::dataframe::DataFrame;
-    /// # use cudf::groupby::{Agg, AggSpec};
-    /// # let df = DataFrame::new(
-    /// #     vec!["key".into(), "val".into()],
-    /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
-    /// #          Column::from_slice(&[10i64,20]).unwrap()],
-    /// # ).unwrap();
     /// let result = df
-    ///     .facade_groupby(&["key"])
-    ///     .agg(&[AggSpec::new("val", Agg::Sum)])
+    ///     .groupby_builder(&["key"])
+    ///     .agg("val", Aggregation::Sum)
+    ///     .execute()
     ///     .unwrap();
     /// ```
-    pub fn facade_groupby<'a>(&'a self, keys: &[&str]) -> groupby::GroupBy<'a> {
-        groupby::GroupBy::new(self, keys.iter().map(|s| s.to_string()).collect())
+    pub fn groupby_builder<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
+        GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
     }
 
     // -- Concat, rename, select ----------------------------------------------
@@ -1695,6 +1695,11 @@ impl DataFrame {
 
     /// Return a new DataFrame with the given column added or replaced.
     ///
+    /// Accepts anything convertible to [`Series`] — both `Column` and
+    /// `Series` work transparently. When a `Series` is passed, its
+    /// `Arc<Column>` is shared directly (zero GPU copy for the inserted
+    /// column as well as all unchanged columns).
+    ///
     /// If `name` already exists in the schema, the column at that position
     /// is replaced. If `name` is new, the column is appended.
     ///
@@ -1704,11 +1709,9 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if the row counts do not match.
-    pub fn with_column(&self, name: &str, col: Column) -> Result<Self> {
-        let col_rows = {
-            let col_view = col.view()?;
-            col_view.len()?
-        };
+    pub fn with_column(&self, name: &str, col: impl Into<Series>) -> Result<Self> {
+        let series: Series = col.into();
+        let col_rows = series.len()?;
         let self_rows = self.num_rows()?;
 
         if self.num_columns() > 0 && col_rows != self_rows {
@@ -1723,7 +1726,7 @@ impl DataFrame {
         }
 
         let mut new_columns = self.columns.clone();
-        new_columns.insert(name.to_string(), Arc::new(col));
+        new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
         let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
 
@@ -1736,11 +1739,12 @@ impl DataFrame {
     /// Unlike [`with_column`](Self::with_column), this variant moves
     /// the existing columns instead of cloning the `IndexMap`, avoiding
     /// the refcount bump for unchanged columns.
-    pub fn with_column_owned(mut self, name: &str, col: Column) -> Result<Self> {
-        let col_rows = {
-            let col_view = col.view()?;
-            col_view.len()?
-        };
+    ///
+    /// Accepts anything convertible to [`Series`] — both `Column` and
+    /// `Series` work transparently.
+    pub fn with_column_owned(mut self, name: &str, col: impl Into<Series>) -> Result<Self> {
+        let series: Series = col.into();
+        let col_rows = series.len()?;
         let self_rows = self.num_rows()?;
 
         if self.num_columns() > 0 && col_rows != self_rows {
@@ -1755,47 +1759,9 @@ impl DataFrame {
         }
 
         let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
-        self.columns.insert(name.to_string(), Arc::new(col));
+        self.columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
         Ok(Self { columns: self.columns, row_count })
-    }
-
-    /// Return a new DataFrame with the given [`Series`] added or replaced.
-    ///
-    /// Like [`with_column`](Self::with_column), but accepts a `Series`
-    /// and shares the `Arc<Column>` directly (zero GPU copy for the
-    /// inserted column as well as all unchanged columns).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the row counts do not match.
-    pub fn with_column_series(&self, name: &str, series: Series) -> Result<Self> {
-        let series_rows = series.len()?;
-        let self_rows = self.num_rows()?;
-
-        if self.num_columns() > 0 && series_rows != self_rows {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("series has {} rows but DataFrame has {} rows", series_rows, self_rows),
-            )
-            .with_operation("dataframe::with_column_series")
-            .with_context("column_name", name.to_string())
-            .with_context("series_rows", series_rows.to_string())
-            .with_context("dataframe_rows", self_rows.to_string()));
-        }
-
-        let mut new_columns = self.columns.clone();
-        new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
-
-        let row_count = if self.num_columns() > 0 { self.row_count } else { series_rows };
-        Ok(Self { columns: new_columns, row_count })
-    }
-
-    /// Return a new DataFrame with the given [`Series`] added or replaced.
-    ///
-    /// Alias for [`with_column_series`](Self::with_column_series) kept for compatibility.
-    pub fn with_series(&self, name: &str, series: Series) -> Result<Self> {
-        self.with_column_series(name, series)
     }
 
     /// Return a new DataFrame with multiple columns added or replaced from
@@ -1890,10 +1856,12 @@ impl DataFrame {
     }
 }
 
-/// Builder for groupby aggregation on a [`DataFrame`].
+/// Low-level builder for groupby aggregation on a [`DataFrame`].
 ///
-/// Created via [`DataFrame::groupby`]. Chain `.agg()` calls to add
+/// Created via [`DataFrame::groupby_builder`]. Chain `.agg()` calls to add
 /// aggregation requests, then call `.execute()` to run.
+///
+/// Prefer [`DataFrame::groupby`] → [`GroupBy`] for new code.
 pub struct GroupByBuilder<'a> {
     df: &'a DataFrame,
     key_names: Vec<String>,
@@ -2208,7 +2176,7 @@ fn merge_join_result(
 }
 
 /// Coalesce two columns by preferring non-null values from `left`; if null,
-/// take from `right`.
+/// take from `right`. Runs entirely on GPU via `replace_nulls_column`.
 fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> Result<Column> {
     let lcv = left.view()?;
     let rcv = right.view()?;
@@ -2222,69 +2190,7 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
             .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
     }
 
-    coalesce_columns_host_fallback(&lcv, &rcv, ldt.id(), operation)
-}
-
-fn coalesce_columns_host_fallback(
-    left: &ColumnView<'_>,
-    right: &ColumnView<'_>,
-    type_id: crate::types::TypeId,
-    operation: &'static str,
-) -> Result<Column> {
-    let len = left.len()?;
-    if len != right.len()? {
-        return Err(Error::new(ErrorKind::InvalidOperation, "cannot coalesce columns with different lengths")
-            .with_operation(operation)
-            .with_context("left_len", left.len()?.to_string())
-            .with_context("right_len", right.len()?.to_string()));
-    }
-
-    let left_valid = left.validity()?;
-    let right_valid = right.validity()?;
-
-    macro_rules! coalesce_typed {
-        ($t:ty) => {{
-            let lv = left.to_vec::<$t>()?;
-            let rv = right.to_vec::<$t>()?;
-            let mut out = Vec::with_capacity(lv.len());
-            let mut validity = Vec::with_capacity(lv.len());
-            for i in 0..lv.len() {
-                let l_ok = left_valid.as_ref().map(|m| m[i]).unwrap_or(true);
-                if l_ok {
-                    out.push(lv[i]);
-                    validity.push(true);
-                } else {
-                    let r_ok = right_valid.as_ref().map(|m| m[i]).unwrap_or(true);
-                    if r_ok {
-                        out.push(rv[i]);
-                        validity.push(true);
-                    } else {
-                        out.push(lv[i]);
-                        validity.push(false);
-                    }
-                }
-            }
-            Column::from_slice_nullable(&out, &validity)
-        }};
-    }
-
-    use crate::types::TypeId;
-    match type_id {
-        TypeId::Int8 => coalesce_typed!(i8),
-        TypeId::Int16 => coalesce_typed!(i16),
-        TypeId::Int32 => coalesce_typed!(i32),
-        TypeId::Int64 => coalesce_typed!(i64),
-        TypeId::UInt8 => coalesce_typed!(u8),
-        TypeId::UInt16 => coalesce_typed!(u16),
-        TypeId::UInt32 => coalesce_typed!(u32),
-        TypeId::UInt64 => coalesce_typed!(u64),
-        TypeId::Float32 => coalesce_typed!(f32),
-        TypeId::Float64 => coalesce_typed!(f64),
-        TypeId::Bool8 => coalesce_typed!(bool),
-        _ => Err(Error::new(ErrorKind::InvalidOperation, "coalesce unsupported for non-fixed-width type")
-            .with_operation(operation)
-            .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
-    }
+    replace::replace_nulls_column(&lcv, &rcv)
 }
 
 fn unique_right_payload_name(existing: &[String], base: &str) -> String {

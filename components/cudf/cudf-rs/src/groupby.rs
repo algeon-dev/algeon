@@ -331,9 +331,9 @@ impl GroupByOptions {
     }
 }
 
-/// A pending groupby operation on a [`DataFrame`][crate::dataframe::DataFrame].
+/// A pending groupby operation on a [`DataFrame`][crate::DataFrame].
 ///
-/// Created via [`DataFrame::facade_groupby`][crate::dataframe::DataFrame::facade_groupby].
+/// Created via [`DataFrame::groupby`][crate::DataFrame::groupby].
 /// Call [`.agg()`][GroupBy::agg] with [`AggSpec`] items, or use the shortcut
 /// methods [`.sum()`][GroupBy::sum], [`.mean()`][GroupBy::mean],
 /// [`.count()`][GroupBy::count] to execute.

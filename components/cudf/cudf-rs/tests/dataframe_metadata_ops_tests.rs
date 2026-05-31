@@ -1,6 +1,6 @@
 //! Integration tests for zero-copy metadata ops (cuDF-style signatures).
 //!
-//! Tests: drop, rename_columns, with_column_series, assign, and Arc sharing verification.
+//! Tests: drop, rename_columns, with_column, assign, and Arc sharing verification.
 //!
 //! All tests require a GPU.
 
@@ -192,15 +192,15 @@ fn test_select_accepts_empty_iterator() {
 }
 
 // ===========================================================================
-// with_column_series: Series overload for with_column
+// with_column: accepts both Column and Series via Into<Series>
 // ===========================================================================
 
 #[test]
-fn test_with_column_series_adds_new_column() {
+fn test_with_column_adds_new_column() {
     let df = sample_df();
     let extra = Series::new::<i64>("extra", &[100, 200, 300]).unwrap();
 
-    let result = df.with_column_series("extra", extra).unwrap();
+    let result = df.with_column("extra", extra).unwrap();
 
     assert_eq!(result.num_columns(), 4);
     assert!(result.column_names().contains(&"extra"));
@@ -208,36 +208,36 @@ fn test_with_column_series_adds_new_column() {
 }
 
 #[test]
-fn test_with_column_series_replaces_existing_column() {
+fn test_with_column_replaces_existing_column() {
     let df = sample_df();
     let new_score = Series::new::<f64>("new_score", &[99.0, 88.0, 77.0]).unwrap();
 
-    let result = df.with_column_series("score", new_score).unwrap();
+    let result = df.with_column("score", new_score).unwrap();
 
     assert_eq!(result.num_columns(), 3);
     assert_eq!(result.column("score").unwrap().to_vec::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
 #[test]
-fn test_with_column_series_preserves_arc_sharing_for_unchanged() {
+fn test_with_column_preserves_arc_sharing_for_unchanged() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
     let flag_ptr = device_ptr(&df, "flag");
 
     let extra = Series::new::<i64>("extra", &[100, 200, 300]).unwrap();
-    let result = df.with_column_series("extra", extra).unwrap();
+    let result = df.with_column("extra", extra).unwrap();
 
     assert_eq!(id_ptr, device_ptr(&result, "id"));
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
 #[test]
-fn test_with_column_series_shares_arc_from_input_series() {
+fn test_with_column_shares_arc_from_input_series() {
     let df = sample_df();
     let extra = Series::new::<i64>("extra", &[100, 200, 300]).unwrap();
     let extra_arc = extra.column_arc().clone();
 
-    let result = df.with_column_series("extra", extra).unwrap();
+    let result = df.with_column("extra", extra).unwrap();
 
     // The inserted column should share the same Arc as the input Series
     let result_series = result.series("extra").unwrap();
@@ -245,11 +245,11 @@ fn test_with_column_series_shares_arc_from_input_series() {
 }
 
 #[test]
-fn test_with_column_series_row_count_mismatch_returns_error() {
+fn test_with_column_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
     let wrong_len = Series::new::<i32>("x", &[1, 2]).unwrap(); // 2 rows
 
-    let result = df.with_column_series("x", wrong_len);
+    let result = df.with_column("x", wrong_len);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
@@ -385,7 +385,7 @@ fn test_with_series_then_rename_columns_preserves_sharing() {
     let extra = Series::new::<i64>("extra", &[100, 200, 300]).unwrap();
     let extra_arc = extra.column_arc().clone();
 
-    let with_extra = df.with_column_series("extra", extra).unwrap();
+    let with_extra = df.with_column("extra", extra).unwrap();
     let result = with_extra.rename_columns([("extra", "bonus")]).unwrap();
 
     let bonus_series = result.series("bonus").unwrap();
