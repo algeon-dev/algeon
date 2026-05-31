@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     CudfOptimizerConfig, GpuFallbackPolicy, NativePipelineExecutionMode, NativeTpcdsParityReport, ParityFloatTolerance,
     StatisticalAggregateExecutionMode, TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig,
     prepare_tpcds_report_dataset, tpcds_native_optimizer_config, tpcds_parity_workload_items_with_external_oracles,
@@ -22,13 +22,13 @@ const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXEC
 
 #[tokio::main]
 async fn main() {
-    let dir = unique_temp_dir("datafusion-cudf-native-tpcds-parity");
+    let dir = unique_temp_dir("datafusion-nexus-native-tpcds-parity");
     let TpcdsParityReport { report, metadata } = parity_report(&dir).await.unwrap();
     print!("{}", report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata()).to_tsv());
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn parity_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsParityReport> {
+async fn parity_report(dir: &std::path::Path) -> datafusion_nexus::TpcdsWorkloadResult<TpcdsParityReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = native_optimizer_config_from_env();
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
@@ -109,7 +109,7 @@ fn validate_statistical_aggregate_parity_contract(
     mode: StatisticalAggregateExecutionMode,
     tolerance: ParityFloatTolerance,
 ) {
-    if mode.tolerance_contract() == datafusion_cudf::StatisticalAggregateToleranceContract::FloatTolerant
+    if mode.tolerance_contract() == datafusion_nexus::StatisticalAggregateToleranceContract::FloatTolerant
         && !tolerance.is_enabled()
     {
         panic!(

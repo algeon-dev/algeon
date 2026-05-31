@@ -1,4 +1,4 @@
-use datafusion_cudf::TpchTableMetadata;
+use datafusion_nexus::TpchTableMetadata;
 
 use super::*;
 
@@ -409,63 +409,63 @@ fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
 }
 
 fn strict_bounded_gate_row(
-    kind: cudf_query_engine::ReservationKind,
-    quality: cudf_query_engine::capability::ContractQuality,
+    kind: nexus_query_engine::ReservationKind,
+    quality: nexus_query_engine::capability::ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
-) -> cudf_query_engine::StrictBoundedContractGateRow {
-    cudf_query_engine::StrictBoundedContractGateRow {
-        execution_mode: cudf_query_engine::StrictBoundedExecutionMode::StrictBounded,
-        contract_scope: cudf_query_engine::capability::ReservationRequirementScope::Edge,
-        gate_id: cudf_query_engine::StrictBoundedContractGateId::Compiled(cudf_query_engine::ReservationGateId::new(
+) -> nexus_query_engine::StrictBoundedContractGateRow {
+    nexus_query_engine::StrictBoundedContractGateRow {
+        execution_mode: nexus_query_engine::StrictBoundedExecutionMode::StrictBounded,
+        contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Edge,
+        gate_id: nexus_query_engine::StrictBoundedContractGateId::Compiled(nexus_query_engine::ReservationGateId::new(
             kind as usize,
         )),
-        owner: cudf_query_engine::StrictBoundedContractOwner::Compiled(
-            cudf_query_engine::ReservationGateOwner::SinkBoundary,
+        owner: nexus_query_engine::StrictBoundedContractOwner::Compiled(
+            nexus_query_engine::ReservationGateOwner::SinkBoundary,
         ),
         reservation_kind: kind,
         memory_boundary: kind.as_str(),
         required_contract: match kind {
-            cudf_query_engine::ReservationKind::FinalSort => "final_sort_contract",
-            cudf_query_engine::ReservationKind::OperatorOutput => "aggregate_contract",
-            cudf_query_engine::ReservationKind::Materialization => {
+            nexus_query_engine::ReservationKind::FinalSort => "final_sort_contract",
+            nexus_query_engine::ReservationKind::OperatorOutput => "aggregate_contract",
+            nexus_query_engine::ReservationKind::Materialization => {
                 "query_engine_explicit_sink_materialization_reservation"
             },
-            cudf_query_engine::ReservationKind::SourceRead => "source_contract",
+            nexus_query_engine::ReservationKind::SourceRead => "source_contract",
             _ => "query_engine_test_contract",
         },
-        contract_status: cudf_query_engine::capability::ContractStatus::Modeled,
+        contract_status: nexus_query_engine::capability::ContractStatus::Modeled,
         contract_quality: quality,
         unresolved_preflight_gap,
     }
 }
 
-fn accepted_strict_bounded_contract_rows() -> Vec<cudf_query_engine::StrictBoundedContractGateRow> {
+fn accepted_strict_bounded_contract_rows() -> Vec<nexus_query_engine::StrictBoundedContractGateRow> {
     vec![
         strict_bounded_gate_row(
-            cudf_query_engine::ReservationKind::SourceRead,
-            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            nexus_query_engine::ReservationKind::SourceRead,
+            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_parquet_decoded_output_preflight_unavailable"),
         ),
         strict_bounded_gate_row(
-            cudf_query_engine::ReservationKind::FinalSort,
-            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            nexus_query_engine::ReservationKind::FinalSort,
+            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_final_sort_order_preflight_unavailable"),
         ),
         strict_bounded_gate_row(
-            cudf_query_engine::ReservationKind::OperatorOutput,
-            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            nexus_query_engine::ReservationKind::OperatorOutput,
+            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
         ),
         strict_bounded_gate_row(
-            cudf_query_engine::ReservationKind::Materialization,
-            cudf_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
+            nexus_query_engine::ReservationKind::Materialization,
+            nexus_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
             None,
         ),
     ]
 }
 
-fn accepted_strict_bounded_compiled_graphs() -> Vec<datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics> {
-    vec![datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics {
+fn accepted_strict_bounded_compiled_graphs() -> Vec<datafusion_nexus::NativeStrictBoundedCompiledGraphDiagnostics> {
+    vec![datafusion_nexus::NativeStrictBoundedCompiledGraphDiagnostics {
         task_count: 3,
         edge_count: 2,
         barrier_count: 0,

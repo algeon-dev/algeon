@@ -1,4 +1,4 @@
-# Local Iceberg REST catalog + RustFS (S3) stack for datafusion-cudf E2E.
+# Local Iceberg REST catalog + RustFS (S3) stack for datafusion-nexus E2E.
 #
 # Brings up:
 #   - rustfs       : S3-compatible object store (data plane)

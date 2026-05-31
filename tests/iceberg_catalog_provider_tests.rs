@@ -19,7 +19,7 @@ use datafusion::{
     catalog::{CatalogProvider, SchemaProvider},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::iceberg::catalog::{
+use datafusion_nexus::iceberg::catalog::{
     CudfIcebergCatalogProvider, IcebergCatalogBackend, IcebergProviderKind, build_catalog_provider_from_backend,
     build_scoped_catalog_provider_from_backend,
 };
@@ -47,20 +47,20 @@ impl MockIcebergCatalogBackend {
 
 #[async_trait]
 impl IcebergCatalogBackend for MockIcebergCatalogBackend {
-    async fn list_namespaces(&self) -> datafusion_cudf::Result<Vec<NamespaceIdent>> {
+    async fn list_namespaces(&self) -> datafusion_nexus::Result<Vec<NamespaceIdent>> {
         Ok(self.namespaces.clone())
     }
 
-    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_cudf::Result<Vec<TableIdent>> {
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::Result<Vec<TableIdent>> {
         let key = Self::namespace_key(namespace);
         let names = self.tables_by_namespace.get(&key).cloned().unwrap_or_default();
         let idents = names.into_iter().map(|name| TableIdent::new(namespace.clone(), name)).collect();
         Ok(idents)
     }
 
-    async fn load_table(&self, _table: &TableIdent) -> datafusion_cudf::Result<iceberg::table::Table> {
-        Err(datafusion_cudf::Error::new(
-            datafusion_cudf::ErrorCode::CudfDependencyFailure,
+    async fn load_table(&self, _table: &TableIdent) -> datafusion_nexus::Result<iceberg::table::Table> {
+        Err(datafusion_nexus::Error::new(
+            datafusion_nexus::ErrorCode::CudfDependencyFailure,
             "mock_backend.load_table",
             "MockIcebergCatalogBackend does not support loading tables",
         ))
@@ -384,15 +384,15 @@ impl CountingMockBackend {
 
 #[async_trait]
 impl IcebergCatalogBackend for CountingMockBackend {
-    async fn list_namespaces(&self) -> datafusion_cudf::Result<Vec<NamespaceIdent>> {
+    async fn list_namespaces(&self) -> datafusion_nexus::Result<Vec<NamespaceIdent>> {
         self.inner.list_namespaces().await
     }
 
-    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_cudf::Result<Vec<TableIdent>> {
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::Result<Vec<TableIdent>> {
         self.inner.list_tables(namespace).await
     }
 
-    async fn load_table(&self, table: &TableIdent) -> datafusion_cudf::Result<iceberg::table::Table> {
+    async fn load_table(&self, table: &TableIdent) -> datafusion_nexus::Result<iceberg::table::Table> {
         self.load_count.fetch_add(1, Ordering::SeqCst);
         self.inner.load_table(table).await
     }
@@ -429,19 +429,19 @@ async fn seed_prevents_backend_load_on_first_table_access() {
 #[tokio::test]
 #[ignore = "requires live AWS Glue/S3 credentials and network access"]
 async fn glue_dynamic_catalog_provider_discovers_tables_live() {
-    use datafusion_cudf::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
+    use datafusion_nexus::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .or_else(|_| std::env::var("DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE"))
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live test");
-    let warehouse = std::env::var("DATAFUSION_CUDF_ICEBERG_WAREHOUSE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_WAREHOUSE for live test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .or_else(|_| std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE"))
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live test");
+    let warehouse = std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_WAREHOUSE for live test");
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
         .expect("set AWS_REGION for live test");
 
     let mut config = GlueIcebergCatalogConfig::new("glue", warehouse, region);
-    if let Ok(catalog_id) = std::env::var("DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID") {
+    if let Ok(catalog_id) = std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID") {
         config = config.with_catalog_id(catalog_id);
     }
 
@@ -470,13 +470,13 @@ async fn glue_dynamic_catalog_provider_discovers_tables_live() {
 #[tokio::test]
 #[ignore = "requires live AWS Glue/S3 credentials and network access"]
 async fn glue_backend_lists_namespaces_live() {
-    use datafusion_cudf::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
+    use datafusion_nexus::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .or_else(|_| std::env::var("DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE"))
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live test");
-    let warehouse = std::env::var("DATAFUSION_CUDF_ICEBERG_WAREHOUSE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_WAREHOUSE for live test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .or_else(|_| std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE"))
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live test");
+    let warehouse = std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_WAREHOUSE for live test");
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
         .expect("set AWS_REGION for live test");

@@ -33,7 +33,7 @@ EXPECTED_FAILURE_FACTS = {
     "budget_enforcement": "hard_memory_resource_limit",
     "cudf_code": "OutOfMemory",
     "cudf_operation": "dataframe::read_parquet_source_chunk_with_budget",
-    "native_operation": "cudf_query_engine.local_parquet_chunk.read",
+    "native_operation": "nexus_query_engine.local_parquet_chunk.read",
     "pipeline_task_kind": "join_probe",
     "stage": "join_source_read",
 }

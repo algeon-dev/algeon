@@ -19,13 +19,13 @@ use arrow::{
     datatypes::{Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{
+use datafusion::{
+    datasource::memory::MemorySourceConfig, physical_expr::expressions::Column, physical_plan::ExecutionPlan,
+};
+use nexus_query_engine::{
     Expr as NativeExpr, GpuResidentSource as NativeGpuResidentSource, LimitSpec as NativeLimitSpec,
     LiteralBatchSource as NativeLiteralBatchSource, NodeId as NativeNodeId, ProjectionOutput as NativeProjectionOutput,
     QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
-};
-use datafusion::{
-    datasource::memory::MemorySourceConfig, physical_expr::expressions::Column, physical_plan::ExecutionPlan,
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
@@ -319,7 +319,7 @@ fn lower_literal_source_input(
     let source_node = builder
         .add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::new(Arc::clone(&native_schema), batches)));
     let source_node = if let Some(fetch) = fetch {
-        builder.add_limit(source_node, cudf_query_engine::LimitSpec::fetch(fetch), Arc::clone(&native_schema))
+        builder.add_limit(source_node, nexus_query_engine::LimitSpec::fetch(fetch), Arc::clone(&native_schema))
     } else {
         source_node
     };

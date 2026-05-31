@@ -12,7 +12,7 @@ use arrow_flight::{
         SqlSupportedUnions, client::FlightSqlServiceClient,
     },
 };
-use datafusion_cudf::server::{
+use datafusion_nexus::server::{
     ServerConfig,
     error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY},
     serve,
@@ -20,7 +20,7 @@ use datafusion_cudf::server::{
 use futures::TryStreamExt;
 use tonic::{Code, transport::Endpoint};
 
-const QUERY_ID_METADATA_KEY: &str = "x-datafusion-cudf-query-id";
+const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
@@ -222,7 +222,7 @@ async fn get_sql_info_advertises_core_server_capabilities() {
     assert_eq!(batches.len(), 1);
     let batch = &batches[0];
     assert_eq!(batch.num_rows(), 16);
-    assert_eq!(sql_info_string(batch, SqlInfo::FlightSqlServerName), "datafusion-cudf");
+    assert_eq!(sql_info_string(batch, SqlInfo::FlightSqlServerName), "datafusion-nexus");
     assert!(sql_info_bool(batch, SqlInfo::FlightSqlServerSql));
     assert!(!sql_info_bool(batch, SqlInfo::FlightSqlServerReadOnly));
     assert_eq!(sql_info_i32(batch, SqlInfo::FlightSqlServerTransaction), SqlSupportedTransaction::None as i32);

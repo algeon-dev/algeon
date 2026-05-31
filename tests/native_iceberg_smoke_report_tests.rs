@@ -4,7 +4,7 @@ mod native_iceberg_smoke_report;
 
 use std::collections::HashMap;
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
     TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
     TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
@@ -109,7 +109,7 @@ fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
 fn rest_s3_tpcds_query_ids_rewrite_tables_within_rest_namespace() {
     let env = HashMap::from([
         ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "rest_s3"),
-        ("DATAFUSION_CUDF_ICEBERG_NAMESPACE", "tpcds_sf10"),
+        ("DATAFUSION_NEXUS_ICEBERG_NAMESPACE", "tpcds_sf10"),
         ("CUDF_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
         ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
         ("CUDF_ICEBERG_SMOKE_EXECUTION_MODE", "native_only"),
@@ -274,7 +274,7 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "not_applicable".to_string(),
     );
     row.native_runtime_started = true;
-    row.native_runtime_outcome = datafusion_cudf::NativeDataFusionRuntimeOutcome::Succeeded;
+    row.native_runtime_outcome = datafusion_nexus::NativeDataFusionRuntimeOutcome::Succeeded;
     row.native_output_rows = Some(1);
     row.native_output_batches = Some(1);
     row.native_count_value = Some(7);

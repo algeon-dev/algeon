@@ -9,7 +9,6 @@
 use std::{any::Any, collections::BTreeSet, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
-use cudf_query_engine::{GpuResidentInputMap, QueryOutput, QueryPlan, execute_query_plan_with_gpu_inputs};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
@@ -20,6 +19,7 @@ use datafusion::{
     },
 };
 use futures::TryStreamExt;
+use nexus_query_engine::{GpuResidentInputMap, QueryOutput, QueryPlan, execute_query_plan_with_gpu_inputs};
 
 use super::{
     common::{
@@ -62,7 +62,7 @@ impl NativeCudfComposedExec {
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_composed.try_new",
+                "datafusion_nexus.native_composed.try_new",
                 "native composed DataFusion execution requires a host-arrow result sink",
             )
             .with_fact("result_sink", "gpu_resident"));
@@ -70,7 +70,7 @@ impl NativeCudfComposedExec {
         if gpu_inputs.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_composed.try_new",
+                "datafusion_nexus.native_composed.try_new",
                 "native composed execution requires at least one GPU-resident producer",
             ));
         }
@@ -81,7 +81,7 @@ impl NativeCudfComposedExec {
             let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.native_composed.try_new",
+                    "datafusion_nexus.native_composed.try_new",
                     "native composed execution children must be GPU-resident native producers",
                 )
                 .with_fact("child_name", child.name()));
@@ -89,7 +89,7 @@ impl NativeCudfComposedExec {
             if !provided_inputs.insert(input_name.clone()) {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.native_composed.try_new",
+                    "datafusion_nexus.native_composed.try_new",
                     "native composed execution received duplicate GPU-resident producer input names",
                 )
                 .with_fact("input_name", input_name));
@@ -100,7 +100,7 @@ impl NativeCudfComposedExec {
         if !missing_inputs.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_composed.try_new",
+                "datafusion_nexus.native_composed.try_new",
                 "native composed execution is missing GPU-resident producer inputs",
             )
             .with_fact("missing_inputs", missing_inputs.join(",")));
@@ -109,7 +109,7 @@ impl NativeCudfComposedExec {
         if !unused_inputs.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_composed.try_new",
+                "datafusion_nexus.native_composed.try_new",
                 "native composed execution received GPU-resident producer inputs the consumer plan does not declare",
             )
             .with_fact("unused_inputs", unused_inputs.join(",")));
@@ -203,7 +203,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_composed.execute",
+                "datafusion_nexus.native_composed.execute",
                 "native composed cudf execution exposes exactly one output partition",
             )
             .with_fact("partition", partition)
@@ -238,7 +238,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
             // CPU fallback is attempted after this point.
             let result = execute_query_plan_with_gpu_inputs(context, &plan, &input_map).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
-                    "datafusion_cudf.native_composed.execute",
+                    "datafusion_nexus.native_composed.execute",
                     "native cudf composed query execution failed",
                     error,
                 ))
@@ -249,7 +249,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
                 return Err(DataFusionError::from(
                     Error::new(
                         ErrorCode::InvalidExecutionPlan,
-                        "datafusion_cudf.native_composed.execute",
+                        "datafusion_nexus.native_composed.execute",
                         "native composed cudf execution produced a non-host result for DataFusion",
                     )
                     .with_fact("result_sink", "gpu_resident"),

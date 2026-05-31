@@ -37,8 +37,8 @@ use crate::{
     },
 };
 
-const PLAN_SCAN_OPERATION: &str = "datafusion_cudf.table_format.iceberg.plan_scan";
-const TASK_CONVERSION_OPERATION: &str = "datafusion_cudf.table_format.iceberg.convert_file_scan_tasks";
+const PLAN_SCAN_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan";
+const TASK_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceberg.convert_file_scan_tasks";
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
 /// DataFusion table provider that plans Iceberg metadata into adapter-owned

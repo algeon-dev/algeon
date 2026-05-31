@@ -1,7 +1,7 @@
 //! DataFusion adapter for native cudf-rs GPU execution.
 //!
 //! The crate exposes the DataFusion-facing boundary around the native
-//! [`cudf_query_engine`] IR:
+//! [`nexus_query_engine`] IR:
 //!
 //! - [`session`] wires the native physical optimizer into a
 //!   `SessionStateBuilder` while preserving DataFusion's final validation rule.
@@ -18,7 +18,7 @@
 //!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
 //! runtime policy, capability admission, and cudf-rs execution live in
-//! [`cudf_query_engine`].
+//! [`nexus_query_engine`].
 
 #[cfg(feature = "cugraph")]
 #[doc(hidden)]
@@ -58,12 +58,6 @@ pub use clickbench::{
     clickbench_report_session_config, clickbench_tuned_cpu_session_config, describe_clickbench_dataset,
     describe_clickbench_dataset_with_content_fingerprint, discover_clickbench_layout,
     external_clickbench_dataset_metadata, prepare_clickbench_report_dataset, register_clickbench_table,
-};
-pub use cudf_query_engine::{
-    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
-    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, S3SourceStorageCredential,
-    S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
-    StatisticalAggregateToleranceContract,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
@@ -126,6 +120,12 @@ pub use native_report::{
     NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
     ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata, compare_record_batches,
     sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+};
+pub use nexus_query_engine::{
+    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
+    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, S3SourceStorageCredential,
+    S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
+    StatisticalAggregateToleranceContract,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,

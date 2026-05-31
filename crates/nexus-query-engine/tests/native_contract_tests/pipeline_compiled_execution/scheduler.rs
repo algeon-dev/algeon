@@ -1,0 +1,358 @@
+use super::*;
+
+#[test]
+fn compiled_scheduler_runs_tasks_from_dependencies_and_releases_after_all_consumers() {
+    let pipeline = out_of_order_join_barrier_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute");
+
+    assert_eq!(
+        state.execution_order(),
+        &[
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(2),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(3),
+            PipelineTaskId::new(4),
+        ]
+    );
+    assert_eq!(executor.executed, state.execution_order());
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
+    assert_eq!(state.live_resource_count(), 0);
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+    assert!(state.is_resource_released(ResidentResourceId::new(1)));
+}
+
+#[test]
+fn compiled_scheduler_prioritizes_independent_join_build_branch_before_probe_branch() {
+    let pipeline = downstream_build_branch_after_completed_upstream_build_pipeline();
+    let scheduler = CompiledPipelineScheduler::new_with_prioritized_join_builds(
+        &pipeline,
+        BTreeSet::from([PipelineTaskId::new(5)]),
+    )
+    .expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute");
+
+    assert_eq!(
+        state.execution_order(),
+        &[
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(3),
+            PipelineTaskId::new(5),
+            PipelineTaskId::new(2),
+            PipelineTaskId::new(4),
+            PipelineTaskId::new(6),
+            PipelineTaskId::new(7),
+            PipelineTaskId::new(8),
+            PipelineTaskId::new(9),
+        ]
+    );
+    assert_eq!(executor.executed, state.execution_order());
+    assert_eq!(
+        executor.released,
+        vec![
+            ResidentResourceId::new(0),
+            ResidentResourceId::new(2),
+            ResidentResourceId::new(1),
+            ResidentResourceId::new(3),
+            ResidentResourceId::new(4),
+        ]
+    );
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_prefers_live_input_consumers_under_reservation_pressure() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().with_scheduler_memory_pressure();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute under memory pressure");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(0), PipelineTaskId::new(2), PipelineTaskId::new(1), PipelineTaskId::new(3),],
+        "scheduler should consume live resident inputs before admitting another independent source"
+    );
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
+    assert_eq!(executor.simulated_live_reserved_bytes, 0);
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_prefers_currently_admitted_ready_task() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_admission_remaining_bytes(50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(0), 60)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 10)
+        .with_remaining_bytes_after_task(PipelineTaskId::new(1), 70);
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should make progress through admitted tasks");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(1), PipelineTaskId::new(0), PipelineTaskId::new(2), PipelineTaskId::new(3),],
+        "scheduler should skip a dependency-ready task whose coarse reservation estimate exceeds remaining budget"
+    );
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_uses_operator_class_rank_under_reservation_pressure() {
+    let pipeline = independent_operator_class_pressure_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().with_scheduler_memory_pressure();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute under memory pressure");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(0), PipelineTaskId::new(3), PipelineTaskId::new(2), PipelineTaskId::new(1),],
+        "scheduler should prefer join work, then aggregate work, before starting another independent source while reservations are live"
+    );
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+    assert_eq!(executor.simulated_live_reserved_bytes, 1);
+}
+
+#[test]
+fn compiled_scheduler_errors_when_no_ready_task_can_be_admitted() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_admission_remaining_bytes(50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(0), 60)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 70);
+
+    let error = scheduler.run(&mut executor).expect_err("all ready tasks are admission-not-ready");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.facts().get("ready_task_count"), Some("2"));
+    assert_eq!(error.facts().get("ready_task_ids"), Some("t0,t1"));
+    assert_eq!(error.facts().get("max_estimated_required_bytes"), Some("70"));
+    assert_eq!(error.facts().get("max_remaining_bytes"), Some("50"));
+    assert_eq!(error.facts().get("admission_not_ready_reasons"), Some("mock_remaining_budget_too_small"));
+    assert!(executor.executed.is_empty());
+}
+
+#[test]
+fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");
+    let mut executor = MockExecutor::new();
+
+    let state = scheduler.run(&mut executor).expect("shared fan-out pipeline should execute");
+
+    assert_eq!(state.execution_order(), &[PipelineTaskId::new(0), PipelineTaskId::new(1), PipelineTaskId::new(2)]);
+    assert_eq!(executor.executed, state.execution_order());
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert_eq!(state.live_resource_count(), 0);
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+}
+
+#[test]
+fn compiled_state_keeps_shared_resource_live_until_every_consumer_completes() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    let released = state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce shared resource");
+    assert!(released.is_empty());
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let released =
+        state.complete_task(&pipeline.tasks()[1], vec![]).expect("first consumer should not release shared resource");
+    assert!(released.is_empty());
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let released = state
+        .complete_task(&pipeline.tasks()[2], vec![])
+        .expect("last completed consumer should release shared resource");
+    assert_eq!(released.iter().map(|resource| resource.id()).collect::<Vec<_>>(), vec![ResidentResourceId::new(0)]);
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+}
+
+#[test]
+fn compiled_state_consumes_single_consumer_resource_before_task_completion() {
+    let pipeline = simple_unary_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce single-consumer resource");
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let consumed = state
+        .consume_task_input_resource(&pipeline.tasks()[1], ResidentResourceId::new(0))
+        .expect("single-consumer input can be consumed");
+    assert_eq!(consumed.id(), ResidentResourceId::new(0));
+    assert_eq!(consumed.into_payload(), "frame");
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+    assert_eq!(state.live_resource_count(), 0);
+
+    let released =
+        state.complete_task(&pipeline.tasks()[1], vec![]).expect("completion should not release consumed input twice");
+    assert!(released.is_empty());
+}
+
+#[test]
+fn compiled_state_rejects_consuming_multi_consumer_resource() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce shared resource");
+
+    let error = state
+        .consume_task_input_resource(&pipeline.tasks()[1], ResidentResourceId::new(0))
+        .expect_err("multi-consumer input must not be consumed early");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+    assert_eq!(error.facts().get("consumer_count"), Some("2"));
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+}
+
+#[test]
+fn compiled_scheduler_allows_executor_to_consume_single_consumer_input() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().consume_inputs_for(PipelineTaskId::new(1));
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute with consumed input");
+
+    assert_eq!(executor.consumed, vec![ResidentResourceId::new(0)]);
+    assert!(executor.released.is_empty());
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_errors_when_task_omits_declared_output_resource() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().omit_output_for(PipelineTaskId::new(0));
+
+    let error = scheduler.run(&mut executor).expect_err("missing output should fail");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+}
+
+#[test]
+fn compiled_scheduler_releases_live_resources_when_executor_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().fail_task_for(PipelineTaskId::new(1));
+
+    let error = scheduler.run(&mut executor).expect_err("downstream executor failure should fail the pipeline");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
+    assert_eq!(executor.executed, vec![PipelineTaskId::new(0), PipelineTaskId::new(1)]);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+#[test]
+fn compiled_scheduler_cleans_task_local_reservations_when_executor_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .retain_task_local_reservation_for(PipelineTaskId::new(0), "join_build_hash_table")
+        .fail_task_for(PipelineTaskId::new(1));
+
+    let error = scheduler.run(&mut executor).expect_err("downstream executor failure should clean task-local state");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert!(executor.task_local_live.is_empty());
+    assert_eq!(executor.task_local_released, vec!["join_build_hash_table"]);
+    assert_eq!(executor.cleanup_calls, 1);
+}
+
+#[test]
+fn compiled_scheduler_cleans_task_local_reservations_when_completion_validation_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .retain_task_local_reservation_for(PipelineTaskId::new(0), "join_probe_gather_map")
+        .duplicate_output_for(PipelineTaskId::new(0));
+
+    let error = scheduler.run(&mut executor).expect_err("duplicate output should clean partial task state");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert!(executor.task_local_live.is_empty());
+    assert_eq!(executor.task_local_released, vec!["join_probe_gather_map"]);
+    assert_eq!(executor.cleanup_calls, 1);
+}
+
+#[test]
+fn compiled_scheduler_state_errors_when_input_resource_is_missing() {
+    let pipeline = simple_unary_pipeline();
+    let state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    let error = state.prepare_task(&pipeline.tasks()[1]).expect_err("downstream task should require produced input");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+}
+
+#[test]
+fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().duplicate_output_for(PipelineTaskId::new(0));
+
+    let error = scheduler.run(&mut executor).expect_err("duplicate output should fail");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+fn independent_operator_class_pressure_pipeline() -> CompiledPipeline {
+    let pressure_source = PipelineTaskId::new(0);
+    let independent_source = PipelineTaskId::new(1);
+    let aggregate = PipelineTaskId::new(2);
+    let join_build = PipelineTaskId::new(3);
+    let retained_sink_output = ResidentResourceId::new(0);
+
+    CompiledPipeline::new(
+        vec![
+            PipelineTask::new(pressure_source, PipelineTaskKind::SourceRead)
+                .with_output_resources(vec![retained_sink_output]),
+            PipelineTask::new(independent_source, PipelineTaskKind::SourceRead),
+            PipelineTask::new(aggregate, PipelineTaskKind::Aggregate),
+            PipelineTask::new(join_build, PipelineTaskKind::JoinBuild),
+        ],
+        vec![
+            PipelineEdge::new(PipelineEdgeId::new(0), pressure_source, aggregate, PipelineEdgeKind::Control),
+            PipelineEdge::new(PipelineEdgeId::new(1), pressure_source, join_build, PipelineEdgeKind::Control),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![pressure_source, independent_source, aggregate, join_build]),
+        ],
+        vec![ResidentResource::new(
+            retained_sink_output,
+            pressure_source,
+            vec![],
+            ResidentLifetime::SinkOutput { producer: pressure_source },
+        )],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, pressure_source),
+    )
+}

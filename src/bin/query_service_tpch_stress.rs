@@ -6,14 +6,13 @@ use std::{
 };
 
 use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};
-use cudf_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
     prelude::SessionContext,
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
@@ -21,6 +20,7 @@ use datafusion_cudf::{
     default_tpch_parquet_root, describe_tpch_dataset, discover_tpch_table_layout, register_tpch_table_layout,
     tpch_report_session_config, tpch_tuned_cpu_session_config,
 };
+use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::sync::Barrier;
 
 const TSV_SCHEMA_VERSION: u32 = 1;
@@ -79,7 +79,7 @@ impl StressConfig {
     fn from_env() -> DataFusionResult<Self> {
         let dataset_root = match std::env::var_os(DATASET_ROOT_ENV) {
             Some(value) => PathBuf::from(value),
-            None => default_tpch_parquet_root(datafusion_cudf::TpchDefaultScale::Sf1).into(),
+            None => default_tpch_parquet_root(datafusion_nexus::TpchDefaultScale::Sf1).into(),
         };
         let config = Self {
             dataset_root,
@@ -215,7 +215,7 @@ impl StructuredFailure {
 #[derive(Debug)]
 struct StressReport {
     config: StressConfig,
-    dataset: datafusion_cudf::TpchDatasetMetadata,
+    dataset: datafusion_nexus::TpchDatasetMetadata,
     rows: Vec<StressRow>,
 }
 
@@ -446,7 +446,7 @@ async fn run_native_request(
 async fn collect_native_with_handle(
     config: &StressConfig,
     query: &TpchQuery,
-    handle: Arc<cudf_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
@@ -697,7 +697,7 @@ fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch])
 
 fn fingerprint_batches(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-query-service-tpch-output-v1");
+    hasher.update_field("datafusion-nexus-query-service-tpch-output-v1");
     for batch in batches {
         if batch.schema().as_ref() != schema.as_ref() {
             return Err(plan_error("TPC-H output fingerprint requires collected batches to match the planned schema"));

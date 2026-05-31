@@ -1,11 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
-use cudf_query_engine::{
-    Expr as NativeExpr, LiteralValue as NativeLiteralValue, QueryPlanBuilder as NativeQueryPlanBuilder,
-    ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr, WindowFrame as NativeWindowFrame,
-    WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
-};
 use datafusion::{
     common::ScalarValue,
     logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
@@ -15,6 +10,11 @@ use datafusion::{
         window::{PlainAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     },
     physical_plan::{ExecutionPlan, windows::WindowUDFExpr},
+};
+use nexus_query_engine::{
+    Expr as NativeExpr, LiteralValue as NativeLiteralValue, QueryPlanBuilder as NativeQueryPlanBuilder,
+    ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr, WindowFrame as NativeWindowFrame,
+    WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
 };
 
 use super::{

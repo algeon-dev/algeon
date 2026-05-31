@@ -19,12 +19,12 @@ use tonic::transport::Endpoint;
 
 type SmokeResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const SOURCE_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_SOURCE";
-const ICEBERG_EDGE_TABLE_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_ICEBERG_EDGE_TABLE";
-const ICEBERG_SRC_COL_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_ICEBERG_SRC_COL";
-const ICEBERG_DST_COL_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_ICEBERG_DST_COL";
-const ICEBERG_WEIGHT_COL_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
-const RESULT_MODE_ENV: &str = "DATAFUSION_CUDF_CUGRAPH_SMOKE_RESULT_MODE";
+const SOURCE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_SOURCE";
+const ICEBERG_EDGE_TABLE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_EDGE_TABLE";
+const ICEBERG_SRC_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_SRC_COL";
+const ICEBERG_DST_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_DST_COL";
+const ICEBERG_WEIGHT_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
+const RESULT_MODE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_RESULT_MODE";
 
 const DEFAULT_ICEBERG_EDGE_TABLE: &str = "glue.demo_db.github_sf1_bh_edges";
 const DEFAULT_ICEBERG_SRC_COL: &str = "src_id";
@@ -46,7 +46,7 @@ async fn main() -> SmokeResult<()> {
 
     match &source {
         SmokeSource::LocalParquet => {
-            let dir = unique_temp_dir("datafusion-cudf-flight-sql-cugraph-smoke")?;
+            let dir = unique_temp_dir("datafusion-nexus-flight-sql-cugraph-smoke")?;
             let parquet_path = dir.join("edges.parquet");
             write_edge_parquet(&parquet_path)?;
             execute_batches(
@@ -228,7 +228,7 @@ fn optional_nonempty_env(name: &str) -> Option<String> {
 fn server_url() -> String {
     std::env::args()
         .nth(1)
-        .or_else(|| std::env::var("DATAFUSION_CUDF_FLIGHT_SQL_URL").ok())
+        .or_else(|| std::env::var("DATAFUSION_NEXUS_FLIGHT_SQL_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:50051".to_string())
 }
 

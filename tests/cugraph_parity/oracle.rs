@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use datafusion_cudf::cugraph_parity::{OracleLookup, ParityManifest, ParitySpec, load_oracle, oracle_path};
+use datafusion_nexus::cugraph_parity::{OracleLookup, ParityManifest, ParitySpec, load_oracle, oracle_path};
 
 /// Inspect the oracle JSON for one parity row. Returns either a parsed
 /// document or a structured status the caller can render as a skip.

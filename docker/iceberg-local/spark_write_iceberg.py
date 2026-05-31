@@ -14,7 +14,7 @@ Invoked inside the pinned Spark image via spark-submit (see load.sh). Catalog
 config is passed as spark.sql.catalog.* conf; this script only takes the
 namespace, the input parquet dir, and the table list.
 
-Naming contract (must match datafusion-cudf registration):
+Naming contract (must match datafusion-nexus registration):
     catalog   : lake
     namespace : tpch_sf<SF> / tpcds_sf<SF>
     tables    : bare names

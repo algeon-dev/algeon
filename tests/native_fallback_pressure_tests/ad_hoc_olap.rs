@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn native_pipeline_ad_hoc_olap_fallback_report_pins_lowering_diagnostics() {
-    let dir = unique_temp_dir("datafusion-cudf-ad-hoc-olap-fallback-report");
+    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-fallback-report");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let items = ad_hoc_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
@@ -31,7 +31,7 @@ async fn native_pipeline_ad_hoc_olap_fallback_report_pins_lowering_diagnostics()
 
 #[tokio::test]
 async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_first_admission_surface() {
-    let dir = unique_temp_dir("datafusion-cudf-ad-hoc-olap-strict-planning");
+    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-strict-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let items = ad_hoc_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
@@ -102,7 +102,7 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
 
 #[tokio::test]
 async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows() {
-    let dir = unique_temp_dir("datafusion-cudf-ad-hoc-olap-adaptive-planning");
+    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-adaptive-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let optimizer_config =
@@ -146,7 +146,7 @@ async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows
 
 fn assert_planning_row_has_family_free_rejection_diagnostics(
     query_id: &str,
-    row: &datafusion_cudf::NativeDataFusionPlanningRow,
+    row: &datafusion_nexus::NativeDataFusionPlanningRow,
 ) {
     for gate in &row.strict_bounded_contract_rows {
         assert_no_legacy_rejection_terms(query_id, &gate.to_stable_kv_row());

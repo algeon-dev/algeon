@@ -1,16 +1,16 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
-use cudf_query_engine::{
-    ColumnRef as NativeColumnRef, Expr as NativeExpr, JoinKey as NativeJoinKey,
-    JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
-    JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
-};
 use datafusion::{
     common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
     physical_expr::{PhysicalExpr, expressions::Column},
     physical_plan::{ExecutionPlan, joins::NestedLoopJoinExec},
+};
+use nexus_query_engine::{
+    ColumnRef as NativeColumnRef, Expr as NativeExpr, JoinKey as NativeJoinKey,
+    JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
+    JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
 };
 
 use super::{

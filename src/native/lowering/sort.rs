@@ -1,13 +1,13 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema};
-use cudf_query_engine::{
-    Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr,
-    SortSpec as NativeSortSpec,
-};
 use datafusion::{
     physical_expr::expressions::Column,
     physical_plan::{ExecutionPlan, sorts::sort::SortExec},
+};
+use nexus_query_engine::{
+    Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr,
+    SortSpec as NativeSortSpec,
 };
 
 use super::{

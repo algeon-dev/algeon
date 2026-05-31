@@ -24,7 +24,7 @@ use datafusion::{
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy};
+use datafusion_nexus::{CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy};
 
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;
 const DEFAULT_STRING_VERTEX_COUNT: i64 = 4_000;

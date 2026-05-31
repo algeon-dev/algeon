@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// Public rule name and deduplication key for the leftover GPU-only leaf guard.
-pub const CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME: &str = "datafusion_cudf_table_format_gpu_only_leaf_guard";
+pub const CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME: &str = "datafusion_nexus_table_format_gpu_only_leaf_guard";
 
 /// Final-stage physical optimizer rule that converts leftover
 /// [`CudfTableFormatScanExec`] nodes into a structured planning error.
@@ -118,7 +118,7 @@ fn leftover_leaf_error(
     let diagnostics = leaf.diagnostics();
     let mut error = Error::new(
         ErrorCode::NativeCandidateRejected,
-        "datafusion_cudf.planner.table_format_gpu_only_leaf_guard",
+        "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
         "table-format scan leaf was not rewritten to native and has no CPU Arrow reader fallback",
     )
     .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())

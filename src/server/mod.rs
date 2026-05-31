@@ -1,9 +1,9 @@
-//! Opt-in Flight SQL server for `datafusion-cudf`.
+//! Opt-in Flight SQL server for `datafusion-nexus`.
 
 use std::sync::Arc;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
-use cudf_query_engine::MemoryControlPolicy;
+use nexus_query_engine::MemoryControlPolicy;
 use tonic::transport::Server;
 
 mod admission;
@@ -19,21 +19,22 @@ pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfi
 #[cfg(feature = "cugraph")]
 pub use config::CugraphServerConfig;
 pub use config::{
-    DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
-    DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
-    DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
-    DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
-    DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV, DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
-    DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV, DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
-    DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
-    DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
-    DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
-    DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
-    DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
-    DATAFUSION_CUDF_SERVER_LOG_ENV, DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV, DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
+    DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV,
+    DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
+    DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
+    DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+    DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV,
+    DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+    DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+    DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV, DATAFUSION_NEXUS_ICEBERG_TABLES_ENV, DATAFUSION_NEXUS_SERVER_BIND_ENV,
+    DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
+    DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
+    DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+    DATAFUSION_NEXUS_SERVER_LOG_ENV, DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
+    DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
+    DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV, DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
     ServerSessionProfile,
 };
 #[cfg(feature = "iceberg")]
@@ -77,7 +78,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     tracing::info!(
         bind_addr = %addr,
         max_in_flight = config.max_in_flight,
-        "starting datafusion-cudf Flight SQL server"
+        "starting datafusion-nexus Flight SQL server"
     );
 
     // Hand back the escalation-watchdog handle so we can abort it once the
@@ -90,7 +91,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         admission.close();
         let in_flight = cancellations.len();
         shutdown_token.cancel();
-        tracing::info!(in_flight, "received shutdown signal; draining datafusion-cudf Flight SQL server");
+        tracing::info!(in_flight, "received shutdown signal; draining datafusion-nexus Flight SQL server");
         // Stay listening for further signals during drain so a hung drain can
         // be force-exited with a second Ctrl-C / SIGTERM. 130 is the
         // conventional exit code for SIGINT-terminated processes.
@@ -113,7 +114,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     }
     server_result.map_err(ServerError::transport)?;
 
-    tracing::info!("datafusion-cudf Flight SQL server stopped");
+    tracing::info!("datafusion-nexus Flight SQL server stopped");
     Ok(())
 }
 
@@ -349,7 +350,7 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
         auth::AuthMode::Disabled => {
             tracing::warn!(
                 auth_mode = "disabled",
-                "datafusion-cudf Flight SQL server starting with auth DISABLED. \
+                "datafusion-nexus Flight SQL server starting with auth DISABLED. \
                  Every RPC will be accepted. This is unsafe to expose outside \
                  a trusted network. Configure [auth] in the server TOML config \
                  to enable Basic+Bearer authentication."
@@ -360,7 +361,7 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
                 auth_mode = "basic_bearer",
                 user_count = users.len(),
                 token_ttl_secs = *token_ttl_secs,
-                "datafusion-cudf Flight SQL server starting with Basic+Bearer auth"
+                "datafusion-nexus Flight SQL server starting with Basic+Bearer auth"
             );
         },
     }
@@ -382,13 +383,13 @@ fn warn_if_testing_profile_active(config: &ServerConfig) {
     }
     tracing::warn!(
         session_profile = %config.session_profile,
-        "datafusion-cudf Flight SQL server starting with cpu_fallback session \
+        "datafusion-nexus Flight SQL server starting with cpu_fallback session \
          profile while Iceberg is configured, but this binary was built \
          without the `iceberg-cpu` feature. Iceberg tables will be served by \
          the GPU-only CudfTableFormatScanExec leaf and plain ORDER BY queries \
          will fail with a structured planning error. Either rebuild with \
          --features iceberg-cpu to enable the CPU Iceberg reader, or switch \
-         to DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native."
+         to DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native."
     );
 }
 

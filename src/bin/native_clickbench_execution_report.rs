@@ -3,7 +3,7 @@ use std::{
     process::ExitCode,
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     ClickbenchDatasetMetadata, ClickbenchExecutionProgressEvent, ClickbenchWorkloadResult,
     NativeDataFusionExecutionReport, NativePipelineExecutionMode,
     clickbench_datafusion_execution_workload_items_filtered, clickbench_native_optimizer_config,
@@ -31,7 +31,7 @@ async fn main() -> ExitCode {
 
 async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionReport> {
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        datafusion_cudf::ClickbenchWorkloadError::InvalidDataset(
+        datafusion_nexus::ClickbenchWorkloadError::InvalidDataset(
             "no ClickBench fixture found; set CUDF_CLICKBENCH_PARQUET_DIR or stage \
              tests/data/clickbench/{hits.parquet, partitioned/} before running this report"
                 .to_string(),

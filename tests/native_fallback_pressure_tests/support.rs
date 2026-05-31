@@ -76,7 +76,7 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
     report.push_rejected(
         GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1),
-        datafusion_cudf::FallbackReason::NativeBoundedJoinUnsupported,
+        datafusion_nexus::FallbackReason::NativeBoundedJoinUnsupported,
     );
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
@@ -96,7 +96,7 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
         strict_bounded_gate_row(
             StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
             StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(
-                cudf_query_engine::pipeline::PipelineEdgeId::new(0),
+                nexus_query_engine::pipeline::PipelineEdgeId::new(0),
             )),
             ReservationRequirementScope::Edge,
             ReservationKind::BuildSide,
@@ -150,7 +150,7 @@ pub(super) fn rejected_strict_bounded_contract_diagnostics() -> NativeStrictBoun
                 contract_scope: ReservationRequirementScope::Node,
                 gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
                 owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(
-                    cudf_query_engine::pipeline::PipelineTaskId::new(0),
+                    nexus_query_engine::pipeline::PipelineTaskId::new(0),
                 )),
                 reservation_kind: ReservationKind::MixedSizeData,
                 memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
@@ -464,14 +464,14 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
 pub(super) fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
-) -> &'a datafusion_cudf::NativeFallbackPressureRow {
+) -> &'a datafusion_nexus::NativeFallbackPressureRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
 pub(super) fn planning_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> &'a datafusion_cudf::NativeDataFusionPlanningRow {
+) -> &'a datafusion_nexus::NativeDataFusionPlanningRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 

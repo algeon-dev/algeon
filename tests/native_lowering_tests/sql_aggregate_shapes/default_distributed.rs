@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn default_sql_physical_plan_lowers_to_native_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-default");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-default");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -39,7 +39,7 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
 
 #[tokio::test]
 async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-avg");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_AVG_AGGREGATE_QUERY).await;
@@ -75,7 +75,7 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
 
 #[tokio::test]
 async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-rollup");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-rollup");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_ROLLUP_AVG_QUERY).await;
@@ -99,7 +99,7 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
 
 #[tokio::test]
 async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filtered-aggregate");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-filtered-aggregate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_FILTERED_AGGREGATE_QUERY).await;
@@ -129,7 +129,7 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
 
 #[tokio::test]
 async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate_stack() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-distinct-aggregate");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-distinct-aggregate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_DISTINCT_AGGREGATE_QUERY).await;
@@ -148,7 +148,7 @@ async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate
 
 #[tokio::test]
 async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-function-mismatch");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-function-mismatch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -166,7 +166,7 @@ async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
 
 #[tokio::test]
 async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-state-schema-mismatch");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-state-schema-mismatch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_COUNT_STAR_QUERY).await;
@@ -190,7 +190,7 @@ async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
 
 #[tokio::test]
 async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filter-mutation");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-filter-mutation");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -236,7 +236,7 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
 
 #[tokio::test]
 async fn distributed_final_aggregate_filter_expr_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-final-filter-mutation");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-final-filter-mutation");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -271,7 +271,7 @@ async fn distributed_final_aggregate_filter_expr_is_rejected() {
 
 #[tokio::test]
 async fn distributed_aggregate_distinct_expr_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-distinct-mutation");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-distinct-mutation");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -290,7 +290,7 @@ async fn distributed_aggregate_distinct_expr_is_rejected() {
 
 #[tokio::test]
 async fn distributed_aggregate_order_by_expr_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-order-by-mutation");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-order-by-mutation");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
@@ -322,7 +322,7 @@ async fn distributed_aggregate_order_by_expr_is_rejected() {
 
 #[tokio::test]
 async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-unexpected-source");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-unexpected-source");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;

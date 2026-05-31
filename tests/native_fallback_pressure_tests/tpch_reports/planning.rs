@@ -7,7 +7,7 @@ use assertions::assert_tpch_datafusion_planning_report_contract;
 
 #[tokio::test]
 async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
-    let dir = unique_temp_dir("datafusion-cudf-tpch-datafusion-planning");
+    let dir = unique_temp_dir("datafusion-nexus-tpch-datafusion-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();

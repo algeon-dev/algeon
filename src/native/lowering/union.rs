@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
 use datafusion::physical_plan::ExecutionPlan;
+use nexus_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
 
 use super::{
     FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, expr::alias_if_needed,

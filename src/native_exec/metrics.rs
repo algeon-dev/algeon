@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use cudf_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, QueryMetrics};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, Time,
 };
+use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, QueryMetrics};
 
 /// Stable public DataFusion metric-name contract exposed by native cuDF execution plans.
 ///
@@ -1100,23 +1100,25 @@ impl NativeCudfMetrics {
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
         // These counters record which boundary policy was selected for this native query execution,
         // not rows or bytes crossing that boundary.
-        if matches!(policy.source_read(), cudf_query_engine::SourceReadBoundary::DirectDeviceLocalParquet) {
+        if matches!(policy.source_read(), nexus_query_engine::SourceReadBoundary::DirectDeviceLocalParquet) {
             self.source_read_boundary_direct_device.add(1);
         }
         if matches!(
             policy.build_materialization(),
-            cudf_query_engine::BuildMaterializationBoundary::QueryScopedGpuHashJoin
+            nexus_query_engine::BuildMaterializationBoundary::QueryScopedGpuHashJoin
         ) {
             self.build_materialization_boundary_query_scoped.add(1);
         }
-        if matches!(policy.build_materialization(), cudf_query_engine::BuildMaterializationBoundary::DurableGpuHashJoin)
-        {
+        if matches!(
+            policy.build_materialization(),
+            nexus_query_engine::BuildMaterializationBoundary::DurableGpuHashJoin
+        ) {
             self.build_materialization_boundary_durable.add(1);
         }
-        if matches!(policy.probe_execution(), cudf_query_engine::ProbeExecutionBoundary::ReusableGpuHashJoin) {
+        if matches!(policy.probe_execution(), nexus_query_engine::ProbeExecutionBoundary::ReusableGpuHashJoin) {
             self.probe_execution_boundary_reusable.add(1);
         }
-        if matches!(policy.result_materialization(), cudf_query_engine::ResultMaterializationBoundary::ExplicitSink) {
+        if matches!(policy.result_materialization(), nexus_query_engine::ResultMaterializationBoundary::ExplicitSink) {
             self.result_materialization_boundary_explicit.add(1);
         }
     }
@@ -1220,7 +1222,7 @@ fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partitio
 
 #[cfg(test)]
 mod tests {
-    use cudf_query_engine::SourceReadRuntimeMetrics;
+    use nexus_query_engine::SourceReadRuntimeMetrics;
 
     use super::*;
     use crate::native_report::NativeDataFusionExecutionMetrics;

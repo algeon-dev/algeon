@@ -212,7 +212,7 @@ impl TpchDatasetMetadata {
 }
 
 pub fn tiny_tpch_dataset_metadata(root: &Path) -> TpchWorkloadResult<TpchDatasetMetadata> {
-    describe_tpch_dataset(root, "tiny", "generated_tiny", "datafusion-cudf::write_tiny_tpch_parquet_dataset")
+    describe_tpch_dataset(root, "tiny", "generated_tiny", "datafusion-nexus::write_tiny_tpch_parquet_dataset")
 }
 
 pub fn external_tpch_dataset_metadata(
@@ -550,7 +550,7 @@ fn tpch_dataset_metadata_fingerprint(
     tables: &[TpchTableMetadata],
 ) -> String {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpch-dataset-metadata-v2");
+    hasher.update_field("datafusion-nexus-tpch-dataset-metadata-v2");
     hasher.update_field(scale_factor);
     hasher.update_field(provenance);
     hasher.update_field(generation_command);
@@ -581,7 +581,7 @@ fn tpch_dataset_metadata_fingerprint(
 
 fn tpch_dataset_content_fingerprint(tables: &[TpchTableMetadata]) -> TpchWorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpch-dataset-content-v1");
+    hasher.update_field("datafusion-nexus-tpch-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];
     for table in tables {
         hasher.update_field(&table.table);

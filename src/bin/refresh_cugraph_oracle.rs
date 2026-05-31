@@ -3,11 +3,11 @@
 //! The binary iterates [`CUGRAPH_PARITY_SPECS`] and invokes
 //! `scripts/cugraph_oracle.py` for every row's `oracle_relpath` slot,
 //! regardless of
-//! [`ParityTruthSource`](datafusion_cudf::cugraph_parity::ParityTruthSource).
+//! [`ParityTruthSource`](datafusion_nexus::cugraph_parity::ParityTruthSource).
 //! RefCsv-truth rows (e.g. Katz)
 //! still carry a secondary oracle JSON cross-check, so refreshing
 //! them as well lets `--check` catch a missing secondary file. Python
-//! cuGraph must be available (shared `~/code/datafusion-cudf/.venv`);
+//! cuGraph must be available (shared `~/code/datafusion-nexus/.venv`);
 //! when the Python script exits with code 77 we report the row as
 //! "oracle unavailable" and continue. By default the binary fails on
 //! drift: a regenerated payload that differs from the committed JSON
@@ -37,7 +37,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use datafusion_cudf::cugraph_parity::{CUGRAPH_PARITY_SPECS, ParitySpec, data_root, load_manifest, oracle_path};
+use datafusion_nexus::cugraph_parity::{CUGRAPH_PARITY_SPECS, ParitySpec, data_root, load_manifest, oracle_path};
 
 const ORACLE_SCRIPT_REL: &str = "scripts/cugraph_oracle.py";
 

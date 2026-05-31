@@ -9,7 +9,6 @@
 use std::{any::Any, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
-use cudf_query_engine::{QueryOutput, QueryPlan, execute_query_plan};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
@@ -20,6 +19,7 @@ use datafusion::{
     },
 };
 use futures::TryStreamExt;
+use nexus_query_engine::{QueryOutput, QueryPlan, execute_query_plan};
 
 use super::{
     common::{conservative_properties, mark_native_runtime_error, native_query_runtime_error},
@@ -50,7 +50,7 @@ impl NativeCudfExec {
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_exec.try_new",
+                "datafusion_nexus.native_exec.try_new",
                 "native DataFusion execution requires a host-arrow result sink",
             )
             .with_fact("result_sink", "gpu_resident"));
@@ -128,7 +128,7 @@ impl ExecutionPlan for NativeCudfExec {
         if !children.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidChildCount,
-                "datafusion_cudf.native_exec.with_new_children",
+                "datafusion_nexus.native_exec.with_new_children",
                 "native cudf execution expected no children",
             )
             .with_fact("actual_child_count", children.len())
@@ -142,7 +142,7 @@ impl ExecutionPlan for NativeCudfExec {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_exec.execute",
+                "datafusion_nexus.native_exec.execute",
                 "native cudf execution exposes exactly one output partition",
             )
             .with_fact("partition", partition)
@@ -165,7 +165,7 @@ impl ExecutionPlan for NativeCudfExec {
             // facts by `native_query_runtime_error`.
             let result = execute_query_plan(context_lease.context(), &plan).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
-                    "datafusion_cudf.native_exec.execute",
+                    "datafusion_nexus.native_exec.execute",
                     "native cudf query execution failed",
                     error,
                 ))
@@ -176,7 +176,7 @@ impl ExecutionPlan for NativeCudfExec {
                 return Err(DataFusionError::from(
                     Error::new(
                         ErrorCode::InvalidExecutionPlan,
-                        "datafusion_cudf.native_exec.execute",
+                        "datafusion_nexus.native_exec.execute",
                         "native cudf execution produced a non-host result for DataFusion",
                     )
                     .with_fact("result_sink", "gpu_resident"),

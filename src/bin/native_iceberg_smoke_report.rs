@@ -14,7 +14,6 @@ use arrow::{
 };
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
-use cudf_query_engine::{ParquetReadStrategy, SourceSchedulerPolicy};
 use datafusion::{
     datasource::{
         file_format::parquet::ParquetFormat,
@@ -24,7 +23,7 @@ use datafusion::{
     physical_plan::{collect, metrics::MetricsSet},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode,
@@ -50,6 +49,7 @@ use iceberg::{
     io::FileIO,
     table::{StaticTable, Table},
 };
+use nexus_query_engine::{ParquetReadStrategy, SourceSchedulerPolicy};
 use object_store::aws::AmazonS3Builder;
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
@@ -82,16 +82,16 @@ const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_ICEBERG_NATIVE_STDDEV_
 const TPCH_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCH_SCALE_FACTOR";
 const TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
-const REST_URI_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_URI";
-const REST_WAREHOUSE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_WAREHOUSE";
-const REST_NAMESPACE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_NAMESPACE";
+const REST_URI_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_URI";
+const REST_WAREHOUSE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE";
+const REST_NAMESPACE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_NAMESPACE";
 const REST_TABLE_ENV: &str = "CUDF_ICEBERG_REST_TABLE";
-const REST_S3_ENDPOINT_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT";
-const REST_S3_REGION_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_REGION";
-const REST_S3_PATH_STYLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE";
-const REST_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID";
-const REST_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY";
-const REST_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SESSION_TOKEN";
+const REST_S3_ENDPOINT_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT";
+const REST_S3_REGION_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_REGION";
+const REST_S3_PATH_STYLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE";
+const REST_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID";
+const REST_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY";
+const REST_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN";
 const DEFAULT_TPCH_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 const DEFAULT_SMOKE_GLUE_CATALOG_NAME: &str = "glue";
 const DEFAULT_SMOKE_GLUE_DATABASE: &str = "demo_db";
@@ -186,7 +186,7 @@ async fn run_report_with_optional_stream(
         .with_catalog_type(catalog_type.clone())
         .with_parquet_read_strategy_config(config.fixture.parquet_read_strategy_config());
     let staging_records = Arc::new(Mutex::new(Vec::new()));
-    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-stage-").tempdir()?);
+    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-stage-").tempdir()?);
     let planner = Arc::new(StagingTableFormatPlanner::new(
         planner,
         file_io,
@@ -257,7 +257,7 @@ async fn run_tpch_subset_report_with_execution_mode(
 
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
-    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-tpch-stage-").tempdir()?);
+    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-tpch-stage-").tempdir()?);
     let (ctx, native_rule) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark)?;
 
@@ -362,7 +362,7 @@ async fn run_tpcds_subset_report(
 
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
-    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-tpcds-stage-").tempdir()?);
+    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-tpcds-stage-").tempdir()?);
     let (ctx, native_rule) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark)?;
 
@@ -473,7 +473,8 @@ async fn run_custom_subset_report(
 
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
-    let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-custom-stage-").tempdir()?);
+    let staging_tempdir =
+        Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-custom-stage-").tempdir()?);
     let native_execution_profile = match workload {
         CustomWorkload::Tpch => NativeExecutionProfile::TpchBenchmark,
         CustomWorkload::Tpcds => NativeExecutionProfile::TpcdsBenchmark,
@@ -1101,7 +1102,7 @@ impl IcebergNativeSmokeFixture {
             Self::LocalMetadata { .. } => TableFormatParquetReadStrategyConfig::from_env(),
             Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, .. } => {
                 let mut config =
-                    datafusion_cudf::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
+                    datafusion_nexus::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
                 if let Some(catalog_id) = catalog_id.as_ref() {
                     config = config.with_catalog_id(catalog_id.clone());
                 }
@@ -1114,12 +1115,12 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
-    fn source_storage_profile(&self) -> Option<datafusion_cudf::SourceStorageProfile> {
+    fn source_storage_profile(&self) -> Option<datafusion_nexus::SourceStorageProfile> {
         match self {
             Self::LocalMetadata { .. } => None,
             Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, .. } => {
                 let mut config =
-                    datafusion_cudf::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
+                    datafusion_nexus::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
                 if let Some(catalog_id) = catalog_id.as_ref() {
                     config = config.with_catalog_id(catalog_id.clone());
                 }
@@ -1436,7 +1437,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
     fn plan_scan<'a>(
         &'a self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_cudf::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
         Box::pin(async move {
             eprintln!(
                 "[native_iceberg_smoke_report] phase=table_format_scan_planning_start table_name={} staging_mode={}",
@@ -1448,7 +1449,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
             tokio::fs::create_dir_all(&table_stage_dir).await.map_err(|error| {
                 Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.table_format.iceberg.stage_object_store_data_files",
+                    "datafusion_nexus.table_format.iceberg.stage_object_store_data_files",
                     "failed to create Iceberg object-store staging directory",
                 )
                 .with_fact("table_name", &self.table_name)
@@ -1460,7 +1461,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
                     |error| {
                         Error::new(
                             ErrorCode::InvalidExecutionPlan,
-                            "datafusion_cudf.table_format.iceberg.stage_object_store_data_files",
+                            "datafusion_nexus.table_format.iceberg.stage_object_store_data_files",
                             "failed to stage Iceberg object-store data files for native smoke execution",
                         )
                         .with_fact("table_name", &self.table_name)
@@ -1539,7 +1540,7 @@ async fn run_query_with_registered_native_tables(
     let df = ctx.sql(&sql).await?;
     let task_ctx = df.task_ctx();
     let physical_plan = df.create_physical_plan().await?;
-    let planning_row = datafusion_cudf::NativeDataFusionPlanningReport::from_retained_rule(
+    let planning_row = datafusion_nexus::NativeDataFusionPlanningReport::from_retained_rule(
         query_id.clone(),
         Arc::clone(&physical_plan),
         native_rule,
@@ -1776,7 +1777,7 @@ async fn run_query_with_registered_native_tables(
 }
 
 fn native_session_context(
-    source_storage_profile: Option<datafusion_cudf::SourceStorageProfile>,
+    source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
     let mut execution_config =
@@ -1978,7 +1979,7 @@ fn clear_staging_records(records: &Arc<Mutex<Vec<StagingRecord>>>) {
 
 fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableFormatScanDiagnostics {
     if records.is_empty() {
-        return TableFormatScanPlan::new(datafusion_cudf::TableFormat::Iceberg).diagnostics();
+        return TableFormatScanPlan::new(datafusion_nexus::TableFormat::Iceberg).diagnostics();
     }
 
     let diagnostics = records.iter().map(|record| record.scan_plan.diagnostics()).collect::<Vec<_>>();
@@ -2145,7 +2146,7 @@ pub(crate) fn fingerprint_output_batches(
     schema: &arrow::datatypes::Schema,
     batches: &[RecordBatch],
     sql: &str,
-) -> datafusion_cudf::ParityComparisonResult {
+) -> datafusion_nexus::ParityComparisonResult {
     compare_record_batches(
         schema,
         batches,
@@ -2201,7 +2202,7 @@ pub(crate) fn cpu_baseline_listing_urls_from_scan_plan(
 }
 
 fn cpu_baseline_listing_url_from_data_file(
-    file: &datafusion_cudf::TableFormatDataFile,
+    file: &datafusion_nexus::TableFormatDataFile,
 ) -> Option<datafusion::error::Result<ListingTableUrl>> {
     if let Some(resolved) = &file.resolved_parquet_source
         && resolved.read_strategy == ParquetReadStrategy::LocalCacheKvikio

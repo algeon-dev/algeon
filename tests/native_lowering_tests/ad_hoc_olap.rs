@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn native_pipeline_ad_hoc_olap_workload_lowers_into_native_query_plans() {
-    let dir = unique_temp_dir("datafusion-cudf-ad-hoc-olap-lowering");
+    let dir = unique_temp_dir("datafusion-nexus-ad-hoc-olap-lowering");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let items = ad_hoc_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();

@@ -8,7 +8,6 @@
 
 use std::{any::Any, sync::Arc};
 
-use cudf_query_engine::{ExecutionContext, GpuResultHandle, QueryOutput, QueryPlan, execute_query_plan};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
@@ -18,6 +17,7 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
+use nexus_query_engine::{ExecutionContext, GpuResultHandle, QueryOutput, QueryPlan, execute_query_plan};
 
 use super::{
     common::{comma_separated, conservative_properties, gpu_resident_source_names, native_query_runtime_error},
@@ -60,14 +60,14 @@ impl NativeCudfGpuProducerExec {
         if input_name.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_gpu_producer.try_new",
+                "datafusion_nexus.native_gpu_producer.try_new",
                 "native GPU-resident producer input name must not be empty",
             ));
         }
         if plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_gpu_producer.try_new",
+                "datafusion_nexus.native_gpu_producer.try_new",
                 "native GPU-resident producer requires a GPU-resident result sink",
             )
             .with_fact("result_sink", "host_arrow"));
@@ -76,7 +76,7 @@ impl NativeCudfGpuProducerExec {
         if !source_names.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_gpu_producer.try_new",
+                "datafusion_nexus.native_gpu_producer.try_new",
                 "native GPU-resident producer cannot consume external GPU inputs",
             )
             .with_fact("gpu_resident_source_count", source_names.len())
@@ -113,7 +113,7 @@ impl NativeCudfGpuProducerExec {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.native_gpu_producer.execute_gpu",
+                "datafusion_nexus.native_gpu_producer.execute_gpu",
                 "native GPU-resident producer exposes exactly one output partition",
             )
             .with_fact("partition", partition)
@@ -123,7 +123,7 @@ impl NativeCudfGpuProducerExec {
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let result = execute_query_plan(native_context, &self.plan).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
-                "datafusion_cudf.native_gpu_producer.execute_gpu",
+                "datafusion_nexus.native_gpu_producer.execute_gpu",
                 "native cudf GPU-resident fragment execution failed",
                 error,
             ))
@@ -134,7 +134,7 @@ impl NativeCudfGpuProducerExec {
             return Err(DataFusionError::from(
                 Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.native_gpu_producer.execute_gpu",
+                    "datafusion_nexus.native_gpu_producer.execute_gpu",
                     "native GPU-resident producer materialized a host result",
                 )
                 .with_fact("result_sink", "host_arrow"),
@@ -188,7 +188,7 @@ pub(crate) async fn execute_gpu_resident_producer_with_context(
     }
     Err(Error::new(
         ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.native_gpu_producer.execute_gpu",
+        "datafusion_nexus.native_gpu_producer.execute_gpu",
         "execution plan is not a GPU-resident producer",
     )
     .with_fact("plan_name", plan.name())
@@ -240,7 +240,7 @@ impl ExecutionPlan for NativeCudfGpuProducerExec {
         if !children.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidChildCount,
-                "datafusion_cudf.native_gpu_producer.with_new_children",
+                "datafusion_nexus.native_gpu_producer.with_new_children",
                 "native GPU-resident producer expected no children",
             )
             .with_fact("actual_child_count", children.len())
@@ -252,7 +252,7 @@ impl ExecutionPlan for NativeCudfGpuProducerExec {
     fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.native_gpu_producer.execute",
+            "datafusion_nexus.native_gpu_producer.execute",
             "native GPU-resident producer is an internal device boundary and cannot stream host Arrow directly",
         )
         .with_fact("result_sink", "gpu_resident")

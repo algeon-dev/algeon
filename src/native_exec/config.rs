@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudf_query_engine::{
+use nexus_query_engine::{
     AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
     ServiceStreamPool, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
@@ -370,7 +370,7 @@ impl NativeCudfExecutionConfig {
         if let Some(handle) = &self.query_service_handle {
             return handle.acquire_context().map(NativeCudfExecutionContext::tenant_bound).map_err(|error| {
                 Error::from_native(
-                    "datafusion_cudf.native_exec.context",
+                    "datafusion_nexus.native_exec.context",
                     "failed to acquire query service native cudf execution context",
                     error,
                 )
@@ -409,7 +409,7 @@ impl NativeCudfExecutionConfig {
         }
         builder.build().map(NativeCudfExecutionContext::standalone).map_err(|error| {
             Error::from_native(
-                "datafusion_cudf.native_exec.context",
+                "datafusion_nexus.native_exec.context",
                 "failed to build native cudf execution context",
                 error,
             )

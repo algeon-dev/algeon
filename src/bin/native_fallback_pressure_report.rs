@@ -15,7 +15,7 @@ use datafusion::{
     physical_plan::ExecutionPlan,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     NativeCudfExecutionConfig, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
     NativePipelineExecutionMode, TpcdsDatasetMetadata, TpchDatasetMetadata, prepare_tpcds_report_dataset,
     prepare_tpch_report_dataset, tpcds_fallback_pressure_workload_items, tpcds_report_session_config,
@@ -26,7 +26,7 @@ const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXEC
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
+    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure");
     let workload = std::env::var("CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
 
     let (items, workload_dataset) = match workload.as_str() {
@@ -104,13 +104,13 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
     items
 }
 
-async fn tpch_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchWorkload> {
+async fn tpch_workload_items(dir: &std::path::Path) -> datafusion_nexus::TpchWorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
 }
 
-async fn tpch_scalar_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchWorkload> {
+async fn tpch_scalar_workload_items(dir: &std::path::Path) -> datafusion_nexus::TpchWorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_scalar_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
@@ -121,7 +121,7 @@ struct TpchWorkload {
     metadata: TpchDatasetMetadata,
 }
 
-async fn tpcds_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsWorkload> {
+async fn tpcds_workload_items(dir: &std::path::Path) -> datafusion_nexus::TpcdsWorkloadResult<TpcdsWorkload> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let items = tpcds_fallback_pressure_workload_items(&root, tpcds_report_session_config()).await?;
     Ok(TpcdsWorkload { items, metadata })

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required_columns() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-phase2-scalars");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-phase2-scalars");
     let path = dir.join("input.parquet");
     write_phase2_scalar_input_parquet(&path);
 
@@ -35,7 +35,7 @@ async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required
 
 #[tokio::test]
 async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-phase2-nullable-scalars");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-phase2-nullable-scalars");
     let path = dir.join("input.parquet");
     write_nullable_phase2_scalar_input_parquet(&path);
 
@@ -91,7 +91,7 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
     ];
 
     for (name, sql) in cases {
-        let dir = unique_temp_dir(format!("datafusion-cudf-native-runtime-phase2-null-semantics-{name}").as_str());
+        let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-phase2-null-semantics-{name}").as_str());
         let path = dir.join("input.parquet");
         write_nullable_phase2_scalar_input_parquet(&path);
 
@@ -127,7 +127,7 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
         ("substring-negative-length", SQL_INVALID_SUBSTRING_NEGATIVE_LENGTH_QUERY),
         ("substring-stop-overflow", SQL_INVALID_SUBSTRING_STOP_OVERFLOW_QUERY),
     ] {
-        let dir = unique_temp_dir(format!("datafusion-cudf-native-runtime-invalid-{name}").as_str());
+        let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-invalid-{name}").as_str());
         let path = dir.join("input.parquet");
         write_phase2_scalar_input_parquet(&path);
 
@@ -139,8 +139,8 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
         assert!(
             matches!(
                 lowering.report.outcomes()[0],
-                datafusion_cudf::CandidateOutcome::Rejected {
-                    reason: datafusion_cudf::FallbackReason::UnsupportedExpression,
+                datafusion_nexus::CandidateOutcome::Rejected {
+                    reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
                     ..
                 }
             ),
@@ -154,7 +154,7 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
 
 #[tokio::test]
 async fn native_runtime_substring_max_start_length_one_is_in_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-substring-max-start-boundary");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-substring-max-start-boundary");
     let path = dir.join("input.parquet");
     write_phase2_scalar_input_parquet(&path);
 

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_AVG_AGGREGATE_QUERY).await;
@@ -25,7 +25,7 @@ async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
 
 #[tokio::test]
 async fn direct_friendly_sql_global_avg_lowers_to_native_avg() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-global-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-global-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AVG_QUERY).await;
@@ -48,7 +48,7 @@ async fn direct_friendly_sql_global_avg_lowers_to_native_avg() {
 
 #[tokio::test]
 async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-global-aggregate-parity");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-global-aggregate-parity");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AGGREGATE_PARITY_QUERY).await;
@@ -77,7 +77,7 @@ async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
 
 #[tokio::test]
 async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-q6-shaped");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-q6-shaped");
     let path = dir.join("lineitem.parquet");
     write_q6_lineitem_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
@@ -117,7 +117,7 @@ async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
 
 #[tokio::test]
 async fn direct_friendly_sql_filtered_avg_lowers() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-filtered-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-filtered-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_FILTERED_AVG_QUERY).await;
@@ -137,7 +137,7 @@ async fn direct_friendly_sql_filtered_avg_lowers() {
 
 #[tokio::test]
 async fn direct_friendly_sql_distinct_avg_lowers_as_explicit_aggregate_stack() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distinct-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distinct-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DISTINCT_AVG_QUERY).await;

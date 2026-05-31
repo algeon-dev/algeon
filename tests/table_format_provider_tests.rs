@@ -4,10 +4,6 @@ use std::{
 };
 
 use arrow::datatypes::{DataType, Field, Schema};
-use cudf_query_engine::{
-    CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, PlanNode, ResolvedParquetSource, SourceDecodeInput,
-    SourceNode,
-};
 use datafusion::{
     common::ScalarValue,
     datasource::TableProvider,
@@ -19,7 +15,7 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CandidateOutcome, CudfTableFormatScanExec, FallbackReason, TableFormat, TableFormatColumnMapping,
     TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
     TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
@@ -29,6 +25,10 @@ use datafusion_cudf::{
     resolve_table_format_parquet_source_with_metadata,
 };
 use futures::future::BoxFuture;
+use nexus_query_engine::{
+    CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, PlanNode, ResolvedParquetSource, SourceDecodeInput,
+    SourceNode,
+};
 
 #[derive(Debug)]
 struct RecordingPlanner {
@@ -50,7 +50,7 @@ impl TableFormatPlanner for RecordingPlanner {
     fn plan_scan<'a>(
         &'a self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_cudf::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
         let plan = self.plan.clone().with_scan_limit(scan_limit);
@@ -556,7 +556,7 @@ fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatSc
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
 }
 
-fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_query_engine::LocalParquetSource {
+fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_query_engine::LocalParquetSource {
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -570,6 +570,6 @@ fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_que
         .expect("native plan should contain a local parquet source")
 }
 
-fn native_plan_limit_count(plan: &cudf_query_engine::QueryPlan) -> usize {
+fn native_plan_limit_count(plan: &nexus_query_engine::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Limit(_))).count()
 }

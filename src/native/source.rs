@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::{
-    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
-};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_plan::filter::FilterExec,
+};
+use nexus_query_engine::{
+    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
+    PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
 };
 use parquet::file::{
     metadata::RowGroupMetaData,

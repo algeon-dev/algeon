@@ -2,7 +2,7 @@ use super::{super::*, tpch_expectations::*};
 
 #[tokio::test]
 async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query() {
-    let dir = unique_temp_dir("datafusion-cudf-tpch-fallback-pressure");
+    let dir = unique_temp_dir("datafusion-nexus-tpch-fallback-pressure");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
@@ -58,7 +58,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert!(text.contains("# workload=tpch\n"));
     assert!(text.contains("# dataset_scale_factor=tiny\n"));
     assert!(text.contains("# dataset_provenance=generated_tiny\n"));
-    assert!(text.contains("# dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));
+    assert!(text.contains("# dataset_generation_command=datafusion-nexus::write_tiny_tpch_parquet_dataset\n"));
     assert!(text.contains("# dataset_table_count=8\n"));
     assert!(text.contains("# dataset_file_count=8\n"));
     assert!(text.contains("# dataset_total_rows=26\n"));
@@ -83,7 +83,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
 
 #[tokio::test]
 async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
-    let dir = unique_temp_dir("datafusion-cudf-tpch-scalar-fallback-pressure");
+    let dir = unique_temp_dir("datafusion-nexus-tpch-scalar-fallback-pressure");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();

@@ -16,7 +16,7 @@ mod datasets;
 #[path = "cugraph_parity/oracle.rs"]
 mod oracle;
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm,
     cugraph_parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
 };

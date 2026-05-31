@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, SchemaRef};
-use cudf_query_engine::{CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue};
 use datafusion::{
     common::{JoinSide as DataFusionJoinSide, ScalarValue},
     physical_expr::{
@@ -12,6 +11,7 @@ use datafusion::{
     },
     physical_plan::joins::utils::JoinFilter,
 };
+use nexus_query_engine::{CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue};
 
 use super::{
     LoweredNativeInput,
@@ -230,7 +230,7 @@ fn lower_join_filter_case_expr(
             let when = match &base_expr {
                 Some(base_expr) => NativeExpr::binary(
                     base_expr.clone(),
-                    cudf_query_engine::BinaryOp::Eq,
+                    nexus_query_engine::BinaryOp::Eq,
                     lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
                 ),
                 None => lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
@@ -484,7 +484,7 @@ fn lower_join_filter_side_case_expr(
             let when = match &base_expr {
                 Some(base_expr) => NativeExpr::binary(
                     base_expr.clone(),
-                    cudf_query_engine::BinaryOp::Eq,
+                    nexus_query_engine::BinaryOp::Eq,
                     lower_join_filter_side_expr(when, context, side_schema, side, required)?,
                 ),
                 None => lower_join_filter_side_expr(when, context, side_schema, side, required)?,

@@ -1,4 +1,4 @@
-//! Session-state helpers for installing datafusion-cudf public integrations.
+//! Session-state helpers for installing datafusion-nexus public integrations.
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
 //! is placed before DataFusion aggregate statistics so count queries can be
@@ -22,13 +22,13 @@ use crate::planner::{
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
-pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
+pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native";
 /// Public name and deduplication key for the count-only native probe rule.
-pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native_count_only";
+pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native_count_only";
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
-/// DataFusion physical optimizer rule list after datafusion-cudf insertion.
+/// DataFusion physical optimizer rule list after datafusion-nexus insertion.
 pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
 /// Return DataFusion's default physical optimizer rules with the cudf native

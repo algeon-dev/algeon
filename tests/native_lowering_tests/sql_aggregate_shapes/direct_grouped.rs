@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-friendly");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-friendly");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
@@ -31,7 +31,7 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
 
 #[tokio::test]
 async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-parity");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-aggregate-parity");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_AGGREGATE_PARITY_QUERY).await;
@@ -59,7 +59,7 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
 
 #[tokio::test]
 async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-statistical-aggregates");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-statistical-aggregates");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_STATISTICAL_AGGREGATE_QUERY).await;
@@ -84,7 +84,7 @@ async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
 
 #[tokio::test]
 async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-distinct-nunique");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-count-distinct-nunique");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
@@ -122,7 +122,7 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
 
 #[tokio::test]
 async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-star");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-count-star");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_COUNT_STAR_QUERY).await;
@@ -154,7 +154,7 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
 
 #[tokio::test]
 async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-zero-column-count");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-zero-column-count");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan(&path));
@@ -187,7 +187,7 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
 
 #[tokio::test]
 async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_shape() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-count-only");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-count-only");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await;
@@ -200,7 +200,7 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     assert_eq!(
         result.report.outcomes()[0],
         CandidateOutcome::Rewritten {
-            candidate: datafusion_cudf::GpuCandidate::with_operator_count(
+            candidate: datafusion_nexus::GpuCandidate::with_operator_count(
                 "ProjectionExec(AggregateExec(LocalParquetScan))",
                 1,
                 3,
@@ -226,7 +226,7 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
 
 #[tokio::test]
 async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-filter-rewrite");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-filter-rewrite");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
@@ -258,7 +258,7 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
 
 #[tokio::test]
 async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-not-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-not-filter");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);

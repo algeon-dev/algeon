@@ -1,4 +1,4 @@
-// Minimal three-way benchmark runner for TPC-DS used to compare datafusion-cudf
+// Minimal three-way benchmark runner for TPC-DS used to compare datafusion-nexus
 // native GPU execution against tuned CPU DataFusion (and, separately, external-engine via
 // its own benchmark_and_validate.sh runner — that lives outside this binary).
 //
@@ -25,7 +25,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
     NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, StatisticalAggregateExecutionMode, TPCDS_QUERIES,

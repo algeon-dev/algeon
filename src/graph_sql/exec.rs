@@ -14,18 +14,6 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{DataFrame, Series, frame::factorization::Codebook};
-use cudf_query_engine::{
-    BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
-    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams,
-    GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
-    GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams,
-    GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams,
-    GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
-    GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs, stable_graph_result_schema,
-};
 use datafusion::{
     common::{DataFusionError, Result},
     execution::context::TaskContext,
@@ -42,6 +30,18 @@ use datafusion::{
     },
 };
 use futures::{TryStreamExt, future::BoxFuture};
+use nexus_query_engine::{
+    BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
+    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams,
+    GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
+    GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams,
+    GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams,
+    GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
+    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
+    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs, stable_graph_result_schema,
+};
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
@@ -88,7 +88,7 @@ impl CugraphAlgoExec {
             projection,
             limit,
             native_execution_config,
-            format!("__datafusion_cudf_cugraph_result_{id}"),
+            format!("__datafusion_nexus_cugraph_result_{id}"),
         )
     }
 
@@ -137,7 +137,7 @@ impl CugraphAlgoExec {
             if partition != 0 {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.cugraph_sql.execute_gpu",
+                    "datafusion_nexus.cugraph_sql.execute_gpu",
                     "cuGraph SQL GPU-resident producer exposes exactly one output partition",
                 )
                 .with_fact("partition", partition)
@@ -173,7 +173,7 @@ impl CugraphAlgoExec {
                 )?;
                 let batch = decoded.to_host_record_batch().map_err(|error| {
                     DataFusionError::from(Error::from_native(
-                        "datafusion_cudf.cugraph_sql.logical_output",
+                        "datafusion_nexus.cugraph_sql.logical_output",
                         "failed to materialize decoded cuGraph logical BFS output",
                         error,
                     ))
@@ -197,7 +197,7 @@ impl CugraphAlgoExec {
             let frame = record_batches_to_gpu(native_context, &[path])?;
             let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
                 DataFusionError::from(Error::from_native(
-                    "datafusion_cudf.cugraph_sql.path_output",
+                    "datafusion_nexus.cugraph_sql.path_output",
                     "failed to bind BFS path output as a GPU-resident result",
                     error,
                 ))
@@ -209,7 +209,7 @@ impl CugraphAlgoExec {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.cugraph_sql.execute_gpu",
+                "datafusion_nexus.cugraph_sql.execute_gpu",
                 "cuGraph SQL GPU-resident producer exposes exactly one output partition",
             )
             .with_fact("partition", partition)
@@ -335,7 +335,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         if children.len() != expected {
             return Err(Error::new(
                 ErrorCode::InvalidChildCount,
-                "datafusion_cudf.cugraph_sql.with_new_children",
+                "datafusion_nexus.cugraph_sql.with_new_children",
                 "cuGraph SQL execution received an unexpected child count",
             )
             .with_fact("expected_child_count", expected)
@@ -360,7 +360,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.cugraph_sql.execute",
+                "datafusion_nexus.cugraph_sql.execute",
                 "cuGraph SQL execution exposes exactly one output partition",
             )
             .with_fact("partition", partition)
@@ -408,7 +408,7 @@ impl ExecutionPlan for CugraphAlgoExec {
                 let decoded = decode_bfs_logical_gpu_output(context, handle, &codebook, decoded_schema)?;
                 let batch = decoded.to_host_record_batch().map_err(|error| {
                     DataFusionError::from(Error::from_native(
-                        "datafusion_cudf.cugraph_sql.logical_output",
+                        "datafusion_nexus.cugraph_sql.logical_output",
                         "failed to materialize decoded cuGraph logical BFS output",
                         error,
                     ))
@@ -670,7 +670,7 @@ async fn execute_edge_source_to_gpu(
         let native_plan = native.native_plan().clone_with_gpu_resident_sink();
         let result = execute_query_plan(context, &native_plan).map_err(|error| {
             DataFusionError::from(Error::from_native(
-                "datafusion_cudf.cugraph_sql.edge_source_native",
+                "datafusion_nexus.cugraph_sql.edge_source_native",
                 "native cuGraph edge-source execution failed",
                 error,
             ))
@@ -679,7 +679,7 @@ async fn execute_edge_source_to_gpu(
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.cugraph_sql.edge_source_native",
+                "datafusion_nexus.cugraph_sql.edge_source_native",
                 "native cuGraph edge source did not produce a GPU-resident result",
             )
             .into());
@@ -693,7 +693,7 @@ async fn execute_edge_source_to_gpu(
             let Some(producer) = native_gpu_resident_producer(child.as_ref()) else {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
-                    "datafusion_cudf.cugraph_sql.edge_source_composed",
+                    "datafusion_nexus.cugraph_sql.edge_source_composed",
                     "native composed cuGraph edge-source child was not a GPU-resident producer",
                 )
                 .with_fact("child_name", child.name())
@@ -705,7 +705,7 @@ async fn execute_edge_source_to_gpu(
         }
         let result = execute_query_plan_with_gpu_inputs(context, &native_plan, &gpu_inputs).map_err(|error| {
             DataFusionError::from(Error::from_native(
-                "datafusion_cudf.cugraph_sql.edge_source_composed",
+                "datafusion_nexus.cugraph_sql.edge_source_composed",
                 "native composed cuGraph edge-source execution failed",
                 error,
             ))
@@ -714,7 +714,7 @@ async fn execute_edge_source_to_gpu(
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_cudf.cugraph_sql.edge_source_composed",
+                "datafusion_nexus.cugraph_sql.edge_source_composed",
                 "native composed cuGraph edge source did not produce a GPU-resident result",
             )
             .into());
@@ -789,10 +789,10 @@ fn prepare_bfs_logical_gpu_inputs(
     let mut domain_parts = vec![cudf_series(&edge_frame, &spec.src_col)?, cudf_series(&edge_frame, &spec.dst_col)?];
     let source_series = context.runtime().series(&[source_vertex.as_str()]).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.logical_mapping",
+            "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to create GPU source-vertex series for cuGraph logical BFS mapping",
-            cudf_query_engine::QueryError::from_cudf(
-                "datafusion_cudf.cugraph_sql.logical_mapping",
+            nexus_query_engine::QueryError::from_cudf(
+                "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to create GPU source-vertex series for cuGraph logical BFS mapping",
                 error,
             ),
@@ -805,10 +805,10 @@ fn prepare_bfs_logical_gpu_inputs(
     let domain_refs = domain_parts.iter().collect::<Vec<_>>();
     let domain = Series::concat(&domain_refs).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.logical_mapping",
+            "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to concatenate cuGraph logical BFS mapping domain on GPU",
-            cudf_query_engine::QueryError::from_cudf(
-                "datafusion_cudf.cugraph_sql.logical_mapping",
+            nexus_query_engine::QueryError::from_cudf(
+                "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to concatenate cuGraph logical BFS mapping domain on GPU",
                 error,
             ),
@@ -816,10 +816,10 @@ fn prepare_bfs_logical_gpu_inputs(
     })?;
     let codebook = domain.codebook().map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.logical_mapping",
+            "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to build cuGraph logical BFS codebook on GPU",
-            cudf_query_engine::QueryError::from_cudf(
-                "datafusion_cudf.cugraph_sql.logical_mapping",
+            nexus_query_engine::QueryError::from_cudf(
+                "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to build cuGraph logical BFS codebook on GPU",
                 error,
             ),
@@ -1045,7 +1045,7 @@ fn decode_bfs_logical_gpu_output(
     let frame = DataFrame::from_series(columns).map_err(cudf_logical_mapping_error)?;
     GpuResultHandle::new(context, GpuDataFrame::new(frame), output_schema).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.logical_output",
+            "datafusion_nexus.cugraph_sql.logical_output",
             "failed to bind decoded cuGraph logical BFS output",
             error,
         ))
@@ -1067,7 +1067,7 @@ fn apply_gpu_projection_limit(
     if projection.is_none() && limit.is_none() {
         return Ok(handle);
     }
-    let input_name = "__datafusion_cudf_cugraph_logical_output";
+    let input_name = "__datafusion_nexus_cugraph_logical_output";
     let mut inputs = GpuResidentInputMap::new();
     inputs.insert(input_name.to_string(), handle);
     let mut builder = QueryPlanBuilder::new();
@@ -1082,7 +1082,7 @@ fn apply_gpu_projection_limit(
                     input_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
                         plan_error(format!("cuGraph output projection index {index} is out of range"))
                     })?;
-                Ok(ProjectionOutput::new(cudf_query_engine::Expr::column(field.name()), field))
+                Ok(ProjectionOutput::new(nexus_query_engine::Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
         root_schema = projected_schema(&input_schema, Some(projection))?;
@@ -1094,7 +1094,7 @@ fn apply_gpu_projection_limit(
     let plan = builder.finish_gpu_resident(root);
     let result = execute_query_plan_with_gpu_inputs(context, &plan, &inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.logical_output",
+            "datafusion_nexus.cugraph_sql.logical_output",
             "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
             error,
         ))
@@ -1205,14 +1205,14 @@ fn bfs_path_target_vertex(
         GpuResultHandle::new(context, GpuDataFrame::new(frame.frame.frame().clone()), Arc::clone(&frame.schema))
             .map_err(|error| {
                 DataFusionError::from(Error::from_native(
-                    "datafusion_cudf.cugraph_sql.path_output",
+                    "datafusion_nexus.cugraph_sql.path_output",
                     "failed to bind BFS target predicate source for path reconstruction",
                     error,
                 ))
             })?;
     let batch = handle.to_host_record_batch().map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.path_output",
+            "datafusion_nexus.cugraph_sql.path_output",
             "failed to materialize BFS target predicate source for path reconstruction",
             error,
         ))
@@ -1391,10 +1391,10 @@ fn optional_i64_value(array: &dyn Array, row: usize) -> Result<Option<i64>> {
 
 fn cudf_logical_mapping_error(error: cudf::Error) -> DataFusionError {
     Error::from_native(
-        "datafusion_cudf.cugraph_sql.logical_mapping",
+        "datafusion_nexus.cugraph_sql.logical_mapping",
         "cuGraph logical BFS GPU mapping failed",
-        cudf_query_engine::QueryError::from_cudf(
-            "datafusion_cudf.cugraph_sql.logical_mapping",
+        nexus_query_engine::QueryError::from_cudf(
+            "datafusion_nexus.cugraph_sql.logical_mapping",
             "cuGraph logical BFS GPU mapping failed",
             error,
         ),
@@ -1410,7 +1410,7 @@ fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) ->
     let Some(first_batch) = batches.first() else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "cuGraph edge source produced no RecordBatches",
         )
         .into());
@@ -1420,10 +1420,10 @@ fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) ->
         .map(|batch| {
             cudf::DataFrame::from_record_batch(context.runtime(), batch).map_err(|error| {
                 DataFusionError::from(Error::from_native(
-                    "datafusion_cudf.cugraph_sql.edge_source_host_import",
+                    "datafusion_nexus.cugraph_sql.edge_source_host_import",
                     "failed to import host Arrow edge-source batch into cudf",
-                    cudf_query_engine::QueryError::from_cudf(
-                        "datafusion_cudf.cugraph_sql.edge_source_host_import",
+                    nexus_query_engine::QueryError::from_cudf(
+                        "datafusion_nexus.cugraph_sql.edge_source_host_import",
                         "failed to import host Arrow edge-source batch into cudf",
                         error,
                     ),
@@ -1438,10 +1438,10 @@ fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) ->
     let rest = frames.iter().collect::<Vec<_>>();
     let concatenated = first.concat_many(&rest).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "failed to concatenate imported cuGraph edge-source batches",
-            cudf_query_engine::QueryError::from_cudf(
-                "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            nexus_query_engine::QueryError::from_cudf(
+                "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to concatenate imported cuGraph edge-source batches",
                 error,
             ),
@@ -1450,7 +1450,7 @@ fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) ->
     if concatenated.num_columns() != first_batch.num_columns() {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "cuGraph edge-source import changed column count",
         )
         .with_fact("expected_column_count", first_batch.num_columns())
@@ -1484,7 +1484,7 @@ fn execute_cugraph_query_to_host(
     )?;
     let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.execute",
+            "datafusion_nexus.cugraph_sql.execute",
             "native cuGraph SQL query execution failed",
             error,
         ))
@@ -1493,7 +1493,7 @@ fn execute_cugraph_query_to_host(
     let QueryOutput::HostArrow(batch) = output else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.cugraph_sql.execute",
+            "datafusion_nexus.cugraph_sql.execute",
             "native cuGraph SQL query did not produce host Arrow output",
         )
         .into());
@@ -1525,7 +1525,7 @@ fn execute_cugraph_query_to_gpu_with_options(
     )?;
     let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.execute_gpu",
+            "datafusion_nexus.cugraph_sql.execute_gpu",
             "native cuGraph SQL GPU-resident query execution failed",
             error,
         ))
@@ -1534,7 +1534,7 @@ fn execute_cugraph_query_to_gpu_with_options(
     let QueryOutput::GpuResident(handle) = output else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.cugraph_sql.execute_gpu",
+            "datafusion_nexus.cugraph_sql.execute_gpu",
             "native cuGraph SQL query did not produce GPU-resident output",
         )
         .with_fact("result_sink", "host_arrow")
@@ -1560,7 +1560,7 @@ enum CugraphQuerySink {
 }
 
 struct CugraphQueryPlan {
-    plan: cudf_query_engine::QueryPlan,
+    plan: nexus_query_engine::QueryPlan,
     inputs: GpuResidentInputMap,
 }
 
@@ -1575,10 +1575,10 @@ fn cugraph_query_plan(
     sink: CugraphQuerySink,
     edge_normalize_inserted: bool,
 ) -> Result<CugraphQueryPlan> {
-    let input_name = "__datafusion_cudf_cugraph_edges";
+    let input_name = "__datafusion_nexus_cugraph_edges";
     let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&edge_schema)).map_err(|error| {
         DataFusionError::from(Error::from_native(
-            "datafusion_cudf.cugraph_sql.gpu_input",
+            "datafusion_nexus.cugraph_sql.gpu_input",
             "failed to bind cuGraph edge source as a GPU-resident native input",
             error,
         ))
@@ -1606,7 +1606,7 @@ fn cugraph_query_plan(
                     spec.output_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
                         plan_error(format!("cuGraph output projection index {index} is out of range"))
                     })?;
-                Ok(ProjectionOutput::new(cudf_query_engine::Expr::column(field.name()), field))
+                Ok(ProjectionOutput::new(nexus_query_engine::Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
         root = builder.add_projection(root, outputs);
@@ -1626,13 +1626,13 @@ fn bind_predicate_gpu_inputs(
     builder: &mut QueryPlanBuilder,
     inputs: &mut GpuResidentInputMap,
     predicate_frames: Vec<CugraphGpuFrame>,
-) -> Result<Vec<cudf_query_engine::NodeId>> {
+) -> Result<Vec<nexus_query_engine::NodeId>> {
     let mut nodes = Vec::with_capacity(predicate_frames.len());
     for (index, CugraphGpuFrame { schema, frame }) in predicate_frames.into_iter().enumerate() {
-        let input_name = format!("__datafusion_cudf_cugraph_bfs_predicate_{index}");
+        let input_name = format!("__datafusion_nexus_cugraph_bfs_predicate_{index}");
         let handle = GpuResultHandle::new(context, frame, Arc::clone(&schema)).map_err(|error| {
             DataFusionError::from(Error::from_native(
-                "datafusion_cudf.cugraph_sql.gpu_input",
+                "datafusion_nexus.cugraph_sql.gpu_input",
                 "failed to bind cuGraph BFS predicate source as a GPU-resident native input",
                 error,
             ))
@@ -1646,7 +1646,7 @@ fn bind_predicate_gpu_inputs(
 fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
-    predicate_nodes: &[cudf_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::NodeId],
 ) -> GraphAlgorithmSpec {
     let mut edge_columns =
         GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
@@ -1775,7 +1775,7 @@ fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
 
 fn native_algorithm_params(
     params: &CugraphAlgorithmParams,
-    predicate_nodes: &[cudf_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::NodeId],
 ) -> GraphAlgorithmParams {
     match params {
         CugraphAlgorithmParams::PageRank(params) => GraphAlgorithmParams::PageRank(GraphPageRankParams {
@@ -1877,7 +1877,7 @@ fn native_algorithm_params(
 
 fn native_bfs_params(
     params: &super::CugraphBfsParams,
-    predicate_nodes: &[cudf_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::NodeId],
 ) -> GraphBfsParams {
     let mut native = GraphBfsParams::new(params.source_vertex.as_i64().unwrap_or(0), params.depth_limit);
     let mut next = predicate_nodes.iter().copied();

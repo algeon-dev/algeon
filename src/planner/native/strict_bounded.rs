@@ -1,9 +1,9 @@
-use cudf_query_engine::{
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use nexus_query_engine::{
     CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport,
     capability::{CapabilityAnalysis, ContractStatus},
     strict_bounded_pipeline_admission,
 };
-use datafusion::common::{DataFusionError, Result as DataFusionResult};
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
@@ -132,7 +132,7 @@ pub(super) fn strict_bounded_admission_is_rejected(plan: &QueryPlan) -> DataFusi
     match strict_bounded_pipeline_admission(plan) {
         Ok(Some(_)) => Ok(false),
         Ok(None) => Ok(true),
-        Err(error) if error.code() == cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
+        Err(error) if error.code() == nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
         Err(error) => Err(strict_bounded_report_error(error)),
     }
 }
@@ -177,9 +177,9 @@ fn non_join_bounded_diagnostics() -> NativeStrictBoundedContractDiagnostics {
     }
 }
 
-fn strict_bounded_report_error(error: cudf_query_engine::QueryError) -> DataFusionError {
+fn strict_bounded_report_error(error: nexus_query_engine::QueryError) -> DataFusionError {
     Error::from_native(
-        "datafusion_cudf.native.strict_bounded_contract_diagnostics",
+        "datafusion_nexus.native.strict_bounded_contract_diagnostics",
         "strict bounded contract diagnostics could not be built",
         error,
     )
@@ -189,7 +189,7 @@ fn strict_bounded_report_error(error: cudf_query_engine::QueryError) -> DataFusi
 fn strict_bounded_candidate_error(message: &'static str) -> DataFusionError {
     Error::new(
         crate::error::ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.native.strict_bounded_contract_diagnostics",
+        "datafusion_nexus.native.strict_bounded_contract_diagnostics",
         message,
     )
     .into()

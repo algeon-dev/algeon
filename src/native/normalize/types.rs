@@ -1,5 +1,5 @@
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::LimitSpec;
+use nexus_query_engine::LimitSpec;
 
 use super::*;
 

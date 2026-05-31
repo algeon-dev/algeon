@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-in-list");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-in-list");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -17,7 +17,7 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::And, .. }
+        Expr::Binary { left, right, op: nexus_query_engine::BinaryOp::And, .. }
             if matches!(
                 left.as_ref(),
                 Expr::InList { expr, list, negated: false }
@@ -37,7 +37,7 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
 
 #[test]
 fn hash_join_filter_cast_lowers_to_native_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-cast");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -72,7 +72,7 @@ fn hash_join_filter_cast_lowers_to_native_residual_predicate() {
 
 #[test]
 fn hash_join_filter_decimal_to_float_cast_lowers_to_native_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-decimal-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-decimal-cast");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_decimal_payload_parquet_file(&left_path);
@@ -107,7 +107,7 @@ fn hash_join_filter_decimal_to_float_cast_lowers_to_native_residual_predicate() 
 
 #[test]
 fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-decimal-materialized-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-decimal-materialized-cast");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -164,7 +164,7 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
 
 #[test]
 fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-case-decimal-divide");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-case-decimal-divide");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_decimal_payload_parquet_file(&left_path);
@@ -208,7 +208,7 @@ fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_pred
 
 #[test]
 fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-substring-materialized");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-substring-materialized");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_string_payload_parquet_file(&left_path);
@@ -224,7 +224,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::Or, .. }
+        Expr::Binary { left, right, op: nexus_query_engine::BinaryOp::Or, .. }
             if matches!(
                 left.as_ref(),
                 Expr::InList { expr, list, negated: false }
@@ -236,7 +236,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::NotEq, .. }
+                    Expr::Binary { left, right, op: nexus_query_engine::BinaryOp::NotEq, .. }
                         if matches!(
                             left.as_ref(),
                             Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_1"
@@ -256,7 +256,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
 
 #[test]
 fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-upper-cast-materialized");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-upper-cast-materialized");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_string_payload_parquet_file(&left_path);
@@ -272,7 +272,7 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::NotEq, .. }
+        Expr::Binary { left, right, op: nexus_query_engine::BinaryOp::NotEq, .. }
             if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_country")
                 && matches!(
                     right.as_ref(),
@@ -291,7 +291,7 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
 
 #[test]
 fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_inputs() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-hash-join-filter-decimal-materialized-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-hash-join-filter-decimal-materialized-cast");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -337,7 +337,7 @@ fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_input
 
 #[test]
 fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-hash-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-hash-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -367,7 +367,7 @@ fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
 
 #[test]
 fn right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-semi-hash-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-semi-hash-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -393,7 +393,7 @@ fn right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec() {
 
 #[test]
 fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-anti-hash-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-anti-hash-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -431,7 +431,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
     datafusion_join_type: JoinType,
     expected_native_join_type: NativeJoinType,
 ) {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-semi-anti-count-star");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-semi-anti-count-star");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -458,7 +458,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
 
 #[test]
 fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nlj-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -481,7 +481,7 @@ fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Inner));
+    assert!(matches!(join.spec.join_type, nexus_query_engine::JoinType::Inner));
     assert!(join.spec.keys.is_empty());
     let residual = join.spec.residual_predicate.as_ref().expect("nested loop filter should lower as residual");
     assert!(matches!(
@@ -496,7 +496,7 @@ fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
 
 #[test]
 fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-full-nlj-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-full-nlj-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -519,7 +519,7 @@ fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() 
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Full));
+    assert!(matches!(join.spec.join_type, nexus_query_engine::JoinType::Full));
     assert!(join.spec.keys.is_empty());
     assert!(join.spec.residual_predicate.is_some());
 
@@ -528,7 +528,7 @@ fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() 
 
 #[test]
 fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-cross");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nlj-cross");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -551,7 +551,7 @@ fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Cross));
+    assert!(matches!(join.spec.join_type, nexus_query_engine::JoinType::Cross));
     assert!(join.spec.keys.is_empty());
     assert!(join.spec.residual_predicate.is_none());
 
@@ -560,7 +560,7 @@ fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
 
 #[test]
 fn predicate_free_full_nested_loop_join_lowers_to_native_keyless_outer_cross_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-full-nlj-outer-cross");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-full-nlj-outer-cross");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -586,7 +586,7 @@ fn predicate_free_full_nested_loop_join_lowers_to_native_keyless_outer_cross_joi
 
 #[test]
 fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_cross_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-nlj-outer-cross");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-nlj-outer-cross");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -612,7 +612,7 @@ fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_
 
 #[test]
 fn phase5_right_nested_loop_join_filter_lowers_to_swapped_native_left_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-nlj");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-right-nlj");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);

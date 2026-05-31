@@ -480,7 +480,7 @@ fn clickbench_dataset_metadata_fingerprint(
     files: &[ClickbenchFileMetadata],
 ) -> String {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-clickbench-dataset-metadata-v1");
+    hasher.update_field("datafusion-nexus-clickbench-dataset-metadata-v1");
     hasher.update_field(layout.label());
     hasher.update_field(&relative_dataset_path(root, layout.register_path()));
     hasher.update_field(provenance);
@@ -504,7 +504,7 @@ fn clickbench_dataset_metadata_fingerprint(
 
 fn clickbench_dataset_content_fingerprint(files: &[ClickbenchFileMetadata]) -> ClickbenchWorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-clickbench-dataset-content-v1");
+    hasher.update_field("datafusion-nexus-clickbench-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];
     for file in files {
         hasher.update_field(&file.relative_path);

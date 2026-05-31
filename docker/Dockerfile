@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# datafusion-cudf  —  Arrow Flight SQL service  (GPU query engine)
+# datafusion-nexus  —  Arrow Flight SQL service  (GPU query engine)
 #
 # Build flow:
 #   1. Run docker/build.sh on the host to compile the binary and stage:
-#        docker/dist/bin/datafusion_cudf_server
+#        docker/dist/bin/datafusion_nexus_server
 #        docker/dist/lib/libcudf_rust.so
-#   2. docker build -t datafusion-cudf-server docker/
+#   2. docker build -t datafusion-nexus-server docker/
 #
 # Stage lib-collector: runs inside the RAPIDS image to collect the full
 #   transitive set of /opt/conda .so files needed at runtime via ldd.
@@ -30,13 +30,13 @@ RUN apt-get update && \
         binutils patchelf && \
     rm -rf /var/lib/apt/lists/*
 
-COPY dist/bin/datafusion_cudf_server /app/datafusion_cudf_server
+COPY dist/bin/datafusion_nexus_server /app/datafusion_nexus_server
 COPY dist/lib/libcudf_rust.so        /app/lib/libcudf_rust.so
 
 # Rewrite the binary RUNPATH to /app/lib so ldd can resolve libcudf_rust.so.
 # The host-compiled binary has a RUNPATH pointing at the Cargo out-dir on the
 # build host; that path does not exist in this container.
-RUN patchelf --set-rpath /app/lib /app/datafusion_cudf_server
+RUN patchelf --set-rpath /app/lib /app/datafusion_nexus_server
 
 # Collect all /opt/conda-origin .so files in the full transitive closure.
 # ldd resolves transitively; we filter to /opt/conda/ since CUDA system libs
@@ -44,7 +44,7 @@ RUN patchelf --set-rpath /app/lib /app/datafusion_cudf_server
 RUN mkdir -p /collect/lib && \
     cp /app/lib/libcudf_rust.so /collect/lib/ && \
     LD_LIBRARY_PATH="/app/lib:/opt/conda/lib:/usr/local/cuda/lib64" \
-    ldd /app/datafusion_cudf_server 2>/dev/null | \
+    ldd /app/datafusion_nexus_server 2>/dev/null | \
     awk '$3 ~ /^\/opt\/conda\// { print $3 }' | sort -u | \
     xargs -r -I{} cp -n {} /collect/lib/
 
@@ -68,7 +68,7 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} && \
 
 WORKDIR /app
 
-COPY --from=lib-collector --chown=${USERNAME}:${USERNAME} /app/datafusion_cudf_server /app/datafusion_cudf_server
+COPY --from=lib-collector --chown=${USERNAME}:${USERNAME} /app/datafusion_nexus_server /app/datafusion_nexus_server
 COPY --from=lib-collector --chown=${USERNAME}:${USERNAME} /collect/lib/               /app/lib/
 
 ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
@@ -79,21 +79,21 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 # ===========================================================================
 #
 # ── Server core ─────────────────────────────────────────────────────────────
-#   DATAFUSION_CUDF_SERVER_BIND                   default: 0.0.0.0:50051
-#   DATAFUSION_CUDF_SERVER_LOG                    default: info
-#   DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT          default: 1
+#   DATAFUSION_NEXUS_SERVER_BIND                   default: 0.0.0.0:50051
+#   DATAFUSION_NEXUS_SERVER_LOG                    default: info
+#   DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT          default: 1
 #
 # ── Native memory budget (all three required together, or all omitted) ──────
-#   DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES
-#   DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
-#   DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
+#   DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
+#   DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
+#   DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 #
 # ── Iceberg / AWS Glue (omit all to disable) ────────────────────────────────
-#   DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE         required when any Iceberg var set
-#   DATAFUSION_CUDF_ICEBERG_WAREHOUSE             required  (s3://...)
-#   DATAFUSION_CUDF_ICEBERG_GLUE_TABLES           required  "alias=db.tbl,tbl2"
-#   DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME     default: glue
-#   DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID       optional
+#   DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE         required when any Iceberg var set
+#   DATAFUSION_NEXUS_ICEBERG_WAREHOUSE             required  (s3://...)
+#   DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES           required  "alias=db.tbl,tbl2"
+#   DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME     default: glue
+#   DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID       optional
 #   AWS_DEFAULT_REGION                            required (KvikIO S3Endpoint reads ONLY this
 #                                                 variable; AWS_REGION alone is not enough and
 #                                                 will cause silent fallthrough to unsigned S3
@@ -110,13 +110,13 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 #   CUDF_NATIVE_PIPELINE_EXECUTION_MODE           strict_bounded | adaptive
 #
 # ── cuGraph SQL DSL (binary must be built with cugraph support) ─────────────
-#   DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED        true | false
-#   DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS     optional allowlist by SQL
+#   DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED        true | false
+#   DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS     optional allowlist by SQL
 #                                                 function name, e.g.
 #                                                 cugraph_pagerank,cugraph_bfs
-#   DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED       default graph direction
-#   DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER       default renumber flag
-#   DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY
+#   DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED       default graph direction
+#   DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER       default renumber flag
+#   DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY
 #                                                 python_cugraph | raw_libcugraph
 #
 # ===========================================================================
@@ -129,4 +129,4 @@ USER ${USERNAME}
 # to systemd-coredump and nothing drains the pipe, a crashing process would
 # otherwise freeze in do_coredump. With cores disabled it exits immediately
 # and the panic/abort message surfaces on stderr.
-CMD ["sh", "-c", "ulimit -c 0 && exec /app/datafusion_cudf_server"]
+CMD ["sh", "-c", "ulimit -c 0 && exec /app/datafusion_nexus_server"]

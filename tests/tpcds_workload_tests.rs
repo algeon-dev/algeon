@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, describe_tpcds_dataset, tiny_tpcds_dataset_metadata,
     tpcds_native_optimizer_config, tpcds_native_report_session_config, tpcds_query_ids, tpcds_report_session_config,
     write_tiny_tpcds_parquet_dataset,
@@ -71,7 +71,7 @@ fn tpcds_native_optimizer_config_disables_cpu_preference_for_gpu_only_sql_surfac
 
 #[test]
 fn write_tiny_tpcds_parquet_dataset_emits_24_parquet_files() {
-    let dir = unique_temp_dir("datafusion-cudf-tpcds-tiny-fixture");
+    let dir = unique_temp_dir("datafusion-nexus-tpcds-tiny-fixture");
     write_tiny_tpcds_parquet_dataset(&dir).unwrap();
 
     let mut files: Vec<String> = fs::read_dir(&dir)
@@ -93,7 +93,7 @@ fn write_tiny_tpcds_parquet_dataset_emits_24_parquet_files() {
 
 #[test]
 fn tiny_tpcds_dataset_metadata_describes_24_tables() {
-    let dir = unique_temp_dir("datafusion-cudf-tpcds-tiny-describe");
+    let dir = unique_temp_dir("datafusion-nexus-tpcds-tiny-describe");
     write_tiny_tpcds_parquet_dataset(&dir).unwrap();
 
     let metadata = tiny_tpcds_dataset_metadata(&dir).unwrap();
@@ -114,7 +114,7 @@ fn tiny_tpcds_dataset_metadata_describes_24_tables() {
 
 #[test]
 fn tiny_tpcds_dataset_metadata_projects_into_workload_dataset_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-tpcds-tiny-workload-projection");
+    let dir = unique_temp_dir("datafusion-nexus-tpcds-tiny-workload-projection");
     write_tiny_tpcds_parquet_dataset(&dir).unwrap();
 
     let metadata = describe_tpcds_dataset(&dir, "tiny", "generated_tiny", "test_projection").unwrap();

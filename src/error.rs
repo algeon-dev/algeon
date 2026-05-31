@@ -2,7 +2,7 @@
 //!
 //! Adapter errors classify failures from DataFusion planning/execution,
 //! native execution, cuDF calls made directly by the adapter, and native
-//! `cudf-query-engine` errors wrapped by [`Error::from_native`]. Native errors
+//! `nexus-query-engine` errors wrapped by [`Error::from_native`]. Native errors
 //! keep their original classification in `native_*` facts while this layer maps
 //! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
 
@@ -30,7 +30,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// source classification. Those keys may come from direct adapter cuDF calls or
 /// from native facts copied unchanged by [`Error::from_native`]. The
 /// `native_code`, `native_kind`, `native_status`, and `native_operation` keys
-/// describe errors wrapped from `cudf-query-engine`.
+/// describe errors wrapped from `nexus-query-engine`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
@@ -53,9 +53,9 @@ impl Facts {
     }
 
     fn insert(&mut self, key: &'static str, value: String) {
-        assert!(!key.is_empty(), "datafusion-cudf error fact key must not be empty");
+        assert!(!key.is_empty(), "datafusion-nexus error fact key must not be empty");
         let previous = self.values.insert(key, value);
-        assert!(previous.is_none(), "datafusion-cudf error fact key inserted twice: {key}");
+        assert!(previous.is_none(), "datafusion-nexus error fact key inserted twice: {key}");
     }
 }
 
@@ -72,12 +72,12 @@ impl Error {
     /// Creates an adapter error with a stable operation id and message.
     ///
     /// `operation` should be a stable dotted identifier such as
-    /// `datafusion_cudf.native_exec.execute`. `message` is human-facing
+    /// `datafusion_nexus.native_exec.execute`. `message` is human-facing
     /// diagnostic text. Add machine-readable context with [`Self::with_fact`].
     pub fn new(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
-        assert!(!operation.is_empty(), "datafusion-cudf error operation must not be empty");
-        assert!(!message.is_empty(), "datafusion-cudf error message must not be empty");
+        assert!(!operation.is_empty(), "datafusion-nexus error operation must not be empty");
+        assert!(!message.is_empty(), "datafusion-nexus error message must not be empty");
         Self { code, operation, message, facts: Facts::new(), source: None }
     }
 
@@ -131,7 +131,7 @@ impl Error {
     pub fn from_native(
         operation: &'static str,
         message: impl Into<String>,
-        source: cudf_query_engine::QueryError,
+        source: nexus_query_engine::QueryError,
     ) -> Self {
         let code = code_for_native_error(&source);
         let mut error = Self::new(code, operation, message)
@@ -240,7 +240,7 @@ impl StdError for Error {
 }
 
 // Adapter errors cross the DataFusion boundary as `External` so callers can
-// downcast the boxed source back to `datafusion_cudf::Error` and inspect code,
+// downcast the boxed source back to `datafusion_nexus::Error` and inspect code,
 // kind, status, operation, facts, and source.
 impl From<Error> for DataFusionError {
     fn from(error: Error) -> Self {
@@ -277,23 +277,23 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
 // native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
 // the adapter has no shape-specific code. The exact native code remains
 // available in the `native_code` fact attached by `Error::from_native`.
-fn code_for_native_error(error: &cudf_query_engine::QueryError) -> ErrorCode {
+fn code_for_native_error(error: &nexus_query_engine::QueryError) -> ErrorCode {
     match error.code() {
-        cudf_query_engine::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
-        cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
-        cudf_query_engine::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
-        cudf_query_engine::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
-        cudf_query_engine::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
-        cudf_query_engine::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
-        cudf_query_engine::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
-        cudf_query_engine::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
-        cudf_query_engine::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
-        cudf_query_engine::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        cudf_query_engine::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
-        cudf_query_engine::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
-        cudf_query_engine::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
-        cudf_query_engine::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
-        cudf_query_engine::QueryErrorCode::Internal => ErrorCode::Internal,
+        nexus_query_engine::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
+        nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
+        nexus_query_engine::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
+        nexus_query_engine::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
+        nexus_query_engine::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
+        nexus_query_engine::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        nexus_query_engine::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
+        nexus_query_engine::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
+        nexus_query_engine::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
+        nexus_query_engine::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
+        nexus_query_engine::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
+        nexus_query_engine::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        nexus_query_engine::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
+        nexus_query_engine::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
+        nexus_query_engine::QueryErrorCode::Internal => ErrorCode::Internal,
         _ => ErrorCode::Internal,
     }
 }

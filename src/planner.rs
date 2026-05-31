@@ -52,7 +52,7 @@ pub use native::{
 /// native execution uses an auto-sized bounded profile, and query-engine
 /// optimizer options use their own defaults, and plan-preference fallback is
 /// disabled unless a workload opts in. The native
-/// [`ExecutionContext`](cudf_query_engine::ExecutionContext) is still built
+/// [`ExecutionContext`](nexus_query_engine::ExecutionContext) is still built
 /// lazily at execution time through [`NativeCudfExecutionConfig`], so allocator
 /// and memory-control validation fail at the DataFusion/native boundary rather
 /// than during rule construction.
@@ -60,8 +60,8 @@ pub use native::{
 pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
     native_execution_config: NativeCudfExecutionConfig,
-    native_optimizer_options: cudf_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: cudf_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: nexus_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: nexus_query_engine::NativePlanPreferenceOptions,
 }
 
 impl Default for CudfOptimizerConfig {
@@ -69,8 +69,8 @@ impl Default for CudfOptimizerConfig {
         Self {
             fallback_policy: GpuFallbackPolicy::default(),
             native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
-            native_optimizer_options: cudf_query_engine::NativeOptimizerOptions::default(),
-            native_plan_preference_options: cudf_query_engine::NativePlanPreferenceOptions::disabled(),
+            native_optimizer_options: nexus_query_engine::NativeOptimizerOptions::default(),
+            native_plan_preference_options: nexus_query_engine::NativePlanPreferenceOptions::disabled(),
         }
     }
 }
@@ -92,7 +92,7 @@ impl CudfOptimizerConfig {
     }
 
     /// Query-engine optimizer options applied after lowering.
-    pub fn native_optimizer_options(&self) -> &cudf_query_engine::NativeOptimizerOptions {
+    pub fn native_optimizer_options(&self) -> &nexus_query_engine::NativeOptimizerOptions {
         &self.native_optimizer_options
     }
 
@@ -101,17 +101,17 @@ impl CudfOptimizerConfig {
     /// The adapter default is disabled to preserve generic optimizer rewrite
     /// behavior; workload configs can opt in when their benchmark evidence
     /// shows native fixed overhead dominates small selective shapes.
-    pub fn native_plan_preference_options(&self) -> &cudf_query_engine::NativePlanPreferenceOptions {
+    pub fn native_plan_preference_options(&self) -> &nexus_query_engine::NativePlanPreferenceOptions {
         &self.native_plan_preference_options
     }
 
     /// Strict bounded or adaptive pipeline mode used by native execution.
-    pub fn native_pipeline_execution_mode(&self) -> cudf_query_engine::NativePipelineExecutionMode {
+    pub fn native_pipeline_execution_mode(&self) -> nexus_query_engine::NativePipelineExecutionMode {
         self.native_execution_config.native_pipeline_execution_mode()
     }
 
     /// Floating statistical aggregate execution contract used by native execution.
-    pub fn statistical_aggregate_execution_mode(&self) -> cudf_query_engine::StatisticalAggregateExecutionMode {
+    pub fn statistical_aggregate_execution_mode(&self) -> nexus_query_engine::StatisticalAggregateExecutionMode {
         self.native_execution_config.statistical_aggregate_execution_mode()
     }
 
@@ -122,7 +122,7 @@ impl CudfOptimizerConfig {
     }
 
     /// Replace DataFusion-free native optimizer options.
-    pub fn with_native_optimizer_options(mut self, options: cudf_query_engine::NativeOptimizerOptions) -> Self {
+    pub fn with_native_optimizer_options(mut self, options: nexus_query_engine::NativeOptimizerOptions) -> Self {
         self.native_optimizer_options = options;
         self
     }
@@ -130,14 +130,17 @@ impl CudfOptimizerConfig {
     /// Replace native-vs-CPU preference options.
     pub fn with_native_plan_preference_options(
         mut self,
-        options: cudf_query_engine::NativePlanPreferenceOptions,
+        options: nexus_query_engine::NativePlanPreferenceOptions,
     ) -> Self {
         self.native_plan_preference_options = options;
         self
     }
 
     /// Set strict bounded or adaptive execution without rebuilding the rest of the config.
-    pub fn with_native_pipeline_execution_mode(mut self, mode: cudf_query_engine::NativePipelineExecutionMode) -> Self {
+    pub fn with_native_pipeline_execution_mode(
+        mut self,
+        mode: nexus_query_engine::NativePipelineExecutionMode,
+    ) -> Self {
         self.native_execution_config = self.native_execution_config.clone().with_native_pipeline_execution_mode(mode);
         self
     }
@@ -146,7 +149,7 @@ impl CudfOptimizerConfig {
     /// rest of the config.
     pub fn with_statistical_aggregate_execution_mode(
         mut self,
-        mode: cudf_query_engine::StatisticalAggregateExecutionMode,
+        mode: nexus_query_engine::StatisticalAggregateExecutionMode,
     ) -> Self {
         self.native_execution_config =
             self.native_execution_config.clone().with_statistical_aggregate_execution_mode(mode);
@@ -163,7 +166,7 @@ impl CudfOptimizerConfig {
 fn candidate_rejected_error(candidate: &GpuCandidate, reason: FallbackReason, config: &CudfOptimizerConfig) -> Error {
     Error::new(
         ErrorCode::NativeCandidateRejected,
-        "datafusion_cudf.native.optimize_plan",
+        "datafusion_nexus.native.optimize_plan",
         "cuDF native candidate rejected by adapter policy",
     )
     .with_fact("candidate_shape", candidate.shape.as_str())

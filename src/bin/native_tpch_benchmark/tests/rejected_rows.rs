@@ -6,18 +6,20 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = rejected_planning_row("q02");
-    planning.strict_bounded_contract_rows = vec![cudf_query_engine::StrictBoundedContractGateRow {
-        execution_mode: cudf_query_engine::StrictBoundedExecutionMode::UnsupportedStrictBounded,
-        contract_scope: cudf_query_engine::capability::ReservationRequirementScope::Node,
-        gate_id: cudf_query_engine::StrictBoundedContractGateId::Compiled(cudf_query_engine::ReservationGateId::new(0)),
-        owner: cudf_query_engine::StrictBoundedContractOwner::Compiled(cudf_query_engine::ReservationGateOwner::Task(
-            cudf_query_engine::PipelineTaskId::new(0),
+    planning.strict_bounded_contract_rows = vec![nexus_query_engine::StrictBoundedContractGateRow {
+        execution_mode: nexus_query_engine::StrictBoundedExecutionMode::UnsupportedStrictBounded,
+        contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Node,
+        gate_id: nexus_query_engine::StrictBoundedContractGateId::Compiled(nexus_query_engine::ReservationGateId::new(
+            0,
         )),
-        reservation_kind: cudf_query_engine::ReservationKind::MixedSizeData,
+        owner: nexus_query_engine::StrictBoundedContractOwner::Compiled(
+            nexus_query_engine::ReservationGateOwner::Task(nexus_query_engine::PipelineTaskId::new(0)),
+        ),
+        reservation_kind: nexus_query_engine::ReservationKind::MixedSizeData,
         memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
         required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-        contract_status: cudf_query_engine::capability::ContractStatus::BlockedByLowerLevel,
-        contract_quality: cudf_query_engine::capability::ContractQuality::ObservedRetainedState,
+        contract_status: nexus_query_engine::capability::ContractStatus::BlockedByLowerLevel,
+        contract_quality: nexus_query_engine::capability::ContractQuality::ObservedRetainedState,
         unresolved_preflight_gap: None,
     }];
     let report =

@@ -8,7 +8,7 @@
 //!   and unblocks any `tokio::select!` arms guarding planning/execution
 //!   futures. This is the only handle the gRPC layer observes directly.
 //! - A native [`ExecutionCancellation`] flag (an `Arc<AtomicBool>`) observed
-//!   *cooperatively* by [`cudf_query_engine`] at native execution boundaries
+//!   *cooperatively* by [`nexus_query_engine`] at native execution boundaries
 //!   (chunk loops, retries, source reads, compiled tasks, generic nodes,
 //!   top-level execute). Setting it prevents the next boundary from starting
 //!   but does **not** preempt a libcudf/CUDA call already in flight.
@@ -30,8 +30,8 @@
 //! `do_action_cancel_query` — shutdown still cancels it via the parent
 //! `shutdown_token` arm of the planning `select!`.
 
-use cudf_query_engine::ExecutionCancellation;
 use dashmap::DashMap;
+use nexus_query_engine::ExecutionCancellation;
 use tokio_util::sync::CancellationToken;
 
 /// Registry of in-flight statement cancellation handles, keyed by query id.
@@ -52,7 +52,7 @@ struct QueryCancellationEntry {
 
 impl QueryCancellation {
     /// Register `query_id` with the Flight stream token and the native
-    /// cancellation flag observed by `cudf-query-engine`.
+    /// cancellation flag observed by `nexus-query-engine`.
     pub fn insert(
         &self,
         query_id: String,
@@ -66,7 +66,7 @@ impl QueryCancellation {
     ///
     /// Returns `true` if `query_id` was registered. The native cancellation
     /// flag is flipped first so a subsequent native boundary check
-    /// short-circuits with [`cudf_query_engine::QueryErrorCode::Cancelled`];
+    /// short-circuits with [`nexus_query_engine::QueryErrorCode::Cancelled`];
     /// the Flight stream token is then flipped so `DoGet`'s
     /// `.take_until(token.cancelled_owned())` terminates the response stream.
     /// Cancellation is cooperative — a libcudf/CUDA call already in flight is

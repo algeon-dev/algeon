@@ -9,7 +9,7 @@
 //! is available locally and the GPU execution tests are opt-in via
 //! `--include-ignored`.
 
-use datafusion_cudf::cugraph_parity::ParityComparator;
+use datafusion_nexus::cugraph_parity::ParityComparator;
 
 pub fn family_label(comparator: ParityComparator) -> &'static str {
     comparator.as_str()

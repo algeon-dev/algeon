@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout,
     DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
     DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, clickbench_query_ids, describe_clickbench_dataset,
@@ -129,7 +129,7 @@ fn discover_clickbench_layout_recognizes_partitioned_dir() {
 
 #[test]
 fn discover_clickbench_layout_rejects_missing_root() {
-    let missing = Path::new("/tmp/datafusion-cudf-clickbench-missing-root-do-not-create");
+    let missing = Path::new("/tmp/datafusion-nexus-clickbench-missing-root-do-not-create");
     let err = discover_clickbench_layout(missing).expect_err("missing root should error");
     let rendered = err.to_string();
     assert!(rendered.contains("clickbench") || rendered.contains("ClickBench"), "error message: {rendered}");
@@ -142,7 +142,7 @@ fn discover_clickbench_layout_rejects_missing_root() {
 /// the metadata fingerprints.
 #[test]
 fn discover_clickbench_layout_ignores_stray_parquet_alongside_partitioned_shards() {
-    let dir = unique_temp_dir("datafusion-cudf-clickbench-partitioned-stray");
+    let dir = unique_temp_dir("datafusion-nexus-clickbench-partitioned-stray");
     fs::write(dir.join("hits_0.parquet"), b"").unwrap();
     fs::write(dir.join("hits_1.parquet"), b"").unwrap();
     fs::write(dir.join("hits_extra_sample.parquet"), b"").unwrap();

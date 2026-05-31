@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create an isolated git worktree for parallel agent development on
-# datafusion-cudf. Shares sibling path dependencies (cudf-rs, datafusion,
+# datafusion-nexus. Shares sibling path dependencies (cudf-rs, datafusion,
 # external-engine, ...) with the primary checkout; isolates only the Cargo target dir
 # so parallel builds don't clobber each other.
 #
@@ -11,9 +11,9 @@
 #   [base-ref] branch/sha to fork from (default: main)
 #
 # Result:
-#   - worktree at ../datafusion-cudf-wt-<name>
+#   - worktree at ../datafusion-nexus-wt-<name>
 #   - new branch wt/<name> tracking the base ref
-#   - isolated CARGO_TARGET_DIR under ~/code/cargo-target/datafusion-cudf-wt-<name>
+#   - isolated CARGO_TARGET_DIR under ~/code/cargo-target/datafusion-nexus-wt-<name>
 #   - .venv symlink to the shared primary-checkout Python environment
 #   - .envrc.sh inside the worktree that exports the right env vars
 
@@ -36,10 +36,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 parent_dir="$(dirname "$repo_root")"
 
-worktree_path="$parent_dir/datafusion-cudf-wt-$name"
+worktree_path="$parent_dir/datafusion-nexus-wt-$name"
 branch="wt/$name"
-target_dir="$HOME/code/cargo-target/datafusion-cudf-wt-$name"
-shared_venv="$parent_dir/datafusion-cudf/.venv"
+target_dir="$HOME/code/cargo-target/datafusion-nexus-wt-$name"
+shared_venv="$parent_dir/datafusion-nexus/.venv"
 
 if [[ -e "$worktree_path" ]]; then
     echo "error: $worktree_path already exists" >&2

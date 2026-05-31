@@ -22,7 +22,7 @@ fn assert_row_group_coverage_metrics(metrics: &MetricsSet) {
 
 #[tokio::test]
 async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-q6-shaped");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-q6-shaped");
     let path = dir.join("lineitem.parquet");
     write_q6_lineitem_parquet(&path);
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
@@ -50,7 +50,7 @@ async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
 
 #[tokio::test]
 async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-count-only");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-count-only");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let cpu_batches = cpu_sql_output(&path, SQL_COUNT_ONLY_QUERY).await;
@@ -77,7 +77,7 @@ async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
 
 #[tokio::test]
 async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-exec");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-exec");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
@@ -108,7 +108,7 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
 
 #[tokio::test]
 async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_engine() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-avg");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-avg");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
@@ -139,7 +139,7 @@ async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_
 
 #[tokio::test]
 async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-nullable-avg-sort");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-nullable-avg-sort");
     let path = dir.join("input.parquet");
     write_nullable_avg_input_parquet(&path);
     let cpu_batches = cpu_sql_output(&path, SQL_AVG_ORDER_BY_VALUE_QUERY).await;
@@ -167,7 +167,7 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
 
 #[tokio::test]
 async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_execution() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-fallback");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-fallback");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
 
@@ -183,7 +183,7 @@ async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_executi
 
 #[tokio::test]
 async fn native_datafusion_exec_resource_failure_preserves_adapter_facts() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-resource-failure");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-resource-failure");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let plan =

@@ -28,7 +28,7 @@ pub struct AuthConfig {
 ///
 /// [[auth.mode.users]]
 /// username = "alice"
-/// # generate with: cargo run --bin datafusion_cudf_server -- hash-password
+/// # generate with: cargo run --bin datafusion_nexus_server -- hash-password
 /// password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 /// roles = ["reader"]
 /// ```

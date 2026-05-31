@@ -12,12 +12,12 @@ mod validate;
 
 use std::sync::Arc;
 
-use cudf_query_engine::{
+use datafusion::physical_plan::ExecutionPlan;
+use lowering::lower_normalized_plan;
+use nexus_query_engine::{
     PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan, SourceDiagnostics as NativeSourceDiagnostics,
     SourceNode as NativeSourceNode,
 };
-use datafusion::physical_plan::ExecutionPlan;
-use lowering::lower_normalized_plan;
 use normalize::normalize_native_plan;
 use source::source_diagnostics_for_normalized_plan;
 use validate::native_zero_column_count_source_is_safe;

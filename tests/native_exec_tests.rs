@@ -1,9 +1,5 @@
 use std::{fs, sync::Arc};
 
-use cudf_query_engine::{
-    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
-    capability::ContractQuality, compile_pipeline,
-};
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,
@@ -17,11 +13,15 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
     },
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
     NativePipelineExecutionMode, NativePlanPreferenceOptions, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
     TPCH_QUERIES, cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+};
+use nexus_query_engine::{
+    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
+    capability::ContractQuality, compile_pipeline,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -119,7 +119,7 @@ fn optimizer_config_default_uses_bounded_native_execution() {
 
 #[test]
 fn native_composed_exec_hands_gpu_result_between_fragments_without_host_materialization() {
-    let dir = unique_temp_dir("datafusion-cudf-native-composed-gpu-resident");
+    let dir = unique_temp_dir("datafusion-nexus-native-composed-gpu-resident");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let schema = parquet_file_schema();
@@ -190,7 +190,7 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
 
 #[test]
 fn native_optimizer_rule_rewrites_supported_physical_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -217,7 +217,7 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
 
 #[test]
 fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer-rejected");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -239,7 +239,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
 
 #[test]
 fn native_optimizer_rule_obeys_cpu_only_policy_for_supported_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-cpu-only");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-cpu-only");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -262,7 +262,7 @@ fn native_optimizer_rule_obeys_cpu_only_policy_for_supported_plan() {
 
 #[test]
 fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-preference-topk");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-topk");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
@@ -290,7 +290,7 @@ fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled(
 
 #[test]
 fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-preference-gpu-only");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-gpu-only");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
@@ -314,7 +314,7 @@ fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
 
 #[test]
 fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-gpu-only-rejected");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -327,7 +327,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     let DataFusionError::External(source) = &error else {
         panic!("GpuOnly native rejection should preserve the typed adapter error");
     };
-    let adapter_error = source.downcast_ref::<datafusion_cudf::Error>().expect("expected datafusion-cudf Error");
+    let adapter_error = source.downcast_ref::<datafusion_nexus::Error>().expect("expected datafusion-nexus Error");
 
     assert_eq!(adapter_error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_expression"));
@@ -338,7 +338,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
 
 #[test]
 fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-partial-host-arrow-boundary");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -374,7 +374,7 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
 
 #[test]
 fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_order_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-stddev-sort-cpu-boundary");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-stddev-sort-cpu-boundary");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = stddev_sort_sql_plan(&path);
@@ -401,9 +401,9 @@ fn native_optimizer_rule_is_inserted_before_final_validation() {
     let rules = cudf_native_physical_optimizer_rules(native_optimizer_config());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
 
-    let count_only_position = names.iter().position(|name| *name == "datafusion_cudf_native_count_only").unwrap();
+    let count_only_position = names.iter().position(|name| *name == "datafusion_nexus_native_count_only").unwrap();
     let aggregate_statistics_position = names.iter().position(|name| *name == "aggregate_statistics").unwrap();
-    let native_position = names.iter().position(|name| *name == "datafusion_cudf_native").unwrap();
+    let native_position = names.iter().position(|name| *name == "datafusion_nexus_native").unwrap();
     let sanity_position = names.iter().position(|name| *name == "SanityCheckPlan").unwrap();
     assert!(count_only_position < aggregate_statistics_position);
     assert!(aggregate_statistics_position < native_position);
@@ -411,8 +411,8 @@ fn native_optimizer_rule_is_inserted_before_final_validation() {
 
     let default_rules = cudf_native_physical_optimizer_rules(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred));
     let default_names = default_rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
-    assert!(default_names.contains(&"datafusion_cudf_native"));
-    assert!(default_names.contains(&"datafusion_cudf_native_count_only"));
+    assert!(default_names.contains(&"datafusion_nexus_native"));
+    assert!(default_names.contains(&"datafusion_nexus_native_count_only"));
 }
 
 #[test]
@@ -430,9 +430,9 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
         parquet::arrow::ArrowWriter,
         prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
-    use datafusion_cudf::CudfSessionStateBuilderExt;
+    use datafusion_nexus::CudfSessionStateBuilderExt;
 
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-try-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-try-cast");
     let path = dir.join("input.parquet");
     {
         let schema = Arc::new(Schema::new(vec![

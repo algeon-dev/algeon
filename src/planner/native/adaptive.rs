@@ -1,5 +1,5 @@
-use cudf_query_engine::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow, QueryPlan};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use nexus_query_engine::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow, QueryPlan};
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
@@ -56,7 +56,7 @@ pub(super) fn plan_adaptive_pipeline_diagnostics(
 ) -> DataFusionResult<Option<NativeAdaptivePipelineDiagnostics>> {
     let memory_history = execution_config.adaptive_memory_history();
     let admission =
-        cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
+        nexus_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
             .map_err(adaptive_pipeline_report_error)?;
     Ok(admission.map(|admission| NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())))
 }
@@ -68,9 +68,9 @@ pub(super) fn adaptive_pipeline_was_rejected(diagnostics: &NativeAdaptivePipelin
         .any(|candidate| candidate.report.row().candidate_status == AdaptiveCandidateStatus::Rejected)
 }
 
-fn adaptive_pipeline_report_error(error: cudf_query_engine::QueryError) -> DataFusionError {
+fn adaptive_pipeline_report_error(error: nexus_query_engine::QueryError) -> DataFusionError {
     Error::from_native(
-        "datafusion_cudf.native.adaptive_pipeline_diagnostics",
+        "datafusion_nexus.native.adaptive_pipeline_diagnostics",
         "adaptive pipeline diagnostics could not be built",
         error,
     )

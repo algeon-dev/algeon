@@ -9,10 +9,6 @@
 
 use std::{fmt::Write, sync::Arc};
 
-use cudf_query_engine::{
-    ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptivePipelineReport, AdaptivePipelineReportRow,
-    SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow, is_supported_arrow_type,
-};
 use datafusion::{
     common::ScalarValue,
     datasource::{
@@ -40,6 +36,10 @@ use datafusion::{
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
         windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
+};
+use nexus_query_engine::{
+    ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptivePipelineReport, AdaptivePipelineReportRow,
+    SourceDiagnostics as NativeSourceDiagnostics, StrictBoundedContractGateRow, is_supported_arrow_type,
 };
 
 #[cfg(feature = "cugraph")]
@@ -154,7 +154,7 @@ fn report_rows_for_plan(
                 let adaptive_pipeline_rows = adaptive_pipeline_rows_for_candidate(&adaptive_pipeline, candidate);
                 let adaptive_rejected = adaptive_pipeline_rows
                     .iter()
-                    .any(|row| row.candidate_status == cudf_query_engine::AdaptiveCandidateStatus::Rejected);
+                    .any(|row| row.candidate_status == nexus_query_engine::AdaptiveCandidateStatus::Rejected);
                 NativeFallbackPressureRow {
                     query_id: query_id.clone(),
                     physical_root: physical_root.clone(),
@@ -222,7 +222,7 @@ fn fallback_pressure_adaptive_pipeline_rows(
     lowering: &crate::native::NativeLoweringResult,
     execution_config: &NativeCudfExecutionConfig,
 ) -> crate::planner::NativeAdaptivePipelineDiagnostics {
-    if execution_config.native_pipeline_execution_mode() != cudf_query_engine::NativePipelineExecutionMode::Adaptive {
+    if execution_config.native_pipeline_execution_mode() != nexus_query_engine::NativePipelineExecutionMode::Adaptive {
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     }
     let Some(plan) = lowering.plans.first() else {
@@ -232,7 +232,7 @@ fn fallback_pressure_adaptive_pipeline_rows(
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
     let memory_history = execution_config.adaptive_memory_history();
-    match cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref()) {
+    match nexus_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref()) {
         Ok(Some(admission)) => {
             crate::planner::NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())
         },
@@ -486,7 +486,7 @@ fn datafusion_planning_row_for_planning_failure(
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
         adaptive_pipeline_rows: Vec::new(),
-        native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
+        native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),

@@ -15,7 +15,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
     ClickbenchWorkloadResult, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativePipelineExecutionMode,
     clickbench_native_optimizer_config, clickbench_report_session_config, clickbench_tuned_cpu_session_config,
