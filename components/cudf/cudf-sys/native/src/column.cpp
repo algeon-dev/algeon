@@ -251,6 +251,10 @@ cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     auto dtype = view->type();
+    if (!cudf::is_fixed_width(dtype)) {
+      set_error("column_view_to_host only supports fixed-width types");
+      return CUDF_ERROR_TYPE;
+    }
     auto elem_size = cudf::size_of(dtype);
     size_t needed = static_cast<size_t>(view->size()) * elem_size;
     if (buf_size < needed) {
@@ -380,6 +384,10 @@ cudf_status_t cudf_column_create_strings(
     std::vector<int32_t> host_offsets(num_strings + 1);
     host_offsets[0] = 0;
     for (int32_t i = 0; i < num_strings; ++i) {
+      if (lengths[i] < 0) {
+        set_error("string lengths must be >= 0");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
       host_offsets[i + 1] = host_offsets[i] + lengths[i];
     }
     int32_t total_chars = host_offsets[num_strings];

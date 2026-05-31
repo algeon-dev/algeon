@@ -16,15 +16,15 @@ fn sample_df() -> DataFrame {
 }
 
 // ---------------------------------------------------------------------------
-// filter_owned
+// filter_by_mask_owned
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_filter_owned_basic() {
+fn test_filter_by_mask_owned_basic() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask = mask_col.view().unwrap();
-    let filtered = df.filter_owned(&mask).unwrap();
+    let filtered = df.filter_by_mask_owned(&mask).unwrap();
 
     assert_eq!(filtered.num_rows().unwrap(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
@@ -32,11 +32,11 @@ fn test_filter_owned_basic() {
 }
 
 #[test]
-fn test_filter_owned_preserves_schema() {
+fn test_filter_by_mask_owned_preserves_schema() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[true, true, true, true, true]).unwrap();
     let mask = mask_col.view().unwrap();
-    let filtered = df.filter_owned(&mask).unwrap();
+    let filtered = df.filter_by_mask_owned(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
@@ -44,14 +44,14 @@ fn test_filter_owned_preserves_schema() {
 }
 
 #[test]
-fn test_filter_owned_matches_borrow_variant() {
+fn test_filter_by_mask_owned_matches_borrow_variant() {
     let df1 = sample_df();
     let df2 = sample_df();
     let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask = mask_col.view().unwrap();
 
-    let borrow_result = df1.filter(&mask).unwrap();
-    let owned_result = df2.filter_owned(&mask).unwrap();
+    let borrow_result = df1.filter_by_mask(&mask).unwrap();
+    let owned_result = df2.filter_by_mask_owned(&mask).unwrap();
 
     assert_eq!(
         borrow_result.column("id").unwrap().to_vec::<i32>().unwrap(),
@@ -393,8 +393,13 @@ fn test_owned_method_chaining() {
     let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask = mask_col.view().unwrap();
 
-    let result =
-        df.filter_owned(&mask).unwrap().sort_owned(&["id"], &[Order::Ascending]).unwrap().head_owned(2).unwrap();
+    let result = df
+        .filter_by_mask_owned(&mask)
+        .unwrap()
+        .sort_owned(&["id"], &[Order::Ascending])
+        .unwrap()
+        .head_owned(2)
+        .unwrap();
 
     assert_eq!(result.num_rows().unwrap(), 2);
     assert_eq!(result.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4]);
@@ -408,7 +413,7 @@ fn test_owned_chain_filter_sort_select() {
     let mask = mask_col.view().unwrap();
 
     let result = df
-        .filter_owned(&mask)
+        .filter_by_mask_owned(&mask)
         .unwrap()
         .sort_owned(&["score"], &[Order::Descending])
         .unwrap()

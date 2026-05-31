@@ -23,7 +23,7 @@ fn filter_preserves_row_and_column_counts() {
     // Boolean mask: keep rows 0, 2, 4.
     let mask = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask_view = mask.view().unwrap();
-    let filtered = df.filter(&mask_view).unwrap();
+    let filtered = df.filter_by_mask(&mask_view).unwrap();
 
     assert_eq!(filtered.num_columns(), 2, "column count preserved");
     assert_eq!(filtered.num_rows().unwrap(), 3, "filtered row count");

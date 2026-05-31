@@ -8,6 +8,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include <string>
+
 extern "C" {
 
 /// Create a new CUDA stream.
@@ -50,9 +52,8 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out) {
     } else if (err == cudaErrorNotReady) {
       *out = 0;
     } else {
-      // Unexpected error.
-      cudaGetLastError();  // clear the error
-      set_error("CUDA stream query failed");
+      auto msg = std::string("CUDA stream query failed: ") + cudaGetErrorString(err);
+      set_error(msg);
       return CUDF_ERROR_CUDA;
     }
     return CUDF_SUCCESS;

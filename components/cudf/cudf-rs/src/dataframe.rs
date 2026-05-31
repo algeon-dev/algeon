@@ -690,16 +690,30 @@ impl DataFrame {
 
     // -- Filter, sort, deduplicate -------------------------------------------
 
-    /// Filter rows using a boolean mask column.
+    /// Filter rows using a `Series` boolean mask (cuDF-style façade).
     ///
     /// Rows where `mask` is `true` are kept; `false` or null rows are
     /// dropped. The schema is preserved.
     ///
     /// # Errors
     ///
+    /// - `TypeError` if `mask` dtype is not `Bool8`.
+    /// - `InvalidOperation` if `mask` length does not match the DataFrame row count.
+    pub fn filter(&self, mask: &Series) -> Result<Self> {
+        let mask_view = self.validate_series_mask(mask)?;
+        self.filter_by_mask(&mask_view)
+    }
+
+    /// Filter rows using a low-level `ColumnView` boolean mask.
+    ///
+    /// This is the low-level entry point. Prefer [`filter`](Self::filter)
+    /// with a `Series` mask for the cuDF-style API.
+    ///
+    /// # Errors
+    ///
     /// Returns an error if `mask` is not `Bool8`, or if its row count
     /// does not match the DataFrame's row count.
-    pub fn filter(&self, mask: &ColumnView<'_>) -> Result<Self> {
+    pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
         let tv = self.build_table_view()?;
         let result_table = filter::apply_boolean_mask(tv.table(), mask)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -707,10 +721,10 @@ impl DataFrame {
 
     /// Keep only rows where `mask` is `true`, consuming `self`.
     ///
-    /// Functionally identical to [`filter`](Self::filter) but takes `self`
-    /// by value, allowing the input's `Arc<Column>`s to drop sooner when
-    /// they are the last reference.
-    pub fn filter_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
+    /// Functionally identical to [`filter_by_mask`](Self::filter_by_mask) but
+    /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
+    /// sooner when they are the last reference.
+    pub fn filter_by_mask_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
         let names = self.column_names_owned();
         let result_table = {
             let tv = self.build_table_view()?;
@@ -722,7 +736,7 @@ impl DataFrame {
     /// Filter rows to those where `column` values appear in `values`.
     ///
     /// This is a convenience wrapper around [`crate::search::contains`] +
-    /// [`DataFrame::filter`], equivalent to pandas `df[df[column].isin(values)]`.
+    /// [`DataFrame::filter_by_mask`], equivalent to pandas `df[df[column].isin(values)]`.
     ///
     /// `values` is the haystack (the set to test membership against).
     /// The column and values must have the same data type.
@@ -735,7 +749,7 @@ impl DataFrame {
         let col_view = self.column(column)?;
         let mask = crate::search::contains(values, &col_view)?;
         let mask_view = mask.view()?;
-        self.filter(&mask_view)
+        self.filter_by_mask(&mask_view)
     }
 
     /// Filter rows to those where `column` values appear in `values`,
@@ -750,7 +764,34 @@ impl DataFrame {
             crate::search::contains(values, &col_view)?
         };
         let mask_view = mask.view()?;
-        self.filter_owned(&mask_view)
+        self.filter_by_mask_owned(&mask_view)
+    }
+
+    /// Validate that a `Series` is a valid boolean mask for this DataFrame.
+    ///
+    /// Returns the `ColumnView` if valid, or an appropriate error.
+    fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
+        let mask_view = mask.view()?;
+        let mask_dtype = mask_view.data_type()?;
+        if mask_dtype.id() != crate::types::TypeId::Bool8 {
+            return Err(Error::new(
+                ErrorKind::TypeError,
+                format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
+            )
+            .with_operation("dataframe::filter")
+            .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
+        }
+        let mask_len = mask_view.len()?;
+        if mask_len != self.row_count {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("filter mask length ({}) does not match DataFrame row count ({})", mask_len, self.row_count),
+            )
+            .with_operation("dataframe::filter")
+            .with_context("mask_length", mask_len.to_string())
+            .with_context("row_count", self.row_count.to_string()));
+        }
+        Ok(mask_view)
     }
 
     /// Sort rows by the given column names and orders.
