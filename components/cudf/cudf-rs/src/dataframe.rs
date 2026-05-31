@@ -35,6 +35,7 @@ use crate::{
     io::parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
     join, replace,
     scalar::Scalar,
+    series::Series,
     sorting::{self, Order},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     table::{Table, TableView},
@@ -359,6 +360,82 @@ impl DataFrame {
         Ok(Self { columns: map, row_count })
     }
 
+    /// Create a `DataFrame` from a fixed-size array of `(name, Series)` pairs.
+    ///
+    /// This is the ergonomic constructor for building DataFrames from Series.
+    /// Each Series' `Arc<Column>` is shared (zero GPU copy).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any name is duplicated
+    /// - Columns have different row counts
+    pub fn from_columns<const N: usize>(pairs: [(&str, Series); N]) -> Result<Self> {
+        Self::from_series(pairs)
+    }
+
+    /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
+    ///
+    /// Each Series' `Arc<Column>` is shared (zero GPU copy).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any name is duplicated
+    /// - Columns have different row counts
+    pub fn from_series<I, S>(pairs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, Series)>,
+        S: Into<String>,
+    {
+        let iter = pairs.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut map = IndexMap::with_capacity(lower);
+
+        for (name, series) in iter {
+            let name = name.into();
+            if map.contains_key(&name) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
+                    .with_operation("dataframe::from_series")
+                    .with_context("duplicate_name", name));
+            }
+            map.insert(name, Arc::clone(series.column_arc()));
+        }
+
+        if map.is_empty() {
+            return Ok(Self { columns: IndexMap::new(), row_count: 0 });
+        }
+
+        // Validate all columns have the same row count.
+        let mut iter = map.iter();
+        let (first_name, first_col) = iter.next().unwrap();
+        let first_rows = first_col
+            .view()
+            .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?
+            .len()
+            .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?;
+
+        for (name, col) in iter {
+            let rows = col
+                .view()
+                .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?
+                .len()
+                .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?;
+            if rows != first_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
+                )
+                .with_operation("dataframe::from_series")
+                .with_context("column_name", name.clone())
+                .with_context("column_rows", rows.to_string())
+                .with_context("expected_rows", first_rows.to_string()));
+            }
+        }
+
+        Ok(Self { columns: map, row_count: first_rows })
+    }
+
     /// Returns the number of columns.
     pub fn num_columns(&self) -> usize {
         self.columns.len()
@@ -387,6 +464,24 @@ impl DataFrame {
         })?;
 
         col.view()
+    }
+
+    /// Return a named [`Series`] for the given column, sharing the `Arc<Column>`.
+    ///
+    /// The returned Series has its name set to the DataFrame column name.
+    /// This is a zero-copy metadata operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` is not in the schema.
+    pub fn series(&self, name: &str) -> Result<Series> {
+        let col = self.columns.get(name).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                .with_operation("dataframe::series")
+                .with_context("column_name", name.to_string())
+        })?;
+
+        Ok(Series::from_column_arc(Arc::clone(col)).rename(name))
     }
 
     /// Look up the positional index of a column by name.

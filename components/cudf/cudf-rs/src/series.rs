@@ -24,6 +24,18 @@ pub struct Series {
     column: Arc<Column>,
 }
 
+impl std::fmt::Debug for Series {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut ds = f.debug_struct("Series");
+        ds.field("name", &self.name);
+        let dtype_str = self.dtype().map(|dt| format!("{:?}", dt.id())).unwrap_or_else(|_| "?".to_string());
+        ds.field("dtype", &dtype_str);
+        let len = self.len().unwrap_or(-1);
+        ds.field("len", &len);
+        ds.finish()
+    }
+}
+
 impl Series {
     // -- Constructors --------------------------------------------------------
 
