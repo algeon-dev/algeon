@@ -13,9 +13,10 @@ extern "C" {
 cudf_status_t cudf_apply_boolean_mask(cudf_table_view_handle input,
                                       cudf_column_view_handle mask,
                                       cudf_table_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(mask, "mask is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto* mask_view = static_cast<cudf::column_view*>(mask);

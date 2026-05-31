@@ -11,9 +11,9 @@ extern "C" {
 cudf_status_t cudf_hashing_murmurhash3_x86_32(cudf_table_view_handle input,
                                                uint32_t seed,
                                                cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -28,9 +28,9 @@ cudf_status_t cudf_hashing_murmurhash3_x86_32(cudf_table_view_handle input,
 cudf_status_t cudf_hashing_xxhash_64(cudf_table_view_handle input,
                                      uint64_t seed,
                                      cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();

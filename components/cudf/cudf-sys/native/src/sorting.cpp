@@ -64,13 +64,13 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
                         const cudf_null_order_t* null_precedence,
                         int32_t num_keys,
                         cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -103,13 +103,13 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
                                const cudf_null_order_t* null_precedence,
                                int32_t num_keys,
                                cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -143,14 +143,14 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
                                const cudf_null_order_t* null_precedence,
                                int32_t num_key_columns,
                                cudf_table_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(values, "values is null");
   CUDF_RUST_NULL_CHECK(keys, "keys is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   if (num_key_columns < 0) {
     set_error("num_key_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* vals = static_cast<cudf::table_view*>(values);
     auto* ks = static_cast<cudf::table_view*>(keys);
@@ -186,14 +186,14 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
                                       const cudf_null_order_t* null_precedence,
                                       int32_t num_key_columns,
                                       cudf_table_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(values, "values is null");
   CUDF_RUST_NULL_CHECK(keys, "keys is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   if (num_key_columns < 0) {
     set_error("num_key_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* vals = static_cast<cudf::table_view*>(values);
     auto* ks = static_cast<cudf::table_view*>(keys);
@@ -228,13 +228,13 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
                                 const cudf_null_order_t* null_precedence,
                                 int32_t num_keys,
                                 cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -267,8 +267,9 @@ cudf_status_t cudf_is_sorted(cudf_table_view_handle input,
                              const cudf_null_order_t* null_precedence,
                              int32_t num_keys,
                              int32_t* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;

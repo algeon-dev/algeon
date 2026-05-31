@@ -16,6 +16,7 @@
 #include <rmm/device_buffer.hpp>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 
 static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
@@ -43,6 +44,7 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          int32_t null_count,
                                          cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (size < 0) {
     set_error("size must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -57,7 +59,6 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
   if (null_count > 0) {
     CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto dtype = cudf::data_type(to_cudf_type_id(type_id));
     auto stream = cudf::get_default_stream();
@@ -93,9 +94,9 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
 
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
     auto* col = static_cast<cudf::column*>(src);
     auto stream = cudf::get_default_stream();
@@ -109,9 +110,9 @@ cudf_status_t cudf_column_copy(cudf_column_handle src,
 
 cudf_status_t cudf_column_copy_from_view(cudf_column_view_handle src,
                                          cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
     auto const& view = *static_cast<cudf::column_view const*>(src);
     auto stream = cudf::get_default_stream();
@@ -129,8 +130,9 @@ void cudf_column_destroy(cudf_column_handle handle) {
 
 cudf_status_t cudf_column_view(cudf_column_handle handle,
                                cudf_column_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* col = static_cast<cudf::column*>(handle);
     auto* view = new cudf::column_view(col->view());
@@ -146,8 +148,9 @@ void cudf_column_view_destroy(cudf_column_view_handle handle) {
 
 cudf_status_t cudf_column_view_type(cudf_column_view_handle handle,
                                     cudf_type_id_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = CUDF_TYPE_EMPTY;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = static_cast<cudf_type_id_t>(view->type().id());
@@ -158,8 +161,9 @@ cudf_status_t cudf_column_view_type(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
                                     int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->size();
@@ -170,8 +174,9 @@ cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
                                           int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->null_count();
@@ -182,8 +187,9 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_nullable(cudf_column_view_handle handle,
                                         int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->nullable() ? 1 : 0;
@@ -194,8 +200,9 @@ cudf_status_t cudf_column_view_nullable(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_num_children(cudf_column_view_handle handle,
                                             int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->num_children();
@@ -207,8 +214,9 @@ cudf_status_t cudf_column_view_num_children(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
                                      int32_t index,
                                      cudf_column_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     auto* child = new cudf::column_view(view->child(index));
@@ -220,8 +228,9 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
                                         const void** out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     // data<uint8_t>() returns the base device pointer. For STRING columns
@@ -234,8 +243,9 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
                                       int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->offset();
@@ -265,6 +275,7 @@ cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
     // Copy from device to host.
     CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->data<uint8_t>(),
                                   needed, cudaMemcpyDeviceToHost, stream.value()));
+    // This API promises the caller's host buffer is populated on return.
     stream.synchronize();
     return CUDF_SUCCESS;
   }
@@ -294,6 +305,7 @@ cudf_status_t cudf_column_view_null_mask_to_host(
     auto stream = cudf::get_default_stream();
     CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
                                   cudaMemcpyDeviceToHost, stream.value()));
+    // This API promises the caller's host buffer is populated on return.
     stream.synchronize();
     return CUDF_SUCCESS;
   }
@@ -306,6 +318,7 @@ cudf_status_t cudf_column_create_from_device_data(
     int32_t size,
     cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (size < 0) {
     set_error("size must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -313,7 +326,6 @@ cudf_status_t cudf_column_create_from_device_data(
   if (size > 0) {
     CUDF_RUST_NULL_CHECK(device_data, "device_data is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto dtype = cudf::data_type(to_cudf_type_id(type_id));
     auto stream = cudf::get_default_stream();
@@ -333,6 +345,8 @@ cudf_status_t cudf_column_create_from_device_data(
     rmm::device_buffer dev_data(data_bytes, stream, mr);
     CUDF_CUDA_TRY(cudaMemcpyAsync(dev_data.data(), device_data, data_bytes,
                                   cudaMemcpyDeviceToDevice, stream.value()));
+    // The input pointer is borrowed from the caller with no stream handoff.
+    // Complete the copy before returning an owning column handle.
     stream.synchronize();
 
     // Construct an owning column from the device buffer (no null mask).
@@ -354,6 +368,7 @@ cudf_status_t cudf_column_create_strings(
     int32_t null_count,
     cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (num_strings < 0) {
     set_error("num_strings must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -369,7 +384,6 @@ cudf_status_t cudf_column_create_strings(
   if (null_count > 0) {
     CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -388,7 +402,17 @@ cudf_status_t cudf_column_create_strings(
         set_error("string lengths must be >= 0");
         return CUDF_ERROR_INVALID_OPERATION;
       }
-      host_offsets[i + 1] = host_offsets[i] + lengths[i];
+      if (lengths[i] > 0 && strings[i] == nullptr) {
+        set_error("string entry is null");
+        return CUDF_ERROR_NULL;
+      }
+      auto const next_offset =
+          static_cast<int64_t>(host_offsets[i]) + static_cast<int64_t>(lengths[i]);
+      if (next_offset > std::numeric_limits<int32_t>::max()) {
+        set_error("total string bytes exceed INT32_MAX");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      host_offsets[i + 1] = static_cast<int32_t>(next_offset);
     }
     int32_t total_chars = host_offsets[num_strings];
 
@@ -441,8 +465,9 @@ cudf_status_t cudf_column_view_strings_to_host(
     char* chars_buf,
     size_t chars_buf_size,
     int32_t* total_chars_bytes) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(total_chars_bytes, "total_chars_bytes is null");
+  *total_chars_bytes = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     if (view->type().id() != cudf::type_id::STRING) {
@@ -475,6 +500,7 @@ cudf_status_t cudf_column_view_strings_to_host(
     auto offsets_data = offsets_view.data<int32_t>();
     CUDF_CUDA_TRY(cudaMemcpyAsync(offsets_buf, offsets_data,
                                   needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value()));
+    // We need the copied offsets on host before we can size the chars copy.
     stream.synchronize();
 
     // Compute total chars bytes from offsets
@@ -500,6 +526,7 @@ cudf_status_t cudf_column_view_strings_to_host(
         CUDF_CUDA_TRY(cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
                                       static_cast<size_t>(total),
                                       cudaMemcpyDeviceToHost, stream.value()));
+        // This API promises the caller's chars buffer is populated on return.
         stream.synchronize();
       }
       // If chars_buf is null, we just return total_chars_bytes without copying.

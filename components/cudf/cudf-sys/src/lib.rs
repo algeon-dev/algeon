@@ -3,6 +3,12 @@
 //! This crate provides raw `extern "C"` function declarations matching the
 //! C shim layer that wraps cuDF's C++ API. It is not intended to be used
 //! directly — use the `cudf` crate for a safe, idiomatic Rust API.
+//!
+//! The stream and memory-resource handle APIs exposed here are currently
+//! standalone utilities only. They let callers create, destroy, and inspect
+//! CUDA streams and RMM resources, but the data-processing entry points in
+//! this shim still execute on cuDF's default stream and current device memory
+//! resource.
 
 #![allow(non_camel_case_types)]
 
@@ -278,21 +284,44 @@ extern "C" {
 
     // -- Stream --------------------------------------------------------------
 
+    /// Create an owned CUDA stream handle.
+    ///
+    /// This handle is currently a standalone control surface for
+    /// [`cudf_stream_synchronize`] and [`cudf_stream_is_ready`] only. Other
+    /// `cudf-sys` compute APIs do not accept a stream handle and continue to
+    /// execute on cuDF's default stream.
     pub fn cudf_stream_create(out: *mut cudf_stream_handle) -> cudf_status_t;
+
+    /// Destroy a CUDA stream created by [`cudf_stream_create`].
     pub fn cudf_stream_destroy(handle: cudf_stream_handle);
+
+    /// Block until work already enqueued on `handle` completes.
     pub fn cudf_stream_synchronize(handle: cudf_stream_handle) -> cudf_status_t;
+
+    /// Report whether work already enqueued on `handle` has completed.
     pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
 
     // -- Memory Resource -----------------------------------------------------
 
+    /// Create an owned CUDA-backed RMM memory resource handle.
+    ///
+    /// This handle is not yet threaded through the compute APIs in this shim.
+    /// Regular cuDF operations still allocate via
+    /// `cudf::get_current_device_resource_ref()`.
     pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
 
+    /// Create an owned pool memory resource handle.
+    ///
+    /// Like [`cudf_memory_resource_create_cuda`], this creates a standalone
+    /// resource object but does not install it as the allocator used by other
+    /// `cudf-sys` entry points.
     pub fn cudf_memory_resource_create_pool(
         initial_pool_size: usize,
         maximum_pool_size: usize,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 
+    /// Destroy a memory resource created by this shim.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle);
 
     // -- I/O: Parquet --------------------------------------------------------

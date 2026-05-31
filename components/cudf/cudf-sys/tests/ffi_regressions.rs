@@ -96,6 +96,18 @@ fn make_i32_data_type() -> *mut c_void {
     out
 }
 
+fn unique_missing_path(extension: &str) -> std::ffi::CString {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "cudf-sys-ffi-regressions-missing-{}-{}.{}",
+        std::process::id(),
+        nanos,
+        extension
+    ));
+    let _ = std::fs::remove_file(&path);
+    std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap()
+}
+
 fn last_error_message() -> String {
     let ptr = unsafe { cudf_sys::cudf_last_error_message() };
     if ptr.is_null() {
@@ -161,6 +173,29 @@ fn test_scalar_create_numeric_valid_requires_value() {
 }
 
 #[test]
+fn test_scalar_create_string_valid_requires_value() {
+    let mut scalar: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 1, &mut scalar) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
+    assert!(scalar.is_null());
+}
+
+#[test]
+fn test_scalar_create_string_invalid_allows_null_value() {
+    let mut scalar: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 0, &mut scalar) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!scalar.is_null());
+
+    let mut is_valid = -1;
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid(scalar, &mut is_valid) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(is_valid, 0);
+
+    unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+}
+
+#[test]
 fn test_stream_is_ready_null_out_rejected() {
     let mut stream: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
@@ -169,6 +204,24 @@ fn test_stream_is_ready_null_out_rejected() {
 
     let st = unsafe { cudf_sys::cudf_stream_is_ready(stream, ptr::null_mut()) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
+
+    unsafe { cudf_sys::cudf_stream_destroy(stream) };
+}
+
+#[test]
+fn test_stream_create_is_ready_and_synchronize_smoke() {
+    let mut stream: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!stream.is_null());
+
+    let mut ready = 0;
+    let status = unsafe { cudf_sys::cudf_stream_is_ready(stream, &mut ready) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(ready, 1);
+
+    let status = unsafe { cudf_sys::cudf_stream_synchronize(stream) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     unsafe { cudf_sys::cudf_stream_destroy(stream) };
 }
@@ -464,6 +517,19 @@ fn test_column_create_strings_negative_length_rejected() {
         cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), 1, ptr::null(), 0, &mut col)
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(col.is_null());
+}
+
+#[test]
+fn test_column_create_strings_positive_length_requires_non_null_string_pointer() {
+    let string_ptrs = [ptr::null()];
+    let lengths = [2i32];
+
+    let mut col: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), 1, ptr::null(), 0, &mut col)
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(col.is_null());
 }
 
@@ -860,6 +926,60 @@ fn test_memory_resource_pool_create_destroy_smoke() {
 }
 
 #[test]
+fn test_memory_resource_cuda_create_destroy_smoke() {
+    let mut mr: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut mr) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!mr.is_null());
+
+    unsafe { cudf_sys::cudf_memory_resource_destroy(mr) };
+}
+
+#[test]
+fn test_table_view_null_handle_clears_out() {
+    let mut out = 1usize as *mut c_void;
+    let status = unsafe { cudf_sys::cudf_table_view(ptr::null_mut(), &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+}
+
+#[test]
+fn test_io_read_csv_missing_file_clears_out() {
+    let path = unique_missing_path("csv");
+    let mut out = 1usize as *mut c_void;
+    let status = unsafe { cudf_sys::cudf_io_read_csv(path.as_ptr(), b',' as c_char, 1, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
+    assert!(out.is_null());
+}
+
+#[test]
+fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
+    let path = unique_missing_path("parquet");
+    let mut out_table = 1usize as *mut c_void;
+    let mut out_names = 1usize as *mut *mut c_char;
+    let mut out_num_names = -1;
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_with_metadata(
+            path.as_ptr(),
+            ptr::null(),
+            -1,
+            0,
+            -1,
+            &mut out_table,
+            &mut out_names,
+            &mut out_num_names,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_table.is_null());
+    assert!(out_names.is_null());
+    assert_eq!(out_num_names, 0);
+}
+
+#[test]
 fn test_io_write_csv_negative_num_columns_rejected() {
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
@@ -876,11 +996,38 @@ fn test_io_write_csv_negative_num_columns_rejected() {
 }
 
 #[test]
+fn test_io_write_csv_null_column_name_entry_rejected() {
+    let col = make_i32_column(&[1, 2]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+    let path = std::ffi::CString::new("/tmp/cudf_sys_write_csv_null_column_name_entry.csv").unwrap();
+    let names = [ptr::null()];
+
+    let status = unsafe { cudf_sys::cudf_io_write_csv(tv, path.as_ptr(), names.as_ptr(), 1, b',' as i8, 1) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_io_read_parquet_negative_num_columns_rejected() {
     let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), -1, 0, -1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+}
+
+#[test]
+fn test_io_read_parquet_null_column_name_entry_rejected() {
+    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let columns = [ptr::null()];
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), columns.as_ptr(), 1, 0, -1, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
 }
 
@@ -919,6 +1066,23 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
 }
 
 #[test]
+fn test_io_write_parquet_null_column_name_entry_rejected() {
+    let col = make_i32_column(&[1, 2]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+    let path = std::ffi::CString::new("/tmp/cudf_sys_write_parquet_null_column_name_entry.parquet").unwrap();
+    let names = [ptr::null()];
+
+    let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), names.as_ptr(), 1) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
     let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
     let mut out_table: *mut c_void = ptr::null_mut();
@@ -939,6 +1103,31 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out_table.is_null());
     assert!(out_names.is_null());
+}
+
+#[test]
+fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
+    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let columns = [ptr::null()];
+    let mut out_table: *mut c_void = 1usize as *mut c_void;
+    let mut out_names: *mut *mut i8 = 1usize as *mut *mut i8;
+    let mut out_num_names: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_with_metadata(
+            path.as_ptr(),
+            columns.as_ptr(),
+            1,
+            0,
+            -1,
+            &mut out_table,
+            &mut out_names,
+            &mut out_num_names,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out_table.is_null());
+    assert!(out_names.is_null());
+    assert_eq!(out_num_names, 0);
 }
 
 #[test]

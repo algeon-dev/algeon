@@ -27,9 +27,9 @@ extern "C" {
 cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
                                    cudf_unary_operator_t op,
                                    cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   cudf::unary_operator cudf_op;
   auto status = to_unary_operator(op, &cudf_op);
   if (status != CUDF_SUCCESS) {
@@ -49,8 +49,9 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_null(cudf_column_view_handle input,
                            cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -65,8 +66,9 @@ cudf_status_t cudf_is_null(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_valid(cudf_column_view_handle input,
                             cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -82,9 +84,10 @@ cudf_status_t cudf_is_valid(cudf_column_view_handle input,
 cudf_status_t cudf_cast(cudf_column_view_handle input,
                         cudf_data_type_handle output_type,
                         cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
@@ -101,9 +104,10 @@ cudf_status_t cudf_cast(cudf_column_view_handle input,
 cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
                                      cudf_data_type_handle to_type,
                                      int32_t* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
   CUDF_RUST_NULL_CHECK(from_type, "from_type is null");
   CUDF_RUST_NULL_CHECK(to_type, "to_type is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* from_dt = static_cast<cudf::data_type*>(from_type);
     auto* to_dt = static_cast<cudf::data_type*>(to_type);
@@ -116,8 +120,9 @@ cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
 
 cudf_status_t cudf_is_nan(cudf_column_view_handle input,
                           cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -132,8 +137,9 @@ cudf_status_t cudf_is_nan(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_not_nan(cudf_column_view_handle input,
                               cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto stream = cudf::get_default_stream();

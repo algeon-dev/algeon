@@ -15,6 +15,7 @@ extern "C" {
 /// Create a new CUDA stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto* stream = new rmm::cuda_stream();
     *out = static_cast<cudf_stream_handle>(stream);
@@ -42,8 +43,9 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle) {
 /// Check if all operations on the stream have completed (non-blocking).
 /// Sets *out to 1 if ready, 0 if not.
 cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* stream = static_cast<rmm::cuda_stream*>(handle);
     cudaError_t err = cudaStreamQuery(stream->view().value());

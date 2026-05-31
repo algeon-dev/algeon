@@ -13,9 +13,10 @@ extern "C" {
 cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
                                         cudf_scalar_handle replacement,
                                         cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(replacement, "replacement is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto* scalar = static_cast<cudf::scalar*>(replacement);
@@ -32,9 +33,10 @@ cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
 cudf_status_t cudf_replace_nulls_column(cudf_column_view_handle input,
                                         cudf_column_view_handle replacement,
                                         cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(replacement, "replacement is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* view_input = static_cast<cudf::column_view*>(input);
     auto* view_replacement = static_cast<cudf::column_view*>(replacement);

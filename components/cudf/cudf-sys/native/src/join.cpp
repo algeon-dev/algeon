@@ -74,14 +74,14 @@ cudf_status_t cudf_inner_join(cudf_table_view_handle left_keys,
                               cudf_null_equality_t null_equality,
                               cudf_table_handle* out_left,
                               cudf_table_handle* out_right) {
+  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
+  *out_left = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_right = nullptr;
   CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
   CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
-  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
-  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
-  *out_left = nullptr;
-  *out_right = nullptr;
   cudf::null_equality null_eq;
   auto status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {
@@ -121,14 +121,14 @@ cudf_status_t cudf_left_join(cudf_table_view_handle left_keys,
                              cudf_null_equality_t null_equality,
                              cudf_table_handle* out_left,
                              cudf_table_handle* out_right) {
+  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
+  *out_left = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_right = nullptr;
   CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
   CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
-  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
-  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
-  *out_left = nullptr;
-  *out_right = nullptr;
   cudf::null_equality null_eq;
   auto status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {
@@ -168,14 +168,14 @@ cudf_status_t cudf_full_join(cudf_table_view_handle left_keys,
                              cudf_null_equality_t null_equality,
                              cudf_table_handle* out_left,
                              cudf_table_handle* out_right) {
+  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
+  *out_left = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_right = nullptr;
   CUDF_RUST_NULL_CHECK(left_keys, "left_keys is null");
   CUDF_RUST_NULL_CHECK(right_keys, "right_keys is null");
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
-  CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
-  CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
-  *out_left = nullptr;
-  *out_right = nullptr;
   cudf::null_equality null_eq;
   auto status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {

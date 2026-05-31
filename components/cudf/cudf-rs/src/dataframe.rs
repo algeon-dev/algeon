@@ -1791,7 +1791,15 @@ impl DataFrame {
     /// otherwise it is appended. All unchanged columns are shared via
     /// `Arc::clone` (zero GPU copy).
     ///
-    /// If the same name appears more than once in `pairs`, the last value wins.
+    /// # Duplicate name handling
+    ///
+    /// If the same output name appears more than once in `pairs`, the **last
+    /// value wins** — earlier entries for that name are silently overwritten.
+    /// This matches the semantics of Python's `DataFrame.assign(**kwargs)` and
+    /// is intentional: `assign` is a batch "set these columns" operation, not a
+    /// schema-definition operation. Methods that define schema shape
+    /// ([`select`](Self::select), [`rename_columns`](Self::rename_columns))
+    /// reject duplicates with an error.
     ///
     /// # Errors
     ///

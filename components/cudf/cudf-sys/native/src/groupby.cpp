@@ -39,6 +39,7 @@ extern "C" {
 cudf_status_t cudf_aggregation_create(cudf_aggregation_kind_t kind,
                                       cudf_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     std::unique_ptr<cudf::groupby_aggregation> agg;
     switch (kind) {
@@ -106,6 +107,7 @@ cudf_status_t cudf_aggregation_create_count(cudf_null_policy_t null_policy,
 cudf_status_t cudf_aggregation_create_std(int32_t ddof,
                                           cudf_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto agg =
         cudf::make_std_aggregation<cudf::groupby_aggregation>(ddof);
@@ -118,6 +120,7 @@ cudf_status_t cudf_aggregation_create_std(int32_t ddof,
 cudf_status_t cudf_aggregation_create_variance(int32_t ddof,
                                                cudf_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto agg =
         cudf::make_variance_aggregation<cudf::groupby_aggregation>(ddof);
@@ -142,13 +145,13 @@ cudf_status_t cudf_groupby_aggregate(
     cudf_table_handle* out_keys,
     cudf_column_handle** out_values,
     int32_t* out_total_columns) {
-  CUDF_RUST_NULL_CHECK(keys, "keys is null");
   CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
-  CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
-  CUDF_RUST_NULL_CHECK(out_total_columns, "out_total_columns is null");
   *out_keys = nullptr;
+  CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
   *out_values = nullptr;
+  CUDF_RUST_NULL_CHECK(out_total_columns, "out_total_columns is null");
   *out_total_columns = 0;
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
   if (num_requests < 0) {
     set_error("num_requests must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;

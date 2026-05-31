@@ -17,8 +17,9 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
                               int num_keys,
                               int keep_threshold,
                               cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -30,7 +31,6 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
   if (num_keys > 0) {
     CUDF_RUST_NULL_CHECK(keys, "keys is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto stream = cudf::get_default_stream();
@@ -55,8 +55,9 @@ cudf_status_t cudf_distinct(cudf_table_view_handle input,
                             cudf_stream_compaction_null_equality_t null_equality,
                             cudf_stream_compaction_nan_equality_t nan_equality,
                             cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   if (num_keys < 0) {
     set_error("num_keys must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -64,8 +65,6 @@ cudf_status_t cudf_distinct(cudf_table_view_handle input,
   if (num_keys > 0) {
     CUDF_RUST_NULL_CHECK(keys, "keys is null");
   }
-  *out = nullptr;
-
   cudf::duplicate_keep_option keep_opt;
   switch (keep) {
     case CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY:

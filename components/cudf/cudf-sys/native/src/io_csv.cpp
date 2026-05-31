@@ -15,8 +15,9 @@ extern "C" {
 
 cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
                                int32_t has_header, cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_TRY {
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::csv_reader_options::builder(source)
@@ -58,6 +59,11 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
             .include_header(include_header != 0);
 
     if (column_names != nullptr && num_columns > 0) {
+      auto status =
+          validate_c_string_array(column_names, num_columns, "column_names");
+      if (status != CUDF_SUCCESS) {
+        return status;
+      }
       std::vector<std::string> names;
       names.reserve(num_columns);
       for (int32_t i = 0; i < num_columns; ++i) {

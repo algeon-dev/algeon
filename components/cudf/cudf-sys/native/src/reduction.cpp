@@ -50,6 +50,7 @@ cudf_status_t cudf_reduce_aggregation_create(
     cudf_reduce_aggregation_kind_t kind,
     cudf_reduce_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     std::unique_ptr<cudf::reduce_aggregation> agg;
     switch (kind) {
@@ -91,6 +92,7 @@ cudf_status_t cudf_reduce_aggregation_create_variance(
     int32_t ddof,
     cudf_reduce_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto agg = cudf::make_variance_aggregation<cudf::reduce_aggregation>(ddof);
     *out = static_cast<cudf_reduce_aggregation_handle>(agg.release());
@@ -103,6 +105,7 @@ cudf_status_t cudf_reduce_aggregation_create_std(
     int32_t ddof,
     cudf_reduce_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto agg = cudf::make_std_aggregation<cudf::reduce_aggregation>(ddof);
     *out = static_cast<cudf_reduce_aggregation_handle>(agg.release());
@@ -119,6 +122,7 @@ cudf_status_t cudf_scan_aggregation_create(
     cudf_reduce_aggregation_kind_t kind,
     cudf_scan_aggregation_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     std::unique_ptr<cudf::scan_aggregation> agg;
     switch (kind) {
@@ -152,11 +156,11 @@ cudf_status_t cudf_reduce(cudf_column_view_handle input,
                           cudf_reduce_aggregation_handle agg,
                           cudf_data_type_handle output_type,
                           cudf_scalar_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(agg, "agg is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto* reduce_agg = static_cast<cudf::reduce_aggregation*>(agg);
@@ -176,10 +180,10 @@ cudf_status_t cudf_scan(cudf_column_view_handle input,
                         cudf_scan_type_t scan_type,
                         int32_t null_policy,
                         cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_NULL_CHECK(agg, "agg is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_NULL_CHECK(agg, "agg is null");
   cudf::scan_type cudf_scan_type;
   auto status = to_scan_type(scan_type, &cudf_scan_type);
   if (status != CUDF_SUCCESS) {
@@ -207,11 +211,11 @@ cudf_status_t cudf_scan(cudf_column_view_handle input,
 cudf_status_t cudf_minmax(cudf_column_view_handle input,
                           cudf_scalar_handle* out_min,
                           cudf_scalar_handle* out_max) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out_min, "out_min is null");
-  CUDF_RUST_NULL_CHECK(out_max, "out_max is null");
   *out_min = nullptr;
+  CUDF_RUST_NULL_CHECK(out_max, "out_max is null");
   *out_max = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto stream = cudf::get_default_stream();
