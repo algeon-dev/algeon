@@ -4,6 +4,7 @@
 /// Master include for cudf Rust FFI C shim.
 
 #include "error.h"
+#include "execution_context.h"
 #include "types.h"
 #include "column.h"
 #include "table.h"

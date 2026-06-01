@@ -9,6 +9,8 @@
 #include <cudf/utilities/traits.hpp>
 
 #include <cstring>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -183,7 +185,7 @@ cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out) {
 }
 
 cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
-                                       const char** out, int32_t* len_out) {
+                                       char** out, int32_t* len_out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(len_out, "len_out is null");
@@ -197,16 +199,32 @@ cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
     }
     auto* str_scalar = static_cast<cudf::string_scalar*>(s);
     auto stream = cudf::get_default_stream();
-    // to_string() copies from device to host.
-    // We store the result in a thread-local buffer.
-    // Returned pointer is valid until the next shim call on this thread.
-    static thread_local std::string tl_string;
-    tl_string = str_scalar->to_string(stream);
-    *out = tl_string.c_str();
-    *len_out = static_cast<int32_t>(tl_string.size());
+    auto host_value = str_scalar->to_string(stream);
+    if (host_value.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+      set_error("String scalar value exceeds supported host length");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto const length = static_cast<int32_t>(host_value.size());
+    auto* copied = static_cast<char*>(std::malloc(static_cast<size_t>(length) + 1));
+    if (copied == nullptr) {
+      set_error("Out of memory allocating string scalar host copy");
+      return CUDF_ERROR_OUT_OF_MEMORY;
+    }
+    if (length > 0) {
+      std::memcpy(copied, host_value.data(), static_cast<size_t>(length));
+    }
+    copied[length] = '\0';
+
+    *out = copied;
+    *len_out = length;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+void cudf_string_free(char* ptr) {
+  std::free(ptr);
 }
 
 }  // extern "C"

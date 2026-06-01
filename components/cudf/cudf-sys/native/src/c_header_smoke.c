@@ -20,6 +20,11 @@ int cudf_rust_c_header_smoke(void)
     &cudf_dictionary_encode;
   cudf_status_t (*f12)(cudf_table_view_handle, uint32_t, cudf_column_handle*) =
     &cudf_hashing_murmurhash3_x86_32;
+  cudf_status_t (*f13)(cudf_column_handle, const cudf_exec_options_t*, cudf_column_handle*) =
+    &cudf_column_copy_ex;
+  cudf_status_t (*f14)(cudf_column_view_handle, void*, size_t, const cudf_exec_options_t*) =
+    &cudf_column_view_to_host_ex;
+  cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
 
   (void)f1;
   (void)f2;
@@ -33,5 +38,8 @@ int cudf_rust_c_header_smoke(void)
   (void)f10;
   (void)f11;
   (void)f12;
+  (void)f13;
+  (void)f14;
+  (void)opts;
   return 0;
 }

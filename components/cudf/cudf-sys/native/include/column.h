@@ -2,6 +2,7 @@
 #define CUDF_RUST_COLUMN_H
 
 #include "error.h"
+#include "execution_context.h"
 #include "scalar.h"
 #include "types.h"
 #include <stddef.h>
@@ -34,6 +35,15 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
 /// Deep-copy a column.
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out);
+
+/// Deep-copy a column with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
+                                  const cudf_exec_options_t* options,
+                                  cudf_column_handle* out);
 
 /// Deep-copy a column from a column_view. Works for all types including
 /// strings and nested types.
@@ -82,6 +92,16 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
 /// Only valid for fixed-width types.
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
                                        void* host_buf, size_t buf_size);
+
+/// Copy column data to host buffer with explicit execution options.
+///
+/// The provided stream is synchronized before return so `host_buf` is fully
+/// populated on success. `options->mr` is ignored because this helper does not
+/// allocate output device storage.
+cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
+                                          void* host_buf,
+                                          size_t buf_size,
+                                          const cudf_exec_options_t* options);
 
 /// Get the raw device (GPU) data pointer of a column_view.
 ///
