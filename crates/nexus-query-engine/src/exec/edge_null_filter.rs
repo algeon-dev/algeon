@@ -1,15 +1,33 @@
 use super::*;
 use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 
+/// Which optional edge columns may gate null-row dropping for an operation.
+///
+/// `source`/`destination` always gate: a null endpoint is not a valid graph
+/// edge. Optional columns only gate when the consuming operation actually reads
+/// them — dropping an edge because an unread column is null silently corrupts
+/// the graph topology (e.g. BFS reachability). See the BFS regression in
+/// `graph_algorithm_execution.rs`.
+#[derive(Clone, Copy)]
+pub(super) struct EdgeNullFilterScope {
+    /// Whether a null `weight` should drop its edge. True only for algorithms
+    /// that read edge weights (SSSP, minimum spanning tree).
+    pub weight: bool,
+    /// Whether a null `edge_id` should drop its edge. True only when edge ids
+    /// are consumed (edge-id graph construction / edge-id predicates).
+    pub edge_id: bool,
+}
+
 pub(super) fn filter_null_edge_rows(
     context: &ExecutionContext,
     node_id: NodeId,
     operator_kind: &'static str,
     frame: DataFrame,
     edge_columns: &GraphEdgeColumnBindings,
+    scope: EdgeNullFilterScope,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
-    let columns = edge_filter_columns(edge_columns);
+    let columns = edge_filter_columns(edge_columns, scope);
     let mut null_counts = Vec::new();
     for (role, column) in &columns {
         let series = frame.series(column).map_err(|error| {
@@ -57,13 +75,20 @@ pub(super) fn filter_null_edge_rows(
     Ok(output)
 }
 
-fn edge_filter_columns(edge_columns: &GraphEdgeColumnBindings) -> Vec<(&'static str, &str)> {
+fn edge_filter_columns<'a>(
+    edge_columns: &'a GraphEdgeColumnBindings,
+    scope: EdgeNullFilterScope,
+) -> Vec<(&'static str, &'a str)> {
     let mut columns =
         vec![("source", edge_columns.source.as_str()), ("destination", edge_columns.destination.as_str())];
-    if let Some(weight) = edge_columns.weight.as_deref() {
+    if scope.weight
+        && let Some(weight) = edge_columns.weight.as_deref()
+    {
         columns.push(("weight", weight));
     }
-    if let Some(edge_id) = edge_columns.edge_id.as_deref() {
+    if scope.edge_id
+        && let Some(edge_id) = edge_columns.edge_id.as_deref()
+    {
         columns.push(("edge_id", edge_id));
     }
     columns

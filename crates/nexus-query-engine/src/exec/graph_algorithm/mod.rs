@@ -79,12 +79,17 @@ pub(super) fn execute_graph_algorithm(
     let boundary_before = metrics.boundary.clone();
     let executor = graph_algorithm_executor(node.spec.algorithm);
     let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, node.input);
+    let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
+        weight: node.spec.algorithm.consumes_weight(),
+        edge_id: node.spec.edge_columns.edge_id.is_some(),
+    };
     let input = super::edge_null_filter::filter_null_edge_rows(
         context,
         node_id,
         "graph_edge_null_filter",
         input.into_frame(),
         &node.spec.edge_columns,
+        null_filter_scope,
         metrics,
     )?;
     let sanitized_input_rows = input.num_rows() as u64;
@@ -469,7 +474,11 @@ where
     let dst_view = graph_device_view::<V>(&dst_slice, "destination")?;
     let edge_id_view = graph_device_view::<V>(&edge_id_slice, "edge_id")?;
 
-    match spec.edge_columns.weight.as_deref() {
+    // Weight is only projected (and thus present in `edges`) for algorithms
+    // that consume it; mirror that gate here so an unweighted edge-id graph
+    // does not look up a column `project_edge_list` intentionally dropped.
+    let weight_binding = if spec.algorithm.consumes_weight() { spec.edge_columns.weight.as_deref() } else { None };
+    match weight_binding {
         Some(weight_col) => {
             let weight = graph_series(edges, weight_col, "weight")?;
             let weight_dtype = weight.dtype().map_err(|error| {
@@ -604,7 +613,14 @@ pub(super) fn project_edge_list(
         .with_fact("src_cudf_dtype", format!("{source_type:?}"))
         .with_fact("dst_cudf_dtype", format!("{destination_type:?}")));
     }
-    if let Some(weight) = &spec.edge_columns.weight {
+    // Only validate/project the weight column for algorithms that consume it.
+    // Unweighted algorithms (BFS, etc.) must ignore a bound weight entirely:
+    // validating it would reject legitimately-null weights, and projecting it
+    // would feed cuGraph a weight it does not use. Kept in lockstep with
+    // `table_graph_options`, which only sets `weight_col` under the same gate.
+    if spec.algorithm.consumes_weight()
+        && let Some(weight) = &spec.edge_columns.weight
+    {
         validate_edge_column(frame, weight, EdgeColumnRole::Weight)?;
     }
     if let Some(edge_id) = &spec.edge_columns.edge_id {
@@ -622,7 +638,9 @@ pub(super) fn project_edge_list(
     }
 
     let mut selected = vec![spec.edge_columns.source.as_str(), spec.edge_columns.destination.as_str()];
-    if let Some(weight) = &spec.edge_columns.weight {
+    if spec.algorithm.consumes_weight()
+        && let Some(weight) = &spec.edge_columns.weight
+    {
         selected.push(weight.as_str());
     }
     if let Some(edge_id) = &spec.edge_columns.edge_id {
@@ -707,7 +725,10 @@ pub(super) fn table_graph_options(spec: &crate::plan::GraphAlgorithmSpec) -> cug
     if spec.graph_options.renumber {
         options = options.renumber();
     }
-    if spec.edge_columns.weight.is_some() {
+    // `project_edge_list` only emits the weight column (at index 2, before any
+    // edge-id column) when the algorithm consumes weights. Gate the cuGraph
+    // weight binding on the same condition so the index stays valid.
+    if spec.algorithm.consumes_weight() && spec.edge_columns.weight.is_some() {
         options = options.weight_col(2);
     }
     options

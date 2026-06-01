@@ -112,8 +112,12 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
 }
 
+// BFS does not consume edge weights, so a null weight must NOT drop its edge
+// (that would silently break reachability). A null edge_id, however, is
+// consumed by the edge-id graph path here and is correctly dropped. This pins
+// the fix for the BFS null-weight reachability P0.
 #[test]
-fn bfs_drops_null_weight_and_edge_id_rows_before_graph_construction() {
+fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
 
@@ -123,6 +127,10 @@ fn bfs_drops_null_weight_and_edge_id_rows_before_graph_construction() {
         Field::new("weight", DataType::Float64, true),
         Field::new("edge_id", DataType::Int32, true),
     ]));
+    // Edges: 0->1 (w=1, id=10), 1->2 (w=NULL, id=11), 0->3 (w=1, id=NULL),
+    //        1->4 (w=1, id=14), 2->4 (w=1, id=24). BFS from 0.
+    // Null weight on 1->2 must be kept (BFS ignores weight) -> 2 reachable.
+    // Null edge_id on 0->3 is dropped (edge-id path consumes it) -> 3 unreachable.
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
         vec![
@@ -157,9 +165,26 @@ fn bfs_drops_null_weight_and_edge_id_rows_before_graph_construction() {
     );
 
     let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize BFS output");
+    };
+    let vertices = int64_array(batch, 0);
+    let distances = int64_array(batch, 1);
+    let distance_for = |vertex: i64| {
+        (0..batch.num_rows()).find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+    };
+    // Reachability preserved across the null-weight edge 1->2.
+    assert_eq!(distance_for(0), Some(0));
+    assert_eq!(distance_for(1), Some(1));
+    assert_eq!(distance_for(2), Some(2));
+    assert_eq!(distance_for(4), Some(2));
+    // Vertex 3's only inbound edge had a null edge_id and was dropped.
+    let unreachable = i64::from(i32::MAX);
+    assert!(distance_for(3).is_none_or(|distance| distance == unreachable));
+
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
-    assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=1"));
 
     let null_filter = result
         .metrics()
@@ -168,7 +193,74 @@ fn bfs_drops_null_weight_and_edge_id_rows_before_graph_construction() {
         .find(|row| row.operator_kind == "graph_edge_null_filter")
         .expect("null-edge filter metrics should be recorded when dirty rows are dropped");
     assert_eq!(null_filter.input_rows, 5);
-    assert_eq!(null_filter.output_rows, 3);
+    assert_eq!(null_filter.output_rows, 4);
+}
+
+// Companion to the above isolating the pure P0: BFS with ONLY a weight binding
+// (no edge_id). A null weight must never drop its edge, so every vertex stays
+// reachable. Before the fix this returned i32::MAX sentinels for 1 and 2.
+#[test]
+fn bfs_null_weight_does_not_drop_reachable_edges() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+        Field::new("weight", DataType::Float64, true),
+    ]));
+    // 0->9 (w=1), 0->1 (w=NULL), 1->2 (w=1). BFS from 0 ignores weights.
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 0, 1])),
+            Arc::new(Int32Array::from(vec![9, 1, 2])),
+            Arc::new(Float64Array::from(vec![Some(1.0), None, Some(1.0)])),
+        ],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize BFS output");
+    };
+    let vertices = int64_array(batch, 0);
+    let distances = int64_array(batch, 1);
+    let distance_for = |vertex: i64| {
+        (0..batch.num_rows())
+            .find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+            .unwrap_or_else(|| panic!("missing vertex {vertex} in BFS output"))
+    };
+    assert_eq!(distance_for(0), 0);
+    assert_eq!(distance_for(9), 1);
+    assert_eq!(distance_for(1), 1);
+    assert_eq!(distance_for(2), 2);
+
+    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
+    assert_eq!(graph_metrics.len(), 1);
+    assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=0"));
 }
 
 #[test]
