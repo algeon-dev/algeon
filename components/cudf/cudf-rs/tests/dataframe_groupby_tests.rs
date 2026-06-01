@@ -1,4 +1,6 @@
-//! Tests for DataFrame groupby aggregation.
+//! Tests for DataFrame groupby aggregation (legacy `GroupByBuilder` API).
+
+#![allow(deprecated)]
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, groupby::Aggregation};
 

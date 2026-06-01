@@ -1490,10 +1490,10 @@ impl DataFrame {
 
     /// Low-level groupby using [`GroupByBuilder`] with [`Aggregation`] variants.
     ///
-    /// Prefer [`groupby`][DataFrame::groupby] for new code. This method is
-    /// retained for callers that need direct access to the low-level
-    /// [`Aggregation`] enum (e.g. `Median`, `Std`, `Variance`, `NUnique`).
-    /// It will be removed once the façade [`Agg`] enum reaches parity.
+    /// # Deprecated
+    ///
+    /// The façade [`Agg`] enum now covers all aggregation types. Use
+    /// [`groupby`][DataFrame::groupby] with [`AggSpec`] instead.
     ///
     /// # Example
     ///
@@ -1512,6 +1512,8 @@ impl DataFrame {
     ///     .execute()
     ///     .unwrap();
     /// ```
+    #[deprecated(since = "0.2.0", note = "use `DataFrame::groupby` with `Agg` / `AggSpec` instead")]
+    #[allow(deprecated)]
     pub fn groupby_builder<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
         GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
     }
@@ -2113,7 +2115,11 @@ impl DataFrame {
 /// Created via [`DataFrame::groupby_builder`]. Chain `.agg()` calls to add
 /// aggregation requests, then call `.execute()` to run.
 ///
-/// Prefer [`DataFrame::groupby`] → [`GroupBy`] for new code.
+/// # Deprecated
+///
+/// Use [`DataFrame::groupby`] → [`GroupBy`] with [`AggSpec`] instead.
+/// The façade [`Agg`] enum now covers all aggregation types.
+#[deprecated(since = "0.2.0", note = "use `DataFrame::groupby` with `Agg` / `AggSpec` instead")]
 pub struct GroupByBuilder<'a> {
     df: &'a DataFrame,
     key_names: Vec<String>,
@@ -2121,6 +2127,7 @@ pub struct GroupByBuilder<'a> {
     agg_requests: Vec<(String, Aggregation)>,
 }
 
+#[allow(deprecated)]
 impl<'a> GroupByBuilder<'a> {
     /// Add an aggregation on `column` using the given [`Aggregation`].
     ///

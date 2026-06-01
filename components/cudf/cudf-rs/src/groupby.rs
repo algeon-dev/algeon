@@ -251,7 +251,19 @@ pub enum Agg {
     Min,
     Max,
     Mean,
-    Count { include_nulls: bool },
+    Count {
+        include_nulls: bool,
+    },
+    Median,
+    NUnique,
+    /// Standard deviation with degrees-of-freedom correction.
+    Std {
+        ddof: u8,
+    },
+    /// Variance with degrees-of-freedom correction.
+    Variance {
+        ddof: u8,
+    },
 }
 
 impl Agg {
@@ -263,6 +275,10 @@ impl Agg {
             Agg::Max => Aggregation::Max,
             Agg::Mean => Aggregation::Mean,
             Agg::Count { include_nulls } => Aggregation::Count { include_nulls: *include_nulls },
+            Agg::Median => Aggregation::Median,
+            Agg::NUnique => Aggregation::NUnique,
+            Agg::Std { ddof } => Aggregation::Std { ddof: i32::from(*ddof) },
+            Agg::Variance { ddof } => Aggregation::Variance { ddof: i32::from(*ddof) },
         }
     }
 
@@ -274,6 +290,10 @@ impl Agg {
             Agg::Max => "max",
             Agg::Mean => "mean",
             Agg::Count { .. } => "count",
+            Agg::Median => "median",
+            Agg::NUnique => "nunique",
+            Agg::Std { .. } => "std",
+            Agg::Variance { .. } => "var",
         }
     }
 }
@@ -524,6 +544,50 @@ impl<'a> GroupBy<'a> {
     {
         let specs: Vec<AggSpec> =
             columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Count { include_nulls: false })).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the median of each named column per group.
+    pub fn median<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Median)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: count unique non-null values of each named column per group.
+    pub fn nunique<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::NUnique)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the sample standard deviation (ddof=1) of each named
+    /// column per group.
+    pub fn std<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> =
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Std { ddof: 1 })).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the sample variance (ddof=1) of each named column
+    /// per group.
+    pub fn var<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> =
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Variance { ddof: 1 })).collect();
         self.agg(&specs)
     }
 }
