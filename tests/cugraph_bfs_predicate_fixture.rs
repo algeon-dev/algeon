@@ -243,8 +243,9 @@ async fn cugraph_sql_bfs_utf8_path_fixture_matches_python_cugraph_and_reports_ti
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs_path('bfs_utf8_raw_edges', 'v00000000', 'src', 'dst', NULL, \
+             FROM cugraph_bfs('bfs_utf8_raw_edges', 'v00000000', 'src', 'dst', NULL, \
                   '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"output_mode\":\"path\",\
                      \"target_vertices_table\":\"bfs_utf8_target_vertices\",\
                      \"target_vertex_col\":\"vertex_id\",\
                      \"include_edges_table\":\"bfs_utf8_allowed_edges\",\

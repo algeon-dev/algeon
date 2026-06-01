@@ -9,7 +9,6 @@ use crate::NativeCudfExecutionConfig;
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
-pub const CUGRAPH_BFS_PATH_FUNCTION: &str = "cugraph_bfs_path";
 pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
 pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
 pub const CUGRAPH_KATZ_CENTRALITY_FUNCTION: &str = "cugraph_katz_centrality";
@@ -32,6 +31,9 @@ pub const CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION: &str = "cugraph_balanced_cut
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
+pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 3;
+pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 3;
+pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {

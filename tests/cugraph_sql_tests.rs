@@ -21,11 +21,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CUGRAPH_BFS_PATH_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
-    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt,
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSourceVertex,
-    CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec,
-    parse_cugraph_algorithm_spec, stable_result_schema,
+    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
+    CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION,
+    CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
+    CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy,
+    CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec, parse_cugraph_algorithm_spec, stable_result_schema,
 };
 
 #[tokio::test]
@@ -46,7 +46,6 @@ async fn cugraph_sql_planning_registers_udtfs_on_session_state_builder() {
     let mut registry_function_names: std::collections::BTreeSet<&str> =
         CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect();
     registry_function_names.extend([
-        CUGRAPH_BFS_PATH_FUNCTION,
         CUGRAPH_LIST_ALGORITHMS_FUNCTION,
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION,
         CUGRAPH_VALIDATE_CALL_FUNCTION,
@@ -66,7 +65,8 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
 
     let batches = ctx
         .sql(
-            "SELECT function_name, enabled, requires_source_vertex, output_schema_json \
+            "SELECT function_name, enabled, requires_source_vertex, output_schema_json, \
+                    summary, supports_weight, options_schema_json \
              FROM cugraph_list_algorithms() \
              WHERE function_name IN ('cugraph_pagerank', 'cugraph_bfs') \
              ORDER BY function_name",
@@ -81,6 +81,10 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
     assert_eq!(string_value(batch, 0, 0), "cugraph_bfs");
     assert!(!bool_value(batch, 1, 0), "BFS is registered but disabled by the allowlist");
     assert!(bool_value(batch, 2, 0), "BFS must advertise its source_vertex requirement");
+    assert!(string_value(batch, 4, 0).contains("breadth-first"));
+    assert!(bool_value(batch, 5, 0), "BFS accepts a weight_col binding even though traversal ignores it");
+    assert!(string_value(batch, 6, 0).contains(r#""output_mode""#));
+    assert!(string_value(batch, 6, 0).contains(r#""allowed_values":["raw","normalized","path"]"#));
     assert_eq!(string_value(batch, 0, 1), "cugraph_pagerank");
     assert!(bool_value(batch, 1, 1));
     assert!(string_value(batch, 3, 1).contains(r#""vertex""#));
@@ -92,7 +96,11 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     let ctx = SessionContext::new_with_state(state);
 
     let batches = ctx
-        .sql("SELECT valid, error_code, requires_source_vertex, argument_descriptions_json FROM cugraph_describe_algorithm('cugraph_bfs')")
+        .sql(
+            "SELECT valid, error_code, requires_source_vertex, argument_descriptions_json, \
+                    summary, purpose, mode_schemas_json, examples_json, limitations_json \
+             FROM cugraph_describe_algorithm('cugraph_bfs')",
+        )
         .await
         .unwrap()
         .collect()
@@ -103,6 +111,12 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     assert_eq!(string_value(batch, 1, 0), "ok");
     assert!(bool_value(batch, 2, 0));
     assert!(string_value(batch, 3, 0).contains("source_vertex"));
+    assert!(string_value(batch, 3, 0).contains("Int64|Utf8"));
+    assert!(string_value(batch, 4, 0).contains("breadth-first"));
+    assert!(string_value(batch, 5, 0).contains("reconstructed source-to-target path"));
+    assert!(string_value(batch, 6, 0).contains(r#""path_index""#));
+    assert!(string_value(batch, 7, 0).contains("dry_run_path"));
+    assert!(string_value(batch, 8, 0).contains("ignores edge weights"));
 
     let batches = ctx
         .sql("SELECT valid, error_code, message FROM cugraph_describe_algorithm('cugraph_missing')")
@@ -115,6 +129,64 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     assert!(!bool_value(batch, 0, 0));
     assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
     assert!(string_value(batch, 2, 0).contains("cugraph_missing"));
+}
+
+#[tokio::test]
+async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
+    assert_eq!(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, 3);
+    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 3);
+    assert_eq!(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, 1);
+
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let list_df = ctx.sql("SELECT * FROM cugraph_list_algorithms()").await.unwrap();
+    assert_eq!(
+        schema_field_names(list_df.schema().inner()),
+        vec![
+            "function_name",
+            "algorithm",
+            "enabled",
+            "experimental",
+            "requires_source_vertex",
+            "supports_weight",
+            "min_args",
+            "max_args",
+            "output_schema_json",
+            "options_schema_json",
+            "default_graph_options_json",
+            "summary",
+        ],
+    );
+
+    let describe_df = ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs')").await.unwrap();
+    assert_eq!(
+        schema_field_names(describe_df.schema().inner()),
+        vec![
+            "valid",
+            "error_code",
+            "message",
+            "function_name",
+            "algorithm",
+            "enabled",
+            "experimental",
+            "requires_source_vertex",
+            "supports_weight",
+            "min_args",
+            "max_args",
+            "output_schema_json",
+            "options_schema_json",
+            "default_graph_options_json",
+            "argument_descriptions_json",
+            "option_defaults_json",
+            "result_field_descriptions_json",
+            "limitations_json",
+            "summary",
+            "purpose",
+            "mode_schemas_json",
+            "examples_json",
+        ],
+    );
 }
 
 #[tokio::test]
@@ -375,14 +447,14 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
 }
 
 #[tokio::test]
-async fn cugraph_bfs_path_table_function_exposes_path_schema() {
+async fn cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
 
     let df = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, \
-             '{\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}')",
+            "SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, \
+             '{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}')",
         )
         .await
         .unwrap();
@@ -399,20 +471,20 @@ async fn cugraph_bfs_path_table_function_exposes_path_schema() {
 }
 
 #[tokio::test]
-async fn cugraph_bfs_path_table_function_requires_target_relation() {
+async fn cugraph_bfs_path_mode_requires_target_relation() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
 
     let error = ctx
-        .sql("SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, '{}')")
+        .sql("SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, '{\"output_mode\":\"path\"}')")
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("cugraph_bfs_path requires target_vertices_table and target_vertex_col options"));
+    assert!(error.contains("BFS path output requires target_vertices_table and target_vertex_col options"));
 }
 
 #[tokio::test]
-async fn cugraph_validate_call_accepts_bfs_path_function() {
+async fn cugraph_validate_call_accepts_bfs_path_mode_on_canonical_function() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
@@ -422,9 +494,9 @@ async fn cugraph_validate_call_accepts_bfs_path_function() {
         .sql(
             r#"SELECT valid, error_code, output_schema_json, normalized_options_json
                FROM cugraph_validate_call(
-                 'cugraph_bfs_path',
+                 'cugraph_bfs',
                  'raw_edges',
-                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"target_vertices_table":"targets","target_vertex_col":"vertex_id"}}'
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"path","target_vertices_table":"targets","target_vertex_col":"vertex_id"}}'
                )"#,
         )
         .await
@@ -437,6 +509,80 @@ async fn cugraph_validate_call_accepts_bfs_path_function() {
     assert_eq!(string_value(batch, 1, 0), "ok");
     assert!(string_value(batch, 2, 0).contains(r#""path_index""#));
     assert!(string_value(batch, 3, 0).contains(r#""mode":"path""#));
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_path_mode_target_info_as_structured_row() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, false);
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, message
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'raw_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"path","target_vertices_table":"targets","target_vertex_col":"vertex_id","return_target_info":true}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(!bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "invalid_argument");
+    assert!(string_value(batch, 2, 0).contains("cannot combine with return_target_info=true"));
+}
+
+#[tokio::test]
+async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let error = ctx
+        .sql("SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, '{}')")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cugraph_bfs_path"));
+
+    let batches = ctx
+        .sql(
+            "SELECT valid, error_code, message \
+             FROM cugraph_describe_algorithm('cugraph_bfs_path')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(!bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
+    assert!(string_value(batch, 2, 0).contains("cugraph_bfs_path"));
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, message
+               FROM cugraph_validate_call(
+                 'cugraph_bfs_path',
+                 'raw_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst"}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(!bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
+    assert!(string_value(batch, 2, 0).contains("cugraph_bfs_path"));
 }
 
 #[tokio::test]
@@ -2095,8 +2241,9 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs_path('raw_edges', 'a', 'src', 'dst', NULL, \
+             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
                   '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"output_mode\":\"path\",\
                      \"target_vertices_table\":\"targets\",\
                      \"target_vertex_col\":\"vertex_id\",\
                      \"include_edges_table\":\"allowed_edges\",\
@@ -2721,6 +2868,10 @@ async fn assert_validate_error(
 fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
     assert_eq!(batches.len(), 1, "expected one RecordBatch");
     &batches[0]
+}
+
+fn schema_field_names(schema: &Schema) -> Vec<&str> {
+    schema.fields().iter().map(|field| field.name().as_str()).collect()
 }
 
 fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {

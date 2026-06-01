@@ -11,9 +11,8 @@ use datafusion::{
 };
 
 use super::{
-    CUGRAPH_BFS_PATH_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig,
-    CugraphTableReference, CugraphVertexIdDomain, parse_cugraph_algorithm_spec, parse_cugraph_bfs_path_spec,
-    plan_error, vertex_id_domain_for_call,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
+    CugraphVertexIdDomain, parse_cugraph_algorithm_spec, plan_error, vertex_id_domain_for_call,
 };
 use crate::{
     NativeCudfExecutionConfig,
@@ -98,18 +97,6 @@ impl TableFunctionImpl for CugraphTableFunction {
     }
 }
 
-#[derive(Debug)]
-struct CugraphBfsPathTableFunction {
-    config: CugraphSqlConfig,
-}
-
-impl TableFunctionImpl for CugraphBfsPathTableFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-        let spec = parse_cugraph_bfs_path_spec(args, &self.config)?;
-        Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
-    }
-}
-
 pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
     let mut functions: Vec<_> = CugraphAlgorithm::all()
         .map(|algorithm| {
@@ -119,10 +106,6 @@ pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunctio
             ))
         })
         .collect();
-    functions.push(Arc::new(TableFunction::new(
-        CUGRAPH_BFS_PATH_FUNCTION.to_string(),
-        Arc::new(CugraphBfsPathTableFunction { config: config.clone() }),
-    )));
     functions.extend(cugraph_metadata_table_functions(config));
     functions
 }

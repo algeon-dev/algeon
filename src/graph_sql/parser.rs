@@ -102,20 +102,6 @@ pub fn parse_cugraph_algorithm_spec(
     })
 }
 
-pub fn parse_cugraph_bfs_path_spec(args: &[Expr], config: &CugraphSqlConfig) -> Result<CugraphAlgorithmSpec> {
-    let mut spec = parse_cugraph_algorithm_spec(CugraphAlgorithm::Bfs, args, config)?;
-    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else {
-        unreachable!("BFS parser returned non-BFS params");
-    };
-    if params.predicates.target_vertices.is_none() {
-        return Err(plan_error("cugraph_bfs_path requires target_vertices_table and target_vertex_col options"));
-    }
-    params.output.mode = CugraphBfsOutputMode::Path;
-    params.output.return_target_info = false;
-    spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &spec.params);
-    Ok(spec)
-}
-
 fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
     let valid = match algorithm {
         CugraphAlgorithm::PageRank
@@ -712,6 +698,9 @@ fn parse_bfs_predicate_options(
     if return_target_info && target_vertices.is_none() {
         return Err(plan_error("BFS return_target_info requires target_vertices_table and target_vertex_col options"));
     }
+    if output_mode == CugraphBfsOutputMode::Path && return_target_info {
+        return Err(plan_error("BFS path output cannot combine with return_target_info=true"));
+    }
     if output_mode == CugraphBfsOutputMode::Path && target_vertices.is_none() {
         return Err(plan_error("BFS path output requires target_vertices_table and target_vertex_col options"));
     }
@@ -724,10 +713,7 @@ fn parse_bfs_predicate_options(
             include_edge_ids,
             include_edges,
         };
-        params.output = CugraphBfsOutputOptions {
-            mode: output_mode,
-            return_target_info: output_mode != CugraphBfsOutputMode::Path && return_target_info,
-        };
+        params.output = CugraphBfsOutputOptions { mode: output_mode, return_target_info };
     }
     Ok(())
 }
