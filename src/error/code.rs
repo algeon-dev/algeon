@@ -13,10 +13,14 @@ pub enum ErrorCode {
     Cancelled,
     /// SQL text could not be parsed.
     SqlParse,
+    /// The server request envelope or handle was invalid for the operation.
+    InvalidRequest,
     /// DataFusion rejected the query during logical or physical planning.
     DataFusionPlanning,
-    /// A requested catalog, schema, table, column, or similar named object was not found.
+    /// A requested catalog, schema, table, table function, or similar named object was not found.
     ObjectNotFound,
+    /// A named field was not present in a resolved schema.
+    FieldNotFound,
     /// The optimizer intentionally rejected a native candidate.
     NativeCandidateRejected,
     /// A physical operator is unsupported by the GPU/native adapter path.
@@ -58,6 +62,8 @@ pub enum ErrorCode {
     /// This is a temporary resource condition copied through from native
     /// execution, separate from a cuDF allocator failure.
     MemoryReservationFailed,
+    /// The native query service rejected work because admission capacity was exhausted.
+    ServiceOverloaded,
     /// An internal adapter bug or unreachable condition.
     Internal,
 }
@@ -68,8 +74,10 @@ impl ErrorCode {
         match self {
             Self::Cancelled => "cancelled",
             Self::SqlParse => "sql_parse",
+            Self::InvalidRequest => "invalid_request",
             Self::DataFusionPlanning => "datafusion_planning",
             Self::ObjectNotFound => "object_not_found",
+            Self::FieldNotFound => "field_not_found",
             Self::NativeCandidateRejected => "native_candidate_rejected",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
@@ -84,6 +92,7 @@ impl ErrorCode {
             Self::CudfDependencyFailure => "cudf_dependency_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
+            Self::ServiceOverloaded => "service_overloaded",
             Self::Internal => "internal",
         }
     }
@@ -111,7 +120,7 @@ impl fmt::Display for ErrorCode {
 pub enum ErrorKind {
     /// Caller-requested cancellation stopped execution.
     Cancelled,
-    /// Requested catalog, schema, table, column, or similar named object was not found.
+    /// Requested catalog, schema, table, table function, or similar named object was not found.
     NotFound,
     /// Planning, validation, or physical-plan construction failure.
     Planning,
@@ -196,17 +205,21 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     match code {
         ErrorCode::Cancelled => ErrorKind::Cancelled,
         ErrorCode::SqlParse => ErrorKind::InvalidInput,
+        ErrorCode::InvalidRequest => ErrorKind::InvalidInput,
         ErrorCode::DataFusionPlanning | ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => {
             ErrorKind::Planning
         },
         ErrorCode::ObjectNotFound => ErrorKind::NotFound,
+        ErrorCode::FieldNotFound => ErrorKind::InvalidInput,
         ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
             ErrorKind::Unsupported
         },
         ErrorCode::InvalidChildCount => ErrorKind::Internal,
         ErrorCode::CudfInvalidInput => ErrorKind::InvalidInput,
         ErrorCode::CudfUnsupported => ErrorKind::Unsupported,
-        ErrorCode::CudfResourceExhausted | ErrorCode::MemoryReservationFailed => ErrorKind::ResourceExhausted,
+        ErrorCode::CudfResourceExhausted | ErrorCode::MemoryReservationFailed | ErrorCode::ServiceOverloaded => {
+            ErrorKind::ResourceExhausted
+        },
         ErrorCode::CudfTemporaryFailure | ErrorCode::CudfPersistentFailure | ErrorCode::CudfDependencyFailure => {
             ErrorKind::DependencyFailure
         },
@@ -224,13 +237,16 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::Cancelled => ErrorStatus::Permanent,
-        ErrorCode::CudfResourceExhausted | ErrorCode::CudfTemporaryFailure | ErrorCode::MemoryReservationFailed => {
-            ErrorStatus::Temporary
-        },
+        ErrorCode::CudfResourceExhausted
+        | ErrorCode::CudfTemporaryFailure
+        | ErrorCode::MemoryReservationFailed
+        | ErrorCode::ServiceOverloaded => ErrorStatus::Temporary,
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
         ErrorCode::SqlParse
+        | ErrorCode::InvalidRequest
         | ErrorCode::DataFusionPlanning
         | ErrorCode::ObjectNotFound
+        | ErrorCode::FieldNotFound
         | ErrorCode::NativeCandidateRejected
         | ErrorCode::UnsupportedOperator
         | ErrorCode::UnsupportedExpression

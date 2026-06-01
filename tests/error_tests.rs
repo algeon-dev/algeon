@@ -11,9 +11,17 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::SqlParse.kind(), ErrorKind::InvalidInput);
     assert_eq!(ErrorCode::SqlParse.status(), ErrorStatus::Permanent);
 
+    assert_eq!(ErrorCode::InvalidRequest.as_str(), "invalid_request");
+    assert_eq!(ErrorCode::InvalidRequest.kind(), ErrorKind::InvalidInput);
+    assert_eq!(ErrorCode::InvalidRequest.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::ObjectNotFound.as_str(), "object_not_found");
     assert_eq!(ErrorCode::ObjectNotFound.kind(), ErrorKind::NotFound);
     assert_eq!(ErrorCode::ObjectNotFound.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::FieldNotFound.as_str(), "field_not_found");
+    assert_eq!(ErrorCode::FieldNotFound.kind(), ErrorKind::InvalidInput);
+    assert_eq!(ErrorCode::FieldNotFound.status(), ErrorStatus::Permanent);
 
     assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
     assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
@@ -30,6 +38,29 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::MemoryReservationFailed.as_str(), "memory_reservation_failed");
     assert_eq!(ErrorCode::MemoryReservationFailed.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::MemoryReservationFailed.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
+    assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
+}
+
+#[test]
+fn native_service_overloaded_error_preserves_adapter_classification_and_facts() {
+    let native_error = nexus_query_engine::QueryError::new(
+        nexus_query_engine::QueryErrorCode::ServiceOverloaded,
+        "nexus_query_engine.query_service.admit",
+        "native query service is overloaded",
+    )
+    .with_fact("retry_action", "backoff");
+
+    let adapter_error =
+        Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::ServiceOverloaded);
+    assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(adapter_error.status(), ErrorStatus::Temporary);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("service_overloaded"));
+    assert_eq!(adapter_error.fact_value("retry_action"), Some("backoff"));
 }
 
 #[test]

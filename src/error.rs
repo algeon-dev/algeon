@@ -293,6 +293,7 @@ fn code_for_native_error(error: &nexus_query_engine::QueryError) -> ErrorCode {
         nexus_query_engine::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
         nexus_query_engine::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
         nexus_query_engine::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
+        nexus_query_engine::QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
         nexus_query_engine::QueryErrorCode::Internal => ErrorCode::Internal,
         _ => ErrorCode::Internal,
     }

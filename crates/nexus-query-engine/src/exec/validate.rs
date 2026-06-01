@@ -601,12 +601,6 @@ fn validate_graph_predicate_column(
     expected_type: &arrow::datatypes::DataType,
 ) -> Result<()> {
     let field = graph_edge_field(role, column, input_schema, input_available)?;
-    if field.is_nullable() {
-        return Err(graph_algorithm_error("graph predicate id columns must be non-null")
-            .with_fact("reason", "nullable_predicate_column")
-            .with_fact("predicate_role", role)
-            .with_fact("column", column));
-    }
     if field.data_type() != expected_type {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,

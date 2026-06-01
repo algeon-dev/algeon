@@ -19,17 +19,21 @@ use arrow_flight::{
         ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs,
         CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
         CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTableTypes, CommandGetTables,
-        CommandPreparedStatementQuery, CommandStatementQuery, ProstMessageExt, SqlInfo, SqlNullOrdering,
-        SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency,
-        SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions, SqlTransactionIsolationLevel,
-        SupportedSqlGrammar, TicketStatementQuery,
+        CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate,
+        ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity,
+        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
+        SqlSupportedUnions, SqlTransactionIsolationLevel, SupportedSqlGrammar, TicketStatementQuery,
         metadata::{GetDbSchemasBuilder, GetTablesBuilder, SqlInfoDataBuilder},
-        server::FlightSqlService,
+        server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
 use dashmap::DashMap;
 use datafusion::{
-    datasource::TableType, error::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext,
+    datasource::TableType,
+    error::DataFusionError,
+    execution::SessionStateBuilder,
+    logical_expr::{DdlStatement, LogicalPlan, Statement},
+    prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use nexus_query_engine::ExecutionCancellation;
@@ -45,12 +49,13 @@ use super::{
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
-    error::{ServerError, datafusion_error_to_status},
+    error::{ServerError, datafusion_error_to_status_for_operation},
 };
-use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt};
+use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode};
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
+const UNKNOWN_UPDATE_RECORD_COUNT: i64 = -1;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 
@@ -111,16 +116,71 @@ struct QueryPlanning {
 /// per-execution `query_id` — are identical in both cases; only the
 /// outer protobuf `Any` type URL differs, so the right `do_get_*`
 /// dispatch branch fires.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum StatementTicketKind {
     Statement,
     PreparedStatement,
+}
+
+impl StatementTicketKind {
+    const fn create_logical_plan_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.get_flight_info_statement.create_logical_plan",
+            Self::PreparedStatement => {
+                "datafusion_nexus.server.flight.get_flight_info_prepared_statement.create_logical_plan"
+            },
+        }
+    }
+
+    const fn sql_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_get_statement.sql",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.sql",
+        }
+    }
+
+    const fn execute_stream_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_get_statement.execute_stream",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.execute_stream",
+        }
+    }
+
+    const fn stream_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_get_statement.stream",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.stream",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UpdateStatementKind {
+    Statement,
+    PreparedStatement,
+}
+
+impl UpdateStatementKind {
+    const fn sql_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_put_statement_update.sql",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_put_prepared_statement_update.sql",
+        }
+    }
+
+    const fn collect_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_put_statement_update.collect",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_put_prepared_statement_update.collect",
+        }
+    }
 }
 
 #[derive(Debug)]
 struct StatementTicket {
     query_id: String,
     sql: String,
+    ticket_kind: StatementTicketKind,
     native_cancellation: ExecutionCancellation,
     started_at: Instant,
     issued_at: Instant,
@@ -210,12 +270,20 @@ impl DatafusionCudfFlightSqlService {
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
-            result = query_state.create_logical_plan(&sql) => result.map_err(datafusion_error_to_status)?,
+            result = query_state.create_logical_plan(&sql) => {
+                result.map_err(|error| datafusion_error_to_status_for_operation(
+                    error,
+                    ticket_kind.create_logical_plan_operation(),
+                ))?
+            },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
                 return Err(server_shutdown_status(&query_id));
             }
         };
+        if let Err(status) = verify_flight_info_plan(&logical_plan, ticket_kind) {
+            return Err(status);
+        }
         let schema = logical_plan.schema().as_arrow().clone();
 
         // Both ticket variants carry the per-execution `query_id` UTF-8 bytes
@@ -250,6 +318,7 @@ impl DatafusionCudfFlightSqlService {
             StatementTicket {
                 query_id,
                 sql,
+                ticket_kind,
                 native_cancellation,
                 started_at,
                 issued_at: Instant::now(),
@@ -330,8 +399,12 @@ impl DatafusionCudfFlightSqlService {
     async fn execute_ticket(&self, query_id: String) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.expire_stale_tickets(Instant::now());
         let (_, ticket) = self.tickets.remove(&query_id).ok_or_else(|| {
-            let status = status_with_query_id(
-                Status::invalid_argument(format!("unknown, expired, or already consumed statement ticket: {query_id}")),
+            let status = adapter_error_status_with_query_id(
+                Error::new(
+                    ErrorCode::InvalidRequest,
+                    "datafusion_nexus.server.flight.execute_ticket.resolve",
+                    "unknown, expired, or already consumed statement ticket",
+                ),
                 &query_id,
             );
             log_statement_status(&query_id, "ticket", Instant::now(), &status);
@@ -341,7 +414,8 @@ impl DatafusionCudfFlightSqlService {
         // Derive from `shutdown_token` so cancellation cascades to statements
         // that race in between permit acquisition and registry insert.
         let token = self.shutdown_token.child_token();
-        let StatementTicket { query_id, sql, native_cancellation, started_at, _permit: permit, .. } = ticket;
+        let StatementTicket { query_id, sql, ticket_kind, native_cancellation, started_at, _permit: permit, .. } =
+            ticket;
         self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
         let native_cancellation_for_bridge = native_cancellation.clone();
         let token_for_bridge = token.clone();
@@ -375,7 +449,10 @@ impl DatafusionCudfFlightSqlService {
                     // that does carry the leaf-guard facts gets the
                     // structured warn line.
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    let status = status_with_query_id(datafusion_error_to_status(error), &query_id);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
+                        &query_id,
+                    );
                     lifecycle.finish_status("planning", &status);
                     return Err(status);
                 },
@@ -404,7 +481,10 @@ impl DatafusionCudfFlightSqlService {
                 Err(error) => {
                     log_native_planning_report(&query_id, planning.native_rule.last_report().as_ref());
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    let status = status_with_query_id(datafusion_error_to_status(error), &query_id);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, ticket_kind.execute_stream_operation()),
+                        &query_id,
+                    );
                     lifecycle.finish_status("execute_stream", &status);
                     return Err(status);
                 },
@@ -421,6 +501,7 @@ impl DatafusionCudfFlightSqlService {
         let query_id_for_tail = query_id.clone();
         let lifecycle_for_body = Arc::clone(&lifecycle);
         let query_id_for_body = query_id.clone();
+        let stream_operation = ticket_kind.stream_operation();
         // The body stream ends either naturally or because the token was
         // cancelled. `take_until` does not signal an error on the latter, so
         // a client would see OK end-of-stream with only a prefix of rows.
@@ -428,7 +509,9 @@ impl DatafusionCudfFlightSqlService {
         // CANCELLED status if the token fired. This is observed as a gRPC
         // trailer status rather than a clean stream completion.
         let body = stream
-            .map_err(move |error| datafusion_error_to_flight_error(error, &query_id_for_body, &lifecycle_for_body))
+            .map_err(move |error| {
+                datafusion_error_to_flight_error(error, &query_id_for_body, &lifecycle_for_body, stream_operation)
+            })
             .take_until(token.cancelled_owned());
         let lifecycle_for_tail = Arc::clone(&lifecycle);
         let tail = futures::stream::once(async move {
@@ -441,7 +524,7 @@ impl DatafusionCudfFlightSqlService {
         .filter_map(|opt| async move { opt });
         let lifecycle_for_end = Arc::clone(&lifecycle);
         let end = futures::stream::once(async move {
-            lifecycle_for_end.finish_success();
+            lifecycle_for_end.finish_success("stream");
             None::<Result<arrow::record_batch::RecordBatch, FlightError>>
         })
         .filter_map(|opt| async move { opt });
@@ -459,6 +542,132 @@ impl DatafusionCudfFlightSqlService {
             });
 
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn execute_update_sql(
+        &self,
+        query_id: String,
+        sql: String,
+        statement_kind: UpdateStatementKind,
+    ) -> Result<i64, Status> {
+        let started_at = Instant::now();
+        tracing::info!(query_id, sql, statement_kind = ?statement_kind, "executing Flight SQL update statement");
+
+        let queued_at = Instant::now();
+        let _permit = match self.acquire_statement_permit(&query_id).await {
+            Ok(permit) => permit,
+            Err(status) => {
+                log_statement_status(&query_id, "admission", queued_at, &status);
+                return Err(status);
+            },
+        };
+
+        let lifecycle = QueryLifecycle::new(query_id.clone(), started_at);
+        let state = self.ctx.state();
+        let plan = tokio::select! {
+            result = state.create_logical_plan(&sql) => match result {
+                Ok(plan) => plan,
+                Err(error) => {
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
+                        &query_id,
+                    );
+                    lifecycle.finish_status("planning", &status);
+                    return Err(status);
+                },
+            },
+            _ = self.shutdown_token.cancelled() => {
+                let status = server_shutdown_status(&query_id);
+                lifecycle.finish_status("planning", &status);
+                return Err(status);
+            },
+        };
+        if let Err(status) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
+            let status = status_with_query_id(status, &query_id);
+            lifecycle.finish_status("planning", &status);
+            return Err(status);
+        }
+        if let Err(status) = verify_update_plan(&plan) {
+            let status = status_with_query_id(status, &query_id);
+            lifecycle.finish_status("planning", &status);
+            return Err(status);
+        }
+        let df = tokio::select! {
+            result = self.ctx.execute_logical_plan(plan) => match result {
+                Ok(df) => df,
+                Err(error) => {
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
+                        &query_id,
+                    );
+                    lifecycle.finish_status("planning", &status);
+                    return Err(status);
+                },
+            },
+            _ = self.shutdown_token.cancelled() => {
+                let status = server_shutdown_status(&query_id);
+                lifecycle.finish_status("planning", &status);
+                return Err(status);
+            },
+        };
+
+        let _batches = tokio::select! {
+            result = df.collect() => match result {
+                Ok(batches) => batches,
+                Err(error) => {
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, statement_kind.collect_operation()),
+                        &query_id,
+                    );
+                    lifecycle.finish_status("collect", &status);
+                    return Err(status);
+                },
+            },
+            _ = self.shutdown_token.cancelled() => {
+                let status = server_shutdown_status(&query_id);
+                lifecycle.finish_status("collect", &status);
+                return Err(status);
+            },
+        };
+
+        lifecycle.finish_success("collect");
+        Ok(UNKNOWN_UPDATE_RECORD_COUNT)
+    }
+
+    fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> Result<Schema, Status> {
+        match plan {
+            LogicalPlan::Ddl(ddl) => {
+                verify_update_ddl(
+                    ddl,
+                    "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
+                )?;
+                Ok(Schema::empty())
+            },
+            LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+                ErrorCode::UnsupportedOperator,
+                "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
+                "Flight SQL prepared DML and COPY statements are not supported",
+            ))),
+            LogicalPlan::Statement(statement) => match statement {
+                Statement::SetVariable(_) | Statement::ResetVariable(_) => Ok(Schema::empty()),
+                Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(adapter_error_status(Error::new(
+                    ErrorCode::UnsupportedOperator,
+                    "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
+                    "Flight SQL transactions are not supported",
+                ))),
+                Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => {
+                    Err(adapter_error_status(Error::new(
+                        ErrorCode::InvalidRequest,
+                        "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
+                        "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL prepared statements",
+                    )))
+                },
+            },
+            _ => Ok(plan.schema().as_arrow().clone()),
+        }
     }
 
     fn cancel_from_flight_info(&self, raw_info: &[u8]) -> Result<bool, Status> {
@@ -521,8 +730,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let planning_started_at = Instant::now();
         tracing::info!(query_id, sql, "planning Flight SQL statement");
         if query.transaction_id.is_some() {
-            let status =
-                status_with_query_id(Status::unimplemented("Flight SQL transactions are not supported"), &query_id);
+            let status = flight_sql_transactions_unsupported_status(&query_id);
             log_statement_status(&query_id, "planning", planning_started_at, &status);
             return Err(status);
         }
@@ -721,8 +929,12 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                             },
                         }
                     } else {
-                        let table_type =
-                            schema_provider.table_type(&table_name).await.map_err(datafusion_error_to_status)?;
+                        let table_type = schema_provider.table_type(&table_name).await.map_err(|error| {
+                            datafusion_error_to_status_for_operation(
+                                error,
+                                "datafusion_nexus.server.flight.do_get_tables.table_type",
+                            )
+                        })?;
                         (None, table_type)
                     };
                     // A `None` here means the table vanished between
@@ -766,19 +978,74 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
     }
 
+    async fn do_put_statement_update(
+        &self,
+        query: CommandStatementUpdate,
+        request: Request<PeekableFlightDataStream>,
+    ) -> Result<i64, Status> {
+        self.check_auth(&request)?;
+        let query_id = Uuid::new_v4().hyphenated().to_string();
+        if query.transaction_id.is_some() {
+            return Err(flight_sql_transactions_unsupported_status(&query_id));
+        }
+        self.execute_update_sql(query_id, query.query, UpdateStatementKind::Statement).await
+    }
+
+    async fn do_put_prepared_statement_update(
+        &self,
+        query: CommandPreparedStatementUpdate,
+        request: Request<PeekableFlightDataStream>,
+    ) -> Result<i64, Status> {
+        self.check_auth(&request)?;
+        let query_id = Uuid::new_v4().hyphenated().to_string();
+        let handle = std::str::from_utf8(&query.prepared_statement_handle)
+            .map_err(|error| {
+                adapter_error_status_with_query_id(
+                    Error::new(
+                        ErrorCode::InvalidRequest,
+                        "datafusion_nexus.server.flight.do_put_prepared_statement_update.handle",
+                        format!("prepared statement handle is not valid UTF-8: {error}"),
+                    ),
+                    &query_id,
+                )
+            })?
+            .to_string();
+        let sql = self.prepared_statements.get(&handle).map(|entry| entry.value().clone()).ok_or_else(|| {
+            adapter_error_status_with_query_id(
+                Error::new(
+                    ErrorCode::ObjectNotFound,
+                    "datafusion_nexus.server.flight.do_put_prepared_statement_update.resolve",
+                    format!("unknown prepared statement handle: {handle}"),
+                ),
+                &query_id,
+            )
+        })?;
+
+        self.execute_update_sql(query_id, sql, UpdateStatementKind::PreparedStatement).await
+    }
+
     async fn do_action_create_prepared_statement(
         &self,
         query: ActionCreatePreparedStatementRequest,
         request: Request<arrow_flight::Action>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
         self.check_auth(&request)?;
+        let query_id = Uuid::new_v4().hyphenated().to_string();
         if query.transaction_id.is_some() {
-            return Err(Status::unimplemented("Flight SQL transactions are not supported"));
+            return Err(flight_sql_transactions_unsupported_status(&query_id));
         }
         if self.prepared_statements.len() >= MAX_PREPARED_STATEMENTS {
-            return Err(Status::resource_exhausted(format!(
-                "too many live prepared statements (limit {MAX_PREPARED_STATEMENTS})"
-            )));
+            let error = Error::new(
+                ErrorCode::ServiceOverloaded,
+                "datafusion_nexus.server.flight.do_action_create_prepared_statement.admission",
+                format!("too many live prepared statements (limit {MAX_PREPARED_STATEMENTS})"),
+            )
+            .with_fact("limit", MAX_PREPARED_STATEMENTS);
+            let operation = error.operation();
+            return Err(status_with_query_id(
+                datafusion_error_to_status_for_operation(error.into(), operation),
+                &query_id,
+            ));
         }
         let sql = query.query;
         // Plan logically to derive the result-set schema the client needs
@@ -788,12 +1055,30 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         // the client actually executes this prepared statement.
         let state = self.ctx.state();
         let logical_plan = tokio::select! {
-            result = state.create_logical_plan(&sql) => result.map_err(datafusion_error_to_status)?,
+            result = state.create_logical_plan(&sql) => {
+                result.map_err(|error| {
+                    status_with_query_id(
+                        datafusion_error_to_status_for_operation(
+                            error,
+                            "datafusion_nexus.server.flight.do_action_create_prepared_statement.create_logical_plan",
+                        ),
+                        &query_id,
+                    )
+                })?
+            },
             _ = self.shutdown_token.cancelled() => {
-                return Err(Status::cancelled("server shutting down"));
+                return Err(status_with_query_id(Status::cancelled("server shutting down"), &query_id));
             }
         };
-        let dataset_schema = logical_plan.schema().as_arrow().clone();
+        if let Err(status) = reject_parameterized_plan(
+            &logical_plan,
+            "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
+        ) {
+            return Err(status_with_query_id(status, &query_id));
+        }
+        let dataset_schema = self
+            .dataset_schema_for_prepared_statement(&logical_plan)
+            .map_err(|status| status_with_query_id(status, &query_id))?;
         let dataset_schema_ipc =
             schema_to_ipc_bytes(&dataset_schema).map_err(|error| Status::internal(error.to_string()))?;
 
@@ -839,13 +1124,18 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let handle = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?
             .to_string();
-        let sql = self
-            .prepared_statements
-            .get(&handle)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| Status::not_found(format!("unknown prepared statement handle: {handle}")))?;
-
         let query_id = Uuid::new_v4().hyphenated().to_string();
+        let sql = self.prepared_statements.get(&handle).map(|entry| entry.value().clone()).ok_or_else(|| {
+            adapter_error_status_with_query_id(
+                Error::new(
+                    ErrorCode::ObjectNotFound,
+                    "datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve",
+                    format!("unknown prepared statement handle: {handle}"),
+                ),
+                &query_id,
+            )
+        })?;
+
         let planning_started_at = Instant::now();
         tracing::info!(
             query_id,
@@ -1027,12 +1317,12 @@ impl QueryLifecycle {
         Self { query_id, started_at, terminal: Mutex::new(None) }
     }
 
-    fn finish_success(&self) {
+    fn finish_success(&self, stage: &'static str) {
         if self.try_finish("succeeded") {
             tracing::info!(
                 query_id = self.query_id,
                 outcome = "succeeded",
-                stage = "stream",
+                stage,
                 elapsed_ms = self.started_at.elapsed().as_millis(),
                 "finished Flight SQL statement"
             );
@@ -1068,10 +1358,132 @@ impl QueryLifecycle {
     }
 }
 
-fn datafusion_error_to_flight_error(error: DataFusionError, query_id: &str, lifecycle: &QueryLifecycle) -> FlightError {
-    let status = status_with_query_id(datafusion_error_to_status(error), query_id);
+fn datafusion_error_to_flight_error(
+    error: DataFusionError,
+    query_id: &str,
+    lifecycle: &QueryLifecycle,
+    operation: &'static str,
+) -> FlightError {
+    let status = status_with_query_id(datafusion_error_to_status_for_operation(error, operation), query_id);
     lifecycle.finish_status("stream", &status);
     FlightError::from(status)
+}
+
+fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: StatementTicketKind) -> Result<(), Status> {
+    match ticket_kind {
+        StatementTicketKind::Statement => verify_statement_query_plan(plan),
+        StatementTicketKind::PreparedStatement => verify_prepared_query_plan(plan),
+    }
+}
+
+fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<(), Status> {
+    match plan {
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.server.flight.get_flight_info_statement.verify_plan",
+            "Flight SQL statement query does not support DML or COPY statements",
+        ))),
+        LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
+            statement,
+            "datafusion_nexus.server.flight.get_flight_info_statement.verify_plan",
+            "Flight SQL statement query does not support SQL session statements; use the update endpoint for session updates",
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<(), Status> {
+    match plan {
+        LogicalPlan::Ddl(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
+            "Flight SQL prepared DDL statements must be executed with execute_update",
+        ))),
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
+            "Flight SQL prepared DML and COPY statements are not supported",
+        ))),
+        LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
+            statement,
+            "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
+            "Flight SQL prepared session-update statements must be executed with execute_update",
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn verify_update_plan(plan: &LogicalPlan) -> Result<(), Status> {
+    match plan {
+        LogicalPlan::Ddl(ddl) => verify_update_ddl(ddl, "datafusion_nexus.server.flight.do_put_update.verify_plan"),
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.server.flight.do_put_update.verify_plan",
+            "Flight SQL update DoPut does not yet support DML or COPY statements",
+        ))),
+        LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
+            statement,
+            "datafusion_nexus.server.flight.do_put_update.verify_plan",
+            "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL update DoPut",
+        ),
+        _ => Err(adapter_error_status(Error::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.server.flight.do_put_update.verify_plan",
+            "Flight SQL update DoPut only supports DDL and session-update statements; use the statement query endpoint for SELECT",
+        ))),
+    }
+}
+
+fn verify_sql_statement_namespace(
+    statement: &Statement,
+    operation: &'static str,
+    session_update_message: &'static str,
+) -> Result<(), Status> {
+    match statement {
+        Statement::SetVariable(_) | Statement::ResetVariable(_) => {
+            if operation == "datafusion_nexus.server.flight.do_put_update.verify_plan" {
+                Ok(())
+            } else {
+                Err(adapter_error_status(Error::new(ErrorCode::InvalidRequest, operation, session_update_message)))
+            }
+        },
+        Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::UnsupportedOperator,
+            operation,
+            "Flight SQL transactions are not supported",
+        ))),
+        Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => {
+            Err(adapter_error_status(Error::new(
+                ErrorCode::InvalidRequest,
+                operation,
+                "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL",
+            )))
+        },
+    }
+}
+
+fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> Result<(), Status> {
+    match ddl {
+        DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(adapter_error_status(Error::new(
+            ErrorCode::UnsupportedOperator,
+            operation,
+            "Flight SQL update DoPut does not yet support query-producing DDL such as CREATE TABLE AS SELECT",
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static str) -> Result<(), Status> {
+    let parameter_names =
+        plan.get_parameter_names().map_err(|error| datafusion_error_to_status_for_operation(error, operation))?;
+    if parameter_names.is_empty() {
+        return Ok(());
+    }
+    Err(adapter_error_status(Error::new(
+        ErrorCode::InvalidRequest,
+        operation,
+        "Flight SQL parameter binding is not supported; prepare statements without placeholders",
+    )))
 }
 
 fn arrow_error_to_status(error: arrow::error::ArrowError) -> Status {
@@ -1254,8 +1666,35 @@ fn server_error_to_status(error: ServerError) -> Status {
     Status::internal(error.to_string())
 }
 
+fn adapter_error_status(error: Error) -> Status {
+    let operation = error.operation();
+    datafusion_error_to_status_for_operation(error.into(), operation)
+}
+
+fn adapter_error_status_with_query_id(error: Error, query_id: &str) -> Status {
+    status_with_query_id(adapter_error_status(error), query_id)
+}
+
+fn flight_sql_transactions_unsupported_status(query_id: &str) -> Status {
+    adapter_error_status_with_query_id(
+        Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.server.flight.transaction",
+            "Flight SQL transactions are not supported",
+        ),
+        query_id,
+    )
+}
+
 fn server_shutdown_status(query_id: &str) -> Status {
-    status_with_query_id(Status::cancelled(format!("server shutting down; statement {query_id} aborted")), query_id)
+    adapter_error_status_with_query_id(
+        Error::new(
+            ErrorCode::Cancelled,
+            "datafusion_nexus.server.flight.shutdown",
+            "server shutting down; statement aborted",
+        ),
+        query_id,
+    )
 }
 
 /// Disambiguate per-statement cancellation: if the parent shutdown token has
@@ -1265,7 +1704,10 @@ fn cancellation_status(shutdown_token: &CancellationToken, query_id: &str) -> St
     if shutdown_token.is_cancelled() {
         server_shutdown_status(query_id)
     } else {
-        status_with_query_id(Status::cancelled(format!("statement {query_id} was cancelled")), query_id)
+        adapter_error_status_with_query_id(
+            Error::new(ErrorCode::Cancelled, "datafusion_nexus.server.flight.cancel_query", "statement was cancelled"),
+            query_id,
+        )
     }
 }
 
