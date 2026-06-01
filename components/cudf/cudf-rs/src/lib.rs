@@ -11,6 +11,9 @@
 //! - [`DataFrame`] — A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
 //! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
+//! - [`SeriesView`] — A named, borrowed view of a column (via Deref to
+//!   [`ColumnView`]).
+//! - [`DataFrameView`] — A named, borrowed view of all columns in a DataFrame.
 //!
 //! **Core layer** (for advanced / low-level use):
 //! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
@@ -48,6 +51,7 @@ pub mod column;
 pub mod concatenate;
 pub mod copying;
 pub mod dataframe;
+pub mod dataframe_view;
 pub mod dictionary;
 pub mod error;
 pub mod filter;
@@ -63,6 +67,7 @@ pub mod replace;
 pub mod scalar;
 pub mod search;
 pub mod series;
+pub mod series_view;
 pub mod sorting;
 pub mod stream;
 pub mod stream_compaction;
@@ -74,11 +79,13 @@ pub mod unary;
 // Re-export core types at crate root.
 pub use column::{Column, ColumnView, DeviceSlice};
 pub use dataframe::DataFrame;
+pub use dataframe_view::DataFrameView;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};
 pub use join::{JoinType, MergeOptions};
 pub use scalar::Scalar;
 pub use series::Series;
+pub use series_view::SeriesView;
 pub use sorting::SortOptions;
 pub use stream::CudaStream;
 pub use table::{Table, TableView};
