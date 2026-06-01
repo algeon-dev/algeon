@@ -2,6 +2,8 @@
 
 mod exec;
 mod metadata;
+#[doc(hidden)]
+pub mod parity;
 mod parser;
 mod table_function;
 mod types;

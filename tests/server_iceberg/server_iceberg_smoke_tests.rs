@@ -52,8 +52,6 @@ async fn glue_tpch_sf1_lineitem_count_via_flight_sql() {
 #[ignore = "requires live AWS Glue/S3 credentials and network access"]
 async fn glue_three_part_lineitem_count_dynamic_catalog() {
     let addr = free_local_addr();
-    // Build config without pre-declared ICEBERG_TABLES to exercise the pure
-    // dynamic catalog path.
     let config = ServerConfig::from_env_get(|name| {
         // Explicitly strip the tables env vars so the dynamic catalog is the
         // only path for table resolution.
@@ -64,7 +62,6 @@ async fn glue_three_part_lineitem_count_dynamic_catalog() {
     })
     .expect("failed to build ServerConfig; check Iceberg + AWS env vars");
 
-    // Verify that no pre-declared tables leaked in.
     assert!(
         config.iceberg.as_ref().map_or(true, |ic| ic.tables.is_empty()),
         "test requires no pre-declared tables; unset DATAFUSION_NEXUS_ICEBERG_TABLES"
@@ -100,7 +97,6 @@ async fn glue_bare_alias_and_three_part_address_both_work() {
     let mut config = ServerConfig::from_env().unwrap();
     config.bind_addr = addr;
 
-    // Require at least one pre-declared table for this test to be meaningful.
     assert!(
         config.iceberg.as_ref().map_or(false, |ic| !ic.tables.is_empty()),
         "test requires DATAFUSION_NEXUS_ICEBERG_TABLES to be set (e.g. lineitem=tpch_sf1_lineitem)"

@@ -1,7 +1,5 @@
 //! Public runtime policy and diagnostic value types.
 
-#![deny(missing_docs)]
-
 use crate::error::{QueryError, Result};
 
 /// Effective device placement for a native execution context.

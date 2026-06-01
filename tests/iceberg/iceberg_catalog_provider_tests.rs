@@ -460,7 +460,6 @@ async fn glue_dynamic_catalog_provider_discovers_tables_live() {
     let table_names = schema.table_names();
     eprintln!("discovered tables in '{namespace}': {table_names:?}");
     assert!(!table_names.is_empty(), "expected at least one table in '{namespace}'");
-    // Expect at least one TPC-H–style table to be present.
     assert!(
         table_names.iter().any(|n| n.contains("lineitem") || n.contains("orders") || n.contains("nation")),
         "no expected TPC-H table found; discovered: {table_names:?}"

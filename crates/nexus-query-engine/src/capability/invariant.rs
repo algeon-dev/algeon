@@ -4,8 +4,6 @@
 //! invariants that span more than a single node — for example, "build side of
 //! this join must dominate the resident-resource reservation gate."
 
-#![deny(missing_docs)]
-
 use super::{edge::*, graph::*, model::*, node::*, shape::*, *};
 use crate::{plan::WindowFunction, source::LocalParquetSource};
 

@@ -5,8 +5,6 @@
 //! detected early. The final native rewrite is placed immediately before
 //! DataFusion's final sanity check so rewritten plans are still validated.
 
-#![deny(missing_docs)]
-
 use std::sync::Arc;
 
 use datafusion::{
@@ -28,7 +26,6 @@ pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusio
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
-/// DataFusion physical optimizer rule list after datafusion-nexus insertion.
 pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
 /// Return DataFusion's default physical optimizer rules with the cudf native
@@ -54,7 +51,6 @@ pub trait CudfSessionStateBuilderExt {
     /// validation rule.
     fn with_cudf_native(self, config: CudfOptimizerConfig) -> Self;
 
-    /// Register cuGraph SQL table functions.
     #[cfg(feature = "cugraph")]
     fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
 

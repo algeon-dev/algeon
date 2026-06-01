@@ -4,8 +4,6 @@
 //! executes a DataFusion-free native plan and streams the final result as host
 //! Arrow batches.
 
-#![deny(missing_docs)]
-
 use std::{any::Any, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
@@ -64,7 +62,6 @@ impl NativeCudfExec {
         })
     }
 
-    /// Return the lowered native query plan wrapped by this DataFusion execution node.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }
@@ -138,7 +135,6 @@ impl ExecutionPlan for NativeCudfExec {
     }
 
     fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
-        // Native DataFusion execution currently exposes a single final output partition.
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,

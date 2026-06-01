@@ -4,8 +4,6 @@
 //! strict gaps as missing contracts, but they do not represent strict readiness
 //! evidence and must never use `execution_mode=strict_bounded`.
 
-#![deny(missing_docs)]
-
 use std::fmt;
 
 use crate::{

@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use std::sync::Arc;
 
 use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};

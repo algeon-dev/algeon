@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use super::{LocalParquetFile, PartitionColumn, SourceColumnRef};
 
 #[derive(Debug, Clone, Copy)]

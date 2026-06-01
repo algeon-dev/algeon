@@ -6,8 +6,6 @@
 //! expression, Arrow type, edge contract, invariant, or reservation
 //! contract); they never use legacy named "execution family" report keys.
 
-#![deny(missing_docs)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{

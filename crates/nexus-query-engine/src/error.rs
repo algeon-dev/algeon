@@ -4,7 +4,6 @@
 //! The DataFusion adapter wraps them in its own `datafusion_nexus::Error` so it
 //! can preserve native classification facts while exposing adapter-level
 //! planning and execution categories to DataFusion.
-#![deny(missing_docs)]
 
 use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
@@ -256,12 +255,10 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// Creates an empty fact set.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns the string value for `key` when present.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
@@ -407,7 +404,6 @@ impl QueryError {
         &self.facts
     }
 
-    /// Returns one fact value by key.
     pub fn fact_value(&self, key: &str) -> Option<&str> {
         self.facts.get(key)
     }

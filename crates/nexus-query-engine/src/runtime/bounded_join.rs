@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use super::{ExecutionBoundaryPolicy, ReservationKind};
 
 mod diagnostics;

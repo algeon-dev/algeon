@@ -5,8 +5,6 @@
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 
-#![deny(missing_docs)]
-
 /// Policy controlling whether DataFusion may fall back to CPU execution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFallbackPolicy {

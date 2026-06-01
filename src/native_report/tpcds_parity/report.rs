@@ -87,12 +87,10 @@ impl ParityFloatTolerance {
         Self { absolute: 0.0, relative: 0.0 }
     }
 
-    /// Builds a tolerance from absolute and relative error bounds.
     pub const fn new(absolute: f64, relative: f64) -> Self {
         Self { absolute, relative }
     }
 
-    /// Returns true when either tolerance component is non-zero.
     pub fn is_enabled(self) -> bool {
         self.absolute > 0.0 || self.relative > 0.0
     }
@@ -290,12 +288,10 @@ pub struct NativeTpcdsParityReport {
 }
 
 impl NativeTpcdsParityReport {
-    /// Builds a report from already-derived rows.
     pub fn from_rows(rows: Vec<NativeTpcdsParityRow>, float_tolerance: ParityFloatTolerance) -> Self {
         Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
     }
 
-    /// Builds report rows from captured CPU/native/oracle workload outcomes.
     pub fn collect(
         items: impl IntoIterator<Item = NativeTpcdsParityWorkloadItem>,
         float_tolerance: ParityFloatTolerance,

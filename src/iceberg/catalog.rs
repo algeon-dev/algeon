@@ -13,8 +13,6 @@
 //! - REST and Hive backends can be added as additional implementations of
 //!   [`IcebergCatalogBackend`] without changing the DataFusion-facing layer.
 
-#![deny(missing_docs)]
-
 use std::{
     any::Any,
     collections::{BTreeMap, HashMap},

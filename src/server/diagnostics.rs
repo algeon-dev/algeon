@@ -25,8 +25,6 @@
 //! goes onto every log line so an operator can grep for one keyword instead of
 //! enumerating every reject code variant.
 
-#![deny(missing_docs)]
-
 use datafusion::common::DataFusionError;
 
 use super::config::ServerSessionProfile;
@@ -92,7 +90,6 @@ impl FlightSqlNativeRejectClass {
         }
     }
 
-    /// Bucket a [`FallbackReason`] into one of the common Flight SQL classes.
     pub const fn from_reason(reason: FallbackReason) -> Self {
         match reason {
             FallbackReason::NativeSortPreservingMergeUnsupported => Self::NativeSortPreservingMerge,

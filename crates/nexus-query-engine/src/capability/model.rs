@@ -3,7 +3,6 @@
 //! This module is the public vocabulary for local node, edge, and subgraph
 //! proofs. Rejection reasons and fact keys are report-facing stable strings;
 //! add new labels instead of reusing old whole-plan family names.
-#![deny(missing_docs)]
 
 use super::*;
 use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};

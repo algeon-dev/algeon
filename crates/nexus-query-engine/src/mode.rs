@@ -3,7 +3,6 @@
 //! These labels describe the bounded pipeline execution contract, not the
 //! final result placement. Result placement is represented by `QueryOutputMode`
 //! in the execution layer.
-#![deny(missing_docs)]
 
 use std::{fmt, str::FromStr};
 

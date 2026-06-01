@@ -4,8 +4,6 @@
 //! match their position in the corresponding vector. Builders do not validate
 //! cross references; call [`CompiledPipeline::validate`] before execution.
 
-#![deny(missing_docs)]
-
 use crate::{
     capability::{ContractQuality, ContractStatus, ReservationRequirement, ReservationRequirementScope},
     plan::NodeId,

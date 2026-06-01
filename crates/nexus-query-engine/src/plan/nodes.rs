@@ -4,8 +4,6 @@
 //! validity are owned by [`QueryPlan`](super::QueryPlan) and validated by
 //! execution/planning entrypoints.
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Boolean filtering operation over one input.

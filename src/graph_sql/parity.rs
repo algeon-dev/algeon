@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::CugraphAlgorithm;
+use super::CugraphAlgorithm;
 
 /// Manifest JSON resident next to the vendored datasets.
 pub const CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST: &str = "fixture/data/cugraph";

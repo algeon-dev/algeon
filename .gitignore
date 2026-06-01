@@ -40,11 +40,8 @@ __pycache__/
 /docker/iceberg-local/.loader-data/
 /docker/iceberg-local/.ivy-cache/
 
-docs/*
-!docs/
-!docs/issue/
-docs/issue/*
-!docs/issue/2026-05-31-cugraph-nullable-edge-column-gate-unfriendly.md
-!docs/plan/
-docs/plan/*
-!docs/plan/2026-05-24-flight-sql-cugraph-dsl-plan.md
+# private documentation
+docs/
+
+# test data
+fixture/data/

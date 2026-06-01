@@ -4,7 +4,6 @@
 //! can be scheduled under a bounded memory policy. Byte fields are device-side
 //! planning estimates unless explicitly named as compressed Parquet bytes or
 //! exact source-read preflight bytes.
-#![deny(missing_docs)]
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -106,7 +105,6 @@ impl SourceTaskMemoryModel {
         self.source_read_preflight_slack_slots
     }
 
-    /// Returns the total number of live chunk-sized slots in this model.
     pub const fn live_slot_count(self) -> u64 {
         self.source_read_slots
             + self.source_adjacent_operator_slots
@@ -117,7 +115,6 @@ impl SourceTaskMemoryModel {
 }
 
 impl SourceChunkPlanningPolicy {
-    /// Creates a policy from an optional byte target and row-group limit.
     pub const fn new(max_source_chunk_bytes: Option<u64>, max_row_groups_per_chunk: usize) -> Self {
         Self { max_source_chunk_bytes, max_row_groups_per_chunk }
     }
@@ -185,7 +182,6 @@ pub struct SourceChunkPlan {
 }
 
 impl SourceChunkPlan {
-    /// Returns the number of chunks in this plan.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -216,12 +212,10 @@ pub struct SourceChunkBatch {
 }
 
 impl SourceChunkBatch {
-    /// Returns true when this batch contains exactly one source chunk.
     pub fn is_singleton(&self) -> bool {
         self.chunks.len() == 1
     }
 
-    /// Returns the number of child chunks.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -333,7 +327,6 @@ pub struct SourceChunk {
 }
 
 impl SourceChunk {
-    /// Returns the number of explicitly selected row groups in this chunk.
     pub fn row_group_count(&self) -> usize {
         self.row_group_indexes.len()
     }

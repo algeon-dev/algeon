@@ -5,8 +5,6 @@
 //! host-buffer object-store path unless a future pipeline compiler consumes
 //! these diagnostics.
 
-#![deny(missing_docs)]
-
 use std::path::{Path, PathBuf};
 
 /// Default Linux procfs path created by the `nvidia-fs` kernel module.

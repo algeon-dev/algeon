@@ -3,8 +3,6 @@
 //! The public name list is the contract consumed by tests, reports, and users
 //! who inspect DataFusion metrics after native execution.
 
-#![deny(missing_docs)]
-
 use std::collections::BTreeMap;
 
 use datafusion::physical_plan::metrics::{

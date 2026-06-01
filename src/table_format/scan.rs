@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};

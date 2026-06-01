@@ -18,7 +18,7 @@ mod oracle;
 
 use datafusion_nexus::{
     CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm,
-    cugraph_parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
+    graph_sql::parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
 };
 
 #[test]

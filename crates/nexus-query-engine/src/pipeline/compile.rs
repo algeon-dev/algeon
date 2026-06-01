@@ -1,7 +1,5 @@
 //! QueryPlan to CompiledPipeline graph construction.
 
-#![deny(missing_docs)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{

@@ -4,8 +4,6 @@
 //! construction, allocator setup, memory-control validation, and cache wiring
 //! happen later when execution builds the native query context.
 
-#![deny(missing_docs)]
-
 use std::sync::{Arc, OnceLock};
 
 use nexus_query_engine::{

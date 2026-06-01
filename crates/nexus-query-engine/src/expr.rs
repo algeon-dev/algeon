@@ -4,7 +4,6 @@
 //! depend on DataFusion physical-expression objects. Unsupported expression
 //! forms should be rejected during capability analysis or validation before
 //! reaching cudf-rs execution.
-#![deny(missing_docs)]
 
 use std::{fmt, ops::Not};
 

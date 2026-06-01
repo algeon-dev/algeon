@@ -5,8 +5,6 @@
 //! lower-level `cudf-rs` / `libcudf` reservation and observability hooks
 //! that strict bounded join admission depends on.
 
-#![deny(missing_docs)]
-
 use std::collections::BTreeMap;
 
 use super::*;

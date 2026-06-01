@@ -3,8 +3,6 @@
 //! Provides reachability and topological-walk utilities over [`QueryPlan`]
 //! nodes that admission and invariant analyses share.
 
-#![deny(missing_docs)]
-
 use super::{model::*, *};
 
 pub(super) struct GraphScheduleProof<'a> {

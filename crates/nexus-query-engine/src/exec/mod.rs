@@ -8,8 +8,6 @@
 //! [`QueryExecutionResult`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
-#![deny(missing_docs)]
-
 use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc, time::Instant};
 
 use arrow::{

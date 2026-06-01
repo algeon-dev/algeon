@@ -4,8 +4,6 @@
 //! participate in strict bounded contract validation and are intentionally kept
 //! outside the mode-agnostic pipeline graph.
 
-#![deny(missing_docs)]
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::RwLock,

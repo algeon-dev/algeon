@@ -3,8 +3,6 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-#![deny(missing_docs)]
-
 use std::{any::Any, fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
@@ -158,7 +156,6 @@ pub struct IcebergTableFormatPlanner {
 }
 
 impl IcebergTableFormatPlanner {
-    /// Builds a planner around an `iceberg-rust` table handle.
     pub fn new(table: Table) -> Self {
         Self {
             table,

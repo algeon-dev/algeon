@@ -4,8 +4,6 @@
 //! Builder, node, expression-spec, facts, and graph-algorithm modules are
 //! re-exported from here as the engine's public plan surface.
 
-#![deny(missing_docs)]
-
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};

@@ -5,8 +5,6 @@
 //! reader predicate support are represented explicitly so native execution does
 //! not depend on DataFusion scan internals.
 
-#![deny(missing_docs)]
-
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -526,7 +524,6 @@ pub struct PartitionColumn {
 }
 
 impl PartitionColumn {
-    /// Creates a partition column descriptor.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self { name: name.into(), data_type, nullable }
     }
@@ -548,7 +545,6 @@ pub struct MissingColumn {
 }
 
 impl MissingColumn {
-    /// Creates a missing-column descriptor.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self { name: name.into(), data_type, nullable }
     }
@@ -675,7 +671,6 @@ impl LocalParquetSource {
         }
     }
 
-    /// Builds a single-file local Parquet source.
     pub fn new(path: impl Into<PathBuf>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
         Self::from_files(vec![LocalParquetFile::new(path)], schema, read_columns)
     }
@@ -796,7 +791,6 @@ impl LocalParquetSource {
         reader_predicate_references_decimal_column(self, predicate)
     }
 
-    /// Recomputes diagnostics from the current source metadata.
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
         self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
@@ -831,12 +825,10 @@ impl LocalParquetSource {
         self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
     }
 
-    /// Number of represented file entries.
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
 
-    /// Number of physical Parquet columns that will be read.
     pub fn read_column_count(&self) -> usize {
         self.read_columns.len()
     }
@@ -867,7 +859,6 @@ impl LocalParquetSource {
         self.diagnostics.direct_device_read
     }
 
-    /// Number of synthetic partition columns represented by this source.
     pub fn partition_column_count(&self) -> usize {
         self.partition_columns.len()
     }

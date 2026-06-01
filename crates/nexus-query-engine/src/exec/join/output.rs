@@ -252,7 +252,6 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     // 1. Create a sequential Int32 Series [0, 1, ..., probe_rows-1].
     // 2. Test membership against matching_indices (hash-set, O(N+M)).
     let mark_series = if matching_indices.is_empty() {
-        // No matches: mark column is all false.
         let false_scalar = runtime.scalar(false).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.join.mark_output",
@@ -284,7 +283,6 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
         })?
     };
 
-    // Build output: left-side projection columns (identity, no gather needed) + mark column.
     let mut columns = Vec::with_capacity(projection.len() + 1);
     for output in projection {
         let series = probe.series(output.column.name()).map_err(|error| {

@@ -20,9 +20,6 @@
 //! runtime policy, capability admission, and cudf-rs execution live in
 //! [`nexus_query_engine`].
 
-#[cfg(feature = "cugraph")]
-#[doc(hidden)]
-pub mod cugraph_parity;
 pub mod error;
 #[cfg(feature = "cugraph")]
 pub mod graph_sql;

@@ -5,8 +5,6 @@
 //! native subplans, but the final DataFusion-facing boundary still streams
 //! host Arrow.
 
-#![deny(missing_docs)]
-
 mod common;
 mod composed;
 mod config;

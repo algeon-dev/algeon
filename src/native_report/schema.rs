@@ -3,8 +3,6 @@
 //! Headers define column order exactly. Schema versions should increase
 //! whenever a consumer would need to change parsing logic or column meaning.
 
-#![deny(missing_docs)]
-
 /// Fallback-pressure TSV schema version.
 pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 7;
 /// Fallback-pressure TSV header. Column order is stable for schema version 7.

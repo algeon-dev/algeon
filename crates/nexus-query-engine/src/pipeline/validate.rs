@@ -6,8 +6,6 @@
 //! [`QueryErrorCode::Invalid`](crate::error::QueryErrorCode::Invalid) and
 //! are bugs in the producer, not user errors.
 
-#![deny(missing_docs)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
