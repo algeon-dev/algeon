@@ -216,7 +216,7 @@ pub fn groupby_aggregate(
 
     // Collect result columns from the flat array.
     let total = out_total_columns as usize;
-    let col_array = unsafe { std::slice::from_raw_parts(out_values, total) };
+    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
 
     let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
     let mut offset = 0;

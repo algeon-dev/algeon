@@ -96,6 +96,33 @@ fn make_i32_data_type() -> *mut c_void {
     out
 }
 
+fn make_dictionary_i32_column(data: &[i32]) -> *mut c_void {
+    let col = make_i32_column(data);
+    let view = make_column_view(col);
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_dictionary_encode(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+    out
+}
+
+fn decode_dictionary_i32_column(dict_col: *mut c_void, expected_len: usize) -> Vec<i32> {
+    let dict_view = make_column_view(dict_col);
+    let mut decoded: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_dictionary_decode(dict_view, &mut decoded) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!decoded.is_null());
+    unsafe { cudf_sys::cudf_column_view_destroy(dict_view) };
+
+    let data = read_i32_column_data(decoded, expected_len);
+    unsafe { cudf_sys::cudf_column_destroy(decoded) };
+    data
+}
+
 fn unique_missing_path(extension: &str) -> std::ffi::CString {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let path = std::env::temp_dir().join(format!(
@@ -127,6 +154,8 @@ unsafe extern "C" {
     fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> i32;
     fn cudf_test_memory_resource_create_stats(out: *mut *mut c_void) -> i32;
     fn cudf_test_memory_resource_allocation_count(handle: *mut c_void, out: *mut i64) -> i32;
+    fn cudf_test_throw_runtime_error() -> i32;
+    fn cudf_test_throw_bad_alloc() -> i32;
 }
 
 fn reset_exec_observation() {
@@ -964,6 +993,43 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
     }
 }
 
+#[test]
+fn test_groupby_zero_aggregations_returns_null_output_array() {
+    let key_col = make_i32_column(&[1, 1, 2]);
+    let keys_tbl = make_table_from_one_column(key_col);
+    let keys_view = make_table_view(keys_tbl);
+
+    let mut out_keys: *mut c_void = ptr::null_mut();
+    let mut out_vals: *mut *mut c_void = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_total: i32 = -1;
+
+    let status = unsafe {
+        cudf_sys::cudf_groupby_aggregate(
+            keys_view,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            0,
+            &mut out_keys,
+            &mut out_vals,
+            &mut out_total,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out_keys.is_null());
+    assert!(out_vals.is_null());
+    assert_eq!(out_total, 0);
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out_keys);
+        cudf_sys::cudf_table_view_destroy(keys_view);
+        cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
 fn assert_join_invalid_null_equality_rejected(
     join_fn: unsafe extern "C" fn(
         *mut c_void,
@@ -1239,6 +1305,32 @@ fn test_io_read_csv_missing_file_clears_out() {
 }
 
 #[test]
+fn test_io_read_parquet_missing_file_clears_out() {
+    let path = unique_missing_path("parquet");
+    let mut out = 1usize as *mut c_void;
+    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -1, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
+    assert!(out.is_null());
+}
+
+#[test]
+fn test_non_io_runtime_error_maps_to_unknown() {
+    let status = unsafe { cudf_test_throw_runtime_error() };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
+    assert!(last_error_message().contains("non-io runtime failure"));
+}
+
+#[test]
+fn test_bad_alloc_maps_to_out_of_memory() {
+    let status = unsafe { cudf_test_throw_bad_alloc() };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(!last_error_message().is_empty());
+}
+
+#[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     let path = unique_missing_path("parquet");
     let mut out_table = 1usize as *mut c_void;
@@ -1460,6 +1552,86 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
     assert!(out_names.is_null());
 }
 
+#[test]
+fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
+    let dict_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_count: i32 = -1;
+
+    let status =
+        unsafe { cudf_sys::cudf_dictionary_match_dictionaries(dict_columns, 0, &mut out_columns, &mut out_count) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_columns.is_null());
+    assert_eq!(out_count, 0);
+}
+
+#[test]
+fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
+    let dict = make_dictionary_i32_column(&[1, 2, 1]);
+    let dict_view = make_column_view(dict);
+    let dict_columns = [dict_view, ptr::null_mut()];
+
+    let mut out_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_count: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_dictionary_match_dictionaries(
+            dict_columns.as_ptr(),
+            dict_columns.len() as i32,
+            &mut out_columns,
+            &mut out_count,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out_columns.is_null());
+    assert_eq!(out_count, 0);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(dict_view);
+        cudf_sys::cudf_column_destroy(dict);
+    }
+}
+
+#[test]
+fn test_dictionary_match_dictionaries_returns_heap_array() {
+    let left = make_dictionary_i32_column(&[10, 20, 10, 30]);
+    let right = make_dictionary_i32_column(&[20, 30, 40, 20]);
+    let left_view = make_column_view(left);
+    let right_view = make_column_view(right);
+    let dict_columns = [left_view, right_view];
+
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_dictionary_match_dictionaries(
+            dict_columns.as_ptr(),
+            dict_columns.len() as i32,
+            &mut out_columns,
+            &mut out_count,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out_count, dict_columns.len() as i32);
+    assert!(!out_columns.is_null());
+
+    let matched = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
+    assert_eq!(decode_dictionary_i32_column(matched[0], 4), vec![10, 20, 10, 30]);
+    assert_eq!(decode_dictionary_i32_column(matched[1], 4), vec![20, 30, 40, 20]);
+
+    unsafe {
+        for &col in matched {
+            cudf_sys::cudf_column_destroy(col);
+        }
+        cudf_sys::cudf_free_column_array(out_columns);
+        cudf_sys::cudf_column_view_destroy(right_view);
+        cudf_sys::cudf_column_view_destroy(left_view);
+        cudf_sys::cudf_column_destroy(right);
+        cudf_sys::cudf_column_destroy(left);
+    }
+}
+
 // ===========================================================================
 // cudf_table_create tests
 // ===========================================================================
@@ -1570,7 +1742,7 @@ fn test_table_release_columns_empty_table() {
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out_count, 0);
-    // out_columns may or may not be null for 0-column tables, but count should be 0.
+    assert!(out_columns.is_null());
 }
 
 #[test]

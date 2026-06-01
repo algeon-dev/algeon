@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -70,7 +71,7 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
     *out = static_cast<cudf_table_handle>(result.tbl.release());
     return CUDF_SUCCESS;
   }
-  CUDF_RUST_CATCH
+  CUDF_RUST_IO_CATCH
 }
 
 cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
@@ -110,7 +111,7 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
     cudf::io::write_parquet(options);
     return CUDF_SUCCESS;
   }
-  CUDF_RUST_CATCH
+  CUDF_RUST_IO_CATCH
 }
 
 cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
@@ -176,22 +177,29 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
     auto const& schema_info = result.metadata.schema_info;
     auto const n = static_cast<int32_t>(schema_info.size());
 
-    char** names = static_cast<char**>(std::malloc(
-        static_cast<size_t>(n) * sizeof(char*)));
-    if (names == nullptr && n > 0) {
-      set_error("failed to allocate column name array");
-      return CUDF_ERROR_OUT_OF_MEMORY;
-    }
-    for (int32_t i = 0; i < n; ++i) {
-      names[i] = strdup(schema_info[i].name.c_str());
-      if (names[i] == nullptr) {
-        // Clean up already allocated strings
-        for (int32_t j = 0; j < i; ++j) {
-          std::free(names[j]);
-        }
-        std::free(names);
-        set_error("failed to allocate column name string");
+    char** names = nullptr;
+    if (n > 0) {
+      names = new (std::nothrow) char*[n];
+      if (names == nullptr) {
+        set_error("failed to allocate column name array");
         return CUDF_ERROR_OUT_OF_MEMORY;
+      }
+      for (int32_t i = 0; i < n; ++i) {
+        names[i] = nullptr;
+      }
+      for (int32_t i = 0; i < n; ++i) {
+        auto const& name = schema_info[i].name;
+        auto const size = name.size() + 1;
+        names[i] = new (std::nothrow) char[size];
+        if (names[i] == nullptr) {
+          for (int32_t j = 0; j < i; ++j) {
+            delete[] names[j];
+          }
+          delete[] names;
+          set_error("failed to allocate column name string");
+          return CUDF_ERROR_OUT_OF_MEMORY;
+        }
+        std::memcpy(names[i], name.c_str(), size);
       }
     }
 
@@ -200,15 +208,15 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
     *out_num_names = n;
     return CUDF_SUCCESS;
   }
-  CUDF_RUST_CATCH
+  CUDF_RUST_IO_CATCH
 }
 
 void cudf_io_free_column_names(char** names, int32_t num_names) {
   if (names == nullptr) return;
   for (int32_t i = 0; i < num_names; ++i) {
-    std::free(names[i]);
+    delete[] names[i];
   }
-  std::free(names);
+  delete[] names;
 }
 
 }  // extern "C"

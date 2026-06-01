@@ -9,6 +9,7 @@
 void set_error(const std::string& msg);
 void set_error(const char* msg);
 cudf_status_t translate_exception();
+cudf_status_t translate_io_exception();
 
 // Exception-catching macro pair for C shim functions.
 //
@@ -22,6 +23,11 @@ cudf_status_t translate_exception();
 #define CUDF_RUST_CATCH                  \
   catch (...) {                          \
     return translate_exception();        \
+  }
+
+#define CUDF_RUST_IO_CATCH               \
+  catch (...) {                          \
+    return translate_io_exception();     \
   }
 
 // Null-check macro that sets error and returns.
