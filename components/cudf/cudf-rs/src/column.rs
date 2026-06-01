@@ -308,6 +308,19 @@ impl Column {
         )?;
         Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
+
+    /// Create a column by repeating a scalar value `size` times.
+    ///
+    /// Uses `cudf::make_column_from_scalar` under the hood. For `size == 0`,
+    /// an empty column of the scalar's type is returned.
+    pub fn from_scalar(scalar: &crate::scalar::Scalar, size: i32) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_from_scalar(scalar.raw_handle(), size, &mut handle) },
+            "column::from_scalar",
+        )?;
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+    }
 }
 
 // ---------------------------------------------------------------------------

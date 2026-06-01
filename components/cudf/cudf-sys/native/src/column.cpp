@@ -1,8 +1,10 @@
 #include "column.h"
+#include "scalar.h"
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
+#include <cudf/scalar/scalar.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -537,6 +539,28 @@ cudf_status_t cudf_column_view_strings_to_host(
       offsets_buf[i] -= char_begin;
     }
 
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
+                                      int32_t size,
+                                      cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(scalar, "scalar is null");
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY {
+    auto const& sc = *static_cast<cudf::scalar const*>(scalar);
+    auto stream = cudf::get_default_stream();
+    auto mr = cudf::get_current_device_resource_ref();
+    auto col = cudf::make_column_from_scalar(
+        sc, static_cast<cudf::size_type>(size), stream, mr);
+    *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
