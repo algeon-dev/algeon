@@ -15,8 +15,6 @@ const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
 const CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
 const CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV: &str = "CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE";
 const CUDF_TPCDS_PARITY_DUCKDB_BIN_ENV: &str = "CUDF_TPCDS_PARITY_DUCKDB_BIN";
-const CUDF_TPCDS_PARITY_external-engine_BIN_ENV: &str = "CUDF_TPCDS_PARITY_external-engine_BIN";
-const CUDF_TPCDS_PARITY_external-engine_CONFIG_FILE_ENV: &str = "CUDF_TPCDS_PARITY_external-engine_CONFIG_FILE";
 const CUDF_TPCDS_PARITY_SKIP_NATIVE_ENV: &str = "CUDF_TPCDS_PARITY_SKIP_NATIVE";
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 
@@ -119,19 +117,7 @@ fn validate_statistical_aggregate_parity_contract(
 }
 
 fn external_oracle_config_from_env(scratch_dir: PathBuf) -> Option<TpcdsExternalOracleConfig> {
-    let duckdb = std::env::var_os(CUDF_TPCDS_PARITY_DUCKDB_BIN_ENV).map(|binary| TpcdsExternalEngineConfig {
-        binary: PathBuf::from(binary),
-        external-engine_config_file: None,
-        disable_external-engine: true,
-    });
-    let external-engine = std::env::var_os(CUDF_TPCDS_PARITY_external-engine_BIN_ENV).map(|binary| TpcdsExternalEngineConfig {
-        binary: PathBuf::from(binary),
-        external-engine_config_file: std::env::var_os(CUDF_TPCDS_PARITY_external-engine_CONFIG_FILE_ENV).map(PathBuf::from),
-        disable_external-engine: false,
-    });
-    if duckdb.is_none() && external-engine.is_none() {
-        None
-    } else {
-        Some(TpcdsExternalOracleConfig { scratch_dir, duckdb, external-engine })
-    }
+    let duckdb = std::env::var_os(CUDF_TPCDS_PARITY_DUCKDB_BIN_ENV)
+        .map(|binary| TpcdsExternalEngineConfig { binary: PathBuf::from(binary) });
+    if duckdb.is_none() { None } else { Some(TpcdsExternalOracleConfig { scratch_dir, duckdb }) }
 }

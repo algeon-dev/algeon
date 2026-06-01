@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-#[path = "../src/bin/native_iceberg_smoke_report.rs"]
+#[path = "../../src/bin/native_iceberg_smoke_report.rs"]
 mod native_iceberg_smoke_report;
 
 use std::collections::HashMap;

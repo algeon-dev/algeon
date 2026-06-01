@@ -18,7 +18,7 @@
 //!   DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
 //!   DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
 //!   DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-//!   cargo test --features iceberg --test iceberg_rest_e2e_tests -- --ignored --nocapture
+//!   cargo test --features iceberg --test iceberg_tests iceberg_rest_e2e_tests:: -- --ignored --nocapture
 //! ```
 #![cfg(feature = "iceberg")]
 
@@ -113,7 +113,7 @@ async fn rest_scoped_catalog_provider_discovers_tables_live() {
 /// ```bash
 /// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   CUDF_ICEBERG_REST_E2E_TABLE=nation CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS=25 \
-///   ... cargo test --features iceberg-cpu --test iceberg_rest_e2e_tests \
+///   ... cargo test --features iceberg-cpu --test iceberg_tests iceberg_rest_e2e_tests:: \
 ///   rest_datafusion_scan_live -- --ignored --nocapture
 /// ```
 #[cfg(feature = "iceberg-cpu")]
@@ -174,7 +174,7 @@ async fn rest_datafusion_scan_live() {
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
 /// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-///   ... cargo test --features iceberg --test iceberg_rest_e2e_tests \
+///   ... cargo test --features iceberg --test iceberg_tests iceberg_rest_e2e_tests:: \
 ///   rest_table_metadata_contract_live -- --ignored --nocapture
 /// ```
 #[tokio::test]
@@ -247,7 +247,7 @@ async fn rest_table_metadata_contract_live() {
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
 /// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-///   ... cargo test --features iceberg-cpu --test iceberg_rest_e2e_tests \
+///   ... cargo test --features iceberg-cpu --test iceberg_tests iceberg_rest_e2e_tests:: \
 ///   rest_native_planning_and_parity_live -- --ignored --nocapture
 /// ```
 #[cfg(feature = "iceberg-cpu")]

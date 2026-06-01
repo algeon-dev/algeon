@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create an isolated git worktree for parallel agent development on
-# datafusion-nexus. Shares sibling path dependencies (cudf-rs, datafusion,
-# external-engine, ...) with the primary checkout; isolates only the Cargo target dir
+# datafusion-nexus. Shares sibling path dependencies (cudf-rs, datafusion, and
+# optional comparison repos) with the primary checkout; isolates only the Cargo target dir
 # so parallel builds don't clobber each other.
 #
 # Usage:
@@ -112,7 +112,7 @@ Next steps:
 Sibling path-deps shared with primary checkout (read-only by convention):
   $parent_dir/cudf-rs
   $parent_dir/datafusion
-  $parent_dir/external-engine
+  optional comparison repos under $parent_dir
   $parent_dir/iceberg-rust
   $parent_dir/cuCascade
 

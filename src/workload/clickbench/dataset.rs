@@ -36,15 +36,15 @@ pub const CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_CLICKBENCH_CONTE
 
 /// In-repo default for the single-file ClickBench fixture. Used when no env
 /// var is set and the partitioned variants are unavailable.
-pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET: &str = "./tests/data/clickbench/hits.parquet";
+pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET: &str = "./fixture/data/clickbench/hits.parquet";
 
 /// In-repo default directory for the single-file ClickBench fixture, i.e. a
 /// directory containing `hits.parquet`. Discovery resolves this to a
 /// [`ClickbenchLayout::Single`].
-pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR: &str = "./tests/data/clickbench/single";
+pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR: &str = "./fixture/data/clickbench/single";
 
 /// In-repo default for the partitioned ClickBench fixture (100 shards).
-pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./tests/data/clickbench/partitioned";
+pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./fixture/data/clickbench/partitioned";
 
 /// On-host NVMe default for the partitioned ClickBench fixture. Probed only
 /// when the NVMe mount is present; absence is silent and the implicit
@@ -177,7 +177,7 @@ impl ClickbenchDatasetMetadata {
 
 /// Discover a ClickBench layout under `root`. Accepts:
 ///
-/// 1. A file path ending in `.parquet` (e.g. `tests/data/clickbench/hits.parquet`).
+/// 1. A file path ending in `.parquet` (e.g. `fixture/data/clickbench/hits.parquet`).
 /// 2. A directory containing `hits.parquet` (single layout).
 /// 3. A directory containing `hits_*.parquet` (partitioned at this level).
 /// 4. A directory containing a `partitioned/` subdir with `hits_*.parquet`.
@@ -350,8 +350,8 @@ pub fn external_clickbench_dataset_metadata(
 ///
 /// 1. `CUDF_CLICKBENCH_PARQUET_DIR` env var (file or directory).
 /// 2. NVMe partitioned default (only when the NVMe mount is present).
-/// 3. Local partitioned default (`./tests/data/clickbench/partitioned`).
-/// 4. Local single-file default (`./tests/data/clickbench/hits.parquet`).
+/// 3. Local partitioned default (`./fixture/data/clickbench/partitioned`).
+/// 4. Local single-file default (`./fixture/data/clickbench/hits.parquet`).
 ///
 /// The env-var fixture is strict: if set, it must describe a valid complete
 /// ClickBench layout, and its generation command defaults to

@@ -2033,7 +2033,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
 // Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain
 // previously lived here. They have been subsumed by the registry-driven
-// `tests/cugraph_parity.rs` harness, which reads checked-in oracle JSON
+// `tests/cugraph/cugraph_parity.rs` harness, which reads checked-in oracle JSON
 // produced by `scripts/cugraph_oracle.py`. The composition test below
 // stays in place and will move into the harness as a Milestone 2
 // composition entry.

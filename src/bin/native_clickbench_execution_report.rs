@@ -33,7 +33,7 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionRepo
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
         datafusion_nexus::ClickbenchWorkloadError::InvalidDataset(
             "no ClickBench fixture found; set CUDF_CLICKBENCH_PARQUET_DIR or stage \
-             tests/data/clickbench/{hits.parquet, partitioned/} before running this report"
+             fixture/data/clickbench/{hits.parquet, partitioned/} before running this report"
                 .to_string(),
         )
     })?;

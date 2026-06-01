@@ -29,8 +29,6 @@ pub struct TpcdsExternalOracleConfig {
     pub scratch_dir: PathBuf,
     /// Optional DuckDB-compatible oracle process.
     pub duckdb: Option<TpcdsExternalEngineConfig>,
-    /// Optional external-engine oracle process.
-    pub external-engine: Option<TpcdsExternalEngineConfig>,
 }
 
 /// One external engine process used by the TPC-DS parity oracle surface.
@@ -38,10 +36,6 @@ pub struct TpcdsExternalOracleConfig {
 pub struct TpcdsExternalEngineConfig {
     /// Executable invoked with SQL on stdin and an in-memory database argument.
     pub binary: PathBuf,
-    /// Optional external-engine config path passed through `external-engine_CONFIG_FILE`.
-    pub external-engine_config_file: Option<PathBuf>,
-    /// Sets `external-engine_DISABLE=1` for DuckDB-without-external-engine comparisons.
-    pub disable_external-engine: bool,
 }
 
 /// Build parity workload items for the TPC-DS workload. For each selected query
@@ -135,12 +129,6 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
             .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
                 run_external_oracle(root, query.id, query.sql, "duckdb", engine, &config.scratch_dir)
             });
-        let external-engine_output = external_oracles
-            .as_ref()
-            .and_then(|config| config.external-engine.as_ref().map(|engine| (config, engine)))
-            .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
-                run_external_oracle(root, query.id, query.sql, "external-engine", engine, &config.scratch_dir)
-            });
         items.push(NativeTpcdsParityWorkloadItem {
             query_id: query.id.to_string(),
             sql: query.sql.to_string(),
@@ -148,7 +136,6 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
             native_planning,
             native_runtime,
             duckdb_output,
-            external-engine_output,
         });
     }
     Ok(items)
@@ -292,12 +279,6 @@ fn run_external_oracle(
     };
     let mut command = Command::new(&engine.binary);
     command.arg(":memory:").stdin(Stdio::from(stdin_file));
-    if engine.disable_external-engine {
-        command.env("external-engine_DISABLE", "1");
-    }
-    if let Some(config_file) = &engine.external-engine_config_file {
-        command.env("external-engine_CONFIG_FILE", config_file);
-    }
     let output = match command.output() {
         Ok(output) => output,
         Err(error) => {

@@ -9,6 +9,14 @@
 !scripts/**
 !data/
 !data/.gitkeep
+!data/cugraph/
+data/cugraph/*
+!data/cugraph/*.csv
+!data/cugraph/manifest.json
+!data/cugraph/oracle/
+!data/cugraph/oracle/**
+!data/cugraph/ref/
+!data/cugraph/ref/**
 
 # Still drop common junk inside scripts/.
 scripts/**/__pycache__/

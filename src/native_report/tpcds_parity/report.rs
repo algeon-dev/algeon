@@ -153,8 +153,6 @@ pub struct NativeTpcdsParityRow {
     pub comparison_mode: ParityComparisonMode,
     /// DuckDB oracle output and CPU parity summary.
     pub duckdb_output: NativeTpcdsParityExternalOutputSummary,
-    /// external-engine oracle output and CPU parity summary.
-    pub external-engine_output: NativeTpcdsParityExternalOutputSummary,
     /// Native reservation live peak in device bytes.
     pub native_reservation_live_peak_bytes: Option<usize>,
     /// Number of native reservation denials recorded during runtime.
@@ -344,31 +342,29 @@ impl NativeTpcdsParityReport {
         output.push_str(NATIVE_TPCDS_PARITY_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
-            let _ = writeln!(
-                output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                row.query_id,
-                row.cpu_planning_status.as_str(),
-                row.cpu_runtime_status.as_str(),
-                row.native_planning_outcome.as_str(),
-                row.native_reason_code.as_deref().unwrap_or("none"),
-                row.native_unsupported_category.as_deref().unwrap_or("none"),
-                row.post_native_execution_path.as_str(),
-                row.native_plan_fragment_count,
-                row.host_datafusion_boundary_count,
-                row.native_runtime_started,
-                row.native_runtime_outcome.as_str(),
-                row.parity_status.as_str(),
+            let fields = [
+                row.query_id.clone(),
+                row.cpu_planning_status.as_str().to_string(),
+                row.cpu_runtime_status.as_str().to_string(),
+                row.native_planning_outcome.as_str().to_string(),
+                row.native_reason_code.as_deref().unwrap_or("none").to_string(),
+                row.native_unsupported_category.as_deref().unwrap_or("none").to_string(),
+                row.post_native_execution_path.as_str().to_string(),
+                row.native_plan_fragment_count.to_string(),
+                row.host_datafusion_boundary_count.to_string(),
+                row.native_runtime_started.to_string(),
+                row.native_runtime_outcome.as_str().to_string(),
+                row.parity_status.as_str().to_string(),
                 row.parity_detail.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
                 format_optional_usize(row.cpu_output_rows),
                 format_optional_usize(row.native_output_rows),
                 format_optional_usize(row.cpu_output_batches),
                 format_optional_usize(row.native_output_batches),
-                row.cpu_output_fingerprint.as_deref().unwrap_or("none"),
-                row.native_output_fingerprint.as_deref().unwrap_or("none"),
-                row.comparison_mode.as_str(),
-                row.duckdb_output.status.as_str(),
-                row.duckdb_output.cpu_parity_status.as_str(),
+                row.cpu_output_fingerprint.as_deref().unwrap_or("none").to_string(),
+                row.native_output_fingerprint.as_deref().unwrap_or("none").to_string(),
+                row.comparison_mode.as_str().to_string(),
+                row.duckdb_output.status.as_str().to_string(),
+                row.duckdb_output.cpu_parity_status.as_str().to_string(),
                 row.duckdb_output
                     .cpu_parity_detail
                     .as_deref()
@@ -376,22 +372,13 @@ impl NativeTpcdsParityReport {
                     .unwrap_or_else(|| "none".to_string()),
                 format_optional_usize(row.duckdb_output.output_rows),
                 format_optional_usize(row.duckdb_output.output_batches),
-                row.duckdb_output.output_fingerprint.as_deref().unwrap_or("none"),
-                row.external-engine_output.status.as_str(),
-                row.external-engine_output.cpu_parity_status.as_str(),
-                row.external-engine_output
-                    .cpu_parity_detail
-                    .as_deref()
-                    .map(stable_tsv_field)
-                    .unwrap_or_else(|| "none".to_string()),
-                format_optional_usize(row.external-engine_output.output_rows),
-                format_optional_usize(row.external-engine_output.output_batches),
-                row.external-engine_output.output_fingerprint.as_deref().unwrap_or("none"),
+                row.duckdb_output.output_fingerprint.as_deref().unwrap_or("none").to_string(),
                 format_optional_usize(row.native_reservation_live_peak_bytes),
                 format_optional_usize(row.native_reservation_denied_count),
                 format_optional_usize(row.native_retry_count),
                 row.native_runtime_failure.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
-            );
+            ];
+            let _ = writeln!(output, "{}", fields.join("\t"));
         }
         output
     }
@@ -417,8 +404,6 @@ pub struct NativeTpcdsParityWorkloadItem {
     pub native_runtime: NativeTpcdsParityNativeRuntimeOutcome,
     /// Optional DuckDB oracle output.
     pub duckdb_output: NativeTpcdsParityExternalOutput,
-    /// Optional external-engine oracle output.
-    pub external-engine_output: NativeTpcdsParityExternalOutput,
 }
 
 /// Captured CPU DataFusion baseline outcome for one parity query.
@@ -602,14 +587,6 @@ fn parity_row_for_item(
         ordered_total,
         float_tolerance,
     );
-    let external-engine_output = summarize_external_output(
-        item.external-engine_output,
-        cpu_schema.as_ref(),
-        cpu_batches.as_deref(),
-        ordered,
-        ordered_total,
-        float_tolerance,
-    );
 
     NativeTpcdsParityRow {
         query_id: item.query_id,
@@ -633,7 +610,6 @@ fn parity_row_for_item(
         native_output_fingerprint: native_fingerprint,
         comparison_mode,
         duckdb_output,
-        external-engine_output,
         native_reservation_live_peak_bytes: native_metrics_summary.as_ref().map(|m| m.reservation_live_peak_bytes),
         native_reservation_denied_count: native_metrics_summary.as_ref().map(|m| m.reservation_denied_count),
         native_retry_count: native_metrics_summary.as_ref().map(|m| m.retry_count),

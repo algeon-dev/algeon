@@ -1,6 +1,5 @@
-// Minimal three-way benchmark runner for TPC-DS used to compare datafusion-nexus
-// native GPU execution against tuned CPU DataFusion (and, separately, external-engine via
-// its own benchmark_and_validate.sh runner — that lives outside this binary).
+// Minimal benchmark runner for TPC-DS used to compare datafusion-nexus native
+// GPU execution against tuned CPU DataFusion.
 //
 // Run separate invocations per session: native_gpu, cpu_datafusion, and
 // hybrid_cpu_preferred for CPU-preferred native plans. Each invocation registers

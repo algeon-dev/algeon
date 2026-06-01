@@ -44,8 +44,8 @@ fn clickbench_table_names_are_stable() {
 }
 
 /// Locate an in-repo single-file ClickBench fixture, accepting either the
-/// flat `tests/data/clickbench/hits.parquet` layout or the
-/// `tests/data/clickbench/single/hits.parquet` directory layout. Returns the
+/// flat `fixture/data/clickbench/hits.parquet` layout or the
+/// `fixture/data/clickbench/single/hits.parquet` directory layout. Returns the
 /// path to pass to `discover_clickbench_layout` (a file path for the flat
 /// layout, a directory path for the `single/` layout) together with the
 /// resolved `hits.parquet` file, or `None` when no fixture is present.

@@ -2,7 +2,7 @@
 //!
 //! The default `cargo test --features cugraph` invocation reaches this
 //! module only through the CPU-only manifest verification tests in
-//! `tests/cugraph_parity.rs`. GPU execution paths (currently
+//! `tests/cugraph/cugraph_parity.rs`. GPU execution paths (currently
 //! `#[ignore]`) will reuse the same dataset loading entry points so the
 //! Rust and Python sides observe byte-identical input.
 
