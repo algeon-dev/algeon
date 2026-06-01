@@ -20,6 +20,58 @@ fn make_i32_column(data: &[i32]) -> *mut c_void {
     out
 }
 
+fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
+    let mut mask = vec![0u8; validity.len().div_ceil(8)];
+    for (index, is_valid) in validity.iter().copied().enumerate() {
+        if is_valid {
+            mask[index / 8] |= 1 << (index % 8);
+        }
+    }
+    mask
+}
+
+fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut c_void {
+    assert_eq!(data.len(), validity.len());
+    let null_mask = validity_to_bitmask(validity);
+    let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            null_mask.as_ptr(),
+            null_count,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn make_string_column(data: &[&str]) -> *mut c_void {
+    let c_strings: Vec<_> = data.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
+    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let lengths: Vec<_> = data.iter().map(|value| value.len() as i32).collect();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_strings(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            data.len() as i32,
+            ptr::null(),
+            0,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
 fn make_empty_i32_column() -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_create_empty(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
@@ -157,6 +209,8 @@ unsafe extern "C" {
     fn cudf_test_throw_runtime_error() -> i32;
     fn cudf_test_throw_bad_alloc() -> i32;
 }
+
+const NO_SYNC_RECORDED: usize = usize::MAX;
 
 fn reset_exec_observation() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -391,6 +445,7 @@ fn test_execution_context_defaults_match_legacy_column_copy() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), default_stream);
     assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
     assert_eq!(read_i32_column_data(legacy_out, 4), vec![1, 2, 3, 4]);
 
     reset_exec_observation();
@@ -399,6 +454,7 @@ fn test_execution_context_defaults_match_legacy_column_copy() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), default_stream);
     assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
     assert_eq!(read_i32_column_data(null_opts_out, 4), vec![1, 2, 3, 4]);
 
     let exec = cudf_sys::ExecutionContext::new();
@@ -408,6 +464,7 @@ fn test_execution_context_defaults_match_legacy_column_copy() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), default_stream);
     assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
     assert_eq!(read_i32_column_data(explicit_defaults_out, 4), vec![1, 2, 3, 4]);
 
     unsafe {
@@ -416,6 +473,34 @@ fn test_execution_context_defaults_match_legacy_column_copy() {
         cudf_sys::cudf_column_destroy(legacy_out);
         cudf_sys::cudf_column_destroy(col);
     }
+}
+
+#[test]
+fn test_scalar_create_apis_do_not_hide_stream_synchronization() {
+    reset_exec_observation();
+    let scalar = make_i32_scalar(42);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+
+    let mut value = 0i32;
+    let st = unsafe { cudf_sys::cudf_scalar_value(scalar, &mut value as *mut i32 as *mut c_void) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(value, 42);
+    unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+
+    let hello = std::ffi::CString::new("hello").unwrap();
+    reset_exec_observation();
+    let mut string_scalar: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scalar_create_string(hello.as_ptr(), 1, &mut string_scalar) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!string_scalar.is_null());
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut len = -1;
+    let st = unsafe { cudf_sys::cudf_scalar_string_value(string_scalar, &mut out, &mut len) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(owned_string_value(out, len), "hello");
+    unsafe { cudf_sys::cudf_scalar_destroy(string_scalar) };
 }
 
 #[test]
@@ -429,6 +514,7 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_ne!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
 
     let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
     reset_exec_observation();
@@ -436,6 +522,7 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec.as_raw(), &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
 
     unsafe {
         cudf_sys::cudf_column_destroy(explicit_out);
@@ -501,6 +588,111 @@ fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
     unsafe {
         cudf_sys::cudf_column_view_destroy(view);
         cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_null_mask_to_host_sync_contract() {
+    let col = make_i32_column_nullable(&[1, 2, 3, 4, 5], &[true, false, true, false, true]);
+    let view = make_column_view(col);
+    let default_stream = default_stream_value();
+    let mut host_mask = [0u8; 64];
+
+    reset_exec_observation();
+    let st = unsafe { cudf_sys::cudf_column_view_null_mask_to_host(view, host_mask.as_mut_ptr(), host_mask.len()) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(host_mask[0] & 0b0001_1111, 0b0001_0101);
+    assert_eq!(last_exec_sync_stream_value(), default_stream);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_strings_to_host_sync_contract() {
+    let col = make_string_column(&["ab", "", "cde"]);
+    let view = make_column_view(col);
+    let default_stream = default_stream_value();
+    let mut offsets = vec![-1i32; 4];
+    let mut chars = vec![0u8; 5];
+    let mut total_chars = -1;
+
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_strings_to_host(
+            view,
+            offsets.as_mut_ptr(),
+            std::mem::size_of_val(offsets.as_slice()),
+            chars.as_mut_ptr() as *mut c_char,
+            chars.len(),
+            &mut total_chars,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(offsets, vec![0, 2, 2, 5]);
+    assert_eq!(total_chars, 5);
+    assert_eq!(chars.as_slice(), b"abcde");
+    assert_eq!(last_exec_sync_stream_value(), default_stream);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_create_from_device_data_sync_and_async_contracts() {
+    let source = make_i32_column(&[21, 22, 23]);
+    let source_view = make_column_view(source);
+    let default_stream = default_stream_value();
+
+    let mut device_ptr: *const c_void = ptr::null();
+    let st = unsafe { cudf_sys::cudf_column_view_data_ptr(source_view, &mut device_ptr) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!device_ptr.is_null());
+
+    reset_exec_observation();
+    let mut sync_out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_from_device_data(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            device_ptr,
+            3,
+            &mut sync_out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_sync_stream_value(), default_stream);
+    assert_eq!(read_i32_column_data(sync_out, 3), vec![21, 22, 23]);
+
+    let stream = cudf_sys::Stream::new().unwrap();
+    let explicit_stream = stream_value(stream.as_raw());
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+
+    reset_exec_observation();
+    let mut async_out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_from_device_data_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            device_ptr,
+            3,
+            exec.as_raw(),
+            &mut async_out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+    stream.synchronize().unwrap();
+    assert_eq!(read_i32_column_data(async_out, 3), vec![21, 22, 23]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(async_out);
+        cudf_sys::cudf_column_destroy(sync_out);
+        cudf_sys::cudf_column_view_destroy(source_view);
+        cudf_sys::cudf_column_destroy(source);
     }
 }
 

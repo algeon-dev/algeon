@@ -130,6 +130,8 @@ cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
 ///
 /// Returns CUDF_ERROR_NULL if column has no null mask.
 /// Returns CUDF_ERROR_INVALID_OPERATION for sliced views (offset != 0).
+/// This helper synchronizes cuDF's default stream before return so `host_buf`
+/// is fully populated on success.
 cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
                                                  uint8_t* host_buf,
                                                  size_t buf_size);
@@ -141,10 +143,31 @@ cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
 ///
 /// For `size == 0`, `device_data` may be NULL.
 /// For `size > 0`, `device_data` must be non-NULL.
+///
+/// This legacy helper synchronizes cuDF's default stream before return so the
+/// borrowed `device_data` pointer is no longer in use when the call succeeds.
 cudf_status_t cudf_column_create_from_device_data(
     cudf_type_id_t type_id,
     const void* device_data,
     int32_t size,
+    cudf_column_handle* out);
+
+/// Create a column by copying data from an existing device (GPU) pointer with
+/// explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+///
+/// Unlike `cudf_column_create_from_device_data`, this `_ex` variant does not
+/// synchronize before returning. The caller must keep `device_data` valid until
+/// work on the selected stream has completed, and must establish any required
+/// cross-stream ordering for later consumers of the returned column.
+cudf_status_t cudf_column_create_from_device_data_ex(
+    cudf_type_id_t type_id,
+    const void* device_data,
+    int32_t size,
+    const cudf_exec_options_t* options,
     cudf_column_handle* out);
 
 /// Create a STRING type column from host string data.
@@ -183,6 +206,8 @@ cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
 /// `chars_buf_size` must be >= total chars bytes (= offsets[n] - offsets[0]).
 ///
 /// Returns CUDF_ERROR_TYPE if the column is not STRING type.
+/// This helper synchronizes cuDF's default stream before return whenever it
+/// must materialize offsets or chars into the caller's host buffers.
 cudf_status_t cudf_column_view_strings_to_host(
     cudf_column_view_handle handle,
     int32_t* offsets_buf,

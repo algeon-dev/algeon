@@ -13,11 +13,17 @@ extern "C" {
 typedef void* cudf_scalar_handle;
 
 /// Create a numeric scalar. `value` is reinterpreted according to `type_id`.
+///
+/// This helper enqueues any required device work on cuDF's default stream and
+/// returns without an extra stream synchronization barrier.
 cudf_status_t cudf_scalar_create_numeric(cudf_type_id_t type_id,
                                          const void* value, int32_t is_valid,
                                          cudf_scalar_handle* out);
 
 /// Create a string scalar from a null-terminated UTF-8 string.
+///
+/// This helper enqueues any required device work on cuDF's default stream and
+/// returns without an extra stream synchronization barrier.
 cudf_status_t cudf_scalar_create_string(const char* value, int32_t is_valid,
                                         cudf_scalar_handle* out);
 
