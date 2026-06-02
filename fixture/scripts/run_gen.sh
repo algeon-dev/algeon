@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run a BloodHound graph fixture generator from this directory's local .venv.
+# Run a local fixture generator/preparer.
 #
 # Usage:
-#   ./run_gen.sh github                   # bh_sf1 by default
+#   ./run_gen.sh github                         # bh_sf1 by default
+#   ./run_gen.sh cugraph --oracle               # copy cuGraph data + generate oracle JSON
 #   BH_GITHUB_SCALE=bh_sf1 ./run_gen.sh github
 #
 # Bootstraps `.venv/` with numpy + pyarrow on first run. The .venv directory
@@ -27,6 +28,9 @@ case "${1:-}" in
   graph500 | graph500_rmat)
     exec "$(rapids_python)" "${HERE}/gen_graph500_rmat.py" "${@:2}"
     ;;
+  cugraph)
+    exec "$(rapids_python)" "${HERE}/prepare_cugraph.py" "${@:2}"
+    ;;
 esac
 
 if [[ ! -x "${VENV}/bin/python" ]]; then
@@ -43,7 +47,7 @@ case "${1:-}" in
     exec "${VENV}/bin/python" "${HERE}/gen_ad_entra_bh.py"
     ;;
   "")
-    echo "usage: $0 <generator>   (available: github, ad_entra, graph500_rmat)" >&2
+    echo "usage: $0 <generator>   (available: github, ad_entra, graph500_rmat, cugraph)" >&2
     exit 2
     ;;
   *)
