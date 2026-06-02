@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for the `internal` module's infrastructure.
 //!
 //! `TempTableView`, `resolve`, and `reassemble` are `pub(crate)`, so we
@@ -26,7 +27,7 @@ fn filter_preserves_row_and_column_counts() {
     let filtered = df.filter_by_mask(&mask_view).unwrap();
 
     assert_eq!(filtered.num_columns(), 2, "column count preserved");
-    assert_eq!(filtered.num_rows().unwrap(), 3, "filtered row count");
+    assert_eq!(filtered.num_rows(), 3, "filtered row count");
     assert_eq!(filtered.column_names(), vec!["id", "val"], "schema names preserved");
 }
 
@@ -40,7 +41,7 @@ fn sort_preserves_schema_names_and_lengths() {
     let sorted = df.sort(&["a"], &[cudf::sorting::Order::Ascending]).unwrap();
 
     assert_eq!(sorted.num_columns(), 2);
-    assert_eq!(sorted.num_rows().unwrap(), 3);
+    assert_eq!(sorted.num_rows(), 3);
     assert_eq!(sorted.column_names(), vec!["a", "b"]);
 
     // Verify sorted order.
@@ -59,7 +60,7 @@ fn reassembly_after_distinct_preserves_schema() {
     let distinct = df.distinct(&["x", "y"], cudf::stream_compaction::DuplicateKeepOption::KeepFirst).unwrap();
 
     assert_eq!(distinct.num_columns(), 2, "schema columns preserved");
-    assert_eq!(distinct.num_rows().unwrap(), 3, "distinct row count");
+    assert_eq!(distinct.num_rows(), 3, "distinct row count");
     assert_eq!(distinct.column_names(), vec!["x", "y"], "schema names preserved");
 }
 
@@ -97,7 +98,7 @@ fn join_reassembly_preserves_schema_names() {
     let joined = left.inner_join(&right, &["key"]).unwrap();
 
     // Inner join on [2,3] → 2 rows.
-    assert_eq!(joined.num_rows().unwrap(), 2);
+    assert_eq!(joined.num_rows(), 2);
     // Schema: key + lval + rval.
     assert_eq!(joined.column_names(), vec!["key", "lval", "rval"]);
 }

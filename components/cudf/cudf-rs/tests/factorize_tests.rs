@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for Column::factorize
 
 use cudf::{column::Column, types::TypeId};

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for the expression layer (Task D5).
 //!
 //! Tests cover: `col()` / `lit()`, arithmetic operators, comparisons,
@@ -33,7 +34,7 @@ fn col_resolves_existing_column() {
     let df = xy_df();
     let result = col("x").eval(&df).unwrap();
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.len().unwrap(), 3);
+    assert_eq!(result.len(), 3);
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -49,7 +50,7 @@ fn lit_i32_broadcasts() {
     let df = xy_df();
     let result = lit(42i32).alias("c").eval(&df).unwrap();
     assert_eq!(result.name(), Some("c"));
-    assert_eq!(result.len().unwrap(), 3);
+    assert_eq!(result.len(), 3);
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
@@ -57,7 +58,7 @@ fn lit_i32_broadcasts() {
 fn lit_f64_broadcasts() {
     let df = xy_df();
     let result = lit(3.14f64).alias("pi").eval(&df).unwrap();
-    assert_eq!(result.len().unwrap(), 3);
+    assert_eq!(result.len(), 3);
     assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![3.14, 3.14, 3.14]);
 }
 
@@ -65,7 +66,7 @@ fn lit_f64_broadcasts() {
 fn lit_string_broadcasts() {
     let df = xy_df();
     let result = lit("hello").alias("s").eval(&df).unwrap();
-    assert_eq!(result.len().unwrap(), 3);
+    assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
 }
 

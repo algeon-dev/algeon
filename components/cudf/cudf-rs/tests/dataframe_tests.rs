@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for the DataFrame wrapper.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, table::Table};
@@ -14,7 +15,7 @@ fn test_new_from_named_columns() {
     let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
 }
 
 #[test]
@@ -113,7 +114,7 @@ fn test_column_accessor_validates_data() {
     let col = df.column("x").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2]);
     assert_eq!(df.num_columns(), 1);
-    assert_eq!(df.num_rows().unwrap(), 2);
+    assert_eq!(df.num_rows(), 2);
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn test_from_table_round_trip() {
     let df = DataFrame::from_table(table, vec!["a".to_string(), "b".to_string()]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
 
     let col_a = df.column("a").unwrap();
     assert_eq!(col_a.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
@@ -181,7 +182,7 @@ fn test_dataframe_macro_basic() {
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.column_names(), &["x", "y"]);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column("x").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 

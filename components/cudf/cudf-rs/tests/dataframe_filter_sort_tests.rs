@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
 use cudf::{
@@ -23,7 +24,7 @@ fn test_filter_basic() {
     let mask = mask_col.view().unwrap();
     let filtered = df.filter_by_mask(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3);
+    assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
     assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
@@ -47,7 +48,7 @@ fn test_filter_all_false() {
     let mask = mask_col.view().unwrap();
     let filtered = df.filter_by_mask(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 0);
+    assert_eq!(filtered.num_rows(), 0);
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
 }
 
@@ -62,7 +63,7 @@ fn test_filter_isin_basic() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin("id", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3); // rows with id 1,1,5
+    assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
     let mut ids = filtered.column("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![1, 1, 5]);
@@ -75,7 +76,7 @@ fn test_filter_isin_no_matches() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin("id", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 0);
+    assert_eq!(filtered.num_rows(), 0);
 }
 
 #[test]
@@ -85,7 +86,7 @@ fn test_filter_isin_all_match() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin("id", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 5);
+    assert_eq!(filtered.num_rows(), 5);
 }
 
 #[test]
@@ -118,7 +119,7 @@ fn test_filter_isin_float64() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin("score", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 2);
+    assert_eq!(filtered.num_rows(), 2);
     let mut scores = filtered.column("score").unwrap().to_vec::<f64>().unwrap();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(scores, vec![10.0, 50.0]);
@@ -131,7 +132,7 @@ fn test_filter_isin_empty_values() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin("id", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 0);
+    assert_eq!(filtered.num_rows(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +206,7 @@ fn test_nlargest() {
     let df = sample_df(); // ids: 3,1,4,1,5  scores: 30,10,40,15,50
     let top2 = df.nlargest(2, "score").unwrap();
 
-    assert_eq!(top2.num_rows().unwrap(), 2);
+    assert_eq!(top2.num_rows(), 2);
     assert_eq!(top2.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0]);
 }
 
@@ -214,7 +215,7 @@ fn test_nsmallest() {
     let df = sample_df();
     let bot2 = df.nsmallest(2, "id").unwrap();
 
-    assert_eq!(bot2.num_rows().unwrap(), 2);
+    assert_eq!(bot2.num_rows(), 2);
     assert_eq!(bot2.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
 }
 
@@ -236,7 +237,7 @@ fn test_distinct_by_single_column() {
     let df = sample_df();
     let deduped = df.distinct(&["id"], DuplicateKeepOption::KeepAny).unwrap();
 
-    assert_eq!(deduped.num_rows().unwrap(), 4); // 4 distinct ids
+    assert_eq!(deduped.num_rows(), 4); // 4 distinct ids
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
 }
 
@@ -269,7 +270,7 @@ fn test_drop_nulls_basic() {
 
     let cleaned = df.drop_nulls(&["id"], 1).unwrap();
 
-    assert_eq!(cleaned.num_rows().unwrap(), 3);
+    assert_eq!(cleaned.num_rows(), 3);
     assert_eq!(cleaned.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
     assert_eq!(cleaned.column("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
 }
@@ -308,7 +309,7 @@ fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
     let expected = df.drop_nulls(subset, subset.len() as i32).unwrap();
     let actual = df.drop_nulls_any(subset).unwrap();
 
-    assert_eq!(actual.num_rows().unwrap(), expected.num_rows().unwrap());
+    assert_eq!(actual.num_rows(), expected.num_rows());
     assert_eq!(
         actual.column("id").unwrap().to_vec::<i32>().unwrap(),
         expected.column("id").unwrap().to_vec::<i32>().unwrap(),
@@ -334,7 +335,7 @@ fn test_drop_nulls_any_mixed_null_patterns() {
     // Row 3: a=4, b=40 → kept
     let cleaned = df.drop_nulls_any(&["a", "b"]).unwrap();
 
-    assert_eq!(cleaned.num_rows().unwrap(), 2);
+    assert_eq!(cleaned.num_rows(), 2);
     assert_eq!(cleaned.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
     assert_eq!(cleaned.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 40]);
     assert_eq!(cleaned.column("c").unwrap().to_vec::<f64>().unwrap(), vec![100.0, 400.0]);
@@ -347,7 +348,7 @@ fn test_drop_nulls_any_empty_subset_returns_unchanged() {
 
     // Empty subset → no columns to check for nulls → all rows kept.
     let result = df.drop_nulls_any(&[]).unwrap();
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -356,7 +357,7 @@ fn test_drop_nulls_any_no_nulls() {
     let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
 
     let result = df.drop_nulls_any(&["x"]).unwrap();
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -365,7 +366,7 @@ fn test_drop_nulls_any_all_null() {
     let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
 
     let result = df.drop_nulls_any(&["x"]).unwrap();
-    assert_eq!(result.num_rows().unwrap(), 0);
+    assert_eq!(result.num_rows(), 0);
 }
 
 #[test]

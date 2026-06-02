@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for Series-aware DataFrame constructors and accessors.
 //!
 //! All tests require a GPU.
@@ -18,7 +19,7 @@ fn test_from_columns_happy_path() {
     let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), &["id", "score"]);
 
     let col = df.column("id").unwrap();
@@ -34,7 +35,7 @@ fn test_from_columns_single_column() {
     let df = DataFrame::from_columns([("x", vals)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
-    assert_eq!(df.num_rows().unwrap(), 2);
+    assert_eq!(df.num_rows(), 2);
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn test_from_columns_empty_series() {
     let df = DataFrame::from_columns([("e", empty)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
-    assert_eq!(df.num_rows().unwrap(), 0);
+    assert_eq!(df.num_rows(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ fn test_from_series_happy_path() {
     let df = DataFrame::from_series(pairs).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), &["id", "name"]);
 }
 
@@ -114,7 +115,7 @@ fn test_from_series_empty_iterator() {
     let df = DataFrame::from_series(std::iter::empty::<(&str, Series)>()).unwrap();
 
     assert_eq!(df.num_columns(), 0);
-    assert_eq!(df.num_rows().unwrap(), 0);
+    assert_eq!(df.num_rows(), 0);
 }
 
 #[test]
@@ -152,7 +153,7 @@ fn test_series_returns_named_series() {
 
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.len().unwrap(), 3);
+    assert_eq!(s.len(), 3);
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn test_round_trip_from_columns_to_series() {
     let retrieved = df.series("val").unwrap();
 
     assert_eq!(retrieved.name(), Some("val"));
-    assert_eq!(retrieved.len().unwrap(), 3);
+    assert_eq!(retrieved.len(), 3);
     assert_eq!(retrieved.dtype().unwrap().id(), TypeId::Float64);
 
     // The retrieved Series should share the same GPU allocation.

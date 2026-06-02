@@ -187,9 +187,9 @@ impl Expr {
 
             Expr::Literal(lit_val) => {
                 let scalar = lit_val.to_scalar()?;
-                let size = df.num_rows()?;
+                let size = df.num_rows() as i32;
                 let col = Column::from_scalar(&scalar, size)?;
-                Ok(Series::from_column(col))
+                Series::from_column(col)
             },
 
             Expr::BinaryOp { lhs, op, rhs } => {
@@ -199,14 +199,14 @@ impl Expr {
                 let rv = right.column_view()?;
                 let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), *op)?;
                 let col = binary::binary_operation_vv(&lv, &rv, *op, &out_type)?;
-                Ok(Series::from_column(col))
+                Series::from_column(col)
             },
 
             Expr::UnaryOp { op, input } => {
                 let series = input.eval(df)?;
                 let cv = series.column_view()?;
                 let col = unary::unary_operation(&cv, *op)?;
-                Ok(Series::from_column(col))
+                Series::from_column(col)
             },
 
             Expr::Cast { input, target } => {

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame row slicing helpers.
 
 use cudf::{column::Column, dataframe::DataFrame};
@@ -18,7 +19,7 @@ fn test_head_basic() {
     let df = sample_df();
     let h = df.head(2).unwrap();
 
-    assert_eq!(h.num_rows().unwrap(), 2);
+    assert_eq!(h.num_rows(), 2);
     assert_eq!(h.num_columns(), 2);
     assert_eq!(h.column("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20]);
     assert_eq!(h.column("val").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0]);
@@ -29,7 +30,7 @@ fn test_head_zero_rows() {
     let df = sample_df();
     let h = df.head(0).unwrap();
 
-    assert_eq!(h.num_rows().unwrap(), 0);
+    assert_eq!(h.num_rows(), 0);
     assert_eq!(h.num_columns(), 2);
     assert_eq!(h.column_names(), vec!["id", "val"]);
 }
@@ -39,7 +40,7 @@ fn test_head_clamps_to_num_rows() {
     let df = sample_df();
     let h = df.head(100).unwrap();
 
-    assert_eq!(h.num_rows().unwrap(), 5);
+    assert_eq!(h.num_rows(), 5);
     assert_eq!(h.column("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
@@ -61,7 +62,7 @@ fn test_tail_basic() {
     let df = sample_df();
     let t = df.tail(2).unwrap();
 
-    assert_eq!(t.num_rows().unwrap(), 2);
+    assert_eq!(t.num_rows(), 2);
     assert_eq!(t.column("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
     assert_eq!(t.column("val").unwrap().to_vec::<f64>().unwrap(), vec![4.0, 5.0]);
 }
@@ -71,7 +72,7 @@ fn test_tail_clamps_to_num_rows() {
     let df = sample_df();
     let t = df.tail(100).unwrap();
 
-    assert_eq!(t.num_rows().unwrap(), 5);
+    assert_eq!(t.num_rows(), 5);
     assert_eq!(t.column("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
@@ -80,7 +81,7 @@ fn test_tail_zero_rows() {
     let df = sample_df();
     let t = df.tail(0).unwrap();
 
-    assert_eq!(t.num_rows().unwrap(), 0);
+    assert_eq!(t.num_rows(), 0);
     assert_eq!(t.column_names(), vec!["id", "val"]);
 }
 
@@ -100,7 +101,7 @@ fn test_slice_basic() {
     let df = sample_df();
     let s = df.slice(1, 2).unwrap();
 
-    assert_eq!(s.num_rows().unwrap(), 2);
+    assert_eq!(s.num_rows(), 2);
     assert_eq!(s.column("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
     assert_eq!(s.column("val").unwrap().to_vec::<f64>().unwrap(), vec![2.0, 3.0]);
 }
@@ -111,7 +112,7 @@ fn test_slice_clamps_length() {
     // offset=3, length=100 → should clamp to rows 3..5
     let s = df.slice(3, 100).unwrap();
 
-    assert_eq!(s.num_rows().unwrap(), 2);
+    assert_eq!(s.num_rows(), 2);
     assert_eq!(s.column("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
 }
 
@@ -120,7 +121,7 @@ fn test_slice_zero_length() {
     let df = sample_df();
     let s = df.slice(2, 0).unwrap();
 
-    assert_eq!(s.num_rows().unwrap(), 0);
+    assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
 
@@ -138,7 +139,7 @@ fn test_slice_offset_at_end() {
     let df = sample_df();
     // offset == num_rows → empty result
     let s = df.slice(5, 10).unwrap();
-    assert_eq!(s.num_rows().unwrap(), 0);
+    assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
 
@@ -147,6 +148,6 @@ fn test_slice_offset_beyond_end() {
     let df = sample_df();
     // offset > num_rows → empty result
     let s = df.slice(999, 10).unwrap();
-    assert_eq!(s.num_rows().unwrap(), 0);
+    assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }

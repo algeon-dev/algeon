@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for the `DataFrame::groupby` façade API: `GroupBy`, `Agg`, `AggSpec`,
 //! `GroupByOptions`.
 
@@ -16,7 +17,7 @@ fn groupby_sum() {
     let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
 
     let key_data: Vec<i32> = result.column("key").unwrap().to_vec::<i32>().unwrap();
@@ -289,7 +290,7 @@ fn groupby_with_options_include_null_keys() {
     let result = df.groupby(&["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
 }
 
 // ===========================================================================

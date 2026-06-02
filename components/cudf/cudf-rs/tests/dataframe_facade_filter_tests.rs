@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for the façade `DataFrame::filter` that accepts `&Series` masks.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, series::Series};
@@ -22,7 +23,7 @@ fn test_filter_series_mask_basic() {
 
     let filtered = df.filter(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3);
+    assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
     assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
@@ -33,7 +34,7 @@ fn test_filter_series_mask_all_true() {
     let mask = Series::new::<bool>("mask", &[true, true, true, true, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 5);
+    assert_eq!(filtered.num_rows(), 5);
 }
 
 #[test]
@@ -42,7 +43,7 @@ fn test_filter_series_mask_all_false() {
     let mask = Series::new::<bool>("mask", &[false, false, false, false, false]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 0);
+    assert_eq!(filtered.num_rows(), 0);
     // Schema preserved even when empty.
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
 }
@@ -107,7 +108,7 @@ fn test_filter_series_with_eq_scalar_mask() {
 
     let filtered = df.filter(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 2);
+    assert_eq!(filtered.num_rows(), 2);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
 }
 
@@ -120,7 +121,7 @@ fn test_filter_series_with_le_scalar_mask() {
 
     let filtered = df.filter(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 2);
+    assert_eq!(filtered.num_rows(), 2);
     assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 15.0]);
 }
 
@@ -136,7 +137,7 @@ fn test_low_level_filter_by_mask_still_works() {
 
     let filtered = df.filter_by_mask(&mask_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3);
+    assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
 }
 

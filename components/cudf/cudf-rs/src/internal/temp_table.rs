@@ -16,7 +16,7 @@ use crate::{column::ColumnView, error::Result, table::TableView};
 ///
 /// `TempTableView` simply stores both values together so they can be passed
 /// around as one unit.
-pub(crate) struct TempTableView<'a> {
+pub struct TempTableView<'a> {
     /// Column views kept alive for the lifetime of this bundle.
     _views: Vec<ColumnView<'a>>,
     /// The table view composed from equivalent column-view references.
@@ -40,7 +40,7 @@ impl<'a> TempTableView<'a> {
     }
 
     /// Returns a reference to the underlying `TableView`.
-    pub(crate) fn table(&self) -> &TableView<'a> {
+    pub fn table(&self) -> &TableView<'a> {
         &self.table
     }
 }

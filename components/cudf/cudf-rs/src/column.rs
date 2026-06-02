@@ -824,6 +824,23 @@ impl<'a> ColumnView<'a> {
         Ok(result)
     }
 
+    /// Copy string data to host as `Vec<Option<String>>`, distinguishing null
+    /// from empty string.
+    ///
+    /// Null positions return `None`; valid positions return `Some(s)`.
+    /// Non-nullable columns return all `Some`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TypeError` if the column type is not `STRING`.
+    pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
+        let strings = self.to_strings()?;
+        match self.validity()? {
+            None => Ok(strings.into_iter().map(Some).collect()),
+            Some(valid) => Ok(strings.into_iter().zip(valid).map(|(s, v)| if v { Some(s) } else { None }).collect()),
+        }
+    }
+
     /// Returns a [`DeviceSlice`] describing the active device memory region
     /// of this column, with type validation.
     ///

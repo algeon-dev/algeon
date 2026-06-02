@@ -16,7 +16,7 @@
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! let score = df.series("score").unwrap();
-//! assert_eq!(score.len().unwrap(), 3);
+//! assert_eq!(score.len(), 3);
 //! ```
 
 use std::{path::Path, sync::Arc};
@@ -56,7 +56,7 @@ use crate::{
 #[derive(Clone)]
 pub struct DataFrame {
     columns: IndexMap<String, Arc<Column>>,
-    row_count: i32,
+    row_count: usize,
 }
 
 /// Result of a split DataFrame join operation.
@@ -179,7 +179,7 @@ impl std::fmt::Debug for DataFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Debug shows schema, row count, and column types — NO GPU data copy.
         let num_cols = self.columns.len();
-        let num_rows = self.num_rows().unwrap_or(-1);
+        let num_rows = self.num_rows();
 
         let mut ds = f.debug_struct("DataFrame");
         ds.field("num_columns", &num_cols);
@@ -191,7 +191,7 @@ impl std::fmt::Debug for DataFrame {
             .keys()
             .map(|name| {
                 let type_str = self
-                    .column(name)
+                    .column_view(name)
                     .and_then(|cv| cv.data_type())
                     .map(|dt| format!("{:?}", dt.id()))
                     .unwrap_or_else(|_| "?".to_string());
@@ -266,7 +266,7 @@ impl DisplayColumn {
 
 /// Build one display column cache from a named DataFrame column.
 fn build_display_column(df: &DataFrame, name: &str) -> DisplayColumn {
-    let cv = match df.column(name) {
+    let cv = match df.column_view(name) {
         Ok(cv) => cv,
         Err(_) => return DisplayColumn::unknown(),
     };
@@ -303,7 +303,7 @@ fn build_display_column(df: &DataFrame, name: &str) -> DisplayColumn {
 /// summary line.
 fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: usize) -> std::fmt::Result {
     let num_cols = df.num_columns();
-    let num_rows = df.num_rows().unwrap_or(0);
+    let num_rows = df.num_rows();
 
     if num_cols == 0 {
         return write!(f, "DataFrame [0 columns × {} rows]", num_rows);
@@ -317,7 +317,7 @@ fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: 
     let types: Vec<String> = display_cols.iter().map(|c| c.type_str.clone()).collect();
 
     // Determine how many rows to display.
-    let show_rows = max_rows.min(num_rows as usize);
+    let show_rows = max_rows.min(num_rows);
 
     // Collect string representations of cell values.
     // rows[row_idx][col_idx] = formatted string.
@@ -355,8 +355,8 @@ fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: 
     }
 
     // If there are more rows, indicate truncation.
-    if (num_rows as usize) > show_rows {
-        writeln!(f, "... {} more rows", num_rows as usize - show_rows)?;
+    if num_rows > show_rows {
+        writeln!(f, "... {} more rows", num_rows - show_rows)?;
     }
 
     // Summary line.
@@ -409,18 +409,18 @@ impl DataFrame {
         }
 
         // Validate all columns have the same row count.
-        let first_rows = columns[0].view()?.len()?;
+        let first_rows_i32 = columns[0].view()?.len()?;
         for (i, col) in columns.iter().enumerate().skip(1) {
             let rows = col.view()?.len()?;
-            if rows != first_rows {
+            if rows != first_rows_i32 {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
-                    format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows),
+                    format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows_i32),
                 )
                 .with_operation("dataframe::new")
                 .with_context("column_index", i.to_string())
                 .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
+                .with_context("expected_rows", first_rows_i32.to_string()));
             }
         }
 
@@ -429,7 +429,7 @@ impl DataFrame {
             map.insert(name, Arc::new(col));
         }
 
-        Ok(Self { columns: map, row_count: first_rows })
+        Ok(Self { columns: map, row_count: first_rows_i32 as usize })
     }
 
     /// Wrap an existing [`Table`] with column names.
@@ -441,7 +441,7 @@ impl DataFrame {
     pub fn from_table(table: Table, names: Vec<String>) -> Result<Self> {
         let view = table.view()?;
         let num_cols = view.num_columns()?;
-        let row_count = if num_cols > 0 { view.num_rows()? } else { 0 };
+        let row_count = if num_cols > 0 { view.num_rows()? as usize } else { 0 };
         drop(view);
 
         let expected = names.len() as i32;
@@ -512,7 +512,7 @@ impl DataFrame {
         // Validate all columns have the same row count.
         let mut iter = map.iter();
         let (first_name, first_col) = iter.next().unwrap();
-        let first_rows = first_col
+        let first_rows_i32 = first_col
             .view()
             .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?
             .len()
@@ -524,19 +524,19 @@ impl DataFrame {
                 .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?
                 .len()
                 .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?;
-            if rows != first_rows {
+            if rows != first_rows_i32 {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
-                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
+                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows_i32),
                 )
                 .with_operation("dataframe::from_series")
                 .with_context("column_name", name.clone())
                 .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
+                .with_context("expected_rows", first_rows_i32.to_string()));
             }
         }
 
-        Ok(Self { columns: map, row_count: first_rows })
+        Ok(Self { columns: map, row_count: first_rows_i32 as usize })
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -550,7 +550,7 @@ impl DataFrame {
     /// The caller must ensure:
     /// - No duplicate keys in `columns`
     /// - All columns have `row_count` rows
-    pub(crate) fn from_raw_parts(columns: IndexMap<String, Arc<Column>>, row_count: i32) -> Self {
+    pub(crate) fn from_raw_parts(columns: IndexMap<String, Arc<Column>>, row_count: usize) -> Self {
         Self { columns, row_count }
     }
 
@@ -560,8 +560,8 @@ impl DataFrame {
     }
 
     /// Returns the number of rows.
-    pub fn num_rows(&self) -> Result<i32> {
-        Ok(self.row_count)
+    pub fn num_rows(&self) -> usize {
+        self.row_count
     }
 
     /// Returns column names in insertion (schema) order.
@@ -575,13 +575,40 @@ impl DataFrame {
     /// `Deref<Target = ColumnView>`, so all low-level column methods are
     /// available directly.
     ///
+    /// # Migration
+    ///
+    /// - For owned access, use [`series()`](Self::series) (canonical accessor).
+    /// - For explicit borrowed access, use [`column_view()`](Self::column_view).
+    ///
     /// # Errors
     ///
     /// Returns an error if `name` is not in the schema.
+    #[deprecated(since = "0.3.0", note = "Use series() for owned access or column_view() for borrowed access")]
     pub fn column(&self, name: &str) -> Result<SeriesView<'_>> {
+        self.column_view(name)
+    }
+
+    /// Borrow a named [`SeriesView`] by name — the explicit borrow accessor.
+    ///
+    /// The returned view carries the column name and implements
+    /// `Deref<Target = ColumnView>`, so all low-level column methods are
+    /// available directly.
+    ///
+    /// This is the explicit borrow path. For owned access, use
+    /// [`series()`](Self::series) instead.
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy (FFI view): creates a borrowed `ColumnView` over existing device memory.
+    /// No GPU allocation or copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` is not in the schema.
+    pub fn column_view(&self, name: &str) -> Result<SeriesView<'_>> {
         let (key, col) = self.columns.get_key_value(name).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                .with_operation("dataframe::column")
+                .with_operation("dataframe::column_view")
                 .with_context("column_name", name.to_string())
         })?;
 
@@ -589,15 +616,20 @@ impl DataFrame {
         Ok(SeriesView::new(Some(key.as_str()), cv))
     }
 
-    /// Return a named [`Series`] for the given column — the primary façade accessor.
+    /// Return a named [`Series`] for the given column — the canonical façade accessor.
     ///
     /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
     /// zero-copy metadata operation. The series name is set to the DataFrame
     /// column name.
     ///
-    /// Use this method for all façade-level column access. The lower-level
-    /// [`column()`](Self::column) method is available when you need a raw
-    /// [`ColumnView`] for low-level operations.
+    /// Use this method for all façade-level column access. For a borrowed
+    /// [`SeriesView`] without an `Arc` bump, use
+    /// [`column_view()`](Self::column_view).
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy (Arc-share, metadata-only): returns a new `Series` sharing the underlying
+    /// `Column` via `Arc`. No GPU allocation or copy.
     ///
     /// # Errors
     ///
@@ -609,7 +641,7 @@ impl DataFrame {
                 .with_context("column_name", name.to_string())
         })?;
 
-        Ok(Series::from_column_arc(Arc::clone(col)).rename(name))
+        Ok(Series::from_column_arc(Arc::clone(col))?.rename(name))
     }
 
     /// Look up the positional index of a column by name.
@@ -635,7 +667,7 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn factorize(&self, column: &str) -> Result<(Column, Column)> {
-        let cv = self.column(column)?;
+        let cv = self.column_view(column)?;
         cv.factorize().map_err(|e| {
             let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
             err.with_context("column_name", column.to_string())
@@ -645,38 +677,84 @@ impl DataFrame {
     /// Build an owned [`Table`] by deep-copying each column.
     ///
     /// This is useful when calling APIs that operate on `Table` directly.
-    pub fn to_table(&self) -> Result<Table> {
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: deep-copies every column to a new `Table`. Each column
+    /// gets its own fresh device allocation.
+    pub fn to_table_copy(&self) -> Result<Table> {
         let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
         for (name, arc_col) in &self.columns {
             let col = arc_col
                 .copy()
-                .map_err(|e| e.with_operation("dataframe::to_table").with_context("column_name", name.clone()))?;
+                .map_err(|e| e.with_operation("dataframe::to_table_copy").with_context("column_name", name.clone()))?;
             cols.push(col);
         }
 
-        Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table"))
+        Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))
+    }
+
+    /// Build an owned [`Table`] by deep-copying each column.
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use to_table_copy() to make the deep-copy explicit, or as_table_view() for a zero-copy borrowed view"
+    )]
+    pub fn to_table(&self) -> Result<Table> {
+        self.to_table_copy()
     }
 
     /// Consume the `DataFrame`, returning an owned table and column names.
     ///
-    /// If any columns are shared via `Arc`, shared columns are deep-copied.
-    pub fn into_table(self) -> Result<(Table, Vec<String>)> {
+    /// Columns that are uniquely owned (`Arc` strong count == 1) are moved
+    /// without copying. Shared columns (strong count > 1) are deep-copied
+    /// so the returned `Table` owns independent device memory.
+    ///
+    /// # Cost
+    ///
+    /// Conditional: zero-copy for uniquely-owned columns, GPU-allocating
+    /// (deep-copy) for shared columns. If you know all columns are unique
+    /// (e.g. the `DataFrame` was just constructed), this is effectively free.
+    pub fn try_into_table(self) -> Result<(Table, Vec<String>)> {
         let mut names: Vec<String> = Vec::with_capacity(self.columns.len());
         let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
 
         for (name, arc_col) in self.columns {
             let col = match Arc::try_unwrap(arc_col) {
                 Ok(col) => col,
-                Err(shared) => shared
-                    .copy()
-                    .map_err(|e| e.with_operation("dataframe::into_table").with_context("column_name", name.clone()))?,
+                Err(shared) => shared.copy().map_err(|e| {
+                    e.with_operation("dataframe::try_into_table").with_context("column_name", name.clone())
+                })?,
             };
             names.push(name);
             cols.push(col);
         }
 
-        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::into_table"))?;
+        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?;
         Ok((table, names))
+    }
+
+    /// Consume the `DataFrame`, returning an owned table and column names.
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use try_into_table() which makes ownership-dependent behavior explicit"
+    )]
+    pub fn into_table(self) -> Result<(Table, Vec<String>)> {
+        self.try_into_table()
+    }
+
+    /// Create a borrowed [`TableView`] over this DataFrame's columns.
+    ///
+    /// The returned [`TempTableView`](crate::TempTableView) bundles the
+    /// intermediate column views with the table view so lifetimes are
+    /// managed automatically. Call [`.table()`](crate::TempTableView::table)
+    /// to get a `&TableView` for passing to libcudf operations.
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy: creates a borrowed view over existing column device memory.
+    /// Only lightweight FFI view handles are allocated (no GPU data movement).
+    pub fn as_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
+        self.build_table_view()
     }
 
     // -- Internal helpers ----------------------------------------------------
@@ -744,7 +822,7 @@ impl DataFrame {
     ///
     /// If `n >= num_rows`, all rows are returned. The schema is preserved.
     pub fn head(&self, n: usize) -> Result<Self> {
-        let total = self.num_rows()? as usize;
+        let total = self.num_rows();
         let take = n.min(total);
         self.gather_range(0, take)
     }
@@ -754,8 +832,14 @@ impl DataFrame {
     /// Functionally identical to [`head`](Self::head) but takes `self` by
     /// value, allowing the input's `Arc<Column>`s to drop sooner when they
     /// are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new table with gathered rows. Consuming
+    /// `self` lets the source columns' `Arc`s drop immediately if this was
+    /// the last reference, freeing their device memory sooner.
     pub fn head_owned(self, n: usize) -> Result<Self> {
-        let total = self.num_rows()? as usize;
+        let total = self.num_rows();
         let take = n.min(total);
         self.gather_range(0, take)
     }
@@ -764,7 +848,7 @@ impl DataFrame {
     ///
     /// If `n >= num_rows`, all rows are returned. The schema is preserved.
     pub fn tail(&self, n: usize) -> Result<Self> {
-        let total = self.num_rows()? as usize;
+        let total = self.num_rows();
         let take = n.min(total);
         let start = total - take;
         self.gather_range(start, take)
@@ -775,8 +859,14 @@ impl DataFrame {
     /// Functionally identical to [`tail`](Self::tail) but takes `self` by
     /// value, allowing the input's `Arc<Column>`s to drop sooner when they
     /// are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new table with gathered rows. Consuming
+    /// `self` lets the source columns' `Arc`s drop immediately if this was
+    /// the last reference, freeing their device memory sooner.
     pub fn tail_owned(self, n: usize) -> Result<Self> {
-        let total = self.num_rows()? as usize;
+        let total = self.num_rows();
         let take = n.min(total);
         let start = total - take;
         self.gather_range(start, take)
@@ -788,7 +878,7 @@ impl DataFrame {
     /// out-of-range values never produce an error — they simply yield fewer
     /// (or zero) rows. The schema is preserved.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
-        let total = self.num_rows()? as usize;
+        let total = self.num_rows();
         let start = offset.min(total);
         let take = length.min(total - start);
         self.gather_range(start, take)
@@ -850,6 +940,12 @@ impl DataFrame {
     /// Functionally identical to [`filter_by_mask`](Self::filter_by_mask) but
     /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
     /// sooner when they are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new filtered table. Consuming `self` lets
+    /// the source columns' `Arc`s drop immediately if this was the last
+    /// reference, freeing their device memory sooner.
     pub fn filter_by_mask_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
         self.validate_mask_view(mask, "dataframe::filter_by_mask_owned")?;
         let names = self.column_names_owned();
@@ -873,7 +969,7 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the
     /// `contains` / `filter` operation fails.
     pub fn filter_isin(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
-        let col_view = self.column(column)?;
+        let col_view = self.column_view(column)?;
         let mask = crate::search::contains(values, &col_view)?;
         let mask_view = mask.view()?;
         self.filter_by_mask(&mask_view)
@@ -885,9 +981,15 @@ impl DataFrame {
     /// Functionally identical to [`filter_isin`](Self::filter_isin) but
     /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
     /// sooner when they are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new filtered table. Consuming `self` lets
+    /// the source columns' `Arc`s drop immediately if this was the last
+    /// reference, freeing their device memory sooner.
     pub fn filter_isin_owned(self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
         let mask = {
-            let col_view = self.column(column)?;
+            let col_view = self.column_view(column)?;
             crate::search::contains(values, &col_view)?
         };
         let mask_view = mask.view()?;
@@ -914,7 +1016,7 @@ impl DataFrame {
             .with_operation(operation)
             .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
         }
-        let mask_len = mask.len()?;
+        let mask_len = mask.len()? as usize;
         if mask_len != self.row_count {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
@@ -970,6 +1072,12 @@ impl DataFrame {
     /// Functionally identical to [`sort`](Self::sort) but takes `self` by
     /// value, allowing the input's `Arc<Column>`s to drop sooner when they
     /// are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new sorted table. Consuming `self` lets
+    /// the source columns' `Arc`s drop immediately if this was the last
+    /// reference, freeing their device memory sooner.
     pub fn sort_owned(self, by: &[&str], orders: &[Order]) -> Result<Self> {
         if by.len() != orders.len() {
             return Err(Error::new(ErrorKind::InvalidOperation, "number of sort columns must equal number of orders")
@@ -1143,6 +1251,12 @@ impl DataFrame {
     /// Functionally identical to [`drop_nulls_any`](Self::drop_nulls_any)
     /// but takes `self` by value, allowing the input's `Arc<Column>`s to
     /// drop sooner when they are the last reference.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: produces a new table with nulls removed. Consuming
+    /// `self` lets the source columns' `Arc`s drop immediately if this was
+    /// the last reference, freeing their device memory sooner.
     pub fn drop_nulls_any_owned(self, subset: &[&str]) -> Result<Self> {
         let subset_count = subset.len();
         let keep_threshold = i32::try_from(subset_count).map_err(|_| {
@@ -1618,6 +1732,11 @@ impl DataFrame {
     ///
     /// This is a pure schema rewrite with **no GPU data copy**.
     ///
+    /// # Cost
+    ///
+    /// Zero-copy: only the column name in the schema changes. Consuming
+    /// `self` avoids the `Arc` refcount bump for unchanged columns.
+    ///
     /// # Errors
     ///
     /// Returns an error if `old` is not in the schema, or if `new` already
@@ -1758,6 +1877,12 @@ impl DataFrame {
     /// Unlike [`select`](Self::select), this variant moves columns out of
     /// the `IndexMap` instead of cloning the `Arc`, avoiding even the
     /// refcount bump for selected columns.
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy: moves `Arc<Column>` ownership without GPU data copy.
+    /// Consuming `self` avoids the refcount bump entirely for selected
+    /// columns and drops unselected columns immediately.
     pub fn select_owned(mut self, columns: &[&str]) -> Result<Self> {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for &name in columns {
@@ -1844,10 +1969,10 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if the row counts do not match.
-    pub fn with_column(&self, name: &str, col: impl Into<Series>) -> Result<Self> {
-        let series: Series = col.into();
-        let col_rows = series.len()?;
-        let self_rows = self.num_rows()?;
+    pub fn with_column(&self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
+        let series: Series = col.into_series()?;
+        let col_rows = series.len();
+        let self_rows = self.num_rows();
 
         if self.num_columns() > 0 && col_rows != self_rows {
             return Err(Error::new(
@@ -1877,10 +2002,16 @@ impl DataFrame {
     ///
     /// Accepts anything convertible to [`Series`] — both `Column` and
     /// `Series` work transparently.
-    pub fn with_column_owned(mut self, name: &str, col: impl Into<Series>) -> Result<Self> {
-        let series: Series = col.into();
-        let col_rows = series.len()?;
-        let self_rows = self.num_rows()?;
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy for unchanged columns: moves `Arc<Column>` ownership
+    /// without GPU data copy. Consuming `self` avoids the refcount bump
+    /// for columns that are not being replaced.
+    pub fn with_column_owned(mut self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
+        let series: Series = col.into_series()?;
+        let col_rows = series.len();
+        let self_rows = self.num_rows();
 
         if self.num_columns() > 0 && col_rows != self_rows {
             return Err(Error::new(
@@ -1926,11 +2057,11 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let mut new_columns = self.columns.clone();
-        let self_rows = self.num_rows()?;
+        let self_rows = self.num_rows();
 
         for (name, series) in pairs {
             let name = name.as_ref();
-            let series_rows = series.len()?;
+            let series_rows = series.len();
 
             if self.num_columns() > 0 && series_rows != self_rows {
                 return Err(Error::new(

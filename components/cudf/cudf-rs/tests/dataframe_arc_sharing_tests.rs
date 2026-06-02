@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests verifying that Arc-based column sharing works correctly.
 //!
 //! These tests demonstrate that zero-copy operations (clone, select, rename,
@@ -61,7 +62,7 @@ fn test_clone_preserves_schema() {
     let copied = df.clone();
 
     assert_eq!(df.num_columns(), copied.num_columns());
-    assert_eq!(df.num_rows().unwrap(), copied.num_rows().unwrap());
+    assert_eq!(df.num_rows(), copied.num_rows());
     assert_eq!(df.column_names(), copied.column_names());
 }
 
@@ -223,7 +224,7 @@ fn test_many_clones_are_zero_cost() {
     // All copies should be independently readable with correct data.
     for (i, c) in copies.iter().enumerate() {
         assert_eq!(c.num_columns(), 3, "copy {} has wrong column count", i);
-        assert_eq!(c.num_rows().unwrap(), 3, "copy {} has wrong row count", i);
+        assert_eq!(c.num_rows(), 3, "copy {} has wrong row count", i);
     }
 
     // Spot-check a few copies share the same GPU pointers.

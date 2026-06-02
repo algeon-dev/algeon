@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests that verify the crate root re-exports the façade types correctly.
 //!
 //! These tests mirror the crate-level doc example to ensure it compiles and
@@ -12,7 +13,7 @@ fn test_crate_root_reexports_series() {
     // Series should be importable directly from the crate root.
     let s = cudf::Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
     assert_eq!(s.name(), Some("ids"));
-    assert_eq!(s.len().unwrap(), 3);
+    assert_eq!(s.len(), 3);
 }
 
 #[test]
@@ -23,7 +24,7 @@ fn test_crate_root_reexports_dataframe() {
 
     let df = cudf::DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
 }
 
 #[test]
@@ -38,12 +39,12 @@ fn test_doc_example_facade_workflow() {
     let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
 
     // Retrieve a column as a Series.
     let score_series = df.series("score").unwrap();
     assert_eq!(score_series.name(), Some("score"));
-    assert_eq!(score_series.len().unwrap(), 3);
+    assert_eq!(score_series.len(), 3);
 }
 
 #[test]
@@ -124,7 +125,7 @@ fn test_facade_workflow_merge() {
     let opts = MergeOptions::new().on(&["id"]).how(JoinType::Inner);
     let merged = left.merge(&right, opts).unwrap();
 
-    assert_eq!(merged.num_rows().unwrap(), 2);
+    assert_eq!(merged.num_rows(), 2);
     assert!(merged.column_names().contains(&"score"));
     assert!(merged.column_names().contains(&"rank"));
 }

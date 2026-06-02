@@ -67,7 +67,7 @@ impl DataFrame {
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
             .iter()
             .map(|&name| {
-                let cv = self.column(name)?;
+                let cv = self.column_view(name)?;
                 let type_id = cv.data_type()?.id();
                 let nullable = cv.nullable()?;
                 let arr = column_view_to_arrow(&cv, type_id)?;

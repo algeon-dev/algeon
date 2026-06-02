@@ -23,7 +23,6 @@ project(
 # ##################################################################################################
 # * build options ---------------------------------------------------------------------------------
 
-option(BUILD_SHARED_LIBS "Build cuDF Rust shared libraries" ON)
 option(CUDF_USE_PER_THREAD_DEFAULT_STREAM "Build with per-thread default stream" OFF)
 option(CUDA_STATIC_RUNTIME "Statically link the CUDA runtime" OFF)
 
@@ -51,13 +50,15 @@ if(DEFINED ENV{CUDF_INSTALL_DIR})
   )
   set(cudf_ROOT "${CUDF_INSTALL_DIR}")
   set(CMAKE_PREFIX_PATH ${CUDF_INSTALL_DIR} "${CUDF_INSTALL_DIR}/lib/cmake" "${CUDF_INSTALL_DIR}/lib64/cmake")
+  set(CUDF_RUST_CUDF_DISCOVERY_MODE "install")
   message(STATUS "Using dependencies from libcudf installed path: ${CUDF_INSTALL_DIR}")
 elseif(DEFINED ENV{CUDF_CPP_BUILD_DIR})
   set(CUDF_CPP_BUILD_DIR
       "$ENV{CUDF_CPP_BUILD_DIR}"
       CACHE STRING "path to libcudf build root"
   )
-  set(cudf_ROOT ${CUDF_CPP_BUILD_DIR})
+  set(cudf_ROOT "${CUDF_CPP_BUILD_DIR}")
+  set(CUDF_RUST_CUDF_DISCOVERY_MODE "build")
   message(STATUS "Using pre-configured libcudf from build path: ${CUDF_CPP_BUILD_DIR}")
 else()
   message(FATAL_ERROR "Either CUDF_INSTALL_DIR or CUDF_CPP_BUILD_DIR must be defined.")
@@ -74,7 +75,7 @@ get_target_property(CUDF_CUDA_DEFINITIONS cudf::cudf CUDF_CUDA_DEFINITIONS)
 # * library target --------------------------------------------------------------------------------
 
 add_library(
-  cudf_rust
+  cudf_rust SHARED
   src/error.cpp
   src/types.cpp
   src/column.cpp
@@ -137,13 +138,22 @@ target_link_libraries(cudf_rust PUBLIC cudf::cudf)
 # * cudart options --------------------------------------------------------------------------------
 
 if(CUDA_STATIC_RUNTIME)
+  set(CUDF_RUST_CUDA_RUNTIME_MODE "static")
   target_link_libraries(cudf_rust PRIVATE CUDA::cudart_static)
 else()
+  set(CUDF_RUST_CUDA_RUNTIME_MODE "shared")
   target_link_libraries(cudf_rust PRIVATE CUDA::cudart)
 endif()
+
+# ##################################################################################################
+# * Cargo link manifest ---------------------------------------------------------------------------
+
+set(CUDF_RUST_CARGO_LINK_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/cargo-link.txt")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/cargo-link.txt.in" "${CUDF_RUST_CARGO_LINK_MANIFEST}" @ONLY)
 
 # ##################################################################################################
 # * install ---------------------------------------------------------------------------------------
 
 install(TARGETS cudf_rust LIBRARY DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include)
+install(FILES "${CUDF_RUST_CARGO_LINK_MANIFEST}" DESTINATION share/cudf_rust)

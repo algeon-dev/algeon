@@ -17,8 +17,8 @@ fn test_is_null_all_valid() {
     let mask = s.is_null().unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.len().unwrap(), 3);
-    assert_eq!(mask.name(), None);
+    assert_eq!(mask.len(), 3);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
@@ -36,7 +36,7 @@ fn test_is_null_empty() {
     let s = Series::new::<i32>("e", &[]).unwrap();
     let mask = s.is_null().unwrap();
 
-    assert_eq!(mask.len().unwrap(), 0);
+    assert_eq!(mask.len(), 0);
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
 }
 
@@ -46,8 +46,8 @@ fn test_is_not_null_all_valid() {
     let mask = s.is_not_null().unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.len().unwrap(), 3);
-    assert_eq!(mask.name(), None);
+    assert_eq!(mask.len(), 3);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, true]);
 }
 
@@ -81,8 +81,8 @@ fn test_astype_i32_to_f64() {
     let casted = s.astype(TypeId::Float64).unwrap();
 
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(casted.len().unwrap(), 3);
-    assert_eq!(casted.name(), None);
+    assert_eq!(casted.len(), 3);
+    assert_eq!(casted.name(), Some("x"));
     assert_eq!(casted.view().unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
 }
 
@@ -100,7 +100,7 @@ fn test_astype_preserves_length() {
     let s = Series::new::<i32>("x", &[10, 20, 30, 40, 50]).unwrap();
     let casted = s.astype(TypeId::Int64).unwrap();
 
-    assert_eq!(casted.len().unwrap(), 5);
+    assert_eq!(casted.len(), 5);
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Int64);
 }
 
@@ -109,7 +109,7 @@ fn test_astype_preserves_nulls() {
     let s = Series::new_nullable::<i32>("x", &[1, 0, 3], &[true, false, true]).unwrap();
     let casted = s.astype(TypeId::Float64).unwrap();
 
-    assert_eq!(casted.null_count().unwrap(), 1);
+    assert_eq!(casted.null_count(), 1);
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
 }
 
@@ -131,9 +131,9 @@ fn test_fillna_replaces_nulls_with_scalar() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let filled = s.fillna(99i32).unwrap();
 
-    assert_eq!(filled.len().unwrap(), 3);
-    assert_eq!(filled.null_count().unwrap(), 0);
-    assert_eq!(filled.name(), None);
+    assert_eq!(filled.len(), 3);
+    assert_eq!(filled.null_count(), 0);
+    assert_eq!(filled.name(), Some("x"));
     assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -142,7 +142,7 @@ fn test_fillna_no_nulls_returns_same_values() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let filled = s.fillna(0i32).unwrap();
 
-    assert_eq!(filled.null_count().unwrap(), 0);
+    assert_eq!(filled.null_count(), 0);
     assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
@@ -151,7 +151,7 @@ fn test_fillna_all_nulls() {
     let s = Series::new_nullable::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
     let filled = s.fillna(42i32).unwrap();
 
-    assert_eq!(filled.null_count().unwrap(), 0);
+    assert_eq!(filled.null_count(), 0);
     assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
@@ -173,9 +173,9 @@ fn test_fillna_with_series_replaces_nulls() {
     let fill = Series::new::<i32>("fill", &[100, 200, 300]).unwrap();
     let filled = s.fillna_with_series(&fill).unwrap();
 
-    assert_eq!(filled.len().unwrap(), 3);
-    assert_eq!(filled.null_count().unwrap(), 0);
-    assert_eq!(filled.name(), None);
+    assert_eq!(filled.len(), 3);
+    assert_eq!(filled.null_count(), 0);
+    assert_eq!(filled.name(), Some("x"));
     assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 200, 30]);
 }
 
@@ -199,8 +199,8 @@ fn test_isin_basic() {
     let mask = s.isin(&values).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.len().unwrap(), 5);
-    assert_eq!(mask.name(), None);
+    assert_eq!(mask.len(), 5);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
@@ -241,7 +241,7 @@ fn test_unique_removes_duplicates() {
     let s = Series::new::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
     let uniq = s.unique().unwrap();
 
-    assert_eq!(uniq.name(), None);
+    assert_eq!(uniq.name(), Some("x"));
     assert_eq!(uniq.dtype().unwrap().id(), TypeId::Int32);
 
     let mut vals = uniq.view().unwrap().to_vec::<i32>().unwrap();
@@ -264,7 +264,7 @@ fn test_unique_empty() {
     let s = Series::new::<i32>("x", &[]).unwrap();
     let uniq = s.unique().unwrap();
 
-    assert_eq!(uniq.len().unwrap(), 0);
+    assert_eq!(uniq.len(), 0);
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn test_factorize_basic() {
     let (codes, uniques) = s.factorize().unwrap();
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(codes.len().unwrap(), 5);
+    assert_eq!(codes.len(), 5);
     assert_eq!(codes.name(), None);
 
     // Verify round-trip: same input values get same codes.
@@ -343,7 +343,7 @@ fn test_factorize_strings() {
     let (codes, uniques) = s.factorize().unwrap();
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(codes.len().unwrap(), 4);
+    assert_eq!(codes.len(), 4);
 
     let code_vals = codes.view().unwrap().to_vec::<i32>().unwrap();
     // codes[0] == codes[2] (both map to "a")
@@ -364,8 +364,8 @@ fn test_sort_values_ascending() {
     let sorted = s.sort_values(SortOptions::new()).unwrap();
 
     assert_eq!(sorted.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(sorted.len().unwrap(), 3);
-    assert_eq!(sorted.name(), None);
+    assert_eq!(sorted.len(), 3);
+    assert_eq!(sorted.name(), Some("x"));
     assert_eq!(sorted.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -398,7 +398,7 @@ fn test_sort_values_empty() {
     let s = Series::new::<i32>("x", &[]).unwrap();
     let sorted = s.sort_values(SortOptions::new()).unwrap();
 
-    assert_eq!(sorted.len().unwrap(), 0);
+    assert_eq!(sorted.len(), 0);
 }
 
 #[test]
@@ -406,24 +406,28 @@ fn test_sort_values_with_nulls() {
     let s = Series::new_nullable::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     // Default: ascending, nulls last
     let sorted = s.sort_values(SortOptions::new()).unwrap();
+    let view = sorted.view().unwrap();
 
-    assert_eq!(sorted.len().unwrap(), 3);
-    // First two should be [10, 30], null last
-    let vals = sorted.view().unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(sorted.len(), 3);
+    // The valid values should sort ascending, with the null row moved to the end.
+    let vals = view.to_vec::<i32>().unwrap();
     assert_eq!(vals[0], 10);
     assert_eq!(vals[1], 30);
-    assert_eq!(sorted.null_count().unwrap(), 1);
+    assert_eq!(view.validity().unwrap().unwrap(), vec![true, true, false]);
+    assert_eq!(sorted.null_count(), 1);
 }
 
 #[test]
 fn test_sort_values_nulls_first() {
     let s = Series::new_nullable::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_nulls_first(vec![true])).unwrap();
+    let view = sorted.view().unwrap();
 
-    assert_eq!(sorted.len().unwrap(), 3);
-    assert_eq!(sorted.null_count().unwrap(), 1);
+    assert_eq!(sorted.len(), 3);
+    assert_eq!(sorted.null_count(), 1);
     // Null should be first, then 10, 30
-    let vals = sorted.view().unwrap().to_vec::<i32>().unwrap();
+    let vals = view.to_vec::<i32>().unwrap();
+    assert_eq!(view.validity().unwrap().unwrap(), vec![false, true, true]);
     assert_eq!(vals[1], 10);
     assert_eq!(vals[2], 30);
 }
@@ -452,7 +456,7 @@ fn test_convenience_ops_preserve_input() {
     let _sorted = s.sort_values(SortOptions::new()).unwrap();
 
     assert_eq!(s.name(), Some("x"));
-    assert_eq!(s.len().unwrap(), 3);
-    assert_eq!(s.null_count().unwrap(), 1);
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }

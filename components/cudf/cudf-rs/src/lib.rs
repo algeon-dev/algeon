@@ -37,11 +37,11 @@
 //! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
-//! assert_eq!(df.num_rows().unwrap(), 3);
+//! assert_eq!(df.num_rows(), 3);
 //!
 //! // Retrieve a column back as a Series (zero-copy, Arc-shared).
 //! let score = df.series("score").unwrap();
-//! assert_eq!(score.len().unwrap(), 3);
+//! assert_eq!(score.len(), 3);
 //! ```
 
 #[cfg(feature = "arrow")]
@@ -58,6 +58,7 @@ pub mod expr;
 pub mod filter;
 pub mod groupby;
 pub mod hashing;
+// Internal helpers — `TempTableView` is re-exported below.
 pub(crate) mod internal;
 pub mod io;
 pub mod join;
@@ -86,9 +87,10 @@ pub use expr::Expr;
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};
 pub use join::{JoinType, MergeOptions};
 pub use scalar::Scalar;
-pub use series::Series;
+pub use series::{IntoSeries, Series};
 pub use series_view::SeriesView;
 pub use sorting::SortOptions;
 pub use stream::CudaStream;
 pub use table::{Table, TableView};
+pub use internal::temp_table::TempTableView;
 pub use types::{CudfType, DataType, TypeId};
