@@ -270,12 +270,17 @@ fn parse_options_json(
                 }
             },
             "depth_limit" if algorithm == CugraphAlgorithm::Bfs => {
-                let depth_limit = json_i64(value, key)?;
-                if depth_limit < 0 {
-                    return Err(plan_error("BFS depth_limit must be non-negative"));
-                }
                 if let CugraphAlgorithmParams::Bfs(params) = params {
-                    params.depth_limit = Some(depth_limit);
+                    params.depth_limit = match value {
+                        Value::Null => None,
+                        _ => {
+                            let depth_limit = json_i64(value, key)?;
+                            if depth_limit < 0 {
+                                return Err(plan_error("BFS depth_limit must be non-negative"));
+                            }
+                            Some(depth_limit)
+                        },
+                    };
                 }
             },
             key if algorithm == CugraphAlgorithm::Bfs && is_bfs_predicate_option(key) => {},
@@ -394,12 +399,17 @@ fn parse_options_json(
                 }
             },
             "cutoff" if algorithm == CugraphAlgorithm::Sssp => {
-                let cutoff = json_f64(value, key)?;
-                if cutoff < 0.0 {
-                    return Err(plan_error("SSSP cutoff must be non-negative"));
-                }
                 if let CugraphAlgorithmParams::Sssp(params) = params {
-                    params.cutoff = Some(cutoff);
+                    params.cutoff = match value {
+                        Value::Null => None,
+                        _ => {
+                            let cutoff = json_f64(value, key)?;
+                            if cutoff < 0.0 {
+                                return Err(plan_error("SSSP cutoff must be non-negative"));
+                            }
+                            Some(cutoff)
+                        },
+                    };
                 }
             },
             "degree_type" if algorithm == CugraphAlgorithm::CoreNumber => {

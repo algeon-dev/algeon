@@ -15,10 +15,11 @@ use datafusion::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-    CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexIdDomain, parse_cugraph_algorithm_spec, plan_error, stable_result_schema, vertex_id_domain_for_call,
+    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
+    CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSourceVertex,
+    CugraphGraphOptions, CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, parse_cugraph_algorithm_spec,
+    plan_error, stable_result_schema, vertex_id_domain_for_call,
 };
 
 const SEVERITY_OK: &str = "ok";
@@ -165,6 +166,10 @@ impl TableProvider for CugraphMetadataProvider {
 fn list_schema() -> SchemaRef {
     let mut fields = list_existing_fields();
     fields.push(Field::new("summary", DataType::Utf8, false));
+    fields.push(Field::new("weight_col_policy", DataType::Utf8, false));
+    fields.push(Field::new("output_schema_kind", DataType::Utf8, false));
+    fields.push(Field::new("has_mode_schemas", DataType::Boolean, false));
+    fields.push(Field::new("metadata_schema_version", DataType::Int64, false));
     Arc::new(Schema::new(fields))
 }
 
@@ -200,6 +205,7 @@ fn describe_schema() -> SchemaRef {
         Field::new("purpose", DataType::Utf8, false),
         Field::new("mode_schemas_json", DataType::Utf8, false),
         Field::new("examples_json", DataType::Utf8, false),
+        Field::new("metadata_schema_version", DataType::Int64, false),
     ]);
     Arc::new(Schema::new(fields))
 }
@@ -243,6 +249,10 @@ fn list_batch(config: &CugraphSqlConfig) -> Result<RecordBatch> {
             strings(rows.iter().map(|row| row.options_schema_json.clone()).collect()),
             strings(rows.iter().map(|row| row.default_graph_options_json.clone()).collect()),
             strings(rows.iter().map(|row| row.summary.clone()).collect()),
+            strings(rows.iter().map(|row| row.weight_col_policy.to_string()).collect()),
+            strings(rows.iter().map(|row| row.output_schema_kind.to_string()).collect()),
+            bools(rows.iter().map(|row| row.has_mode_schemas).collect()),
+            int64s(vec![i64::from(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION); rows.len()]),
         ],
     )
     .map_err(Into::into)
@@ -275,6 +285,7 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
                 strings(vec!["".to_string()]),
                 strings(vec!["{}".to_string()]),
                 strings(vec!["[]".to_string()]),
+                int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
             ],
         )
         .map_err(Into::into);
@@ -306,6 +317,7 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
             strings(vec![purpose(algorithm).to_string()]),
             strings(vec![mode_schemas_json(algorithm)]),
             strings(vec![examples_json(algorithm)]),
+            int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
         ],
     )
     .map_err(Into::into)
@@ -357,12 +369,39 @@ struct AlgorithmMetadataRow {
     options_schema_json: String,
     default_graph_options_json: String,
     summary: String,
+    weight_col_policy: &'static str,
+    output_schema_kind: &'static str,
+    has_mode_schemas: bool,
+}
+
+fn title_case_algorithm_name(name: &str) -> String {
+    match name {
+        "pagerank" => return "PageRank".to_string(),
+        "pagerank_strict" => return "PageRank Strict".to_string(),
+        "bfs" => return "BFS".to_string(),
+        "hits" => return "HITS".to_string(),
+        "sssp" => return "SSSP".to_string(),
+        "ecg" => return "ECG".to_string(),
+        "k_core" => return "K-Core".to_string(),
+        _ => {},
+    }
+    name.split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> AlgorithmMetadataRow {
     AlgorithmMetadataRow {
         function_name: algorithm.function_name().to_string(),
-        algorithm: algorithm.native_algorithm().definition().name.to_string(),
+        algorithm: title_case_algorithm_name(algorithm.native_algorithm().definition().name),
         enabled: config.allows(algorithm),
         experimental: false,
         requires_source_vertex: requires_source_vertex(algorithm),
@@ -376,6 +415,9 @@ fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Algo
             &config.default_graph_options,
         )),
         summary: summary(algorithm).to_string(),
+        weight_col_policy: weight_col_policy(algorithm),
+        output_schema_kind: output_schema_kind(algorithm),
+        has_mode_schemas: has_mode_schemas(algorithm),
     }
 }
 
@@ -896,6 +938,24 @@ fn requires_source_vertex(algorithm: CugraphAlgorithm) -> bool {
     matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp)
 }
 
+fn weight_col_policy(algorithm: CugraphAlgorithm) -> &'static str {
+    if algorithm == CugraphAlgorithm::MinimumSpanningTree {
+        "required"
+    } else if algorithm.native_algorithm().consumes_weight() {
+        "optional"
+    } else {
+        "ignored"
+    }
+}
+
+fn output_schema_kind(algorithm: CugraphAlgorithm) -> &'static str {
+    if has_mode_schemas(algorithm) { "default_mode" } else { "fixed" }
+}
+
+fn has_mode_schemas(algorithm: CugraphAlgorithm) -> bool {
+    algorithm == CugraphAlgorithm::Bfs
+}
+
 fn effective_default_graph_options(algorithm: CugraphAlgorithm, defaults: &CugraphGraphOptions) -> CugraphGraphOptions {
     let mut options = defaults.clone();
     if matches!(
@@ -931,89 +991,366 @@ fn schema_json_value(schema: &SchemaRef) -> Value {
 }
 
 fn options_schema_json(algorithm: CugraphAlgorithm) -> String {
-    if algorithm == CugraphAlgorithm::Bfs {
-        return bfs_options_schema_json().to_string();
-    }
     json!({
-        "graph_options": {
-            "directed": {"type": "boolean"},
-            "renumber": {"type": "boolean"},
-            "construction_policy": {"type": "string", "enum": ["python_cugraph", "raw_libcugraph"]}
-        },
-        "algorithm_options": algorithm_option_names(algorithm)
+        "graph_options": graph_options_schema_json(),
+        "algorithm_options": algorithm_options_schema_json(algorithm)
     })
     .to_string()
 }
 
+fn graph_options_schema_json() -> Value {
+    json!({
+        "directed": {"scope": "graph", "type": "Boolean", "default": "session default"},
+        "renumber": {"scope": "graph", "type": "Boolean", "default": "session default"},
+        "construction_policy": {
+            "scope": "graph",
+            "type": "Utf8",
+            "allowed_values": ["python_cugraph", "raw_libcugraph"],
+            "default": "session default"
+        }
+    })
+}
+
+fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
+    match algorithm {
+        CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict => {
+            let params = super::CugraphPageRankParams::default();
+            json!({
+                "alpha": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.alpha,
+                    "min": 0.0,
+                    "max": 1.0
+                },
+                "epsilon": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.epsilon,
+                    "exclusive_min": 0.0
+                },
+                "max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_iterations,
+                    "min": 1
+                }
+            })
+        },
+        CugraphAlgorithm::Bfs => bfs_options_schema_json(),
+        CugraphAlgorithm::Louvain => {
+            let params = super::CugraphLouvainParams::default();
+            json!({
+                "resolution": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.resolution,
+                    "exclusive_min": 0.0
+                }
+            })
+        },
+        CugraphAlgorithm::EigenvectorCentrality => {
+            let params = super::CugraphEigenvectorCentralityParams::default();
+            json!({
+                "epsilon": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.epsilon,
+                    "exclusive_min": 0.0
+                },
+                "max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_iterations,
+                    "min": 1
+                }
+            })
+        },
+        CugraphAlgorithm::KatzCentrality => {
+            let params = super::CugraphKatzCentralityParams::default();
+            json!({
+                "alpha": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.alpha,
+                    "exclusive_min": 0.0,
+                    "max": 1.0
+                },
+                "beta": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.beta,
+                    "exclusive_min": 0.0
+                },
+                "epsilon": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.epsilon,
+                    "exclusive_min": 0.0
+                },
+                "max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_iterations,
+                    "min": 1
+                }
+            })
+        },
+        CugraphAlgorithm::Hits => {
+            let params = super::CugraphHitsParams::default();
+            json!({
+                "epsilon": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.epsilon,
+                    "exclusive_min": 0.0
+                },
+                "max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_iterations,
+                    "min": 1
+                },
+                "normalize": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.normalize
+                }
+            })
+        },
+        CugraphAlgorithm::Sssp => json!({
+            "cutoff": {
+                "scope": "algorithm",
+                "type": "Float64|null",
+                "default": null,
+                "min": 0.0
+            }
+        }),
+        CugraphAlgorithm::CoreNumber => {
+            let params = super::CugraphCoreNumberParams::default();
+            json!({
+                "degree_type": {
+                    "scope": "algorithm",
+                    "type": "Utf8",
+                    "allowed_values": ["in", "out", "in_out"],
+                    "default": params.degree_type.as_str()
+                }
+            })
+        },
+        CugraphAlgorithm::KCore => {
+            let params = super::CugraphKCoreParams::default();
+            json!({
+                "k": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.k,
+                    "min": 1
+                },
+                "degree_type": {
+                    "scope": "algorithm",
+                    "type": "Utf8",
+                    "allowed_values": ["in", "out", "in_out"],
+                    "default": params.degree_type.as_str()
+                }
+            })
+        },
+        CugraphAlgorithm::Leiden => {
+            let params = super::CugraphLeidenParams::default();
+            json!({
+                "max_level": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_level,
+                    "min": 1
+                },
+                "resolution": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.resolution,
+                    "exclusive_min": 0.0
+                },
+                "theta": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.theta,
+                    "exclusive_min": 0.0
+                },
+                "seed": {
+                    "scope": "algorithm",
+                    "type": "UInt64",
+                    "default": params.seed
+                }
+            })
+        },
+        CugraphAlgorithm::Ecg => {
+            let params = super::CugraphEcgParams::default();
+            json!({
+                "min_weight": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.min_weight,
+                    "min": 0.0
+                },
+                "ensemble_size": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.ensemble_size,
+                    "min": 1
+                },
+                "max_level": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_level,
+                    "min": 1
+                },
+                "threshold": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.threshold,
+                    "min": 0.0
+                },
+                "resolution": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.resolution,
+                    "exclusive_min": 0.0
+                },
+                "seed": {
+                    "scope": "algorithm",
+                    "type": "UInt64",
+                    "default": params.seed
+                }
+            })
+        },
+        CugraphAlgorithm::SpectralModularityMaximization | CugraphAlgorithm::BalancedCutClustering => {
+            let params = super::CugraphSpectralClusteringParams::default();
+            json!({
+                "n_clusters": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.n_clusters,
+                    "min": 1
+                },
+                "n_eigenvectors": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.n_eigenvectors,
+                    "min": 1
+                },
+                "evs_tolerance": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.evs_tolerance,
+                    "min": 0.0
+                },
+                "evs_max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.evs_max_iterations,
+                    "min": 1
+                },
+                "k_means_tolerance": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.k_means_tolerance,
+                    "min": 0.0
+                },
+                "k_means_max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.k_means_max_iterations,
+                    "min": 1
+                },
+                "seed": {
+                    "scope": "algorithm",
+                    "type": "UInt64",
+                    "default": params.seed
+                }
+            })
+        },
+        CugraphAlgorithm::DegreesAll
+        | CugraphAlgorithm::InDegreesAll
+        | CugraphAlgorithm::OutDegreesAll
+        | CugraphAlgorithm::WeaklyConnectedComponents
+        | CugraphAlgorithm::StronglyConnectedComponents
+        | CugraphAlgorithm::TriangleCountAll
+        | CugraphAlgorithm::MinimumSpanningTree => json!({}),
+    }
+}
+
 fn bfs_options_schema_json() -> Value {
     json!({
-        "graph_options": {
-            "directed": {"type": "Boolean", "default": "session default"},
-            "renumber": {"type": "Boolean", "default": "session default"},
-            "construction_policy": {
+            "depth_limit": {"scope": "algorithm", "type": "Int64|null", "default": null, "min": 0},
+            "output_mode": {
+                "scope": "algorithm",
                 "type": "Utf8",
-                "allowed_values": ["python_cugraph", "raw_libcugraph"],
-                "default": "session default"
-            }
-        },
-        "algorithm_options": {
-            "depth_limit": {"type": "Int64|null", "default": null},
-            "output_mode": {"type": "Utf8", "allowed_values": ["raw", "normalized", "path"], "default": "raw"},
+                "allowed_values": ["raw", "normalized", "path"],
+                "default": "raw"
+            },
             "target_vertices_table": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "output_mode=path or return_target_info=true"
             },
             "target_vertex_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "output_mode=path or return_target_info=true"
             },
             "return_target_info": {
+                "scope": "algorithm",
                 "type": "Boolean",
                 "default": false,
                 "valid_when": "output_mode in [raw, normalized]"
             },
-            "include_vertices_table": {"type": "Utf8|null", "default": null},
+            "include_vertices_table": {"scope": "algorithm", "type": "Utf8|null", "default": null},
             "include_vertex_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "include_vertices_table is set"
             },
-            "exclude_vertices_table": {"type": "Utf8|null", "default": null},
+            "exclude_vertices_table": {"scope": "algorithm", "type": "Utf8|null", "default": null},
             "exclude_vertex_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "exclude_vertices_table is set"
             },
             "edge_id_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "valid_when": "integer vertex domain only"
             },
             "include_edge_ids_table": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_with": "edge_id_col"
             },
-            "include_edge_ids_col": {"type": "Utf8|null", "default": null},
-            "include_edges_table": {"type": "Utf8|null", "default": null},
+            "include_edge_ids_col": {"scope": "algorithm", "type": "Utf8|null", "default": null},
+            "include_edges_table": {"scope": "algorithm", "type": "Utf8|null", "default": null},
             "include_edge_src_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "include_edges_table is set"
             },
             "include_edge_dst_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_when": "include_edges_table is set"
             },
             "include_edge_id_col": {
+                "scope": "algorithm",
                 "type": "Utf8|null",
                 "default": null,
                 "required_with": "edge_id_col"
             }
-        }
     })
 }
 
@@ -1036,57 +1373,6 @@ fn graph_options_value(options: &CugraphGraphOptions) -> Value {
         "renumber": options.renumber,
         "construction_policy": options.construction_policy.as_str(),
     })
-}
-
-fn algorithm_option_names(algorithm: CugraphAlgorithm) -> Vec<&'static str> {
-    match algorithm {
-        CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict => vec!["alpha", "epsilon", "max_iterations"],
-        CugraphAlgorithm::Bfs => vec![
-            "depth_limit",
-            "edge_id_col",
-            "include_vertices_table",
-            "include_vertex_col",
-            "exclude_vertices_table",
-            "exclude_vertex_col",
-            "target_vertices_table",
-            "target_vertex_col",
-            "include_edge_ids_table",
-            "include_edge_ids_col",
-            "include_edges_table",
-            "include_edge_src_col",
-            "include_edge_dst_col",
-            "include_edge_id_col",
-            "output_mode",
-            "return_target_info",
-        ],
-        CugraphAlgorithm::Louvain => vec!["resolution"],
-        CugraphAlgorithm::EigenvectorCentrality => vec!["epsilon", "max_iterations"],
-        CugraphAlgorithm::KatzCentrality => vec!["alpha", "beta", "epsilon", "max_iterations"],
-        CugraphAlgorithm::Hits => vec!["epsilon", "max_iterations", "normalize"],
-        CugraphAlgorithm::Sssp => vec!["cutoff"],
-        CugraphAlgorithm::CoreNumber => vec!["degree_type"],
-        CugraphAlgorithm::KCore => vec!["k", "degree_type"],
-        CugraphAlgorithm::Leiden => vec!["max_level", "resolution", "theta", "seed"],
-        CugraphAlgorithm::Ecg => vec!["min_weight", "ensemble_size", "max_level", "threshold", "resolution", "seed"],
-        CugraphAlgorithm::SpectralModularityMaximization | CugraphAlgorithm::BalancedCutClustering => {
-            vec![
-                "n_clusters",
-                "n_eigenvectors",
-                "evs_tolerance",
-                "evs_max_iterations",
-                "k_means_tolerance",
-                "k_means_max_iterations",
-                "seed",
-            ]
-        },
-        CugraphAlgorithm::DegreesAll
-        | CugraphAlgorithm::InDegreesAll
-        | CugraphAlgorithm::OutDegreesAll
-        | CugraphAlgorithm::WeaklyConnectedComponents
-        | CugraphAlgorithm::StronglyConnectedComponents
-        | CugraphAlgorithm::TriangleCountAll
-        | CugraphAlgorithm::MinimumSpanningTree => Vec::new(),
-    }
 }
 
 fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
@@ -1206,7 +1492,7 @@ fn limitations_json(algorithm: CugraphAlgorithm) -> String {
             "BFS traversal ignores edge weights; distance is a hop count",
             "string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col",
             "path output requires exactly one target row at execution time",
-            "options_schema_json is typed for BFS; validate_call remains the authoritative call-specific checker",
+            "options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker",
         ]);
     }
     json!(limitations).to_string()
