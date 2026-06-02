@@ -43,5 +43,10 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
         map.insert(name, Arc::new(col));
     }
 
-    Ok(DataFrame::from_raw_parts(map, row_count as usize))
+    let domain = crate::dataframe::derive_frame_domain_from_columns(
+        &map,
+        "internal::reassemble::dataframe_from_table_and_names",
+    )?;
+
+    Ok(DataFrame::from_raw_parts(map, row_count as usize, domain))
 }

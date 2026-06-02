@@ -31,6 +31,7 @@ use crate::{
     copying,
     dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
+    execution_domain::ExecutionDomain,
     filter, groupby,
     io::{
         csv::{self, CsvReaderOptions, CsvWriterOptions},
@@ -85,6 +86,7 @@ use crate::{
 pub struct DataFrame {
     columns: IndexMap<String, Arc<Column>>,
     row_count: usize,
+    domain: Arc<ExecutionDomain>,
 }
 
 /// Result of a split DataFrame join operation.
@@ -239,6 +241,32 @@ fn validate_dataframe_csv_column_name_count(
     }
 
     Ok(())
+}
+
+pub(crate) fn derive_frame_domain_from_columns(
+    columns: &IndexMap<String, Arc<Column>>,
+    operation: &'static str,
+) -> Result<Arc<ExecutionDomain>> {
+    let Some((first_name, first_column)) = columns.iter().next() else {
+        return Ok(ExecutionDomain::ambient_default());
+    };
+
+    let domain = Arc::clone(first_column.execution_domain());
+    for (name, column) in columns.iter().skip(1) {
+        if !ExecutionDomain::same_identity(&domain, column.execution_domain()) {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "all columns in a dataframe must share one execution domain",
+            )
+            .with_operation(operation)
+            .with_context("left_domain", domain.debug_label())
+            .with_context("right_domain", column.execution_domain().debug_label())
+            .with_context("column_name", name.clone())
+            .with_context("frame_column", first_name.clone()));
+        }
+    }
+
+    Ok(domain)
 }
 
 /// Options for [`DataFrame::dropna`].
@@ -479,7 +507,7 @@ impl DataFrame {
         validate_no_duplicate_names(&names, "dataframe::new")?;
 
         if columns.is_empty() {
-            return Ok(Self { columns: IndexMap::new(), row_count: 0 });
+            return Ok(Self { columns: IndexMap::new(), row_count: 0, domain: ExecutionDomain::ambient_default() });
         }
 
         // Validate all columns have the same row count.
@@ -503,7 +531,8 @@ impl DataFrame {
             map.insert(name, Arc::new(col));
         }
 
-        Ok(Self { columns: map, row_count: first_rows })
+        let domain = derive_frame_domain_from_columns(&map, "dataframe::new")?;
+        Ok(Self { columns: map, row_count: first_rows, domain })
     }
 
     /// Wrap an existing [`Table`] with column names.
@@ -534,7 +563,8 @@ impl DataFrame {
             map.insert(name, Arc::new(col));
         }
 
-        Ok(Self { columns: map, row_count })
+        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_table")?;
+        Ok(Self { columns: map, row_count, domain })
     }
 
     /// Create a `DataFrame` from a fixed-size array of `(name, Series)` pairs.
@@ -584,7 +614,7 @@ impl DataFrame {
         }
 
         if map.is_empty() {
-            return Ok(Self { columns: IndexMap::new(), row_count: 0 });
+            return Ok(Self { columns: IndexMap::new(), row_count: 0, domain: ExecutionDomain::ambient_default() });
         }
 
         // Validate all columns have the same row count.
@@ -614,7 +644,8 @@ impl DataFrame {
             }
         }
 
-        Ok(Self { columns: map, row_count: first_rows })
+        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_series")?;
+        Ok(Self { columns: map, row_count: first_rows, domain })
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -628,8 +659,12 @@ impl DataFrame {
     /// The caller must ensure:
     /// - No duplicate keys in `columns`
     /// - All columns have `row_count` rows
-    pub(crate) fn from_raw_parts(columns: IndexMap<String, Arc<Column>>, row_count: usize) -> Self {
-        Self { columns, row_count }
+    pub(crate) fn from_raw_parts(
+        columns: IndexMap<String, Arc<Column>>,
+        row_count: usize,
+        domain: Arc<ExecutionDomain>,
+    ) -> Self {
+        Self { columns, row_count, domain }
     }
 
     /// Returns the number of columns.
@@ -841,6 +876,25 @@ impl DataFrame {
         &self.columns
     }
 
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
     // -- I/O -----------------------------------------------------------------
 
     /// Read a CSV file into a `DataFrame`.
@@ -879,6 +933,7 @@ impl DataFrame {
     /// The DataFrame's schema names are always used as the output column
     /// names so the high-level round-trip path remains truthful.
     pub fn write_csv_with_options(&self, options: DataFrameCsvWriterOptions) -> Result<()> {
+        self.domain.synchronize_for_host_visibility("dataframe::write_csv_with_options")?;
         let names: Vec<&str> = self.column_names();
         let opts = options.to_table_options(&names);
         let tv = self.build_table_view()?;
@@ -905,6 +960,7 @@ impl DataFrame {
     /// Write this `DataFrame` to a Parquet file, embedding column names in
     /// the file's schema metadata.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.domain.synchronize_for_host_visibility("dataframe::write_parquet")?;
         let names: Vec<&str> = self.column_names();
         let opts = ParquetWriterOptions::new(path).column_names(&names)?;
         let tv = self.build_table_view()?;
@@ -967,6 +1023,7 @@ impl DataFrame {
     ///
     /// Returns an error if `indices` is not `Int32`.
     pub fn gather(&self, indices: &Series) -> Result<Self> {
+        ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
         let cv = indices.column_view()?;
         self.gather_by_column_view(&cv)
     }
@@ -984,7 +1041,7 @@ impl DataFrame {
             return self.empty_with_same_schema();
         }
         let tv = self.build_table_view()?;
-        let result_table = copying::gather(tv.table(), indices)?;
+        let result_table = copying::gather(tv.table(), indices)?.with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1000,6 +1057,7 @@ impl DataFrame {
     /// - `TypeError` if `mask` dtype is not `Bool8`.
     /// - `InvalidOperation` if `mask` length does not match the DataFrame row count.
     pub fn filter(&self, mask: &Series) -> Result<Self> {
+        ExecutionDomain::compatible_domain(&self.domain, mask.as_column().execution_domain(), "dataframe::filter")?;
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask(&mask_view)
     }
@@ -1022,7 +1080,8 @@ impl DataFrame {
     pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
         self.validate_mask_view(mask, "dataframe::filter_by_mask")?;
         let tv = self.build_table_view()?;
-        let result_table = filter::apply_boolean_mask(tv.table(), mask)?;
+        let result_table =
+            filter::apply_boolean_mask(tv.table(), mask)?.with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1157,7 +1216,8 @@ impl DataFrame {
             let keys_table = tv.table().select_columns(&key_indices)?;
             let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
             sort_by_key_fn(tv.table(), &keys_table, Some(&orders), null_order_ref)?
-        };
+        }
+        .with_execution_domain(Arc::clone(&self.domain));
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1197,7 +1257,8 @@ impl DataFrame {
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
         let result_table =
-            stream_compaction::distinct(tv.table(), &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?;
+            stream_compaction::distinct(tv.table(), &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?
+                .with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1214,7 +1275,8 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
-        let result_table = stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?;
+        let result_table = stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?
+            .with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1365,6 +1427,8 @@ impl DataFrame {
         null_equality: join::NullEquality,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
+        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation)?;
+
         if left_on.len() != right_on.len() {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
@@ -1406,8 +1470,11 @@ impl DataFrame {
         let right_schema_names = build_join_schema_names(&right.columns, &right_key_indices, &right_payload_indices);
 
         Ok(DataFrameJoinResult {
-            left: DataFrame::from_table(result.left, left_schema_names)?,
-            right: DataFrame::from_table(result.right, right_schema_names)?,
+            left: DataFrame::from_table(
+                result.left.with_execution_domain(Arc::clone(&output_domain)),
+                left_schema_names,
+            )?,
+            right: DataFrame::from_table(result.right.with_execution_domain(output_domain), right_schema_names)?,
         })
     }
 
@@ -1449,6 +1516,8 @@ impl DataFrame {
     /// Returns an error if the schemas do not match (different names, count,
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
+        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &other.domain, "dataframe::concat")?;
+
         // Validate schemas match: same names, same order.
         if self.columns.len() != other.columns.len() {
             return Err(Error::new(
@@ -1491,7 +1560,8 @@ impl DataFrame {
 
         let left_tv = self.build_table_view()?;
         let right_tv = other.build_table_view()?;
-        let result_table = crate::concatenate::concatenate_tables(&[left_tv.table(), right_tv.table()])?;
+        let result_table = crate::concatenate::concatenate_tables(&[left_tv.table(), right_tv.table()])?
+            .with_execution_domain(output_domain);
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1530,7 +1600,7 @@ impl DataFrame {
             }
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
     /// Consuming variant of [`rename`](Self::rename).
@@ -1574,7 +1644,7 @@ impl DataFrame {
             }
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: self.domain })
     }
 
     /// Return a new DataFrame with multiple columns renamed at once.
@@ -1635,7 +1705,7 @@ impl DataFrame {
             new_columns.insert(target, Arc::clone(col));
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
     /// Return a new DataFrame containing only the specified columns.
@@ -1677,7 +1747,7 @@ impl DataFrame {
             new_columns.insert(name.clone(), Arc::clone(col));
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
     /// Consuming variant of [`select`](Self::select).
@@ -1720,7 +1790,7 @@ impl DataFrame {
             new_columns.insert(name.clone(), col);
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: self.domain })
     }
 
     /// Return a new DataFrame with the specified columns removed.
@@ -1754,7 +1824,7 @@ impl DataFrame {
             }
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
     /// Return a new DataFrame with the specified columns removed.
@@ -1811,7 +1881,8 @@ impl DataFrame {
 
         let row_count = expected_rows.unwrap_or(col_rows);
 
-        Ok(Self { columns: new_columns, row_count })
+        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::with_column")?;
+        Ok(Self { columns: new_columns, row_count, domain })
     }
 
     /// Consuming variant of [`with_column`](Self::with_column).
@@ -1848,7 +1919,8 @@ impl DataFrame {
         let row_count = expected_rows.unwrap_or(col_rows);
         self.columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
-        Ok(Self { columns: self.columns, row_count })
+        let domain = derive_frame_domain_from_columns(&self.columns, "dataframe::with_column_owned")?;
+        Ok(Self { columns: self.columns, row_count, domain })
     }
 
     /// Return a new DataFrame with multiple columns added or replaced from
@@ -1908,7 +1980,9 @@ impl DataFrame {
             new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
         }
 
-        Ok(Self { columns: new_columns, row_count: expected_rows.unwrap_or(self.row_count) })
+        let row_count = expected_rows.unwrap_or(self.row_count);
+        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::assign")?;
+        Ok(Self { columns: new_columns, row_count, domain })
     }
 
     /// Evaluate expressions against this DataFrame and add/replace the
@@ -1968,12 +2042,13 @@ impl DataFrame {
         })?;
 
         let cv = col.view()?;
-        let new_col = replace::replace_nulls(&cv, value)?;
+        let new_col = replace::replace_nulls(&cv, value)?.with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::replace_nulls")?;
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 
     /// Return a new DataFrame with the named column cast to a different type.
@@ -1992,12 +2067,13 @@ impl DataFrame {
         })?;
 
         let cv = col.view()?;
-        let new_col = unary::cast(&cv, target_type)?;
+        let new_col = unary::cast(&cv, target_type)?.with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::cast_column")?;
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 
     // -- High-level API: cuDF-style naming --------------------------------
@@ -2120,14 +2196,20 @@ impl DataFrame {
                 .with_context("column_name", column.to_string())
         })?;
 
+        let output_domain = ExecutionDomain::compatible_domain(
+            col.execution_domain(),
+            fill_series.as_column().execution_domain(),
+            "dataframe::fillna_with_series",
+        )?;
         let cv = col.view()?;
         let fill_cv = fill_series.column_view()?;
-        let new_col = replace::replace_nulls_column(&cv, &fill_cv)?;
+        let new_col = replace::replace_nulls_column(&cv, &fill_cv)?.with_execution_domain(output_domain);
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::fillna_with_series")?;
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 }
 
@@ -2152,7 +2234,8 @@ impl DataFrame {
         let tv = self.build_table_view()?;
         // SAFETY: indices are constructed from `start..start+len` which the
         // callers have already validated against row_count.
-        let result_table = unsafe { copying::gather_unchecked(tv.table(), &map.view()?)? };
+        let result_table = unsafe { copying::gather_unchecked(tv.table(), &map.view()?)? }
+            .with_execution_domain(Arc::clone(&self.domain));
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -2169,9 +2252,17 @@ impl DataFrame {
         for (name, col) in &self.columns {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
-            new_columns.insert(name.clone(), Arc::new(Column::empty(type_id)?));
+            new_columns.insert(
+                name.clone(),
+                Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(col.execution_domain()))),
+            );
         }
-        Ok(Self { columns: new_columns, row_count: 0 })
+        let domain = if new_columns.is_empty() {
+            Arc::clone(&self.domain)
+        } else {
+            derive_frame_domain_from_columns(&new_columns, "dataframe::empty_with_same_schema")?
+        };
+        Ok(Self { columns: new_columns, row_count: 0, domain })
     }
 }
 
@@ -2197,6 +2288,8 @@ fn build_join_schema_names(
 /// Coalesce two columns by preferring non-null values from `left`; if null,
 /// take from `right`. Runs entirely on GPU via `replace_nulls_column`.
 fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> Result<Column> {
+    let output_domain =
+        ExecutionDomain::compatible_domain(left.execution_domain(), right.execution_domain(), operation)?;
     let lcv = left.view()?;
     let rcv = right.view()?;
 
@@ -2209,7 +2302,7 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
             .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
     }
 
-    replace::replace_nulls_column(&lcv, &rcv)
+    replace::replace_nulls_column(&lcv, &rcv).map(|col| col.with_execution_domain(output_domain))
 }
 
 // ---------------------------------------------------------------------------
@@ -2353,7 +2446,8 @@ fn merge_join_result_with_suffixes(
         columns.insert(name, col);
     }
 
-    Ok(DataFrame::from_raw_parts(columns, row_count))
+    let domain = derive_frame_domain_from_columns(&columns, operation)?;
+    Ok(DataFrame::from_raw_parts(columns, row_count, domain))
 }
 
 /// Construct a [`DataFrame`](crate::dataframe::DataFrame) from named columns.

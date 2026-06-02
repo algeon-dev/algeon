@@ -7,11 +7,13 @@ use std::{
     marker::PhantomData,
     os::raw::c_void,
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use crate::{
     column::{Column, ColumnView},
     error::{self, Error, ErrorKind, Result},
+    execution_domain::ExecutionDomain,
 };
 
 /// An owned GPU table backed by a `cudf::table`.
@@ -20,6 +22,7 @@ use crate::{
 /// underlying device memory is freed when this value is dropped.
 pub struct Table {
     handle: NonNull<c_void>,
+    domain: Arc<ExecutionDomain>,
 }
 
 // SAFETY: Table owns a GPU table via an opaque C++ handle. The handle is not
@@ -30,10 +33,33 @@ unsafe impl Send for Table {}
 unsafe impl Sync for Table {}
 
 impl Table {
+    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self { handle: NonNull::new(handle).expect("null table handle"), domain }
+    }
+
     /// Create a table from a vector of columns.
     ///
     /// The columns are *moved* into the table — do not use them afterwards.
     pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
+        let domain = if let Some(first) = columns.first() {
+            let domain = Arc::clone(first.execution_domain());
+            for (index, column) in columns.iter().enumerate().skip(1) {
+                if !ExecutionDomain::same_identity(&domain, column.execution_domain()) {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "all columns in a table must share one execution domain",
+                    )
+                    .with_operation("table::from_columns")
+                    .with_context("left_domain", domain.debug_label())
+                    .with_context("right_domain", column.execution_domain().debug_label())
+                    .with_context("column_index", index.to_string()));
+                }
+            }
+            domain
+        } else {
+            ExecutionDomain::ambient_default()
+        };
+
         let num_columns = i32::try_from(columns.len()).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "number of columns exceeds i32::MAX")
                 .with_operation("table::from_columns")
@@ -58,7 +84,7 @@ impl Table {
             error::check_status_in(status, "table::from_columns")?;
         }
 
-        Ok(Self { handle: NonNull::new(table_handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(table_handle, domain))
     }
 
     /// Deep-copy this table.
@@ -66,7 +92,7 @@ impl Table {
         let mut handle = ptr::null_mut();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) }, "table::copy")?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
     }
 
     /// Create an immutable view of this table.
@@ -86,7 +112,12 @@ impl Table {
     /// The handle must be a valid `cudf_table_handle` and the caller must
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self { handle: NonNull::new(handle).expect("null table handle") }
+        Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
+    }
+
+    pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
+        self.domain = domain;
+        self
     }
 
     /// Consume this table and return its columns as owned [`Column`] values.
@@ -98,6 +129,7 @@ impl Table {
     /// transferred, not copied.
     pub fn into_columns(self) -> Result<Vec<Column>> {
         let raw_handle = self.handle.as_ptr();
+        let domain = Arc::clone(&self.domain);
         // Prevent the Drop impl from destroying the table — ownership
         // is transferred to the C shim which will consume it.
         std::mem::forget(self);
@@ -128,13 +160,24 @@ impl Table {
 
         // SAFETY: Each pointer was returned by the successful FFI call and
         // represents an owned column handle being transferred to Column RAII.
-        let columns: Vec<Column> = col_ptrs.iter().map(|&ptr| unsafe { Column::from_raw(ptr) }).collect();
+        let columns: Vec<Column> =
+            col_ptrs.iter().map(|&ptr| unsafe { Column::from_raw_with_domain(ptr, Arc::clone(&domain)) }).collect();
 
         // Free the array (not the columns — they are now owned by Column).
         // SAFETY: out_columns was allocated by the C shim for the column pointer array.
         unsafe { cudf_sys::cudf_free_column_array(out_columns) };
 
         Ok(columns)
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
     }
 }
 

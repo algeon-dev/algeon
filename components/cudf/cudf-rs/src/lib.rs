@@ -61,6 +61,7 @@ pub mod dataframe;
 pub mod dataframe_view;
 pub mod dictionary;
 pub mod error;
+pub(crate) mod execution_domain;
 pub mod expr;
 pub mod filter;
 pub mod groupby;
