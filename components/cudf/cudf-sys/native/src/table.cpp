@@ -70,7 +70,7 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
   CUDF_RUST_TRY {
-    auto const validation_status =
+    cudf_status_t const validation_status =
         validate_table_create_columns(columns, num_columns);
     if (validation_status != CUDF_SUCCESS) { return validation_status; }
 
@@ -202,6 +202,42 @@ cudf_status_t cudf_table_view_from_column_views(
     }
     auto* tv = new cudf::table_view(views);
     *out = static_cast<cudf_table_view_handle>(tv);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_table_view_select_columns(
+    cudf_table_view_handle handle,
+    const int32_t* indices,
+    int32_t num_indices,
+    cudf_table_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  if (num_indices < 0) {
+    set_error("num_indices must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_indices > 0) {
+    CUDF_RUST_NULL_CHECK(indices, "indices is null");
+  }
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::table_view*>(handle);
+    std::vector<cudf::column_view> selected;
+    selected.reserve(num_indices);
+
+    for (int32_t i = 0; i < num_indices; ++i) {
+      auto const index = indices[i];
+      if (index < 0 || index >= view->num_columns()) {
+        set_error("table column index out of bounds");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      selected.push_back(view->column(index));
+    }
+
+    auto* projected = new cudf::table_view(selected);
+    *out = static_cast<cudf_table_view_handle>(projected);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

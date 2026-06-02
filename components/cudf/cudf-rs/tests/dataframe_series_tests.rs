@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for Series-aware DataFrame constructors and accessors.
 //!
 //! All tests require a GPU.
@@ -22,10 +21,10 @@ fn test_from_columns_happy_path() {
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), &["id", "score"]);
 
-    let col = df.column("id").unwrap();
+    let col = df.series_view("id").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let col = df.column("score").unwrap();
+    let col = df.series_view("score").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
@@ -165,7 +164,7 @@ fn test_series_shares_arc_with_dataframe() {
 
     // The returned Series should share the same underlying GPU data
     // (Arc pointer equality).
-    let df_col_ptr = df.column("id").unwrap().device_data_ptr().unwrap();
+    let df_col_ptr = df.series_view("id").unwrap().device_data_ptr().unwrap();
     let series_ptr = s.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(df_col_ptr, series_ptr);
 }
@@ -229,11 +228,11 @@ fn test_round_trip_from_series_to_series() {
 #[test]
 fn test_from_columns_preserves_arc_sharing() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let arc_before = s.column_arc().clone();
+    let arc_before = s.clone().into_inner();
 
     let df = DataFrame::from_columns([("x", s)]).unwrap();
     let retrieved = df.series("x").unwrap();
 
     // The Arc inside the DataFrame should be the same Arc as the input Series.
-    assert!(Arc::ptr_eq(&arc_before, retrieved.column_arc()));
+    assert!(Arc::ptr_eq(&arc_before, &retrieved.into_inner()));
 }

@@ -11,6 +11,15 @@ fn empty_payload() -> Table {
     Table::from_columns(vec![]).unwrap()
 }
 
+fn nullable_i32_table_column(table: &Table, index: usize) -> Vec<Option<i32>> {
+    let view = table.view().unwrap();
+    let column = view.column(index.try_into().unwrap()).unwrap();
+    let values = column.to_vec::<i32>().unwrap();
+    let validity = column.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
+
+    values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
+}
+
 #[test]
 fn test_inner_join() {
     // Left: keys=[1,2,3], payload=[10,20,30]
@@ -76,8 +85,20 @@ fn test_left_join() {
     let result = join::left_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
+    let rv = result.right.view().unwrap();
     // Left join: all 3 left rows should be present.
     assert_eq!(lv.num_rows().unwrap(), 3);
+    assert_eq!(rv.num_rows().unwrap(), 3);
+    assert_eq!(lv.num_columns().unwrap(), 1);
+    assert_eq!(rv.num_columns().unwrap(), 1);
+
+    let mut left_keys = nullable_i32_table_column(&result.left, 0);
+    left_keys.sort();
+    assert_eq!(left_keys, vec![Some(1), Some(2), Some(3)]);
+
+    let mut right_keys = nullable_i32_table_column(&result.right, 0);
+    right_keys.sort();
+    assert_eq!(right_keys, vec![None, None, Some(2)]);
 }
 
 #[test]
@@ -100,8 +121,20 @@ fn test_full_join() {
     let result = join::full_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
+    let rv = result.right.view().unwrap();
     // Full join should have 3 rows (1, 2, 3).
     assert_eq!(lv.num_rows().unwrap(), 3);
+    assert_eq!(rv.num_rows().unwrap(), 3);
+    assert_eq!(lv.num_columns().unwrap(), 1);
+    assert_eq!(rv.num_columns().unwrap(), 1);
+
+    let mut left_keys = nullable_i32_table_column(&result.left, 0);
+    left_keys.sort();
+    assert_eq!(left_keys, vec![None, Some(1), Some(2)]);
+
+    let mut right_keys = nullable_i32_table_column(&result.right, 0);
+    right_keys.sort();
+    assert_eq!(right_keys, vec![None, Some(2), Some(3)]);
 }
 
 #[test]
@@ -147,6 +180,24 @@ fn test_inner_join_multi_column_keys() {
     let result = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
     let lv = result.left.view().unwrap();
+    let rv = result.right.view().unwrap();
     // Matches: (1,10) and (2,10) → 2 rows.
     assert_eq!(lv.num_rows().unwrap(), 2);
+    assert_eq!(rv.num_rows().unwrap(), 2);
+    assert_eq!(lv.num_columns().unwrap(), 2);
+    assert_eq!(rv.num_columns().unwrap(), 2);
+
+    let mut left_pairs: Vec<_> = nullable_i32_table_column(&result.left, 0)
+        .into_iter()
+        .zip(nullable_i32_table_column(&result.left, 1))
+        .collect();
+    left_pairs.sort();
+    assert_eq!(left_pairs, vec![(Some(1), Some(10)), (Some(2), Some(10))]);
+
+    let mut right_pairs: Vec<_> = nullable_i32_table_column(&result.right, 0)
+        .into_iter()
+        .zip(nullable_i32_table_column(&result.right, 1))
+        .collect();
+    right_pairs.sort();
+    assert_eq!(right_pairs, vec![(Some(1), Some(10)), (Some(2), Some(10))]);
 }

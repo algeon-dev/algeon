@@ -1,4 +1,7 @@
 //! GPU column types: owned `Column` and borrowed `ColumnView`.
+//!
+//! **Advanced/Core.** Most users should use [`Series`](crate::Series) /
+//! [`SeriesView`](crate::SeriesView).
 
 use crate::error::{self, Error, ErrorKind, Result};
 
@@ -24,6 +27,10 @@ pub struct Column {
     handle: NonNull<c_void>,
 }
 
+// SAFETY: Column owns a GPU device buffer via an opaque C++ handle. The handle
+// is not thread-local. Send is safe because ownership transfer between threads is
+// supported by the CUDA runtime. Sync is safe because all methods that observe state
+// (view(), len(), data_type()) create independent FFI view handles.
 unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
@@ -31,6 +38,8 @@ impl Column {
     /// Create an empty column of the given type.
     pub fn empty(type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        // SAFETY: type_id.to_raw() produces a valid cudf_type_id_t. handle is
+        // initialized to null and set by the C shim on success.
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
             "column::empty",
@@ -48,6 +57,8 @@ impl Column {
     pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
         let mut handle = ptr::null_mut();
         let size = usize_to_i32_len(data.len(), "data", "column::from_slice")?;
+        // SAFETY: data.as_ptr() is valid for `size` elements of T. T::TYPE_ID
+        // correctly describes the element type. No null mask (ptr::null(), 0).
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_numeric(
@@ -80,6 +91,8 @@ impl Column {
         let null_count = crate::types::count_nulls(validity);
 
         let mut handle = ptr::null_mut();
+        // SAFETY: data and null_mask are valid host pointers with matching lengths.
+        // null_count is derived from validity. T::TYPE_ID describes the element type.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_numeric(
@@ -99,6 +112,7 @@ impl Column {
     /// Deep-copy this column.
     pub fn copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
             "column::copy",
@@ -111,6 +125,7 @@ impl Column {
     /// The returned `ColumnView` borrows from `self` and cannot outlive it.
     pub fn view(&self) -> Result<ColumnView<'_>> {
         let mut view_handle = ptr::null_mut();
+        // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view(self.handle.as_ptr(), &mut view_handle) },
             "column::view",
@@ -167,6 +182,8 @@ impl Column {
 
         let size = usize_to_i32_len(len, "data", "column::from_device_ptr")?;
         let mut handle = ptr::null_mut();
+        // SAFETY: caller guarantees device_ptr is valid for `size` elements.
+        // Null-ptr + zero-len case is checked above.
         error::check_status_in_with(
             unsafe { cudf_sys::cudf_column_create_from_device_data(type_id.to_raw(), device_ptr, size, &mut handle) },
             "column::from_device_ptr",
@@ -194,6 +211,8 @@ impl Column {
             .collect::<Result<Vec<_>>>()?;
 
         let mut handle = ptr::null_mut();
+        // SAFETY: ptrs and lengths are derived from valid &str slices and have
+        // num_strings elements. No null mask (ptr::null(), 0).
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_strings(
@@ -250,6 +269,8 @@ impl Column {
                 let null_count = size;
 
                 let mut handle = ptr::null_mut();
+                // SAFETY: data is zeroed bytes of the correct size, null_mask marks
+                // all elements null. type_id.to_raw() is valid for fixed-width types.
                 error::check_status_in_with(
                     unsafe {
                         cudf_sys::cudf_column_create_numeric(
@@ -293,6 +314,8 @@ impl Column {
         let null_count = crate::types::count_nulls(validity);
 
         let mut handle = ptr::null_mut();
+        // SAFETY: ptrs/lengths are derived from valid &str slices with num_strings
+        // elements. null_mask is a valid bitmask matching the validity slice.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_strings(
@@ -315,6 +338,7 @@ impl Column {
     /// an empty column of the scalar's type is returned.
     pub fn from_scalar(scalar: &crate::scalar::Scalar, size: i32) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_from_scalar(scalar.raw_handle(), size, &mut handle) },
             "column::from_scalar",
@@ -554,6 +578,8 @@ impl Column {
 
 impl Drop for Column {
     fn drop(&mut self) {
+        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
+        // exactly once, so the handle is destroyed exactly once.
         unsafe {
             cudf_sys::cudf_column_destroy(self.handle.as_ptr());
         }
@@ -588,21 +614,24 @@ impl<'a> ColumnView<'a> {
     /// Returns the data type of this column.
     pub fn data_type(&self) -> Result<DataType> {
         let mut raw_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+        let mut scale = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_view_type(self.handle.as_ptr(), &mut raw_id) },
+            unsafe { cudf_sys::cudf_column_view_data_type(self.handle.as_ptr(), &mut raw_id, &mut scale) },
             "column_view::data_type",
         )?;
-        Ok(DataType::new(TypeId::from_raw(raw_id)))
+        DataType::from_raw_parts(raw_id, scale)
     }
 
     /// Returns the number of elements.
-    pub fn len(&self) -> Result<i32> {
+    pub fn len(&self) -> Result<usize> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_size(self.handle.as_ptr(), &mut out) },
             "column_view::len",
         )?;
-        Ok(out)
+        Ok(out as usize)
     }
 
     /// Returns `true` if the column has zero elements.
@@ -613,6 +642,7 @@ impl<'a> ColumnView<'a> {
     /// Returns the number of null (invalid) elements.
     pub fn null_count(&self) -> Result<i32> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_null_count(self.handle.as_ptr(), &mut out) },
             "column_view::null_count",
@@ -623,6 +653,7 @@ impl<'a> ColumnView<'a> {
     /// Returns `true` if this column has a null mask allocated.
     pub fn nullable(&self) -> Result<bool> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_nullable(self.handle.as_ptr(), &mut out) },
             "column_view::nullable",
@@ -633,6 +664,7 @@ impl<'a> ColumnView<'a> {
     /// Returns the number of child columns (for nested types).
     pub fn num_children(&self) -> Result<i32> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_num_children(self.handle.as_ptr(), &mut out) },
             "column_view::num_children",
@@ -649,6 +681,7 @@ impl<'a> ColumnView<'a> {
         }
 
         let mut child_handle = ptr::null_mut();
+        // SAFETY: self.handle is valid. index >= 0 is checked above.
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
             "column_view::child",
@@ -672,6 +705,7 @@ impl<'a> ColumnView<'a> {
     /// active region.
     pub fn device_data_ptr(&self) -> Result<*const c_void> {
         let mut out: *const c_void = std::ptr::null();
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_data_ptr(self.handle.as_ptr(), &mut out) },
             "column_view::device_data_ptr",
@@ -685,6 +719,7 @@ impl<'a> ColumnView<'a> {
     /// starts at `device_data_ptr() + offset * element_size`.
     pub fn offset(&self) -> Result<i32> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_offset(self.handle.as_ptr(), &mut out) },
             "column_view::offset",
@@ -704,10 +739,13 @@ impl<'a> ColumnView<'a> {
                 .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
 
-        let size = self.len()? as usize;
+        let size = self.len()?;
+        // SAFETY: All CudfType implementors have valid all-zero bit patterns.
         let mut buf = vec![unsafe { std::mem::zeroed::<T>() }; size];
         let buf_size = size * std::mem::size_of::<T>();
 
+        // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
+        // valid. Type was checked above to match T::TYPE_ID.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
@@ -726,13 +764,15 @@ impl<'a> ColumnView<'a> {
             return Ok(None);
         }
 
-        let size = self.len()? as usize;
+        let size = self.len()?;
         let mask_bytes = size.div_ceil(8);
         // Ensure we allocate at least the bitmask alignment size that cudf expects.
         // cudf pads to 64-byte boundaries, so allocate enough.
         let alloc_bytes = mask_bytes.div_ceil(64) * 64;
         let mut mask = vec![0u8; alloc_bytes];
 
+        // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
+        // self.handle is valid and nullable (checked above).
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_null_mask_to_host(self.handle.as_ptr(), mask.as_mut_ptr(), alloc_bytes)
@@ -766,7 +806,7 @@ impl<'a> ColumnView<'a> {
         }
 
         // Allocate offsets buffer: n+1 elements
-        let offsets_count = (size + 1) as usize;
+        let offsets_count = size + 1;
         let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
         let mut offsets = vec![0i32; offsets_count];
 
@@ -775,6 +815,7 @@ impl<'a> ColumnView<'a> {
         let mut total_chars_bytes: i32 = 0;
 
         // Phase 1: get offsets and total char bytes (with null chars_buf if 0 chars)
+        // SAFETY: offsets buffer has n+1 capacity. self.handle is valid STRING column.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_strings_to_host(
@@ -794,6 +835,7 @@ impl<'a> ColumnView<'a> {
         if total_chars_bytes > 0 {
             // Need to re-fetch since the first call already wrote offsets but
             // may not have written chars. Re-call to get everything.
+            // SAFETY: chars buffer is sized to total_chars_bytes from Phase 1.
             error::check_status_in(
                 unsafe {
                     cudf_sys::cudf_column_view_strings_to_host(
@@ -810,8 +852,8 @@ impl<'a> ColumnView<'a> {
         }
 
         // Parse strings from offsets + chars
-        let mut result = Vec::with_capacity(size as usize);
-        for i in 0..size as usize {
+        let mut result = Vec::with_capacity(size);
+        for i in 0..size {
             let start = offsets[i] as usize;
             let end = offsets[i + 1] as usize;
             let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
@@ -844,6 +886,8 @@ impl<'a> ColumnView<'a> {
     /// Returns a [`DeviceSlice`] describing the active device memory region
     /// of this column, with type validation.
     ///
+    /// The returned slice borrows `self`, so it cannot outlive this view.
+    ///
     /// This is the safe, typed alternative to [`device_data_ptr()`](Self::device_data_ptr)
     /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
     /// for the column's offset — no manual pointer arithmetic needed.
@@ -867,7 +911,7 @@ impl<'a> ColumnView<'a> {
     /// assert_eq!(left.len(), 2);
     /// assert_eq!(right.len(), 2);
     /// ```
-    pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice> {
+    pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice<'_>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
             return Err(Error::new(ErrorKind::TypeError, "column type does not match requested type")
@@ -878,18 +922,21 @@ impl<'a> ColumnView<'a> {
 
         let base_ptr = self.device_data_ptr()?;
         let offset = self.offset()? as usize;
-        let len = self.len()? as usize;
+        let len = self.len()?;
         let elem_size = std::mem::size_of::<T>();
 
         // Compute the offset-adjusted pointer. This encapsulates the pointer
         // arithmetic that would otherwise leak into application code.
+        // SAFETY: base_ptr is a device pointer returned by FFI. The add() is
+        // pointer arithmetic within the column's device buffer; the result is
+        // never dereferenced on the host.
         let ptr = if base_ptr.is_null() {
             base_ptr as *mut c_void
         } else {
             unsafe { (base_ptr as *const u8).add(offset * elem_size) as *mut c_void }
         };
 
-        Ok(DeviceSlice { ptr, len, type_id: T::TYPE_ID, elem_size })
+        Ok(DeviceSlice { ptr, len, type_id: T::TYPE_ID, elem_size, _lifetime: PhantomData })
     }
 }
 
@@ -906,20 +953,25 @@ impl<'a> ColumnView<'a> {
 ///
 /// `DeviceSlice` is `Send + Sync` because the underlying data lives on the GPU
 /// and is not host-dereferenceable.
-#[derive(Debug, Clone)]
-pub struct DeviceSlice {
+///
+/// The lifetime `'a` ties this slice to the [`ColumnView`] (or [`Column`]) that
+/// produced it, preventing the slice from outliving the GPU memory it points to.
+#[derive(Debug)]
+pub struct DeviceSlice<'a> {
     ptr: *mut c_void,
     len: usize,
     type_id: TypeId,
     elem_size: usize,
+    _lifetime: PhantomData<&'a ()>,
 }
 
-// Device pointers are not dereferenceable from host code, so sharing across
-// threads is safe — no host-side data race is possible.
-unsafe impl Send for DeviceSlice {}
-unsafe impl Sync for DeviceSlice {}
+// SAFETY: Device pointers are not dereferenceable from host code, so sharing
+// across threads is safe — no host-side data race is possible. The lifetime
+// parameter ensures the underlying GPU memory remains valid.
+unsafe impl Send for DeviceSlice<'_> {}
+unsafe impl Sync for DeviceSlice<'_> {}
 
-impl DeviceSlice {
+impl DeviceSlice<'_> {
     /// Number of elements in this device slice.
     pub fn len(&self) -> usize {
         self.len
@@ -957,9 +1009,11 @@ impl DeviceSlice {
     /// # Panics
     ///
     /// Panics if `mid > self.len`.
-    pub fn split_at(&self, mid: usize) -> (DeviceSlice, DeviceSlice) {
+    pub fn split_at(&self, mid: usize) -> (DeviceSlice<'_>, DeviceSlice<'_>) {
         assert!(mid <= self.len, "split_at: mid ({mid}) > len ({})", self.len);
 
+        // SAFETY: Pointer arithmetic within the device buffer range. mid <= len
+        // is asserted above. The result is never dereferenced on the host.
         let right_ptr = if self.ptr.is_null() || self.elem_size == 0 {
             self.ptr
         } else {
@@ -967,8 +1021,20 @@ impl DeviceSlice {
         };
 
         (
-            DeviceSlice { ptr: self.ptr, len: mid, type_id: self.type_id, elem_size: self.elem_size },
-            DeviceSlice { ptr: right_ptr, len: self.len - mid, type_id: self.type_id, elem_size: self.elem_size },
+            DeviceSlice {
+                ptr: self.ptr,
+                len: mid,
+                type_id: self.type_id,
+                elem_size: self.elem_size,
+                _lifetime: PhantomData,
+            },
+            DeviceSlice {
+                ptr: right_ptr,
+                len: self.len - mid,
+                type_id: self.type_id,
+                elem_size: self.elem_size,
+                _lifetime: PhantomData,
+            },
         )
     }
 }
@@ -1171,7 +1237,7 @@ impl ColumnView<'_> {
                     .with_context("values_count", values_count.to_string())
             })?;
 
-        if distinct_keys_count != keys_count {
+        if distinct_keys_count as usize != keys_count {
             return Err(Error::new(ErrorKind::InvalidOperation, "keys must be unique")
                 .with_operation("column_view::map")
                 .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
@@ -1185,7 +1251,7 @@ impl ColumnView<'_> {
 
         // Build a row-index column [0, 1, 2, ..., len-1] as left payload
         // to restore original ordering after the join.
-        let row_indices: Vec<i32> = (0..input_count).collect();
+        let row_indices: Vec<i32> = (0..input_count as i32).collect();
         let idx_col = Column::from_slice(&row_indices).map_err(|e| {
             e.with_operation("column_view::map")
                 .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())

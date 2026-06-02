@@ -1,8 +1,7 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
 use cudf::{
-    column::Column, dataframe::DataFrame, error::ErrorKind, sorting::Order, stream_compaction::DuplicateKeepOption,
+    SortOptions, column::Column, dataframe::DataFrame, error::ErrorKind, stream_compaction::DuplicateKeepOption,
 };
 
 /// Helper: build a 5-row DataFrame with id (i32) and score (f64) columns.
@@ -25,8 +24,8 @@ fn test_filter_basic() {
     let filtered = df.filter_by_mask(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
-    assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
 #[test]
@@ -61,10 +60,10 @@ fn test_filter_isin_basic() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = Column::from_slice(&[1i32, 5]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("id", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
-    let mut ids = filtered.column("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = filtered.series_view("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![1, 1, 5]);
 }
@@ -74,7 +73,7 @@ fn test_filter_isin_no_matches() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = Column::from_slice(&[99i32, 100]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("id", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
 }
@@ -84,7 +83,7 @@ fn test_filter_isin_all_match() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = Column::from_slice(&[1i32, 3, 4, 5]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("id", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
 }
@@ -94,7 +93,7 @@ fn test_filter_isin_preserves_schema() {
     let df = sample_df();
     let values = Column::from_slice(&[1i32]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("id", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
@@ -106,7 +105,7 @@ fn test_filter_isin_nonexistent_column() {
     let df = sample_df();
     let values = Column::from_slice(&[1i32]).unwrap();
     let values_view = values.view().unwrap();
-    let result = df.filter_isin("nonexistent", &values_view);
+    let result = df.filter_isin_by_column_view("nonexistent", &values_view);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
@@ -117,10 +116,10 @@ fn test_filter_isin_float64() {
     let df = sample_df(); // scores: 30.0, 10.0, 40.0, 15.0, 50.0
     let values = Column::from_slice(&[10.0f64, 50.0]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("score", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("score", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    let mut scores = filtered.column("score").unwrap().to_vec::<f64>().unwrap();
+    let mut scores = filtered.series_view("score").unwrap().to_vec::<f64>().unwrap();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(scores, vec![10.0, 50.0]);
 }
@@ -130,7 +129,7 @@ fn test_filter_isin_empty_values() {
     let df = sample_df();
     let values = Column::from_slice::<i32>(&[]).unwrap();
     let values_view = values.view().unwrap();
-    let filtered = df.filter_isin("id", &values_view).unwrap();
+    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
 }
@@ -142,18 +141,18 @@ fn test_filter_isin_empty_values() {
 #[test]
 fn test_sort_single_column_ascending() {
     let df = sample_df();
-    let sorted = df.sort(&["id"], &[Order::Ascending]).unwrap();
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
 
-    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
 }
 
 #[test]
 fn test_sort_single_column_descending() {
     let df = sample_df();
-    let sorted = df.sort(&["score"], &[Order::Descending]).unwrap();
+    let sorted = df.sort_values(&["score"], SortOptions::new().with_descending(vec![true])).unwrap();
 
-    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
+    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
 
 #[test]
@@ -163,26 +162,26 @@ fn test_sort_by_subset_of_columns() {
     let scores = Column::from_slice(&[20.0f64, 10.0, 40.0, 30.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
-    let sorted = df.sort(&["id", "score"], &[Order::Ascending, Order::Descending]).unwrap();
+    let sorted = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
-    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
 #[test]
 fn test_sort_nonexistent_column_returns_error() {
     let df = sample_df();
-    let result = df.sort(&["nonexistent"], &[Order::Ascending]);
+    let result = df.sort_values(&["nonexistent"], SortOptions::new());
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
-fn test_sort_mismatched_orders_count() {
+fn test_sort_mismatched_descending_count() {
     let df = sample_df();
-    // 2 column names but only 1 order → error
-    let result = df.sort(&["id", "score"], &[Order::Ascending]);
+    // 2 column names but only 1 descending flag → error
+    let result = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false]));
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -191,7 +190,7 @@ fn test_sort_mismatched_orders_count() {
 #[test]
 fn test_sort_preserves_schema() {
     let df = sample_df();
-    let sorted = df.sort(&["id"], &[Order::Ascending]).unwrap();
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
     assert_eq!(sorted.column_index("id"), Some(0));
     assert_eq!(sorted.column_index("score"), Some(1));
@@ -207,7 +206,7 @@ fn test_nlargest() {
     let top2 = df.nlargest(2, "score").unwrap();
 
     assert_eq!(top2.num_rows(), 2);
-    assert_eq!(top2.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0]);
+    assert_eq!(top2.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0]);
 }
 
 #[test]
@@ -216,7 +215,7 @@ fn test_nsmallest() {
     let bot2 = df.nsmallest(2, "id").unwrap();
 
     assert_eq!(bot2.num_rows(), 2);
-    assert_eq!(bot2.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
+    assert_eq!(bot2.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
 }
 
 #[test]
@@ -271,8 +270,8 @@ fn test_drop_nulls_basic() {
     let cleaned = df.drop_nulls(&["id"], 1).unwrap();
 
     assert_eq!(cleaned.num_rows(), 3);
-    assert_eq!(cleaned.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
-    assert_eq!(cleaned.column("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
+    assert_eq!(cleaned.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
+    assert_eq!(cleaned.series_view("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
 }
 
 #[test]
@@ -311,12 +310,12 @@ fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
 
     assert_eq!(actual.num_rows(), expected.num_rows());
     assert_eq!(
-        actual.column("id").unwrap().to_vec::<i32>().unwrap(),
-        expected.column("id").unwrap().to_vec::<i32>().unwrap(),
+        actual.series_view("id").unwrap().to_vec::<i32>().unwrap(),
+        expected.series_view("id").unwrap().to_vec::<i32>().unwrap(),
     );
     assert_eq!(
-        actual.column("val").unwrap().to_vec::<f64>().unwrap(),
-        expected.column("val").unwrap().to_vec::<f64>().unwrap(),
+        actual.series_view("val").unwrap().to_vec::<f64>().unwrap(),
+        expected.series_view("val").unwrap().to_vec::<f64>().unwrap(),
     );
 }
 
@@ -336,9 +335,9 @@ fn test_drop_nulls_any_mixed_null_patterns() {
     let cleaned = df.drop_nulls_any(&["a", "b"]).unwrap();
 
     assert_eq!(cleaned.num_rows(), 2);
-    assert_eq!(cleaned.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
-    assert_eq!(cleaned.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 40]);
-    assert_eq!(cleaned.column("c").unwrap().to_vec::<f64>().unwrap(), vec![100.0, 400.0]);
+    assert_eq!(cleaned.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
+    assert_eq!(cleaned.series_view("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 40]);
+    assert_eq!(cleaned.series_view("c").unwrap().to_vec::<f64>().unwrap(), vec![100.0, 400.0]);
 }
 
 #[test]

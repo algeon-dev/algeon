@@ -66,10 +66,12 @@ pub enum UnaryOperator {
 pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid (NonNull maintained by ColumnView).
         unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op as i32, &mut out) },
         "unary::unary_operation",
         [("operator", format!("{:?}", op).to_lowercase())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -83,14 +85,18 @@ pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
 /// Return a boolean column: `true` where elements are null.
 pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
     error::check_status_in(unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) }, "unary::is_null")?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
 pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
     error::check_status_in(unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) }, "unary::is_valid")?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -98,13 +104,17 @@ pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
 pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
     let mut out = ptr::null_mut();
+    // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
+    // a successful to_raw_handle_for call.
     let status = unsafe { cudf_sys::cudf_cast(input.raw_handle(), dtype_handle, &mut out) };
+    // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
         status,
         "unary::cast",
         [("output_type_id", format!("{:?}", output_type.id()).to_lowercase())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -113,7 +123,10 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
     let from_handle = from.to_raw_handle_for("unary::is_supported_cast")?;
     let to_handle = to.to_raw_handle_for("unary::is_supported_cast")?;
     let mut out: i32 = 0;
+    // SAFETY: from_handle and to_handle were returned by successful
+    // to_raw_handle_for calls.
     let status = unsafe { cudf_sys::cudf_is_supported_cast(from_handle, to_handle, &mut out) };
+    // SAFETY: Both handles are valid and must be destroyed.
     unsafe {
         cudf_sys::cudf_data_type_destroy(from_handle);
         cudf_sys::cudf_data_type_destroy(to_handle);
@@ -132,13 +145,17 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
 /// Return a boolean column: `true` where elements are NaN.
 pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
     error::check_status_in(unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) }, "unary::is_nan")?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are not NaN.
 pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
     error::check_status_in(unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) }, "unary::is_not_nan")?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

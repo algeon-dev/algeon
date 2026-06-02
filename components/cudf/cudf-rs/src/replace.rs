@@ -27,9 +27,12 @@ use crate::{
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in(
+        // SAFETY: input (ColumnView) and replacement (Scalar) handles are valid
+        // (NonNull maintained by their types).
         unsafe { cudf_sys::cudf_replace_nulls_scalar(input.raw_handle(), replacement.raw_handle(), &mut out) },
         "replace::replace_nulls",
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -57,8 +60,10 @@ pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Col
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in(
+        // SAFETY: input and replacement handles are valid (NonNull maintained by ColumnView).
         unsafe { cudf_sys::cudf_replace_nulls_column(input.raw_handle(), replacement.raw_handle(), &mut out) },
         "replace::replace_nulls_column",
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

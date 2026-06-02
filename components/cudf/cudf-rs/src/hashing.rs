@@ -34,10 +34,12 @@ pub const DEFAULT_HASH_SEED: u32 = 0;
 pub fn murmurhash3_x86_32(input: &TableView<'_>, seed: u32) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid (NonNull maintained by TableView).
         unsafe { cudf_sys::cudf_hashing_murmurhash3_x86_32(input.raw_handle(), seed, &mut out) },
         "hashing::murmurhash3_x86_32",
         [("seed", seed.to_string())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -47,9 +49,11 @@ pub fn murmurhash3_x86_32(input: &TableView<'_>, seed: u32) -> Result<Column> {
 pub fn xxhash_64(input: &TableView<'_>, seed: u64) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid (NonNull maintained by TableView).
         unsafe { cudf_sys::cudf_hashing_xxhash_64(input.raw_handle(), seed, &mut out) },
         "hashing::xxhash_64",
         [("seed", seed.to_string())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

@@ -82,10 +82,10 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::table_view*>(input);
@@ -93,13 +93,13 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_keys > 0) {
-      auto status = to_order_vec(column_order, num_keys, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_keys, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_keys > 0) {
-      auto status = to_null_order_vec(null_precedence, num_keys, &null_orders);
+      cudf_status_t status = to_null_order_vec(null_precedence, num_keys, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -134,10 +134,10 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::table_view*>(input);
@@ -145,13 +145,13 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_keys > 0) {
-      auto status = to_order_vec(column_order, num_keys, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_keys, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_keys > 0) {
-      auto status = to_null_order_vec(null_precedence, num_keys, &null_orders);
+      cudf_status_t status = to_null_order_vec(null_precedence, num_keys, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -190,10 +190,10 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* vals = static_cast<cudf::table_view*>(values);
@@ -202,13 +202,14 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_key_columns > 0) {
-      auto status = to_order_vec(column_order, num_key_columns, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_key_columns, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_key_columns > 0) {
-      auto status = to_null_order_vec(null_precedence, num_key_columns, &null_orders);
+      cudf_status_t status =
+          to_null_order_vec(null_precedence, num_key_columns, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -248,10 +249,10 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* vals = static_cast<cudf::table_view*>(values);
@@ -260,13 +261,14 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_key_columns > 0) {
-      auto status = to_order_vec(column_order, num_key_columns, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_key_columns, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_key_columns > 0) {
-      auto status = to_null_order_vec(null_precedence, num_key_columns, &null_orders);
+      cudf_status_t status =
+          to_null_order_vec(null_precedence, num_key_columns, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -302,10 +304,10 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::table_view*>(input);
@@ -313,13 +315,13 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_keys > 0) {
-      auto status = to_order_vec(column_order, num_keys, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_keys, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_keys > 0) {
-      auto status = to_null_order_vec(null_precedence, num_keys, &null_orders);
+      cudf_status_t status = to_null_order_vec(null_precedence, num_keys, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -350,13 +352,13 @@ cudf_status_t cudf_is_sorted(cudf_table_view_handle input,
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
     if (column_order != nullptr && num_keys > 0) {
-      auto status = to_order_vec(column_order, num_keys, &orders);
+      cudf_status_t status = to_order_vec(column_order, num_keys, &orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }
     }
     if (null_precedence != nullptr && num_keys > 0) {
-      auto status = to_null_order_vec(null_precedence, num_keys, &null_orders);
+      cudf_status_t status = to_null_order_vec(null_precedence, num_keys, &null_orders);
       if (status != CUDF_SUCCESS) {
         return status;
       }

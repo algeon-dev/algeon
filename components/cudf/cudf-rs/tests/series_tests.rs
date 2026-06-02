@@ -134,7 +134,7 @@ fn test_from_column_round_trip() {
     assert_eq!(s.len(), 3);
 
     // Access the underlying column.
-    let view = s.column().view().unwrap();
+    let view = s.as_column().view().unwrap();
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![5, 10, 15]);
 }
 
@@ -167,7 +167,7 @@ fn test_view_matches_column_data() {
 }
 
 // ===========================================================================
-// B2a — Minimal scalar comparison ops
+// Minimal scalar comparison ops
 // ===========================================================================
 
 #[test]
@@ -265,7 +265,7 @@ fn test_gt_scalar_preserves_input() {
 }
 
 // ===========================================================================
-// B2b — Extended scalar comparison ops
+// Extended scalar comparison ops
 // ===========================================================================
 
 #[test]
@@ -296,7 +296,7 @@ fn test_le_scalar_i32() {
 }
 
 // ===========================================================================
-// B2b — Column-vs-column comparison ops
+// Column-vs-column comparison ops
 // ===========================================================================
 
 #[test]
@@ -372,7 +372,7 @@ fn test_comparison_mixed_types_f64_i32() {
 }
 
 // ===========================================================================
-// B2b — Arithmetic ops
+// Arithmetic ops
 // ===========================================================================
 
 #[test]

@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame concat, copy, rename, select.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind};
@@ -23,10 +22,10 @@ fn test_concat_matching_schemas() {
     assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
-    let a_vals: Vec<i32> = result.column("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3, 4]);
 
-    let b_vals: Vec<f64> = result.column("b").unwrap().to_vec::<f64>().unwrap();
+    let b_vals: Vec<f64> = result.series_view("b").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0, 40.0]);
 }
 
@@ -92,8 +91,8 @@ fn test_rename_owned_is_schema_only_and_preserves_data() {
     let renamed = df.rename_owned("a", "alpha").unwrap();
 
     assert_eq!(renamed.column_names(), vec!["alpha", "b"]);
-    assert_eq!(renamed.column("alpha").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(renamed.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(renamed.series_view("alpha").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(renamed.series_view("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -110,10 +109,10 @@ fn test_copy_preserves_schema_and_data() {
     assert_eq!(copy.num_rows(), 3);
     assert_eq!(copy.column_names(), vec!["x", "y"]);
 
-    let x_vals: Vec<i32> = copy.column("x").unwrap().to_vec::<i32>().unwrap();
+    let x_vals: Vec<i32> = copy.series_view("x").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(x_vals, vec![1, 2, 3]);
 
-    let y_vals: Vec<f64> = copy.column("y").unwrap().to_vec::<f64>().unwrap();
+    let y_vals: Vec<f64> = copy.series_view("y").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(y_vals, vec![4.0, 5.0, 6.0]);
 }
 
@@ -129,14 +128,14 @@ fn test_rename_column() {
 
     // New name works.
     assert_eq!(renamed.column_names(), vec!["new_name", "other"]);
-    let vals: Vec<i32> = renamed.column("new_name").unwrap().to_vec::<i32>().unwrap();
+    let vals: Vec<i32> = renamed.series_view("new_name").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(vals, vec![1, 2]);
 
     // Old name no longer exists.
-    assert!(renamed.column("old_name").is_err());
+    assert!(renamed.series_view("old_name").is_err());
 
     // Other column is preserved.
-    let other_vals: Vec<i32> = renamed.column("other").unwrap().to_vec::<i32>().unwrap();
+    let other_vals: Vec<i32> = renamed.series_view("other").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(other_vals, vec![10, 20]);
 }
 
@@ -178,10 +177,10 @@ fn test_select_subset_of_columns() {
     assert_eq!(selected.num_rows(), 2);
     assert_eq!(selected.column_names(), vec!["c", "a"]);
 
-    let c_vals: Vec<i64> = selected.column("c").unwrap().to_vec::<i64>().unwrap();
+    let c_vals: Vec<i64> = selected.series_view("c").unwrap().to_vec::<i64>().unwrap();
     assert_eq!(c_vals, vec![100, 200]);
 
-    let a_vals: Vec<i32> = selected.column("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = selected.series_view("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
 }
 
@@ -219,7 +218,7 @@ fn test_select_preserves_data() {
     assert_eq!(selected.num_columns(), 1);
     assert_eq!(selected.column_names(), vec!["y"]);
 
-    let y_vals: Vec<f64> = selected.column("y").unwrap().to_vec::<f64>().unwrap();
+    let y_vals: Vec<f64> = selected.series_view("y").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(y_vals, vec![4.0, 5.0, 6.0]);
 }
 
@@ -253,8 +252,8 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
 
     // Data unchanged.
-    assert_eq!(renamed.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(renamed.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(renamed.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(renamed.series_view("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -288,7 +287,7 @@ fn test_rename_owned_same_name_noop() {
     let renamed = df.rename_owned("a", "a").unwrap();
 
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
-    assert_eq!(renamed.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(renamed.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -320,6 +319,6 @@ fn test_select_all_columns_returns_full_copy() {
     assert_eq!(selected.num_rows(), 2);
     assert_eq!(selected.column_names(), vec!["a", "b"]);
 
-    let a_vals: Vec<i32> = selected.column("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = selected.series_view("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
 }

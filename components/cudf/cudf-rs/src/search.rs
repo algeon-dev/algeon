@@ -32,8 +32,10 @@ use crate::{
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in(
+        // SAFETY: haystack and needles handles are valid (NonNull maintained by ColumnView).
         unsafe { cudf_sys::cudf_contains(haystack.raw_handle(), needles.raw_handle(), &mut out) },
         "search::contains",
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

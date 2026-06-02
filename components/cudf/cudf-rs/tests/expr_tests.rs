@@ -1,5 +1,4 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
-//! Integration tests for the expression layer (Task D5).
+//! Integration tests for the expression layer.
 //!
 //! Tests cover: `col()` / `lit()`, arithmetic operators, comparisons,
 //! unary ops (`is_null`, `is_not_null`, `cast`, `Not`), `.alias()`,

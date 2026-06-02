@@ -17,7 +17,7 @@ use crate::column::ColumnView;
 /// directly on `SeriesView` via auto-deref.
 ///
 /// Obtain a `SeriesView` from:
-/// - [`DataFrame::column()`](crate::DataFrame::column) — returns a named view
+/// - [`DataFrame::series_view()`](crate::DataFrame::series_view) — returns a named view
 /// - [`Series::view()`](crate::Series::view) — returns a view with the series' name
 pub struct SeriesView<'a> {
     name: Option<&'a str>,

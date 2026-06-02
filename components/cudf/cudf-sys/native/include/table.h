@@ -63,6 +63,15 @@ cudf_status_t cudf_table_view_from_column_views(
     int32_t num_columns,
     cudf_table_view_handle* out);
 
+/// Construct a projected table_view by selecting columns from an existing
+/// table_view. The returned table_view is heap-allocated and must be freed
+/// with cudf_table_view_destroy.
+cudf_status_t cudf_table_view_select_columns(
+    cudf_table_view_handle handle,
+    const int32_t* indices,
+    int32_t num_indices,
+    cudf_table_view_handle* out);
+
 /// Release all columns from a table, destroying the table in the process.
 ///
 /// The table is consumed: after a successful call, `table` is destroyed and

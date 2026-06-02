@@ -1,5 +1,4 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
-//! Tests for the façade `DataFrame::filter` that accepts `&Series` masks.
+//! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, series::Series};
 
@@ -24,8 +23,8 @@ fn test_filter_series_mask_basic() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
-    assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
 #[test]
@@ -109,7 +108,7 @@ fn test_filter_series_with_eq_scalar_mask() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
 }
 
 #[test]
@@ -122,7 +121,7 @@ fn test_filter_series_with_le_scalar_mask() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 15.0]);
+    assert_eq!(filtered.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 15.0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +137,7 @@ fn test_low_level_filter_by_mask_still_works() {
     let filtered = df.filter_by_mask(&mask_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
 }
 
 #[test]

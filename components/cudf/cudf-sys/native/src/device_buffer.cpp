@@ -90,7 +90,7 @@ cudf_status_t cudf_column_adopt_device_buffer(
   }
   CUDF_RUST_NULL_CHECK(buffer, "buffer is null");
   CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    cudf::data_type dtype(to_cudf_type_id(type_id));
     if (!cudf::is_fixed_width(dtype)) {
       set_error("only fixed-width types are supported for buffer adoption");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -142,7 +142,7 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
   CUDF_RUST_NULL_CHECK(data_buffer, "data_buffer is null");
   CUDF_RUST_NULL_CHECK(null_mask_buffer, "null_mask_buffer is null");
   CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    cudf::data_type dtype(to_cudf_type_id(type_id));
     if (!cudf::is_fixed_width(dtype)) {
       set_error("only fixed-width types are supported for buffer adoption");
       return CUDF_ERROR_INVALID_OPERATION;

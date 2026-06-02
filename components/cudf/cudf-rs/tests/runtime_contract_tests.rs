@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Runtime integration contract tests.
 //!
 //! These tests validate the contracts defined in `docs/ri-design-spec.md`:
@@ -22,13 +21,10 @@ use std::{
 };
 
 use cudf::{
-    Agg, AggSpec, DataFrame, SortOptions, Series,
-    column::Column,
-    memory::DeviceMemoryResource,
-    scalar::Scalar,
-    stream::CudaStream,
-    table::Table,
+    Agg, AggSpec, DataFrame, Series, SortOptions, column::Column, memory::DeviceMemoryResource, scalar::Scalar,
+    stream::CudaStream, table::Table,
 };
+use static_assertions::assert_not_impl_any;
 
 // ===========================================================================
 // Category 1: Send+Sync static assertions for owned types
@@ -86,24 +82,9 @@ fn device_memory_resource_is_send_sync() {
 // exactly what we want to guard against.
 // ===========================================================================
 
-// Compile-time proof that ColumnView is !Send.
-// If ColumnView ever becomes Send, this will produce a compile error.
-const _: () = {
-    // The trait bound `*const c_void: Send` is not satisfied, so any struct
-    // containing NonNull<c_void> without `unsafe impl Send` is !Send.
-    // We verify by asserting the *negative* — that ColumnView does NOT
-    // implement Send.
-    //
-    // The actual enforcement is structural: ColumnView holds NonNull<c_void>
-    // + PhantomData<&'a ()>, which auto-derives !Send + !Sync.
-    // Similarly, TableView and SeriesView inherit !Send + !Sync because
-    // they contain ColumnView or equivalent raw pointers.
-    //
-    // When implementing, add static_assertions as dev-dependency and use:
-    // static_assertions::assert_not_impl_all!(ColumnView<'_>: Send);
-    // static_assertions::assert_not_impl_all!(TableView<'_>: Send);
-    // static_assertions::assert_not_impl_all!(SeriesView<'_>: Send);
-};
+assert_not_impl_any!(cudf::column::ColumnView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::table::TableView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::series_view::SeriesView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and documented in ri-design-spec.md):
@@ -130,25 +111,21 @@ fn sample_df() -> DataFrame {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || {
-        df.sort_values(&["id"], SortOptions::new())
-    })
-    .await
-    .expect("blocking task panicked")
-    .expect("sort_values failed");
+    let result = tokio::task::spawn_blocking(move || df.sort_values(&["id"], SortOptions::new()))
+        .await
+        .expect("blocking task panicked")
+        .expect("sort_values failed");
 
     assert_eq!(result.num_rows(), 5);
-    let ids: Vec<i32> = result.column("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(ids, vec![1, 1, 3, 4, 5]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_head_survives_spawn_blocking() {
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || df.head(3))
-        .await
-        .expect("blocking task panicked")
-        .expect("head failed");
+    let result =
+        tokio::task::spawn_blocking(move || df.head(3)).await.expect("blocking task panicked").expect("head failed");
 
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.num_columns(), 2);
@@ -170,10 +147,7 @@ async fn arc_dataframe_shared_across_workers() {
     }
 
     for handle in handles {
-        let ids = handle
-            .await
-            .expect("blocking task panicked")
-            .expect("to_vec failed");
+        let ids = handle.await.expect("blocking task panicked").expect("to_vec failed");
         assert_eq!(ids, vec![3, 1, 4, 1, 5]);
     }
 }
@@ -196,12 +170,10 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
 async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
     // Move DataFrame into spawn_blocking, return it, drop on the async task.
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || {
-        df.sort_values(&["id"], SortOptions::new())
-    })
-    .await
-    .expect("blocking task panicked")
-    .expect("sort_values failed");
+    let result = tokio::task::spawn_blocking(move || df.sort_values(&["id"], SortOptions::new()))
+        .await
+        .expect("blocking task panicked")
+        .expect("sort_values failed");
 
     // result (DataFrame) is now owned by the async task.
     assert_eq!(result.num_rows(), 5);
@@ -216,12 +188,10 @@ async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_sort_survives_spawn_blocking() {
     let series = Series::new::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
-    let sorted = tokio::task::spawn_blocking(move || {
-        series.sort_values(SortOptions::new())
-    })
-    .await
-    .expect("blocking task panicked")
-    .expect("sort_values failed");
+    let sorted = tokio::task::spawn_blocking(move || series.sort_values(SortOptions::new()))
+        .await
+        .expect("blocking task panicked")
+        .expect("sort_values failed");
 
     let vals: Vec<i64> = sorted.view().unwrap().to_vec::<i64>().unwrap();
     assert_eq!(vals, vec![10, 20, 30, 40, 50]);
@@ -232,10 +202,8 @@ async fn series_arithmetic_in_spawn_blocking() {
     let a = Series::new::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
     let b = Series::new::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
 
-    let result = tokio::task::spawn_blocking(move || a.add(&b))
-        .await
-        .expect("blocking task panicked")
-        .expect("add failed");
+    let result =
+        tokio::task::spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
 
     let vals: Vec<f64> = result.view().unwrap().to_vec::<f64>().unwrap();
     assert_eq!(vals, vec![11.0, 22.0, 33.0]);
@@ -270,12 +238,10 @@ async fn parquet_round_trip_in_spawn_blocking() {
         .expect("write_parquet failed");
 
     // Read from a separate spawn_blocking.
-    let loaded = tokio::task::spawn_blocking(move || {
-        DataFrame::read_parquet(&path_clone)
-    })
-    .await
-    .expect("blocking task panicked")
-    .expect("read_parquet failed");
+    let loaded = tokio::task::spawn_blocking(move || DataFrame::read_parquet(&path_clone))
+        .await
+        .expect("blocking task panicked")
+        .expect("read_parquet failed");
 
     assert_eq!(loaded.num_columns(), 2);
     assert_eq!(loaded.num_rows(), 5);
@@ -290,7 +256,7 @@ async fn parquet_round_trip_in_spawn_blocking() {
 async fn host_materialization_to_vec_in_spawn_blocking() {
     let df = sample_df();
     let ids = tokio::task::spawn_blocking(move || {
-        let col = df.column("id").unwrap();
+        let col = df.series_view("id").unwrap();
         col.to_vec::<i32>()
     })
     .await
@@ -328,15 +294,13 @@ async fn arrow_round_trip_across_spawn_blocking() {
         .expect("to_record_batch failed");
 
     // host → GPU (DataFrame) in another spawn_blocking.
-    let df2 = tokio::task::spawn_blocking(move || {
-        dataframe_from_record_batch(&batch)
-    })
-    .await
-    .expect("blocking task panicked")
-    .expect("from_record_batch failed");
+    let df2 = tokio::task::spawn_blocking(move || dataframe_from_record_batch(&batch))
+        .await
+        .expect("blocking task panicked")
+        .expect("from_record_batch failed");
 
     assert_eq!(df2.num_rows(), 5);
-    let ids: Vec<i32> = df2.column("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = df2.series_view("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(ids, vec![3, 1, 4, 1, 5]);
 }
 
@@ -350,10 +314,7 @@ async fn chained_pipeline_in_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
         let keys = Column::from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
         let vals = Column::from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
-        let df = DataFrame::new(
-            vec!["key".into(), "value".into()],
-            vec![keys, vals],
-        )?;
+        let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
         let sorted = df.sort_values(&["key"], SortOptions::new())?;
@@ -363,13 +324,11 @@ async fn chained_pipeline_in_spawn_blocking() {
         assert_eq!(top.num_rows(), 4);
 
         // GroupBy sum.
-        let agg_result = top
-            .groupby(&["key"])
-            .agg(&[AggSpec::new("value", Agg::Sum)])?;
+        let agg_result = top.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
 
         // Materialize to host.
-        let key_data: Vec<i32> = agg_result.column("key").unwrap().to_vec::<i32>()?;
-        let sum_data: Vec<i64> = agg_result.column("value_sum").unwrap().to_vec::<i64>()?;
+        let key_data: Vec<i32> = agg_result.series_view("key").unwrap().to_vec::<i32>()?;
+        let sum_data: Vec<i64> = agg_result.series_view("value_sum").unwrap().to_vec::<i64>()?;
 
         let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
         pairs.sort_by_key(|&(k, _)| k);
@@ -389,21 +348,16 @@ async fn join_inside_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<usize> {
         let left = DataFrame::new(
             vec!["id".into(), "name".into()],
-            vec![
-                Column::from_slice(&[1i32, 2, 3]).unwrap(),
-                Column::from_strings(&["Alice", "Bob", "Carol"]).unwrap(),
-            ],
+            vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_strings(&["Alice", "Bob", "Carol"]).unwrap()],
         )?;
 
         let right = DataFrame::new(
             vec!["id".into(), "score".into()],
-            vec![
-                Column::from_slice(&[2i32, 3, 4]).unwrap(),
-                Column::from_slice(&[85.0f64, 92.0, 78.0]).unwrap(),
-            ],
+            vec![Column::from_slice(&[2i32, 3, 4]).unwrap(), Column::from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
         )?;
 
-        let joined = left.inner_join(&right, &["id"])?;
+        let opts = cudf::MergeOptions::new().on(&["id"]).how_inner();
+        let joined = left.merge(&right, opts)?;
         Ok(joined.num_rows())
     })
     .await
@@ -429,7 +383,7 @@ async fn dataframe_filter_by_mask_in_spawn_blocking() {
         let filtered = df.filter_by_mask(&mask_view)?;
 
         // Materialize filtered ids to host.
-        let ids = filtered.column("id").unwrap().to_vec::<i32>()?;
+        let ids = filtered.series_view("id").unwrap().to_vec::<i32>()?;
         Ok(ids)
     })
     .await
@@ -456,23 +410,17 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let df2 = Arc::clone(&df);
 
     let (sorted_asc, sorted_desc) = tokio::join!(
-        tokio::task::spawn_blocking(move || {
-            df1.sort_values(&["id"], SortOptions::new())
-        }),
+        tokio::task::spawn_blocking(move || { df1.sort_values(&["id"], SortOptions::new()) }),
         tokio::task::spawn_blocking(move || {
             df2.sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
         }),
     );
 
-    let asc = sorted_asc
-        .expect("asc task panicked")
-        .expect("asc sort failed");
-    let desc = sorted_desc
-        .expect("desc task panicked")
-        .expect("desc sort failed");
+    let asc = sorted_asc.expect("asc task panicked").expect("asc sort failed");
+    let desc = sorted_desc.expect("desc task panicked").expect("desc sort failed");
 
-    let asc_ids: Vec<i32> = asc.column("id").unwrap().to_vec::<i32>().unwrap();
-    let desc_ids: Vec<i32> = desc.column("id").unwrap().to_vec::<i32>().unwrap();
+    let asc_ids: Vec<i32> = asc.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let desc_ids: Vec<i32> = desc.series_view("id").unwrap().to_vec::<i32>().unwrap();
 
     assert_eq!(asc_ids, vec![1, 1, 3, 4, 5]);
     assert_eq!(desc_ids, vec![5, 4, 3, 1, 1]);
@@ -504,7 +452,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
             for _ in 0..16 {
                 let df = sample_df();
                 let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
-                let _ids: Vec<i32> = sorted.column("id").unwrap().to_vec::<i32>().unwrap();
+                let _ids: Vec<i32> = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
             }
         }));
     }
@@ -517,10 +465,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
     }
 
     let ticks = ticker.await.expect("ticker task panicked");
-    assert!(
-        ticks >= 10,
-        "Tokio runtime heartbeat stalled during DataFrame GPU ops (ticks={ticks})"
-    );
+    assert!(ticks >= 10, "Tokio runtime heartbeat stalled during DataFrame GPU ops (ticks={ticks})");
 }
 
 // ===========================================================================
@@ -545,7 +490,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
         Ok(Ok(df)) => {
             // Normal case: completed within timeout.
             assert_eq!(df.num_rows(), 5);
-        }
+        },
         Ok(Err(e)) => panic!("spawn_blocking panicked: {e}"),
         Err(_elapsed) => {
             // Timeout fired. The blocking thread is still running (or
@@ -554,6 +499,6 @@ async fn timeout_on_spawn_blocking_is_safe() {
             //
             // In CI this should not happen (30s is very generous), but
             // this branch documents the contract: timeout doesn't crash.
-        }
+        },
     }
 }

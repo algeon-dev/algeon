@@ -36,10 +36,12 @@
 
 use std::path::Path;
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
-use cudf::io::parquet::{ParquetWriterOptions, write_parquet};
-use cudf::table::Table;
+use cudf::{
+    column::Column,
+    dataframe::DataFrame,
+    io::parquet::{ParquetWriterOptions, write_parquet},
+    table::Table,
+};
 use tempfile::TempDir;
 
 // Future chunked reader types (uncomment when implemented):
@@ -69,7 +71,7 @@ fn write_test_parquet(path: &Path, num_rows: i32, num_columns: usize) {
 
     let table = Table::from_columns(columns).unwrap();
     let view = table.view().unwrap();
-    let opts = ParquetWriterOptions::new(path).column_names(&names);
+    let opts = ParquetWriterOptions::new(path).column_names(&names).unwrap();
     write_parquet(&view, &opts).unwrap();
 }
 

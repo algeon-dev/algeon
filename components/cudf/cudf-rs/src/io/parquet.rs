@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    error::{self, Result},
+    error::{self, Error, ErrorKind, Result},
     table::{Table, TableView},
 };
 
@@ -32,9 +32,22 @@ impl ParquetReaderOptions {
     }
 
     /// Only read the specified columns (by name).
-    pub fn columns(mut self, names: &[&str]) -> Self {
-        self.columns = Some(names.iter().map(|s| CString::new(*s).expect("column name contains null byte")).collect());
-        self
+    ///
+    /// Returns an error if any column name contains an interior null byte.
+    pub fn columns(mut self, names: &[&str]) -> Result<Self> {
+        self.columns = Some(
+            names
+                .iter()
+                .map(|s| {
+                    CString::new(*s).map_err(|_| {
+                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                            .with_operation("io::parquet::ParquetReaderOptions::columns")
+                            .with_context("column_name", s.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        Ok(self)
     }
 
     /// Skip the first `n` rows.
@@ -77,6 +90,8 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
         if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
+        // SAFETY: filepath is a valid CString. col_ptrs is either null or a
+        // valid pointer to num_cols CString pointers.
         unsafe {
             cudf_sys::cudf_io_read_parquet_with_metadata(
                 filepath.as_ptr(),
@@ -97,14 +112,20 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
         ],
     )?;
 
+    // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
+    // Wrap early so table is freed via RAII if collect_column_names() fails.
+    let table = unsafe { Table::from_raw(table_handle) };
+
     // Convert the C string array into Vec<String> and free the C memory.
+    // SAFETY: names_ptr and num_names were returned by a successful FFI call.
+    // cudf_io_free_column_names frees the C-allocated name strings and array.
     let column_names = unsafe {
         let names = collect_column_names(names_ptr, num_names);
         cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         names?
     };
 
-    Ok(ParquetTableWithMetadata { table: unsafe { Table::from_raw(table_handle) }, column_names })
+    Ok(ParquetTableWithMetadata { table, column_names })
 }
 
 unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> Result<Vec<String>> {
@@ -131,6 +152,7 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 
     let mut names = Vec::with_capacity(num_names as usize);
     for i in 0..num_names {
+        // SAFETY: names_ptr is valid for num_names elements (checked above).
         let name_ptr = *names_ptr.add(i as usize);
         if name_ptr.is_null() {
             return Err(crate::error::Error::new(
@@ -142,6 +164,8 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
             .with_context("name_index", i.to_string()));
         }
 
+        // SAFETY: name_ptr is non-null (checked above) and points to a
+        // valid null-terminated C string allocated by the C shim.
         let c_str = CStr::from_ptr(name_ptr);
         names.push(c_str.to_string_lossy().into_owned());
     }
@@ -162,16 +186,45 @@ impl ParquetWriterOptions {
     }
 
     /// Set column names for the output file.
-    pub fn column_names(mut self, names: &[&str]) -> Self {
-        self.column_names =
-            Some(names.iter().map(|s| CString::new(*s).expect("column name contains null byte")).collect());
-        self
+    ///
+    /// Returns an error if any column name contains an interior null byte.
+    pub fn column_names(mut self, names: &[&str]) -> Result<Self> {
+        self.column_names = Some(
+            names
+                .iter()
+                .map(|s| {
+                    CString::new(*s).map_err(|_| {
+                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                            .with_operation("io::parquet::ParquetWriterOptions::column_names")
+                            .with_context("column_name", s.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        Ok(self)
     }
 }
 
 /// Write a table to a Parquet file.
+///
+/// Returns an error if `column_names` were set on the options and their count
+/// does not match the number of columns in the table.
 pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;
+
+    // Validate column name count matches the table before the FFI call.
+    if let Some(ref names) = options.column_names {
+        let expected = table.num_columns()? as usize;
+        if names.len() != expected {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("column name count ({}) does not match table column count ({})", names.len(), expected),
+            )
+            .with_operation("io::parquet::write_parquet")
+            .with_context("column_name_count", names.len().to_string())
+            .with_context("table_column_count", expected.to_string()));
+        }
+    }
 
     // Build the pointer array; the Vec must outlive the FFI call.
     let name_ptrs_vec: Vec<*const c_char> =
@@ -180,6 +233,8 @@ pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> R
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
+        // SAFETY: table handle is valid (NonNull). filepath is a valid CString.
+        // name_ptrs is either null or a valid pointer to num_cols CString pointers.
         unsafe { cudf_sys::cudf_io_write_parquet(table.raw_handle(), filepath.as_ptr(), name_ptrs, num_cols) },
         "io::parquet::write_parquet",
         [("output_column_name_count", num_cols.to_string())],

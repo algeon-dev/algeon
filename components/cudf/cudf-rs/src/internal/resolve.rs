@@ -1,6 +1,6 @@
 //! Column-name resolution and validation helpers.
 //!
-//! These are used by `DataFrame` and other façade types to translate
+//! These are used by `DataFrame` and other high-level types to translate
 //! user-supplied column names into positional indices and to validate
 //! schema constraints.
 
@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use crate::{
     column::Column,
     error::{Error, ErrorKind, Result},
-    table::Table,
+    internal::temp_table::TempTableView,
 };
 
 /// Validate that `names` contains no duplicates.
@@ -54,21 +54,24 @@ pub(crate) fn resolve_column_names(
         .collect()
 }
 
-/// Build an owned `Table` containing only the columns at the given positional
-/// indices from the `IndexMap`. This **deep-copies** each selected column.
-pub(crate) fn build_keys_table_from_columns(
-    columns: &IndexMap<String, Arc<Column>>,
+/// Build a borrowed `TempTableView` containing only the columns at the given
+/// positional indices from the `IndexMap`.
+///
+/// This is zero-copy with respect to device data: it allocates only temporary
+/// FFI view handles over the selected columns.
+pub(crate) fn build_borrowed_table_view_from_columns<'a>(
+    columns: &'a IndexMap<String, Arc<Column>>,
     indices: &[usize],
-) -> Result<Table> {
-    let cols: Vec<Column> = indices
+) -> Result<TempTableView<'a>> {
+    let views = indices
         .iter()
         .map(|&idx| {
-            let (_, col) = columns.get_index(idx).expect("index out of bounds");
-            col.copy()
+            let (_, col) = columns.get_index(idx).expect("BUG: resolved index should always be valid");
+            col.view()
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Table::from_columns(cols)
+    TempTableView::from_column_views(views)
 }
 
 /// Compute payload column indices: all positions NOT in `key_indices`,

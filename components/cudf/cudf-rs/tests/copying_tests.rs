@@ -12,7 +12,7 @@ fn test_gather_basic() {
     let map = Column::from_slice(&[4i32, 2, 0]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![50, 30, 10]);
@@ -28,7 +28,7 @@ fn test_gather_multi_column() {
     let map = Column::from_slice(&[3i32, 1]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_columns().unwrap(), 2);
     assert_eq!(rv.num_rows().unwrap(), 2);
@@ -46,7 +46,7 @@ fn test_gather_identity() {
     let map = Column::from_slice(&[0i32, 1, 2]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -61,7 +61,7 @@ fn test_gather_with_duplicates() {
     let map = Column::from_slice(&[1i32, 1, 1, 0]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 20, 20, 10]);
 }
@@ -75,7 +75,7 @@ fn test_gather_empty_map() {
     let map = Column::from_slice(&[] as &[i32]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::DontCheck).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 0);
 }
@@ -90,7 +90,7 @@ fn test_gather_out_of_bounds_nullify() {
     let map = Column::from_slice(&[0i32, 5, 2]).unwrap();
     let map_view = map.view().unwrap();
 
-    let result = copying::gather(&tv, &map_view, copying::OutOfBoundsPolicy::Nullify).unwrap();
+    let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
     let cv = rv.column(0).unwrap();
@@ -99,4 +99,20 @@ fn test_gather_out_of_bounds_nullify() {
     assert!(validity[0]);
     assert!(!validity[1]); // out-of-bounds → null
     assert!(validity[2]);
+}
+
+#[test]
+fn test_gather_unchecked_basic() {
+    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let tv = table.view().unwrap();
+
+    let map = Column::from_slice(&[2i32, 0]).unwrap();
+    let map_view = map.view().unwrap();
+
+    // SAFETY: indices 2 and 0 are valid for a 3-row table.
+    let result = unsafe { copying::gather_unchecked(&tv, &map_view) }.unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.num_rows().unwrap(), 2);
+    assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
 }

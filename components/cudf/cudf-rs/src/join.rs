@@ -1,5 +1,9 @@
 //! GPU-accelerated join operations.
 //!
+//! **Advanced/Core.** Most users should prefer
+//! [`DataFrame::merge`](crate::DataFrame::merge) with
+//! [`MergeOptions`](crate::MergeOptions).
+//!
 //! # Example
 //!
 //! ```no_run
@@ -28,20 +32,11 @@
 
 use std::ptr;
 
+pub use crate::types::NullEquality;
 use crate::{
     error::{self, Result},
     table::{Table, TableView},
 };
-
-/// How to compare null keys in join operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub enum NullEquality {
-    /// Null keys are considered equal (null == null is true).
-    Equal = 0,
-    /// Null keys are considered unequal (null == null is false).
-    Unequal = 1,
-}
 
 /// Result of a join operation.
 pub struct JoinResult {
@@ -66,6 +61,7 @@ pub fn inner_join(
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: All raw handles are valid (NonNull maintained by their types).
         unsafe {
             cudf_sys::cudf_inner_join(
                 left_keys.raw_handle(),
@@ -80,6 +76,7 @@ pub fn inner_join(
         "join::inner_join",
         [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
+    // SAFETY: out_left/out_right were returned by a successful FFI call, transferring ownership.
     Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }
 
@@ -95,6 +92,7 @@ pub fn left_join(
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: All raw handles are valid (NonNull maintained by their types).
         unsafe {
             cudf_sys::cudf_left_join(
                 left_keys.raw_handle(),
@@ -109,11 +107,12 @@ pub fn left_join(
         "join::left_join",
         [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
+    // SAFETY: out_left/out_right were returned by a successful FFI call, transferring ownership.
     Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }
 
 // ---------------------------------------------------------------------------
-// Façade types
+// High-level types
 // ---------------------------------------------------------------------------
 
 /// The type of join to perform.
@@ -293,6 +292,7 @@ pub fn full_join(
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: All raw handles are valid (NonNull maintained by their types).
         unsafe {
             cudf_sys::cudf_full_join(
                 left_keys.raw_handle(),
@@ -307,5 +307,6 @@ pub fn full_join(
         "join::full_join",
         [("null_equality", format!("{:?}", null_equality).to_lowercase())],
     )?;
+    // SAFETY: out_left/out_right were returned by a successful FFI call, transferring ownership.
     Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }

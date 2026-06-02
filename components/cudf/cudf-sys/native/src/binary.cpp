@@ -36,7 +36,7 @@ cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   cudf::binary_operator cudf_op;
-  auto status = to_binary_operator(op, &cudf_op);
+  cudf_status_t status = to_binary_operator(op, &cudf_op);
   if (status != CUDF_SUCCESS) {
     return status;
   }
@@ -66,7 +66,7 @@ cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   cudf::binary_operator cudf_op;
-  auto status = to_binary_operator(op, &cudf_op);
+  cudf_status_t status = to_binary_operator(op, &cudf_op);
   if (status != CUDF_SUCCESS) {
     return status;
   }
@@ -96,7 +96,7 @@ cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   cudf::binary_operator cudf_op;
-  auto status = to_binary_operator(op, &cudf_op);
+  cudf_status_t status = to_binary_operator(op, &cudf_op);
   if (status != CUDF_SUCCESS) {
     return status;
   }

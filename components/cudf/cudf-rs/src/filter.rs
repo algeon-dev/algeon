@@ -32,9 +32,11 @@ use crate::{
 /// number of rows as the input table.
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
     let mut out = ptr::null_mut();
+    // SAFETY: input and mask raw handles are valid (maintained by NonNull in their types).
     error::check_status_in(
         unsafe { cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out) },
         "filter::apply_boolean_mask",
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Table::from_raw(out) })
 }

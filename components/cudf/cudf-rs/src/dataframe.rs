@@ -28,17 +28,16 @@ use crate::{
     copying,
     dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
-    filter,
-    groupby::{self, Aggregation, AggregationRequest, NullPolicy},
+    filter, groupby,
     io::parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
     join, replace,
     scalar::Scalar,
     series::Series,
     series_view::SeriesView,
-    sorting::{self, Order, SortOptions},
+    sorting::{self, SortOptions},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     table::Table,
-    types::DataType,
+    types::{CudfType, DataType},
     unary,
 };
 
@@ -53,6 +52,29 @@ use crate::{
 ///
 /// Cloning a `DataFrame` is cheap: it clones the `IndexMap` and bumps
 /// `Arc` reference counts — no GPU data is copied.
+///
+/// # Display
+///
+/// [`std::fmt::Display`] for `DataFrame` is metadata-only. It reports row and
+/// column counts plus per-column schema details, but it does not materialize
+/// cell values to host memory.
+///
+/// This keeps `Display` distinct from row-selection APIs such as
+/// [`head`](Self::head), [`tail`](Self::tail), and [`slice`](Self::slice).
+/// Use those APIs to select row subsets, then inspect the resulting columns
+/// explicitly when you need host-visible values.
+///
+/// # Consuming variants
+///
+/// Schema-only operations have `_owned` variants that take `self` by value:
+/// [`rename_owned`](Self::rename_owned), [`select_owned`](Self::select_owned),
+/// [`with_column_owned`](Self::with_column_owned). These avoid the O(N)
+/// `Arc::clone` overhead for N columns by moving ownership directly.
+/// Prefer them when the source DataFrame is no longer needed.
+///
+/// GPU-allocating operations (head, tail, filter, sort, etc.) do **not**
+/// have `_owned` variants because FFI always allocates new device memory,
+/// making the `Arc::clone` cost negligible relative to the GPU allocation.
 #[derive(Clone)]
 pub struct DataFrame {
     columns: IndexMap<String, Arc<Column>>,
@@ -191,7 +213,7 @@ impl std::fmt::Debug for DataFrame {
             .keys()
             .map(|name| {
                 let type_str = self
-                    .column_view(name)
+                    .series_view(name)
                     .and_then(|cv| cv.data_type())
                     .map(|dt| format!("{:?}", dt.id()))
                     .unwrap_or_else(|_| "?".to_string());
@@ -205,188 +227,92 @@ impl std::fmt::Debug for DataFrame {
 
 impl std::fmt::Display for DataFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        display_dataframe(self, f, DISPLAY_MAX_ROWS)
+        display_dataframe(self, f)
     }
 }
 
-/// Maximum number of rows to show in the `Display` output.
-const DISPLAY_MAX_ROWS: usize = 10;
-
-/// Host-side materialized values for one display column.
-enum DisplayColumnValues {
-    Int8(Vec<i8>),
-    Int16(Vec<i16>),
-    Int32(Vec<i32>),
-    Int64(Vec<i64>),
-    UInt8(Vec<u8>),
-    UInt16(Vec<u16>),
-    UInt32(Vec<u32>),
-    UInt64(Vec<u64>),
-    Float32(Vec<f32>),
-    Float64(Vec<f64>),
-    Bool8(Vec<bool>),
-    Unknown,
-}
-
-/// Host-side cached display data for one column.
-struct DisplayColumn {
+/// Cached schema metadata for one display column.
+struct DisplayColumnMetadata {
     type_str: String,
-    validity: Option<Vec<bool>>,
-    values: DisplayColumnValues,
+    nullable: Option<bool>,
+    null_count: Option<i32>,
 }
 
-impl DisplayColumn {
+impl DisplayColumnMetadata {
     fn unknown() -> Self {
-        Self { type_str: "?".to_string(), validity: None, values: DisplayColumnValues::Unknown }
+        Self { type_str: "?".to_string(), nullable: None, null_count: None }
     }
 
-    fn cell(&self, row_idx: usize) -> String {
-        if let Some(validity) = &self.validity {
-            if row_idx < validity.len() && !validity[row_idx] {
-                return "null".to_string();
+    fn details(&self) -> Option<String> {
+        let mut details = Vec::new();
+
+        if matches!(self.nullable, Some(true)) {
+            details.push("nullable".to_string());
+        }
+
+        if let Some(null_count) = self.null_count {
+            if null_count > 0 {
+                details.push(format!("nulls={null_count}"));
             }
         }
 
-        match &self.values {
-            DisplayColumnValues::Int8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int16(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt16(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Float32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Float64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Bool8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Unknown => "?".to_string(),
-        }
+        (!details.is_empty()).then(|| details.join(", "))
     }
 }
 
-/// Build one display column cache from a named DataFrame column.
-fn build_display_column(df: &DataFrame, name: &str) -> DisplayColumn {
-    let cv = match df.column_view(name) {
+/// Build one display column schema summary from a named DataFrame column.
+fn build_display_column_metadata(df: &DataFrame, name: &str) -> DisplayColumnMetadata {
+    let cv = match df.series_view(name) {
         Ok(cv) => cv,
-        Err(_) => return DisplayColumn::unknown(),
+        Err(_) => return DisplayColumnMetadata::unknown(),
     };
 
     let type_id = match cv.data_type() {
         Ok(dt) => dt.id(),
-        Err(_) => return DisplayColumn::unknown(),
+        Err(_) => return DisplayColumnMetadata::unknown(),
     };
 
-    let validity = cv.validity().ok().flatten();
-
-    use crate::types::TypeId;
-    let values = match type_id {
-        TypeId::Int8 => cv.to_vec::<i8>().map(DisplayColumnValues::Int8).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int16 => cv.to_vec::<i16>().map(DisplayColumnValues::Int16).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int32 => cv.to_vec::<i32>().map(DisplayColumnValues::Int32).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int64 => cv.to_vec::<i64>().map(DisplayColumnValues::Int64).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt8 => cv.to_vec::<u8>().map(DisplayColumnValues::UInt8).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt16 => cv.to_vec::<u16>().map(DisplayColumnValues::UInt16).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt32 => cv.to_vec::<u32>().map(DisplayColumnValues::UInt32).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt64 => cv.to_vec::<u64>().map(DisplayColumnValues::UInt64).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Float32 => cv.to_vec::<f32>().map(DisplayColumnValues::Float32).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Float64 => cv.to_vec::<f64>().map(DisplayColumnValues::Float64).unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Bool8 => cv.to_vec::<bool>().map(DisplayColumnValues::Bool8).unwrap_or(DisplayColumnValues::Unknown),
-        _ => DisplayColumnValues::Unknown,
-    };
-
-    DisplayColumn { type_str: format!("{:?}", type_id), validity, values }
+    DisplayColumnMetadata {
+        type_str: format!("{:?}", type_id),
+        nullable: cv.nullable().ok(),
+        null_count: cv.null_count().ok(),
+    }
 }
 
-/// Format a DataFrame as a human-readable table.
+/// Format a DataFrame as a human-readable metadata summary.
 ///
-/// Shows column names, types, up to `max_rows` of data, and a row-count
-/// summary line.
-fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: usize) -> std::fmt::Result {
+/// Shows row and column counts plus per-column schema metadata. This is
+/// intentionally metadata-only and never materializes cell values to host.
+fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let num_cols = df.num_columns();
     let num_rows = df.num_rows();
+    write!(f, "DataFrame [{} columns x {} rows]", num_cols, num_rows)?;
 
     if num_cols == 0 {
-        return write!(f, "DataFrame [0 columns × {} rows]", num_rows);
+        return Ok(());
     }
 
     let names: Vec<&str> = df.column_names();
+    let display_cols: Vec<DisplayColumnMetadata> =
+        names.iter().map(|&name| build_display_column_metadata(df, name)).collect();
 
-    // Materialize each display column ONCE (GPU -> host copy once per column).
-    let display_cols: Vec<DisplayColumn> = names.iter().map(|&name| build_display_column(df, name)).collect();
-
-    let types: Vec<String> = display_cols.iter().map(|c| c.type_str.clone()).collect();
-
-    // Determine how many rows to display.
-    let show_rows = max_rows.min(num_rows);
-
-    // Collect string representations of cell values.
-    // rows[row_idx][col_idx] = formatted string.
-    let mut rows: Vec<Vec<String>> = Vec::with_capacity(show_rows);
-    for row_idx in 0..show_rows {
-        let mut row: Vec<String> = Vec::with_capacity(num_cols);
-        for col in &display_cols {
-            row.push(col.cell(row_idx));
+    write!(f, "\ncolumns:")?;
+    for (name, meta) in names.iter().zip(display_cols.iter()) {
+        write!(f, "\n- {name}: {}", meta.type_str)?;
+        if let Some(details) = meta.details() {
+            write!(f, " ({details})")?;
         }
-        rows.push(row);
     }
 
-    // Compute column widths: max of (name, type, each cell value).
-    let mut widths: Vec<usize> = Vec::with_capacity(num_cols);
-    for col_idx in 0..num_cols {
-        let mut w = names[col_idx].len().max(types[col_idx].len());
-        for row in &rows {
-            w = w.max(row[col_idx].len());
-        }
-        widths.push(w);
-    }
-
-    // Print header: column names.
-    write_row(f, &names.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &widths)?;
-
-    // Print type row.
-    write_row(f, &types, &widths)?;
-
-    // Print separator.
-    write_separator(f, &widths)?;
-
-    // Print data rows.
-    for row in &rows {
-        write_row(f, row, &widths)?;
-    }
-
-    // If there are more rows, indicate truncation.
-    if num_rows > show_rows {
-        writeln!(f, "... {} more rows", num_rows - show_rows)?;
-    }
-
-    // Summary line.
-    write!(f, "[{} columns × {} rows]", num_cols, num_rows)
-}
-
-/// Write one row of values, padded to column widths.
-fn write_row(f: &mut std::fmt::Formatter<'_>, values: &[String], widths: &[usize]) -> std::fmt::Result {
-    for (i, (val, &w)) in values.iter().zip(widths).enumerate() {
-        if i > 0 {
-            write!(f, "  ")?;
-        }
-        write!(f, "{:>width$}", val, width = w)?;
-    }
-    writeln!(f)
-}
-
-/// Write a separator line (dashes under each column).
-fn write_separator(f: &mut std::fmt::Formatter<'_>, widths: &[usize]) -> std::fmt::Result {
-    for (i, &w) in widths.iter().enumerate() {
-        if i > 0 {
-            write!(f, "  ")?;
-        }
-        write!(f, "{}", "-".repeat(w))?;
-    }
-    writeln!(f)
+    Ok(())
 }
 
 impl DataFrame {
-    /// Create a new `DataFrame` from column names and owned columns.
+    /// Create a new `DataFrame` from column names and owned [`Column`] values.
+    ///
+    /// Advanced constructor. For most user-facing code, prefer
+    /// [`DataFrame::from_columns`] with named [`Series`](crate::Series)
+    /// values.
     ///
     /// # Errors
     ///
@@ -409,18 +335,18 @@ impl DataFrame {
         }
 
         // Validate all columns have the same row count.
-        let first_rows_i32 = columns[0].view()?.len()?;
+        let first_rows = columns[0].view()?.len()?;
         for (i, col) in columns.iter().enumerate().skip(1) {
             let rows = col.view()?.len()?;
-            if rows != first_rows_i32 {
+            if rows != first_rows {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
-                    format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows_i32),
+                    format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows),
                 )
                 .with_operation("dataframe::new")
                 .with_context("column_index", i.to_string())
                 .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows_i32.to_string()));
+                .with_context("expected_rows", first_rows.to_string()));
             }
         }
 
@@ -429,7 +355,7 @@ impl DataFrame {
             map.insert(name, Arc::new(col));
         }
 
-        Ok(Self { columns: map, row_count: first_rows_i32 as usize })
+        Ok(Self { columns: map, row_count: first_rows })
     }
 
     /// Wrap an existing [`Table`] with column names.
@@ -467,6 +393,10 @@ impl DataFrame {
     ///
     /// This is the ergonomic constructor for building DataFrames from Series.
     /// Each Series' `Arc<Column>` is shared (zero GPU copy).
+    ///
+    /// The pair name becomes the DataFrame schema name. The input `Series`
+    /// value is treated as the data source; its own `Series::name()` does not
+    /// control the output column name.
     ///
     /// # Errors
     ///
@@ -511,8 +441,8 @@ impl DataFrame {
 
         // Validate all columns have the same row count.
         let mut iter = map.iter();
-        let (first_name, first_col) = iter.next().unwrap();
-        let first_rows_i32 = first_col
+        let (first_name, first_col) = iter.next().expect("non-empty: checked above");
+        let first_rows = first_col
             .view()
             .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?
             .len()
@@ -524,19 +454,19 @@ impl DataFrame {
                 .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?
                 .len()
                 .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?;
-            if rows != first_rows_i32 {
+            if rows != first_rows {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
-                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows_i32),
+                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
                 )
                 .with_operation("dataframe::from_series")
                 .with_context("column_name", name.clone())
                 .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows_i32.to_string()));
+                .with_context("expected_rows", first_rows.to_string()));
             }
         }
 
-        Ok(Self { columns: map, row_count: first_rows_i32 as usize })
+        Ok(Self { columns: map, row_count: first_rows })
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -559,7 +489,13 @@ impl DataFrame {
         self.columns.len()
     }
 
-    /// Returns the number of rows.
+    /// Returns the logical number of rows.
+    ///
+    /// This is cached DataFrame metadata. Schema-only operations such as
+    /// [`select`](Self::select) and [`drop`](Self::drop) preserve it even if
+    /// the resulting DataFrame has zero columns. Bare constructors with no
+    /// columns, however, create a `0 x 0` DataFrame because they have no
+    /// external row index to preserve.
     pub fn num_rows(&self) -> usize {
         self.row_count
     }
@@ -567,25 +503,6 @@ impl DataFrame {
     /// Returns column names in insertion (schema) order.
     pub fn column_names(&self) -> Vec<&str> {
         self.columns.keys().map(|s| s.as_str()).collect()
-    }
-
-    /// Borrow a named [`SeriesView`] by name.
-    ///
-    /// The returned view carries the column name and implements
-    /// `Deref<Target = ColumnView>`, so all low-level column methods are
-    /// available directly.
-    ///
-    /// # Migration
-    ///
-    /// - For owned access, use [`series()`](Self::series) (canonical accessor).
-    /// - For explicit borrowed access, use [`column_view()`](Self::column_view).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `name` is not in the schema.
-    #[deprecated(since = "0.3.0", note = "Use series() for owned access or column_view() for borrowed access")]
-    pub fn column(&self, name: &str) -> Result<SeriesView<'_>> {
-        self.column_view(name)
     }
 
     /// Borrow a named [`SeriesView`] by name — the explicit borrow accessor.
@@ -605,10 +522,10 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if `name` is not in the schema.
-    pub fn column_view(&self, name: &str) -> Result<SeriesView<'_>> {
+    pub fn series_view(&self, name: &str) -> Result<SeriesView<'_>> {
         let (key, col) = self.columns.get_key_value(name).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                .with_operation("dataframe::column_view")
+                .with_operation("dataframe::series_view")
                 .with_context("column_name", name.to_string())
         })?;
 
@@ -616,15 +533,15 @@ impl DataFrame {
         Ok(SeriesView::new(Some(key.as_str()), cv))
     }
 
-    /// Return a named [`Series`] for the given column — the canonical façade accessor.
+    /// Return a named [`Series`] for the given column — the canonical user-facing accessor.
     ///
     /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
     /// zero-copy metadata operation. The series name is set to the DataFrame
     /// column name.
     ///
-    /// Use this method for all façade-level column access. For a borrowed
+    /// Use this method for all high-level column access. For a borrowed
     /// [`SeriesView`] without an `Arc` bump, use
-    /// [`column_view()`](Self::column_view).
+    /// [`series_view()`](Self::series_view).
     ///
     /// # Cost
     ///
@@ -661,17 +578,23 @@ impl DataFrame {
     /// Factorize a named column into integer codes and unique values.
     ///
     /// Returns `(codes, uniques)` where `codes[i]` maps to `uniques[codes[i]]`.
+    /// The `codes` Series is named `"{column}_codes"` and `uniques` is named
+    /// `"{column}_uniques"`.
+    ///
     /// This is equivalent to `pandas.factorize()` but GPU-accelerated.
     ///
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
-    pub fn factorize(&self, column: &str) -> Result<(Column, Column)> {
-        let cv = self.column_view(column)?;
-        cv.factorize().map_err(|e| {
+    pub fn factorize(&self, column: &str) -> Result<(Series, Series)> {
+        let cv = self.series_view(column)?;
+        let (codes_col, uniques_col) = cv.factorize().map_err(|e| {
             let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
             err.with_context("column_name", column.to_string())
-        })
+        })?;
+        let codes = Series::from_column(codes_col)?.rename(format!("{column}_codes"));
+        let uniques = Series::from_column(uniques_col)?.rename(format!("{column}_uniques"));
+        Ok((codes, uniques))
     }
 
     /// Build an owned [`Table`] by deep-copying each column.
@@ -692,15 +615,6 @@ impl DataFrame {
         }
 
         Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))
-    }
-
-    /// Build an owned [`Table`] by deep-copying each column.
-    #[deprecated(
-        since = "0.3.0",
-        note = "Use to_table_copy() to make the deep-copy explicit, or as_table_view() for a zero-copy borrowed view"
-    )]
-    pub fn to_table(&self) -> Result<Table> {
-        self.to_table_copy()
     }
 
     /// Consume the `DataFrame`, returning an owned table and column names.
@@ -731,15 +645,6 @@ impl DataFrame {
 
         let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?;
         Ok((table, names))
-    }
-
-    /// Consume the `DataFrame`, returning an owned table and column names.
-    #[deprecated(
-        since = "0.3.0",
-        note = "Use try_into_table() which makes ownership-dependent behavior explicit"
-    )]
-    pub fn into_table(self) -> Result<(Table, Vec<String>)> {
-        self.try_into_table()
     }
 
     /// Create a borrowed [`TableView`] over this DataFrame's columns.
@@ -782,7 +687,7 @@ impl DataFrame {
 
     /// Returns a reference to the internal column map.
     ///
-    /// This is a crate-internal accessor used by façade types like
+    /// This is a crate-internal accessor used by high-level types like
     /// [`GroupBy`][crate::groupby::GroupBy].
     pub(crate) fn columns_map(&self) -> &IndexMap<String, Arc<Column>> {
         &self.columns
@@ -811,7 +716,7 @@ impl DataFrame {
     /// the file's schema metadata.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         let names: Vec<&str> = self.column_names();
-        let opts = ParquetWriterOptions::new(path).column_names(&names);
+        let opts = ParquetWriterOptions::new(path).column_names(&names)?;
         let tv = self.build_table_view()?;
         parquet::write_parquet(tv.table(), &opts)
     }
@@ -821,24 +726,13 @@ impl DataFrame {
     /// Return the first `n` rows.
     ///
     /// If `n >= num_rows`, all rows are returned. The schema is preserved.
-    pub fn head(&self, n: usize) -> Result<Self> {
-        let total = self.num_rows();
-        let take = n.min(total);
-        self.gather_range(0, take)
-    }
-
-    /// Return the first `n` rows, consuming `self`.
-    ///
-    /// Functionally identical to [`head`](Self::head) but takes `self` by
-    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
-    /// are the last reference.
     ///
     /// # Cost
     ///
-    /// GPU-allocating: produces a new table with gathered rows. Consuming
-    /// `self` lets the source columns' `Arc`s drop immediately if this was
-    /// the last reference, freeing their device memory sooner.
-    pub fn head_owned(self, n: usize) -> Result<Self> {
+    /// GPU-allocating: always produces a new table with gathered rows via FFI.
+    /// GPU allocation dominates runtime cost, so a consuming variant would
+    /// provide negligible benefit.
+    pub fn head(&self, n: usize) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
         self.gather_range(0, take)
@@ -847,25 +741,13 @@ impl DataFrame {
     /// Return the last `n` rows.
     ///
     /// If `n >= num_rows`, all rows are returned. The schema is preserved.
-    pub fn tail(&self, n: usize) -> Result<Self> {
-        let total = self.num_rows();
-        let take = n.min(total);
-        let start = total - take;
-        self.gather_range(start, take)
-    }
-
-    /// Return the last `n` rows, consuming `self`.
-    ///
-    /// Functionally identical to [`tail`](Self::tail) but takes `self` by
-    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
-    /// are the last reference.
     ///
     /// # Cost
     ///
-    /// GPU-allocating: produces a new table with gathered rows. Consuming
-    /// `self` lets the source columns' `Arc`s drop immediately if this was
-    /// the last reference, freeing their device memory sooner.
-    pub fn tail_owned(self, n: usize) -> Result<Self> {
+    /// GPU-allocating: always produces a new table with gathered rows via FFI.
+    /// GPU allocation dominates runtime cost, so a consuming variant would
+    /// provide negligible benefit.
+    pub fn tail(&self, n: usize) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
         let start = total - take;
@@ -884,28 +766,41 @@ impl DataFrame {
         self.gather_range(start, take)
     }
 
-    /// Gather (select) rows by an index column.
+    /// Gather (select) rows by an index `Series`.
     ///
     /// Produces a new `DataFrame` whose row `i` equals `self[indices[i]]`.
-    /// The `indices` column must be `Int32`. Out-of-bounds indices produce
-    /// null rows (uses [`OutOfBoundsPolicy::Nullify`](copying::OutOfBoundsPolicy::Nullify)).
+    /// The `indices` series must be `Int32`. Out-of-bounds indices produce
+    /// null rows (uses [`copying::gather`] which nullifies out-of-bounds indices).
     /// The schema is preserved.
     ///
     /// # Errors
     ///
     /// Returns an error if `indices` is not `Int32`.
-    pub fn gather(&self, indices: &ColumnView<'_>) -> Result<Self> {
+    pub fn gather(&self, indices: &Series) -> Result<Self> {
+        let cv = indices.column_view()?;
+        self.gather_by_column_view(&cv)
+    }
+
+    /// Gather (select) rows by a low-level index `ColumnView`.
+    ///
+    /// This is the advanced entry point. Prefer [`gather`](Self::gather)
+    /// with a `Series` for the cuDF-style API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `indices` is not `Int32`.
+    pub fn gather_by_column_view(&self, indices: &ColumnView<'_>) -> Result<Self> {
         if indices.is_empty()? {
             return self.empty_with_same_schema();
         }
         let tv = self.build_table_view()?;
-        let result_table = copying::gather(tv.table(), indices, copying::OutOfBoundsPolicy::Nullify)?;
+        let result_table = copying::gather(tv.table(), indices)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     // -- Filter, sort, deduplicate -------------------------------------------
 
-    /// Filter rows using a `Series` boolean mask (cuDF-style façade).
+    /// Filter rows using a `Series` boolean mask (cuDF-style high-level API).
     ///
     /// Rows where `mask` is `true` are kept; `false` or null rows are
     /// dropped. The schema is preserved.
@@ -928,6 +823,12 @@ impl DataFrame {
     ///
     /// Returns an error if `mask` is not `Bool8`, or if its row count
     /// does not match the DataFrame's row count.
+    ///
+    /// # Cost
+    ///
+    /// GPU-allocating: always produces a new filtered table via FFI.
+    /// GPU allocation dominates runtime cost, so a consuming variant would
+    /// provide negligible benefit.
     pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
         self.validate_mask_view(mask, "dataframe::filter_by_mask")?;
         let tv = self.build_table_view()?;
@@ -935,30 +836,9 @@ impl DataFrame {
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
-    /// Keep only rows where `mask` is `true`, consuming `self`.
+    /// Filter rows to those where `column` values appear in a `Series`.
     ///
-    /// Functionally identical to [`filter_by_mask`](Self::filter_by_mask) but
-    /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
-    /// sooner when they are the last reference.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: produces a new filtered table. Consuming `self` lets
-    /// the source columns' `Arc`s drop immediately if this was the last
-    /// reference, freeing their device memory sooner.
-    pub fn filter_by_mask_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
-        self.validate_mask_view(mask, "dataframe::filter_by_mask_owned")?;
-        let names = self.column_names_owned();
-        let result_table = {
-            let tv = self.build_table_view()?;
-            filter::apply_boolean_mask(tv.table(), mask)?
-        };
-        Self::from_table_with_names(result_table, names)
-    }
-
-    /// Filter rows to those where `column` values appear in `values`.
-    ///
-    /// This is a convenience wrapper around [`crate::search::contains`] +
+    /// Convenience wrapper around [`crate::search::contains`] +
     /// [`DataFrame::filter_by_mask`], equivalent to pandas `df[df[column].isin(values)]`.
     ///
     /// `values` is the haystack (the set to test membership against).
@@ -968,32 +848,26 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema, or if the
     /// `contains` / `filter` operation fails.
-    pub fn filter_isin(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
-        let col_view = self.column_view(column)?;
+    pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
+        let cv = values.column_view()?;
+        self.filter_isin_by_column_view(column, &cv)
+    }
+
+    /// Filter rows to those where `column` values appear in `values`.
+    ///
+    /// This is the advanced entry point that accepts a raw `ColumnView`.
+    /// Prefer [`filter_isin`](Self::filter_isin) with a `Series` for the
+    /// cuDF-style API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema, or if the
+    /// `contains` / `filter` operation fails.
+    pub fn filter_isin_by_column_view(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
+        let col_view = self.series_view(column)?;
         let mask = crate::search::contains(values, &col_view)?;
         let mask_view = mask.view()?;
         self.filter_by_mask(&mask_view)
-    }
-
-    /// Filter rows to those where `column` values appear in `values`,
-    /// consuming `self`.
-    ///
-    /// Functionally identical to [`filter_isin`](Self::filter_isin) but
-    /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
-    /// sooner when they are the last reference.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: produces a new filtered table. Consuming `self` lets
-    /// the source columns' `Arc`s drop immediately if this was the last
-    /// reference, freeing their device memory sooner.
-    pub fn filter_isin_owned(self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
-        let mask = {
-            let col_view = self.column_view(column)?;
-            crate::search::contains(values, &col_view)?
-        };
-        let mask_view = mask.view()?;
-        self.filter_by_mask_owned(&mask_view)
     }
 
     /// Validate that a `Series` is a valid boolean mask for this DataFrame.
@@ -1016,7 +890,7 @@ impl DataFrame {
             .with_operation(operation)
             .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
         }
-        let mask_len = mask.len()? as usize;
+        let mask_len = mask.len()?;
         if mask_len != self.row_count {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
@@ -1029,89 +903,9 @@ impl DataFrame {
         Ok(())
     }
 
-    /// Sort rows by the given column names and orders.
-    ///
-    /// `by` and `orders` must have the same length. The schema is preserved.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `by` is not in the schema, or if
-    /// `by.len() != orders.len()`.
-    pub fn sort(&self, by: &[&str], orders: &[Order]) -> Result<Self> {
-        if by.len() != orders.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "number of sort columns must equal number of orders")
-                .with_operation("dataframe::sort")
-                .with_context("by_count", by.len().to_string())
-                .with_context("orders_count", orders.len().to_string()));
-        }
-
-        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort")?;
-
-        // Check whether `by` names are exactly all columns in table order.
-        let all_in_order =
-            key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
-
-        let tv = self.build_table_view()?;
-
-        let result_table = if all_in_order {
-            sorting::sort(tv.table(), Some(orders), None)?
-        } else {
-            // Build a keys-only table, get sorted_order, then gather.
-            let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
-            let keys_view = keys_table.view()?;
-            let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
-            let order_view = order_col.view()?;
-            copying::gather(tv.table(), &order_view, copying::OutOfBoundsPolicy::DontCheck)?
-        };
-
-        Self::from_table_with_names(result_table, self.column_names_owned())
-    }
-
-    /// Sort rows by the given column names and orders, consuming `self`.
-    ///
-    /// Functionally identical to [`sort`](Self::sort) but takes `self` by
-    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
-    /// are the last reference.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: produces a new sorted table. Consuming `self` lets
-    /// the source columns' `Arc`s drop immediately if this was the last
-    /// reference, freeing their device memory sooner.
-    pub fn sort_owned(self, by: &[&str], orders: &[Order]) -> Result<Self> {
-        if by.len() != orders.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "number of sort columns must equal number of orders")
-                .with_operation("dataframe::sort_owned")
-                .with_context("by_count", by.len().to_string())
-                .with_context("orders_count", orders.len().to_string()));
-        }
-
-        let names = self.column_names_owned();
-        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort_owned")?;
-
-        let all_in_order =
-            key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
-
-        let result_table = {
-            let tv = self.build_table_view()?;
-
-            if all_in_order {
-                sorting::sort(tv.table(), Some(orders), None)?
-            } else {
-                let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
-                let keys_view = keys_table.view()?;
-                let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
-                let order_view = order_col.view()?;
-                copying::gather(tv.table(), &order_view, copying::OutOfBoundsPolicy::DontCheck)?
-            }
-        };
-
-        Self::from_table_with_names(result_table, names)
-    }
-
     /// Sort rows using cuDF-style [`SortOptions`].
     ///
-    /// This is the façade equivalent of [`sort`](Self::sort), accepting
+    /// This is the high-level equivalent of [`sort`](Self::sort), accepting
     /// column names and a `SortOptions` struct instead of raw `&[Order]`
     /// slices.
     ///
@@ -1121,6 +915,18 @@ impl DataFrame {
     /// either empty (meaning defaults for all keys) or exactly equal in
     /// length to the number of `by` columns. Any other length produces an
     /// `InvalidOperation` error.
+    ///
+    /// # Cost
+    ///
+    /// Produces a new GPU-allocated output table.
+    ///
+    /// If `by` is exactly all columns in schema order, cuDF sorts the table
+    /// directly.
+    ///
+    /// Otherwise, `sort_values()` builds a temporary borrowed keys view and
+    /// calls the keyed sort primitive. This does not deep-copy the key
+    /// columns, but it still allocates temporary view handles plus the sorted
+    /// output.
     ///
     /// # Example
     ///
@@ -1156,13 +962,11 @@ impl DataFrame {
             let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
             sort_fn(tv.table(), Some(&orders), null_order_ref)?
         } else {
-            // Build a keys-only table and use sort_by_key to reorder the
-            // full table according to those keys.
-            let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
-            let keys_view = keys_table.view()?;
-
+            // Project the sort keys directly from the already-built full
+            // table view, then reorder the full table according to those keys.
+            let keys_table = tv.table().select_columns(&key_indices)?;
             let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
-            sort_by_key_fn(tv.table(), &keys_view, Some(&orders), null_order_ref)?
+            sort_by_key_fn(tv.table(), &keys_table, Some(&orders), null_order_ref)?
         };
 
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -1170,24 +974,24 @@ impl DataFrame {
 
     /// Return the `n` rows with the largest values in `column`.
     ///
-    /// Equivalent to `self.sort(&[column], &[Descending])?.head(n)`.
+    /// Equivalent to `self.sort_values(&[column], SortOptions::new().with_descending(vec![true]))?.head(n)`.
     ///
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn nlargest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort(&[column], &[Order::Descending])?.head(n)
+        self.sort_values(&[column], SortOptions::new().with_descending(vec![true]))?.head(n)
     }
 
     /// Return the `n` rows with the smallest values in `column`.
     ///
-    /// Equivalent to `self.sort(&[column], &[Ascending])?.head(n)`.
+    /// Equivalent to `self.sort_values(&[column], SortOptions::new())?.head(n)`.
     ///
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn nsmallest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort(&[column], &[Order::Ascending])?.head(n)
+        self.sort_values(&[column], SortOptions::new())?.head(n)
     }
 
     /// Remove duplicate rows based on a subset of columns.
@@ -1229,6 +1033,12 @@ impl DataFrame {
     /// Equivalent to `self.drop_nulls(subset, subset.len() as i32)` — every
     /// column in `subset` must be non-null for a row to be kept.
     ///
+    /// # Cost
+    ///
+    /// GPU-allocating: always produces a new table with nulls removed via FFI.
+    /// GPU allocation dominates runtime cost, so a consuming variant would
+    /// provide negligible benefit.
+    ///
     /// # Errors
     ///
     /// Returns an error if any name in `subset` is not in the schema.
@@ -1245,170 +1055,11 @@ impl DataFrame {
         })
     }
 
-    /// Drop rows where **any** of the specified `subset` columns contain
-    /// nulls, consuming `self`.
-    ///
-    /// Functionally identical to [`drop_nulls_any`](Self::drop_nulls_any)
-    /// but takes `self` by value, allowing the input's `Arc<Column>`s to
-    /// drop sooner when they are the last reference.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: produces a new table with nulls removed. Consuming
-    /// `self` lets the source columns' `Arc`s drop immediately if this was
-    /// the last reference, freeing their device memory sooner.
-    pub fn drop_nulls_any_owned(self, subset: &[&str]) -> Result<Self> {
-        let subset_count = subset.len();
-        let keep_threshold = i32::try_from(subset_count).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
-                .with_operation("dataframe::drop_nulls_any_owned")
-                .with_context("subset_count", subset_count.to_string())
-        })?;
-
-        let names = self.column_names_owned();
-        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls_any_owned")?;
-        let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
-
-        let result_table = {
-            let tv = self.build_table_view()?;
-            stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?
-        };
-
-        Self::from_table_with_names(result_table, names)
-    }
-
-    // -- Joins ---------------------------------------------------------------
-
-    /// Inner join: returns only rows with matching keys in both DataFrames.
-    ///
-    /// Output schema is: `left_keys + left_payload + right_payload`.
-    /// If a right payload name collides with an existing output column name,
-    /// `"_right"` is appended (and numbered if needed).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn inner_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Inner, "dataframe::inner_join")
-    }
-
-    /// Left join: all left rows are preserved; the right side is null-padded
-    /// for non-matching rows.
-    ///
-    /// Output schema is: `left_keys + left_payload + right_payload`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn left_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Left, "dataframe::left_join")
-    }
-
-    /// Full (outer) join: all rows from both sides are preserved, with
-    /// null-padding where there is no match.
-    ///
-    /// Output schema is: `left_keys + left_payload + right_payload`.
-    ///
-    /// For right-only rows, key columns are coalesced from right keys when
-    /// left keys are null.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn full_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
-        self.join_merged_impl(right, on, JoinKind::Full, "dataframe::full_join")
-    }
-
-    /// Inner join returning split left/right `DataFrame` outputs.
-    ///
-    /// Each side contains `[key_columns..., payload_columns...]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn inner_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
-        self.join_split_on_impl(right, on, on, JoinKind::Inner, "dataframe::inner_join_split")
-    }
-
-    /// Left join returning split left/right `DataFrame` outputs.
-    ///
-    /// Each side contains `[key_columns..., payload_columns...]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn left_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
-        self.join_split_on_impl(right, on, on, JoinKind::Left, "dataframe::left_join_split")
-    }
-
-    /// Full join returning split left/right `DataFrame` outputs.
-    ///
-    /// Each side contains `[key_columns..., payload_columns...]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `on` is not in both schemas, or if
-    /// the key column types do not match.
-    pub fn full_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
-        self.join_split_on_impl(right, on, on, JoinKind::Full, "dataframe::full_join_split")
-    }
-
-    /// Inner join with asymmetric key names.
-    ///
-    /// `left_on` names columns in `self`, `right_on` names columns in
-    /// `right`. Both slices must have the same length (each pair is matched
-    /// positionally). Output key columns use the **left** key names.
-    ///
-    /// Output schema is: `left_keys + left_payload + right_payload`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `left_on` and `right_on` have different lengths,
-    /// if any name is not found in its respective schema, or if paired key
-    /// column types do not match.
-    pub fn inner_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
-        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Inner, "dataframe::inner_join_on")
-    }
-
-    /// Left join with asymmetric key names.
-    ///
-    /// All left rows are preserved; the right side is null-padded for
-    /// non-matching rows. Output key columns use the **left** key names.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `left_on` and `right_on` have different lengths,
-    /// if any name is not found in its respective schema, or if paired key
-    /// column types do not match.
-    pub fn left_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
-        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Left, "dataframe::left_join_on")
-    }
-
-    /// Full (outer) join with asymmetric key names.
-    ///
-    /// All rows from both sides are preserved, with null-padding where
-    /// there is no match. Key columns are coalesced and use the **left**
-    /// key names.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `left_on` and `right_on` have different lengths,
-    /// if any name is not found in its respective schema, or if paired key
-    /// column types do not match.
-    pub fn full_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
-        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Full, "dataframe::full_join_on")
-    }
-
-    // -- Façade merge ---------------------------------------------------------
+    // -- Joins (merge) -------------------------------------------------------
 
     /// Merge (join) two DataFrames with cuDF-style options.
     ///
-    /// This is the unified façade entry point for joins. Configure the merge
+    /// This is the unified high-level entry point for joins. Configure the merge
     /// via [`MergeOptions`](crate::MergeOptions).
     ///
     /// # Key modes
@@ -1454,78 +1105,73 @@ impl DataFrame {
             .with_context("right_on_count", right_on_refs.len().to_string()));
         }
 
-        // Map JoinType to internal JoinKind.
-        let kind = match options.join_type() {
-            join::JoinType::Inner => JoinKind::Inner,
-            join::JoinType::Left => JoinKind::Left,
-            join::JoinType::Full => JoinKind::Full,
-        };
+        let join_type = options.join_type();
 
         // Execute the split join with null_equality from options.
         let split = self.join_split_on_impl_with_null_eq(
             right,
             &left_on_refs,
             &right_on_refs,
-            kind,
+            join_type,
             options.null_eq(),
             operation,
         )?;
 
-        // Reassemble with façade suffix logic.
+        // Reassemble with high-level suffix logic.
         merge_join_result_with_suffixes(
             split,
             &left_on_refs,
             shared_keys,
-            kind == JoinKind::Full,
+            shared_keys && join_type == join::JoinType::Full,
             options.suffix_left(),
             options.suffix_right(),
             operation,
         )
     }
 
-    /// Internal merged-join implementation.
-    fn join_merged_impl(
-        &self,
-        right: &DataFrame,
-        on: &[&str],
-        kind: JoinKind,
-        operation: &'static str,
-    ) -> Result<Self> {
-        self.join_merged_on_impl(right, on, on, kind, operation)
-    }
+    /// Merge (join) two DataFrames, returning split left/right results.
+    ///
+    /// Like [`merge`](Self::merge) but returns a [`DataFrameJoinResult`] with
+    /// separate left and right `DataFrame`s instead of merging columns into one.
+    /// Each side contains `[key_columns..., payload_columns...]`.
+    ///
+    /// # Errors
+    ///
+    /// Same error conditions as [`merge`](Self::merge).
+    pub fn merge_split(&self, right: &DataFrame, options: join::MergeOptions) -> Result<DataFrameJoinResult> {
+        let operation: &'static str = "dataframe::merge_split";
 
-    /// Internal merged-join implementation with asymmetric keys.
-    fn join_merged_on_impl(
-        &self,
-        right: &DataFrame,
-        left_on: &[&str],
-        right_on: &[&str],
-        kind: JoinKind,
-        operation: &'static str,
-    ) -> Result<Self> {
-        let split = self.join_split_on_impl(right, left_on, right_on, kind, operation)?;
-        merge_join_result(split, left_on, kind == JoinKind::Full, operation)
-    }
+        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
 
-    /// Internal split-join dispatch with asymmetric keys (default NullEquality::Equal).
-    fn join_split_on_impl(
-        &self,
-        right: &DataFrame,
-        left_on: &[&str],
-        right_on: &[&str],
-        kind: JoinKind,
-        operation: &'static str,
-    ) -> Result<DataFrameJoinResult> {
-        self.join_split_on_impl_with_null_eq(right, left_on, right_on, kind, join::NullEquality::Equal, operation)
-    }
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
 
-    /// Internal split-join dispatch with asymmetric keys and configurable null equality.
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "left_on and right_on must have the same number of key columns",
+            )
+            .with_operation(operation)
+            .with_context("left_on_count", left_on_refs.len().to_string())
+            .with_context("right_on_count", right_on_refs.len().to_string()));
+        }
+
+        self.join_split_on_impl_with_null_eq(
+            right,
+            &left_on_refs,
+            &right_on_refs,
+            options.join_type(),
+            options.null_eq(),
+            operation,
+        )
+    }
+    /// Internal split-join dispatch with configurable null equality.
     fn join_split_on_impl_with_null_eq(
         &self,
         right: &DataFrame,
         left_on: &[&str],
         right_on: &[&str],
-        kind: JoinKind,
+        join_type: join::JoinType,
         null_equality: join::NullEquality,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
@@ -1547,21 +1193,22 @@ impl DataFrame {
         let left_payload_indices = payload_indices(&self.columns, &left_key_indices);
         let right_payload_indices = payload_indices(&right.columns, &right_key_indices);
 
-        // Build keys and payload tables via deep-copy from column views.
-        let lk_table = build_keys_table_from_columns(&self.columns, &left_key_indices)?;
-        let rk_table = build_keys_table_from_columns(&right.columns, &right_key_indices)?;
-        let lp_table = build_keys_table_from_columns(&self.columns, &left_payload_indices)?;
-        let rp_table = build_keys_table_from_columns(&right.columns, &right_payload_indices)?;
+        // Build borrowed key and payload table views over the existing columns.
+        let lk_table = build_borrowed_table_view_from_columns(&self.columns, &left_key_indices)?;
+        let rk_table = build_borrowed_table_view_from_columns(&right.columns, &right_key_indices)?;
+        let lp_table = build_borrowed_table_view_from_columns(&self.columns, &left_payload_indices)?;
+        let rp_table = build_borrowed_table_view_from_columns(&right.columns, &right_payload_indices)?;
 
-        let lkv = lk_table.view()?;
-        let rkv = rk_table.view()?;
-        let lpv = lp_table.view()?;
-        let rpv = rp_table.view()?;
-
-        let result = match kind {
-            JoinKind::Inner => join::inner_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
-            JoinKind::Left => join::left_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
-            JoinKind::Full => join::full_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
+        let result = match join_type {
+            join::JoinType::Inner => {
+                join::inner_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
+            },
+            join::JoinType::Left => {
+                join::left_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
+            },
+            join::JoinType::Full => {
+                join::full_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
+            },
         };
 
         // Build schemas: left side uses left key names, right side uses right key names.
@@ -1585,12 +1232,10 @@ impl DataFrame {
     /// # Example
     ///
     /// ```no_run
-    /// # use cudf::{Agg, AggSpec, DataFrame, column::Column};
-    /// # let df = DataFrame::new(
-    /// #     vec!["key".into(), "val".into()],
-    /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
-    /// #          Column::from_slice(&[10i64,20]).unwrap()],
-    /// # ).unwrap();
+    /// # use cudf::{Agg, AggSpec, DataFrame, Series};
+    /// # let keys = Series::new::<i32>("key", &[1, 2]).unwrap();
+    /// # let vals = Series::new::<i64>("val", &[10, 20]).unwrap();
+    /// # let df = DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
     /// ```
@@ -1600,36 +1245,6 @@ impl DataFrame {
         S: AsRef<str>,
     {
         groupby::GroupBy::new(self, keys.into_iter().map(|s| s.as_ref().to_string()).collect())
-    }
-
-    /// Low-level groupby using [`GroupByBuilder`] with [`Aggregation`] variants.
-    ///
-    /// # Deprecated
-    ///
-    /// The façade [`Agg`] enum now covers all aggregation types. Use
-    /// [`groupby`][DataFrame::groupby] with [`AggSpec`] instead.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cudf::column::Column;
-    /// # use cudf::dataframe::DataFrame;
-    /// # use cudf::groupby::Aggregation;
-    /// # let df = DataFrame::new(
-    /// #     vec!["key".into(), "val".into()],
-    /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
-    /// #          Column::from_slice(&[10i64,20]).unwrap()],
-    /// # ).unwrap();
-    /// let result = df
-    ///     .groupby_builder(&["key"])
-    ///     .agg("val", Aggregation::Sum)
-    ///     .execute()
-    ///     .unwrap();
-    /// ```
-    #[deprecated(since = "0.2.0", note = "use `DataFrame::groupby` with `Agg` / `AggSpec` instead")]
-    #[allow(deprecated)]
-    pub fn groupby_builder<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
-        GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
     }
 
     // -- Concat, rename, select ----------------------------------------------
@@ -1728,9 +1343,11 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
-    /// Return a new DataFrame with one column renamed, consuming `self`.
+    /// Consuming variant of [`rename`](Self::rename).
     ///
-    /// This is a pure schema rewrite with **no GPU data copy**.
+    /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
+    /// DataFrame is no longer needed. This is a pure schema rewrite with
+    /// **no GPU data copy**.
     ///
     /// # Cost
     ///
@@ -1834,7 +1451,9 @@ impl DataFrame {
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// The columns appear in the order given in `columns`. Each selected
-    /// column is shared via `Arc::clone` (zero GPU copy).
+    /// column is shared via `Arc::clone` (zero GPU copy). The logical row
+    /// count is preserved even if `columns` is empty and the result has zero
+    /// columns.
     ///
     /// # Errors
     ///
@@ -1871,37 +1490,44 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
-    /// Return a new DataFrame containing only the specified columns,
-    /// consuming `self`.
+    /// Consuming variant of [`select`](Self::select).
     ///
-    /// Unlike [`select`](Self::select), this variant moves columns out of
-    /// the `IndexMap` instead of cloning the `Arc`, avoiding even the
-    /// refcount bump for selected columns.
+    /// Moves columns out of the `IndexMap` instead of cloning the `Arc`,
+    /// avoiding the O(N) `Arc::clone` overhead for N selected columns.
+    /// Prefer this when the source DataFrame is no longer needed.
     ///
     /// # Cost
     ///
     /// Zero-copy: moves `Arc<Column>` ownership without GPU data copy.
     /// Consuming `self` avoids the refcount bump entirely for selected
-    /// columns and drops unselected columns immediately.
-    pub fn select_owned(mut self, columns: &[&str]) -> Result<Self> {
+    /// columns and drops unselected columns immediately. The logical row
+    /// count is preserved even if `columns` is empty and the result has zero
+    /// columns.
+    pub fn select_owned<I, S>(mut self, columns: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
+
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for &name in columns {
-            if !seen.insert(name) {
+        for name in &columns {
+            if !seen.insert(name.as_str()) {
                 return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
                     .with_operation("dataframe::select_owned")
-                    .with_context("duplicate_column", name.to_string())
+                    .with_context("duplicate_column", name.clone())
                     .with_context("selected_column_count", columns.len().to_string()));
             }
         }
 
         let mut new_columns = IndexMap::with_capacity(columns.len());
-        for &name in columns {
-            let col = self.columns.swap_remove(name).ok_or_else(|| {
+        for name in &columns {
+            let col = self.columns.swap_remove(name.as_str()).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                     .with_operation("dataframe::select_owned")
-                    .with_context("column_name", name.to_string())
+                    .with_context("column_name", name.clone())
             })?;
-            new_columns.insert(name.to_string(), col);
+            new_columns.insert(name.clone(), col);
         }
 
         Ok(Self { columns: new_columns, row_count: self.row_count })
@@ -1910,7 +1536,8 @@ impl DataFrame {
     /// Return a new DataFrame with the specified columns removed.
     ///
     /// Columns not in `columns` are preserved in their original order via
-    /// `Arc::clone` (zero GPU copy).
+    /// `Arc::clone` (zero GPU copy). Dropping columns is schema-only: the
+    /// logical row count is preserved even if all columns are removed.
     ///
     /// # Errors
     ///
@@ -1964,7 +1591,9 @@ impl DataFrame {
     /// is replaced. If `name` is new, the column is appended.
     ///
     /// The new column must have the same row count as the existing DataFrame
-    /// (unless the DataFrame is empty with 0 columns).
+    /// unless the DataFrame has neither rows nor columns. Zero-column
+    /// DataFrames that still carry a logical row count must preserve that
+    /// row count when the first column is inserted.
     ///
     /// # Errors
     ///
@@ -1972,33 +1601,33 @@ impl DataFrame {
     pub fn with_column(&self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
         let col_rows = series.len();
-        let self_rows = self.num_rows();
+        let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
-        if self.num_columns() > 0 && col_rows != self_rows {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
-            )
-            .with_operation("dataframe::with_column")
-            .with_context("column_name", name.to_string())
-            .with_context("column_rows", col_rows.to_string())
-            .with_context("dataframe_rows", self_rows.to_string()));
+        if let Some(self_rows) = expected_rows {
+            if col_rows != self_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
+                )
+                .with_operation("dataframe::with_column")
+                .with_context("column_name", name.to_string())
+                .with_context("column_rows", col_rows.to_string())
+                .with_context("dataframe_rows", self_rows.to_string()));
+            }
         }
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
-        let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
+        let row_count = expected_rows.unwrap_or(col_rows);
 
         Ok(Self { columns: new_columns, row_count })
     }
 
-    /// Return a new DataFrame with the given column added or replaced,
-    /// consuming `self`.
+    /// Consuming variant of [`with_column`](Self::with_column).
     ///
-    /// Unlike [`with_column`](Self::with_column), this variant moves
-    /// the existing columns instead of cloning the `IndexMap`, avoiding
-    /// the refcount bump for unchanged columns.
+    /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
+    /// DataFrame is no longer needed.
     ///
     /// Accepts anything convertible to [`Series`] — both `Column` and
     /// `Series` work transparently.
@@ -2011,20 +1640,22 @@ impl DataFrame {
     pub fn with_column_owned(mut self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
         let col_rows = series.len();
-        let self_rows = self.num_rows();
+        let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
-        if self.num_columns() > 0 && col_rows != self_rows {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
-            )
-            .with_operation("dataframe::with_column_owned")
-            .with_context("column_name", name.to_string())
-            .with_context("column_rows", col_rows.to_string())
-            .with_context("dataframe_rows", self_rows.to_string()));
+        if let Some(self_rows) = expected_rows {
+            if col_rows != self_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
+                )
+                .with_operation("dataframe::with_column_owned")
+                .with_context("column_name", name.to_string())
+                .with_context("column_rows", col_rows.to_string())
+                .with_context("dataframe_rows", self_rows.to_string()));
+            }
         }
 
-        let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
+        let row_count = expected_rows.unwrap_or(col_rows);
         self.columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
         Ok(Self { columns: self.columns, row_count })
@@ -2047,6 +1678,12 @@ impl DataFrame {
     /// ([`select`](Self::select), [`rename_columns`](Self::rename_columns))
     /// reject duplicates with an error.
     ///
+    /// If `self` has zero columns but a non-zero logical row count (for
+    /// example after [`drop`](Self::drop) or [`select`](Self::select) removes
+    /// every column), inserted Series must still match that row count. Only a
+    /// truly empty `0 x 0` DataFrame lets the first inserted Series establish
+    /// the row count.
+    ///
     /// # Errors
     ///
     /// Returns an error if any Series has a different row count than the
@@ -2057,27 +1694,31 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let mut new_columns = self.columns.clone();
-        let self_rows = self.num_rows();
+        let mut expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
         for (name, series) in pairs {
             let name = name.as_ref();
             let series_rows = series.len();
 
-            if self.num_columns() > 0 && series_rows != self_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
-                )
-                .with_operation("dataframe::assign")
-                .with_context("column_name", name.to_string())
-                .with_context("series_rows", series_rows.to_string())
-                .with_context("dataframe_rows", self_rows.to_string()));
+            if let Some(self_rows) = expected_rows {
+                if series_rows != self_rows {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
+                    )
+                    .with_operation("dataframe::assign")
+                    .with_context("column_name", name.to_string())
+                    .with_context("series_rows", series_rows.to_string())
+                    .with_context("dataframe_rows", self_rows.to_string()));
+                }
+            } else {
+                expected_rows = Some(series_rows);
             }
 
             new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        Ok(Self { columns: new_columns, row_count: expected_rows.unwrap_or(self.row_count) })
     }
 
     /// Evaluate expressions against this DataFrame and add/replace the
@@ -2169,7 +1810,7 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
-    // -- Façade: cuDF-style naming (D3) ----------------------------------------
+    // -- High-level API: cuDF-style naming --------------------------------
 
     /// Drop rows containing null values.
     ///
@@ -2230,9 +1871,9 @@ impl DataFrame {
         self.distinct(&subset_names, opts.keep).map_err(|e| e.with_operation("dataframe::drop_duplicates"))
     }
 
-    /// Replace null values in a single column with a scalar.
+    /// Replace null values in a single column with a plain Rust value.
     ///
-    /// Equivalent to cuDF Python's `DataFrame.fillna({column: scalar})`.
+    /// Equivalent to cuDF Python's `DataFrame.fillna({column: value})`.
     ///
     /// Returns a new DataFrame with the named column's nulls replaced.
     /// All other columns are preserved unchanged (zero-copy via Arc sharing).
@@ -2243,8 +1884,27 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
-    pub fn fillna(&self, column: &str, value: &Scalar) -> Result<Self> {
-        self.replace_nulls(column, value).map_err(|e| e.with_operation("dataframe::fillna"))
+    pub fn fillna<T: CudfType>(&self, column: &str, value: T) -> Result<Self> {
+        let scalar = Scalar::from_value(value)?;
+        self.fillna_with_scalar(column, &scalar)
+    }
+
+    /// Replace null values in a single column with a pre-constructed [`Scalar`].
+    ///
+    /// This is the advanced entry point. Prefer [`fillna`](Self::fillna)
+    /// with a plain Rust value for the cuDF-style API.
+    ///
+    /// Returns a new DataFrame with the named column's nulls replaced.
+    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced for the filled column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
+    pub fn fillna_with_scalar(&self, column: &str, value: &Scalar) -> Result<Self> {
+        self.replace_nulls(column, value).map_err(|e| e.with_operation("dataframe::fillna_with_scalar"))
     }
 
     /// Replace null values in a single column using corresponding elements
@@ -2281,207 +1941,12 @@ impl DataFrame {
     }
 }
 
-/// Low-level builder for groupby aggregation on a [`DataFrame`].
-///
-/// Created via [`DataFrame::groupby_builder`]. Chain `.agg()` calls to add
-/// aggregation requests, then call `.execute()` to run.
-///
-/// # Deprecated
-///
-/// Use [`DataFrame::groupby`] → [`GroupBy`] with [`AggSpec`] instead.
-/// The façade [`Agg`] enum now covers all aggregation types.
-#[deprecated(since = "0.2.0", note = "use `DataFrame::groupby` with `Agg` / `AggSpec` instead")]
-pub struct GroupByBuilder<'a> {
-    df: &'a DataFrame,
-    key_names: Vec<String>,
-    /// (value_column_name, aggregation)
-    agg_requests: Vec<(String, Aggregation)>,
-}
-
-#[allow(deprecated)]
-impl<'a> GroupByBuilder<'a> {
-    /// Add an aggregation on `column` using the given [`Aggregation`].
-    ///
-    /// The result column will be named `"{column}_{aggregation}"`, e.g.
-    /// `"price_sum"`.
-    pub fn agg(mut self, column: &str, agg: Aggregation) -> Self {
-        self.agg_requests.push((column.to_string(), agg));
-        self
-    }
-
-    /// Execute the groupby aggregation, returning a new [`DataFrame`].
-    ///
-    /// The result schema is: `[key_columns..., result_columns...]` where
-    /// each result column is named `"{value_column}_{aggregation}"`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No aggregations were added.
-    /// - Any key or value column name is not in the DataFrame's schema.
-    pub fn execute(&self) -> Result<DataFrame> {
-        if self.agg_requests.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation is required")
-                .with_operation("dataframe::groupby::execute"));
-        }
-
-        // Resolve key column names to indices.
-        let key_indices = resolve_column_names(
-            &self.df.columns,
-            &self.key_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            "dataframe::groupby::execute",
-        )?;
-
-        // Resolve value column names to indices.
-        let value_col_names: Vec<&str> = self.agg_requests.iter().map(|(name, _)| name.as_str()).collect();
-
-        // Validate all value column names exist.
-        for &name in &value_col_names {
-            if !self.df.columns.contains_key(name) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation("dataframe::groupby::execute")
-                    .with_context("column_name", name.to_string()));
-            }
-        }
-
-        // Build keys table from the Arc columns.
-        let keys_table = build_keys_table_from_columns(&self.df.columns, &key_indices)?;
-        let keys_view = keys_table.view()?;
-
-        // Group aggregation requests by value column. Each unique value
-        // column gets one AggregationRequest with potentially multiple
-        // aggregations. We preserve the order of first appearance for
-        // output column naming.
-
-        let mut owned_value_cols: Vec<Column> = Vec::new();
-        let mut request_meta: Vec<(usize, Vec<Aggregation>)> = Vec::new(); // (owned_col_index, aggs)
-        let mut result_names: Vec<String> = Vec::new();
-
-        // Index dedup: map value column name → index in owned_value_cols
-        let mut col_name_to_owned_idx: IndexMap<String, usize> = IndexMap::new();
-        // Map owned value-column index → request_meta group index.
-        let mut owned_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
-        // Output ordering map in original .agg() call order:
-        // (group_index_in_request_meta, agg_index_within_group)
-        let mut output_order: Vec<(usize, usize)> = Vec::new();
-
-        for (col_name, agg) in &self.agg_requests {
-            let owned_idx = if let Some(&idx) = col_name_to_owned_idx.get(col_name.as_str()) {
-                idx
-            } else {
-                let arc_col = self.df.columns.get(col_name.as_str()).unwrap();
-                let owned = arc_col.copy()?;
-                let idx = owned_value_cols.len();
-                owned_value_cols.push(owned);
-                col_name_to_owned_idx.insert(col_name.clone(), idx);
-                idx
-            };
-
-            let group_idx = if let Some(&idx) = owned_idx_to_group_idx.get(&owned_idx) {
-                idx
-            } else {
-                let idx = request_meta.len();
-                request_meta.push((owned_idx, Vec::new()));
-                owned_idx_to_group_idx.insert(owned_idx, idx);
-                idx
-            };
-
-            let agg_idx_within_group = request_meta[group_idx].1.len();
-            request_meta[group_idx].1.push(agg.clone());
-            output_order.push((group_idx, agg_idx_within_group));
-
-            result_names.push(format!("{}_{}", col_name, agg_suffix(agg)));
-        }
-
-        // Build AggregationRequests.
-        let value_views: Vec<_> = owned_value_cols.iter().map(|c| c.view()).collect::<Result<Vec<_>>>()?;
-
-        let agg_slices: Vec<Vec<Aggregation>> = request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
-
-        let requests: Vec<AggregationRequest<'_>> = request_meta
-            .iter()
-            .enumerate()
-            .map(|(i, (owned_idx, _))| AggregationRequest {
-                values: &value_views[*owned_idx],
-                aggregations: &agg_slices[i],
-            })
-            .collect();
-
-        let gb_result = groupby::groupby_aggregate(&keys_view, &requests, NullPolicy::Exclude)?;
-
-        // Reorder aggregate result columns to match original .agg() call order.
-        let mut grouped_results: Vec<Vec<Option<Column>>> =
-            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
-
-        let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
-        for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
-            let group_count = grouped_results.len();
-            let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result group index out of bounds")
-                    .with_operation("dataframe::groupby::execute")
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("group_index", group_idx.to_string())
-                    .with_context("group_count", group_count.to_string())
-            })?;
-
-            let group_agg_count = group.len();
-            let col_slot = group.get_mut(*agg_idx).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result index out of bounds")
-                    .with_operation("dataframe::groupby::execute")
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("group_index", group_idx.to_string())
-                    .with_context("agg_index", agg_idx.to_string())
-                    .with_context("group_agg_count", group_agg_count.to_string())
-            })?;
-
-            let col = col_slot.take().ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result column consumed more than once")
-                    .with_operation("dataframe::groupby::execute")
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("group_index", group_idx.to_string())
-                    .with_context("agg_index", agg_idx.to_string())
-            })?;
-
-            all_result_cols.push(col);
-        }
-
-        // Build the key columns from the groupby result keys table.
-        let result_keys_cols = gb_result.keys.into_columns()?;
-
-        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
-        final_cols.extend(result_keys_cols);
-        final_cols.extend(all_result_cols);
-
-        // Build schema: key names + result names.
-        let mut schema_names: Vec<String> = Vec::with_capacity(self.key_names.len() + result_names.len());
-        schema_names.extend(self.key_names.clone());
-        schema_names.extend(result_names);
-
-        DataFrame::new(schema_names, final_cols)
-    }
-}
-
-/// Return the suffix for an aggregation type used in result column naming.
-fn agg_suffix(agg: &Aggregation) -> &'static str {
-    match agg {
-        Aggregation::Sum => "sum",
-        Aggregation::Min => "min",
-        Aggregation::Max => "max",
-        Aggregation::Count { .. } => "count",
-        Aggregation::Mean => "mean",
-        Aggregation::Median => "median",
-        Aggregation::NUnique => "nunique",
-        Aggregation::Std { .. } => "std",
-        Aggregation::Variance { .. } => "var",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers — thin wrappers delegating to `internal` module
 // ---------------------------------------------------------------------------
 
 use crate::internal::resolve::{
-    build_keys_table_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
+    build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
 };
 
 impl DataFrame {
@@ -2495,13 +1960,20 @@ impl DataFrame {
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
         let map = Column::from_slice(&indices)?;
         let tv = self.build_table_view()?;
-        let result_table = copying::gather(tv.table(), &map.view()?, copying::OutOfBoundsPolicy::DontCheck)?;
+        // SAFETY: indices are constructed from `start..start+len` which the
+        // callers have already validated against row_count.
+        let result_table = unsafe { copying::gather_unchecked(tv.table(), &map.view()?)? };
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
     /// Internal: build an empty DataFrame with the same schema (column names
     /// and types, zero rows).
+    ///
+    /// This helper is for row-space operations that produce no rows at all,
+    /// such as empty gathers or zero-length slices. Unlike schema-only
+    /// operations such as [`select`](Self::select) and [`drop`](Self::drop),
+    /// it intentionally resets the logical row count to zero.
     fn empty_with_same_schema(&self) -> Result<Self> {
         let mut new_columns = IndexMap::with_capacity(self.columns.len());
         for (name, col) in &self.columns {
@@ -2511,14 +1983,6 @@ impl DataFrame {
         }
         Ok(Self { columns: new_columns, row_count: 0 })
     }
-}
-
-/// Internal join type dispatch tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JoinKind {
-    Inner,
-    Left,
-    Full,
 }
 
 /// Build the schema name list for a join result side:
@@ -2540,71 +2004,6 @@ fn build_join_schema_names(
     names
 }
 
-/// Merge a split join result into one DataFrame:
-/// `left_keys + left_payload + right_payload`.
-fn merge_join_result(
-    split: DataFrameJoinResult,
-    on: &[&str],
-    coalesce_keys: bool,
-    operation: &'static str,
-) -> Result<DataFrame> {
-    let DataFrameJoinResult { left, right } = split;
-
-    let key_count = on.len();
-
-    // Extract columns from both sides.
-    let left_names: Vec<String> = left.columns.keys().cloned().collect();
-    let right_names: Vec<String> = right.columns.keys().cloned().collect();
-    let left_cols: Vec<Arc<Column>> = left.columns.into_values().collect();
-    let right_cols: Vec<Arc<Column>> = right.columns.into_values().collect();
-
-    if left_cols.len() != left_names.len() || right_cols.len() != right_names.len() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "join result schema/column count mismatch")
-            .with_operation(operation)
-            .with_context("left_columns", left_cols.len().to_string())
-            .with_context("left_names_count", left_names.len().to_string())
-            .with_context("right_columns", right_cols.len().to_string())
-            .with_context("right_names_count", right_names.len().to_string()));
-    }
-
-    if key_count > left_cols.len() || key_count > right_cols.len() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "join key count exceeds result column count")
-            .with_operation(operation)
-            .with_context("num_keys", key_count.to_string())
-            .with_context("left_columns", left_cols.len().to_string())
-            .with_context("right_columns", right_cols.len().to_string()));
-    }
-
-    let mut out_cols: Vec<Column> = Vec::new();
-    let mut out_names: Vec<String> = Vec::new();
-
-    // 1) keys from left (coalesce with right for full join if requested).
-    for i in 0..key_count {
-        let key_col = if coalesce_keys {
-            coalesce_columns(&left_cols[i], &right_cols[i], operation)?
-        } else {
-            left_cols[i].copy()?
-        };
-        out_cols.push(key_col);
-        out_names.push(left_names[i].clone());
-    }
-
-    // 2) left payload.
-    for i in key_count..left_cols.len() {
-        out_cols.push(left_cols[i].copy()?);
-        out_names.push(left_names[i].clone());
-    }
-
-    // 3) right payload with collision suffixing.
-    for i in key_count..right_cols.len() {
-        out_cols.push(right_cols[i].copy()?);
-        let unique = unique_right_payload_name(&out_names, &right_names[i]);
-        out_names.push(unique);
-    }
-
-    DataFrame::new(out_names, out_cols)
-}
-
 /// Coalesce two columns by preferring non-null values from `left`; if null,
 /// take from `right`. Runs entirely on GPU via `replace_nulls_column`.
 fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> Result<Column> {
@@ -2623,28 +2022,8 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     replace::replace_nulls_column(&lcv, &rcv)
 }
 
-fn unique_right_payload_name(existing: &[String], base: &str) -> String {
-    if !existing.iter().any(|n| n == base) {
-        return base.to_string();
-    }
-
-    let first = format!("{}_right", base);
-    if !existing.iter().any(|n| n == &first) {
-        return first;
-    }
-
-    let mut i = 2usize;
-    loop {
-        let candidate = format!("{}_right{}", base, i);
-        if !existing.iter().any(|n| n == &candidate) {
-            return candidate;
-        }
-        i += 1;
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Façade merge helpers
+// High-level merge helpers
 // ---------------------------------------------------------------------------
 
 /// Resolve the key names from `MergeOptions`, returning `(left_on, right_on, shared)`.
@@ -2687,7 +2066,7 @@ fn resolve_merge_keys(
     }
 }
 
-/// Reassemble a split join result into a single DataFrame using façade suffix rules.
+/// Reassemble a split join result into a single DataFrame using high-level suffix rules.
 ///
 /// When `shared_keys` is true (from `on()`):
 ///   - Emit one shared key column per key (coalesced for full join).
@@ -2707,6 +2086,7 @@ fn merge_join_result_with_suffixes(
 ) -> Result<DataFrame> {
     let DataFrameJoinResult { left, right } = split;
     let key_count = left_on.len();
+    let row_count = left.row_count.max(right.row_count);
 
     let left_names: Vec<String> = left.columns.keys().cloned().collect();
     let right_names: Vec<String> = right.columns.keys().cloned().collect();
@@ -2731,38 +2111,25 @@ fn merge_join_result_with_suffixes(
     let conflicting: std::collections::HashSet<&str> =
         left_payload_set.intersection(&right_payload_set).copied().collect();
 
-    let mut out_cols: Vec<Column> = Vec::new();
+    let mut out_cols: Vec<Arc<Column>> = Vec::new();
     let mut out_names: Vec<String> = Vec::new();
 
-    if shared_keys {
-        // on() mode: emit one shared key column per key.
-        for i in 0..key_count {
-            let key_col = if coalesce_keys {
-                coalesce_columns(&left_cols[i], &right_cols[i], operation)?
-            } else {
-                left_cols[i].copy()?
-            };
-            out_cols.push(key_col);
-            out_names.push(left_names[i].clone());
-        }
-    } else {
-        // left_on/right_on mode: emit left key columns, then right key columns are added
-        // as part of right payload below.
-        for i in 0..key_count {
-            let key_col = if coalesce_keys {
-                coalesce_columns(&left_cols[i], &right_cols[i], operation)?
-            } else {
-                left_cols[i].copy()?
-            };
-            out_cols.push(key_col);
-            out_names.push(left_names[i].clone());
-        }
+    // Only shared-key full joins should coalesce key columns. For left_on/right_on
+    // joins, the contract is to preserve both key columns separately.
+    for i in 0..key_count {
+        let key_col = if coalesce_keys {
+            Arc::new(coalesce_columns(&left_cols[i], &right_cols[i], operation)?)
+        } else {
+            Arc::clone(&left_cols[i])
+        };
+        out_cols.push(key_col);
+        out_names.push(left_names[i].clone());
     }
 
     // Left payload.
     for (idx, name) in left_payload_names.iter().enumerate() {
         let col_idx = key_count + idx;
-        out_cols.push(left_cols[col_idx].copy()?);
+        out_cols.push(Arc::clone(&left_cols[col_idx]));
         if conflicting.contains(name) {
             out_names.push(format!("{}{}", name, suffix_left));
         } else {
@@ -2773,7 +2140,7 @@ fn merge_join_result_with_suffixes(
     if !shared_keys {
         // Emit right key columns for asymmetric join.
         for i in 0..key_count {
-            out_cols.push(right_cols[i].copy()?);
+            out_cols.push(Arc::clone(&right_cols[i]));
             out_names.push(right_names[i].clone());
         }
     }
@@ -2781,7 +2148,7 @@ fn merge_join_result_with_suffixes(
     // Right payload.
     for (idx, name) in right_payload_names.iter().enumerate() {
         let col_idx = key_count + idx;
-        out_cols.push(right_cols[col_idx].copy()?);
+        out_cols.push(Arc::clone(&right_cols[col_idx]));
         if conflicting.contains(name) {
             out_names.push(format!("{}{}", name, suffix_right));
         } else {
@@ -2789,10 +2156,21 @@ fn merge_join_result_with_suffixes(
         }
     }
 
-    DataFrame::new(out_names, out_cols)
+    validate_no_duplicate_names(&out_names, operation)?;
+
+    let mut columns = IndexMap::with_capacity(out_names.len());
+    for (name, col) in out_names.into_iter().zip(out_cols) {
+        columns.insert(name, col);
+    }
+
+    Ok(DataFrame::from_raw_parts(columns, row_count))
 }
 
 /// Construct a [`DataFrame`](crate::dataframe::DataFrame) from named columns.
+///
+/// This macro is column-oriented: each value must evaluate to an owned
+/// [`Column`](crate::Column). For the primary user-facing path, prefer
+/// [`DataFrame::from_columns`] with named [`Series`](crate::Series) values.
 ///
 /// # Example
 ///

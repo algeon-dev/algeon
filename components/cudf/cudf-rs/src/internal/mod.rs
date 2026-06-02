@@ -1,6 +1,7 @@
-//! Internal helpers shared across façade modules.
+//! Internal helpers shared across high-level API modules.
 //!
-//! Most submodules are `pub(crate)`. [`temp_table`] is public because
+//! Not part of the public API. Most submodules are `pub(crate)`.
+//! [`temp_table`] is public because
 //! [`TempTableView`](temp_table::TempTableView) is returned by
 //! [`DataFrame::as_table_view`](crate::DataFrame::as_table_view).
 //!

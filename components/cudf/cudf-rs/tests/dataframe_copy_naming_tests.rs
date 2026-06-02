@@ -1,5 +1,4 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
-//! FC-COPY-NAMING — tests for explicit copy-semantic naming on DataFrame.
+//! Tests for explicit copy-semantic naming on DataFrame.
 //!
 //! These tests verify that the new explicitly-named conversion methods
 //! (`to_table_copy`, `try_into_table`, `as_table_view`) behave identically
@@ -8,12 +7,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{
-    column::Column,
-    dataframe::DataFrame,
-    series::Series,
-    types::TypeId,
-};
+use cudf::{column::Column, dataframe::DataFrame, series::Series, types::TypeId};
 
 // ===========================================================================
 // Helpers
@@ -28,7 +22,7 @@ fn sample_df() -> DataFrame {
 
 /// Get device data pointer for a named column in a DataFrame.
 fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.column_view(name).unwrap().device_data_ptr().unwrap()
+    df.series_view(name).unwrap().device_data_ptr().unwrap()
 }
 
 // ===========================================================================
@@ -61,8 +55,8 @@ fn to_table_copy_source_still_usable() {
     let df = sample_df();
     let _table = df.to_table_copy().unwrap();
 
-    assert_eq!(df.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -73,11 +67,7 @@ fn to_table_copy_source_still_usable() {
 /// `try_into_table()` unwraps without deep-copying.
 #[test]
 fn try_into_table_unique_owner_no_copy() {
-    let df = DataFrame::new(
-        vec!["a".into()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let original_ptr = device_ptr(&df, "a");
     let (table, names) = df.try_into_table().unwrap();
@@ -86,10 +76,7 @@ fn try_into_table_unique_owner_no_copy() {
     let tv = table.view().unwrap();
     let table_ptr = tv.column(0).unwrap().device_data_ptr().unwrap();
 
-    assert_eq!(
-        original_ptr, table_ptr,
-        "try_into_table() with unique Arc should transfer without copy"
-    );
+    assert_eq!(original_ptr, table_ptr, "try_into_table() with unique Arc should transfer without copy");
 }
 
 // ===========================================================================
@@ -115,16 +102,10 @@ fn try_into_table_shared_columns_deep_copies() {
     let tv = table.view().unwrap();
     let table_ptr = tv.column(0).unwrap().device_data_ptr().unwrap();
 
-    assert_ne!(
-        table_ptr, external_ptr,
-        "try_into_table() with shared Arc must deep-copy; pointers should differ"
-    );
+    assert_ne!(table_ptr, external_ptr, "try_into_table() with shared Arc must deep-copy; pointers should differ");
 
     // External series is still valid.
-    assert_eq!(
-        external_series.column_view().unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3],
-    );
+    assert_eq!(external_series.column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
 }
 
 /// `try_into_table()` preserves data values.
@@ -176,14 +157,14 @@ fn as_table_view_preserves_column_order() {
 }
 
 // ===========================================================================
-// 5. Deprecated methods still work
+// 5. Renamed methods produce correct results
 // ===========================================================================
 
-/// Deprecated `to_table()` still compiles and produces correct results.
+/// `to_table_copy()` produces correct results.
 #[test]
-fn deprecated_to_table_still_works() {
+fn to_table_copy_produces_correct_results() {
     let df = sample_df();
-    let table = df.to_table().unwrap();
+    let table = df.to_table_copy().unwrap();
 
     let tv = table.view().unwrap();
     assert_eq!(tv.num_columns().unwrap(), 2);
@@ -191,11 +172,11 @@ fn deprecated_to_table_still_works() {
     assert_eq!(tv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// Deprecated `into_table()` still compiles and produces correct results.
+/// `try_into_table()` produces correct results.
 #[test]
-fn deprecated_into_table_still_works() {
+fn try_into_table_produces_correct_results() {
     let df = sample_df();
-    let (table, names) = df.into_table().unwrap();
+    let (table, names) = df.try_into_table().unwrap();
 
     assert_eq!(names, vec!["id", "score"]);
     let tv = table.view().unwrap();

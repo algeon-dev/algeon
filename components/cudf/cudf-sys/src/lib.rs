@@ -185,8 +185,22 @@ impl MemoryResource {
         Ok(Self { handle })
     }
 
+    /// Create a statistics-enabled memory resource for allocator-sensitive tests.
+    pub fn new_test_stats() -> Result<Self, cudf_status_t> {
+        let mut handle = std::ptr::null_mut();
+        status_to_result(unsafe { cudf_test_memory_resource_create_stats(&mut handle) })?;
+        Ok(Self { handle })
+    }
+
     pub fn as_raw(&self) -> cudf_memory_resource_handle {
         self.handle
+    }
+
+    /// Read the cumulative allocation count from a statistics test resource.
+    pub fn test_allocation_count(&self) -> Result<i64, cudf_status_t> {
+        let mut out = 0_i64;
+        status_to_result(unsafe { cudf_test_memory_resource_allocation_count(self.handle, &mut out) })?;
+        Ok(out)
     }
 }
 
@@ -239,6 +253,16 @@ impl Default for ExecutionContext<'_> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Install `mr` as the process-global current device resource for tests.
+pub fn test_set_current_device_resource(mr: &MemoryResource) -> Result<(), cudf_status_t> {
+    status_to_result(unsafe { cudf_test_memory_resource_set_current(mr.as_raw()) })
+}
+
+/// Restore a previously observed raw device resource pointer for tests.
+pub fn test_set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_status_t> {
+    status_to_result(unsafe { cudf_test_memory_resource_set_current_raw(raw_mr) })
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +325,12 @@ extern "C" {
     pub fn cudf_column_view_destroy(handle: cudf_column_view_handle);
 
     pub fn cudf_column_view_type(handle: cudf_column_view_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
+
+    pub fn cudf_column_view_data_type(
+        handle: cudf_column_view_handle,
+        out_type_id: *mut cudf_type_id_t,
+        out_scale: *mut i32,
+    ) -> cudf_status_t;
 
     pub fn cudf_column_view_size(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
@@ -488,6 +518,13 @@ extern "C" {
         out: *mut cudf_table_view_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_table_view_select_columns(
+        handle: cudf_table_view_handle,
+        indices: *const i32,
+        num_indices: i32,
+        out: *mut cudf_table_view_handle,
+    ) -> cudf_status_t;
+
     /// Release all columns from a table, destroying the table.
     ///
     /// On success, `table` is consumed and must not be used again.
@@ -525,6 +562,12 @@ extern "C" {
     pub fn cudf_scalar_destroy(handle: cudf_scalar_handle);
 
     pub fn cudf_scalar_type(handle: cudf_scalar_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
+
+    pub fn cudf_scalar_data_type(
+        handle: cudf_scalar_handle,
+        out_type_id: *mut cudf_type_id_t,
+        out_scale: *mut i32,
+    ) -> cudf_status_t;
 
     pub fn cudf_scalar_is_valid(handle: cudf_scalar_handle, out: *mut i32) -> cudf_status_t;
 
@@ -1107,6 +1150,10 @@ extern "C" {
     /// Reset the observation state so the next `_ex` call's context is visible.
     pub fn cudf_test_exec_reset_observation();
 
+    /// Force the next `cudf_table_release_columns` handle-array allocation to
+    /// fail for regression testing.
+    pub fn cudf_test_fail_next_table_release_columns_handle_array_alloc();
+
     /// Return the raw `uintptr_t` value of the last stream passed to an `_ex`
     /// shim.
     pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;
@@ -1123,12 +1170,35 @@ extern "C" {
     pub fn cudf_test_default_stream_value(out: *mut usize) -> cudf_status_t;
 
     /// Convert a `cudf_stream_handle` to its raw `uintptr_t` value.
-    pub fn cudf_test_stream_handle_value(
-        handle: cudf_stream_handle,
-        out: *mut usize,
-    ) -> cudf_status_t;
+    pub fn cudf_test_stream_handle_value(handle: cudf_stream_handle, out: *mut usize) -> cudf_status_t;
 
     /// Return the raw pointer of the process-global current device memory
     /// resource.
     pub fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Create a statistics-wrapped memory resource for allocator-sensitive
+    /// integration tests.
+    pub fn cudf_test_memory_resource_create_stats(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
+
+    /// Read the cumulative allocation count from a statistics memory resource.
+    pub fn cudf_test_memory_resource_allocation_count(
+        handle: cudf_memory_resource_handle,
+        out: *mut i64,
+    ) -> cudf_status_t;
+
+    /// Install the memory resource owned by `handle` as the process-global
+    /// current device resource for tests.
+    pub fn cudf_test_memory_resource_set_current(handle: cudf_memory_resource_handle) -> cudf_status_t;
+
+    /// Install a previously observed raw device resource pointer as the
+    /// process-global current device resource for tests.
+    pub fn cudf_test_memory_resource_set_current_raw(raw_mr: *mut c_void) -> cudf_status_t;
+
+    /// Throw a non-I/O `std::runtime_error` from the native shim for error
+    /// classification tests.
+    pub fn cudf_test_throw_runtime_error() -> cudf_status_t;
+
+    /// Throw `std::bad_alloc` from the native shim for OOM classification
+    /// tests.
+    pub fn cudf_test_throw_bad_alloc() -> cudf_status_t;
 }

@@ -31,7 +31,7 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   cudf::unary_operator cudf_op;
-  auto status = to_unary_operator(op, &cudf_op);
+  cudf_status_t status = to_unary_operator(op, &cudf_op);
   if (status != CUDF_SUCCESS) {
     return status;
   }

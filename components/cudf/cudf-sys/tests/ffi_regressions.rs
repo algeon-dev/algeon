@@ -195,82 +195,56 @@ fn last_error_message() -> String {
     unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
 }
 
-unsafe extern "C" {
-    fn cudf_test_fail_next_table_release_columns_handle_array_alloc();
-    fn cudf_test_exec_reset_observation();
-    fn cudf_test_exec_last_stream_value(out: *mut usize) -> i32;
-    fn cudf_test_exec_last_sync_stream_value(out: *mut usize) -> i32;
-    fn cudf_test_exec_last_mr_raw(out: *mut *mut c_void) -> i32;
-    fn cudf_test_default_stream_value(out: *mut usize) -> i32;
-    fn cudf_test_stream_handle_value(handle: *mut c_void, out: *mut usize) -> i32;
-    fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> i32;
-    fn cudf_test_memory_resource_create_stats(out: *mut *mut c_void) -> i32;
-    fn cudf_test_memory_resource_allocation_count(handle: *mut c_void, out: *mut i64) -> i32;
-    fn cudf_test_throw_runtime_error() -> i32;
-    fn cudf_test_throw_bad_alloc() -> i32;
-}
-
 const NO_SYNC_RECORDED: usize = usize::MAX;
 
 fn reset_exec_observation() {
-    unsafe { cudf_test_exec_reset_observation() };
+    unsafe { cudf_sys::cudf_test_exec_reset_observation() };
 }
 
 fn last_exec_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_test_exec_last_stream_value(&mut out) };
+    let st = unsafe { cudf_sys::cudf_test_exec_last_stream_value(&mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn last_exec_sync_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
+    let st = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn last_exec_mr_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let st = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
+    let st = unsafe { cudf_sys::cudf_test_exec_last_mr_raw(&mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn default_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_test_default_stream_value(&mut out) };
+    let st = unsafe { cudf_sys::cudf_test_default_stream_value(&mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn stream_value(stream: *mut c_void) -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_test_stream_handle_value(stream, &mut out) };
+    let st = unsafe { cudf_sys::cudf_test_stream_handle_value(stream, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn current_device_resource_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let st = unsafe { cudf_test_current_device_resource_raw(&mut out) };
+    let st = unsafe { cudf_sys::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     out
 }
 
-fn make_stats_memory_resource() -> *mut c_void {
-    let mut out = ptr::null_mut();
-    let st = unsafe { cudf_test_memory_resource_create_stats(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!out.is_null());
-    out
-}
-
-fn memory_resource_allocation_count(handle: *mut c_void) -> i64 {
-    let mut out = -1;
-    let st = unsafe { cudf_test_memory_resource_allocation_count(handle, &mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
+fn make_stats_memory_resource() -> cudf_sys::MemoryResource {
+    cudf_sys::MemoryResource::new_test_stats().unwrap()
 }
 
 fn owned_string_value(ptr: *mut c_char, len: i32) -> String {
@@ -1452,27 +1426,20 @@ fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
     let mut legacy_out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(memory_resource_allocation_count(stats_mr), 0);
+    assert_eq!(stats_mr.test_allocation_count().unwrap(), 0);
     assert_eq!(last_exec_mr_raw(), default_mr);
 
-    let exec_opts = cudf_sys::cudf_exec_options_t {
-        struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
-        stream: ptr::null_mut(),
-        mr: stats_mr,
-        flags: 0,
-        reserved: [0; 4],
-    };
+    let exec_opts = cudf_sys::ExecutionContext::new().with_memory_resource(&stats_mr);
     reset_exec_observation();
     let mut explicit_out: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, &exec_opts, &mut explicit_out) };
+    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec_opts.as_raw(), &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(memory_resource_allocation_count(stats_mr) > 0);
+    assert!(stats_mr.test_allocation_count().unwrap() > 0);
     assert_ne!(last_exec_mr_raw(), default_mr);
 
     unsafe {
         cudf_sys::cudf_column_destroy(explicit_out);
         cudf_sys::cudf_column_destroy(legacy_out);
-        cudf_sys::cudf_memory_resource_destroy(stats_mr);
         cudf_sys::cudf_column_destroy(col);
     }
 }
@@ -1508,7 +1475,7 @@ fn test_io_read_parquet_missing_file_clears_out() {
 
 #[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
-    let status = unsafe { cudf_test_throw_runtime_error() };
+    let status = unsafe { cudf_sys::cudf_test_throw_runtime_error() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
     assert!(last_error_message().contains("non-io runtime failure"));
@@ -1516,7 +1483,7 @@ fn test_non_io_runtime_error_maps_to_unknown() {
 
 #[test]
 fn test_bad_alloc_maps_to_out_of_memory() {
-    let status = unsafe { cudf_test_throw_bad_alloc() };
+    let status = unsafe { cudf_sys::cudf_test_throw_bad_alloc() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(!last_error_message().is_empty());
@@ -1552,7 +1519,7 @@ fn test_io_write_csv_negative_num_columns_rejected() {
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
-    let path = std::ffi::CString::new("/tmp/cudf_sys_write_csv_negative_num_columns.csv").unwrap();
+    let path = unique_missing_path("csv");
 
     let out_status = unsafe { cudf_sys::cudf_io_write_csv(tv, path.as_ptr(), ptr::null(), -1, b',' as i8, 1) };
     assert_eq!(out_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -1568,7 +1535,7 @@ fn test_io_write_csv_null_column_name_entry_rejected() {
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
-    let path = std::ffi::CString::new("/tmp/cudf_sys_write_csv_null_column_name_entry.csv").unwrap();
+    let path = unique_missing_path("csv");
     let names = [ptr::null()];
 
     let status = unsafe { cudf_sys::cudf_io_write_csv(tv, path.as_ptr(), names.as_ptr(), 1, b',' as i8, 1) };
@@ -1582,7 +1549,7 @@ fn test_io_write_csv_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_negative_num_columns_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), -1, 0, -1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -1591,7 +1558,7 @@ fn test_io_read_parquet_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_read_parquet_null_column_name_entry_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), columns.as_ptr(), 1, 0, -1, &mut out) };
@@ -1601,7 +1568,7 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_negative_skip_rows_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, -1, -1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -1610,7 +1577,7 @@ fn test_io_read_parquet_negative_skip_rows_rejected() {
 
 #[test]
 fn test_io_read_parquet_invalid_num_rows_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -2, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -1622,7 +1589,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
-    let path = std::ffi::CString::new("/tmp/cudf_sys_write_parquet_negative_num_columns.parquet").unwrap();
+    let path = unique_missing_path("parquet");
 
     let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), ptr::null(), -1) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -1638,7 +1605,7 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
-    let path = std::ffi::CString::new("/tmp/cudf_sys_write_parquet_null_column_name_entry.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let names = [ptr::null()];
 
     let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), names.as_ptr(), 1) };
@@ -1652,7 +1619,7 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
@@ -1675,7 +1642,7 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
     let mut out_table: *mut c_void = 1usize as *mut c_void;
     let mut out_names: *mut *mut i8 = 1usize as *mut *mut i8;
@@ -1700,7 +1667,7 @@ fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
@@ -1723,7 +1690,7 @@ fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
-    let path = std::ffi::CString::new("/tmp/does-not-matter.parquet").unwrap();
+    let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
@@ -2019,7 +1986,7 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
 
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = -1;
-    unsafe { cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    unsafe { cudf_sys::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);

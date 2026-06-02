@@ -92,7 +92,7 @@ cudf_status_t cudf_aggregation_create_count(cudf_null_policy_t null_policy,
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   cudf::null_policy policy;
-  auto status = to_cudf_null_policy(null_policy, &policy, "null_policy");
+  cudf_status_t status = to_cudf_null_policy(null_policy, &policy, "null_policy");
   if (status != CUDF_SUCCESS) {
     return status;
   }
@@ -187,15 +187,16 @@ cudf_status_t cudf_groupby_aggregate_ex(
     CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null");
   }
   cudf::null_policy null_policy;
-  auto status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  cudf_status_t status =
+      to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
   if (status != CUDF_SUCCESS) {
     return status;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* keys_view = static_cast<cudf::table_view*>(keys);

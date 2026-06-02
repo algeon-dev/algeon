@@ -1,4 +1,8 @@
-//! GPU-accelerated groupby aggregation.
+//! Low-level GPU-accelerated groupby aggregation.
+//!
+//! Most users should use [`DataFrame::groupby`](crate::DataFrame::groupby) to
+//! create a [`GroupBy`](crate::GroupBy) handle, then call
+//! [`agg()`](crate::GroupBy::agg) with an [`AggSpec`](crate::AggSpec).
 
 use std::{os::raw::c_void, ptr};
 
@@ -39,13 +43,7 @@ pub struct AggregationRequest<'a> {
     pub aggregations: &'a [Aggregation],
 }
 
-/// Null handling policy for groupby keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub enum NullPolicy {
-    Exclude = 0,
-    Include = 1,
-}
+pub use crate::types::NullPolicy;
 
 /// Result of a groupby aggregation.
 pub struct GroupByResult {
@@ -57,22 +55,28 @@ pub struct GroupByResult {
 }
 
 /// Create a C-side aggregation handle from an `Aggregation` enum.
+///
+/// # Safety
+/// Caller must destroy the returned handle via `cudf_aggregation_destroy`.
 unsafe fn create_agg_handle(agg: &Aggregation) -> Result<*mut c_void> {
     let mut handle = ptr::null_mut();
     match agg {
         Aggregation::Sum => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(0, &mut handle),
                 "groupby::create_agg_handle(sum)",
             )?;
         },
         Aggregation::Min => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(1, &mut handle),
                 "groupby::create_agg_handle(min)",
             )?;
         },
         Aggregation::Max => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(2, &mut handle),
                 "groupby::create_agg_handle(max)",
@@ -80,36 +84,42 @@ unsafe fn create_agg_handle(agg: &Aggregation) -> Result<*mut c_void> {
         },
         Aggregation::Count { include_nulls } => {
             let policy = if *include_nulls { 1 } else { 0 };
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_count(policy, &mut handle),
                 "groupby::create_agg_handle(count)",
             )?;
         },
         Aggregation::Mean => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(5, &mut handle),
                 "groupby::create_agg_handle(mean)",
             )?;
         },
         Aggregation::Median => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(6, &mut handle),
                 "groupby::create_agg_handle(median)",
             )?;
         },
         Aggregation::NUnique => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(7, &mut handle),
                 "groupby::create_agg_handle(nunique)",
             )?;
         },
         Aggregation::Std { ddof } => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_std(*ddof, &mut handle),
                 "groupby::create_agg_handle(std)",
             )?;
         },
         Aggregation::Variance { ddof } => {
+            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_variance(*ddof, &mut handle),
                 "groupby::create_agg_handle(variance)",
@@ -170,6 +180,7 @@ pub fn groupby_aggregate(
                 },
                 _ => {},
             }
+            // SAFETY: create_agg_handle calls FFI with valid parameters.
             let handle = unsafe { create_agg_handle(agg)? };
             all_agg_handles.push(handle);
         }
@@ -181,6 +192,8 @@ pub fn groupby_aggregate(
     let mut out_values: *mut *mut c_void = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
+    // SAFETY: keys handle is valid. value_handles, all_agg_handles, and agg_counts
+    // are valid slices with correct lengths.
     let status = unsafe {
         cudf_sys::cudf_groupby_aggregate(
             keys.raw_handle(),
@@ -198,6 +211,7 @@ pub fn groupby_aggregate(
 
     // Destroy aggregation handles regardless of success/failure.
     for handle in &all_agg_handles {
+        // SAFETY: Each handle was returned by a successful create_agg_handle call.
         unsafe { cudf_sys::cudf_aggregation_destroy(*handle) };
     }
 
@@ -212,10 +226,13 @@ pub fn groupby_aggregate(
         ],
     )?;
 
+    // SAFETY: out_keys was returned by a successful FFI call, transferring ownership.
     let keys_table = unsafe { Table::from_raw(out_keys) };
 
     // Collect result columns from the flat array.
     let total = out_total_columns as usize;
+    // SAFETY: out_values and out_total_columns were set by a successful FFI call.
+    // from_raw_parts is valid because the C shim allocated `total` elements.
     let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
 
     let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
@@ -224,23 +241,25 @@ pub fn groupby_aggregate(
         let n = *count as usize;
         let mut cols = Vec::with_capacity(n);
         for i in 0..n {
+            // SAFETY: Each column handle in col_array was returned by the FFI call.
             cols.push(unsafe { Column::from_raw(col_array[offset + i]) });
         }
         offset += n;
         results.push(cols);
     }
 
-    // Free the array itself (not the columns — we took ownership above).
+    // SAFETY: out_values was allocated by the C shim. Column handles were already
+    // taken ownership of above, so we only free the array container.
     unsafe { cudf_sys::cudf_free_column_array(out_values) };
 
     Ok(GroupByResult { keys: keys_table, results })
 }
 
 // ===========================================================================
-// Façade types: cuDF-Python-like groupby API
+// High-level types: cuDF-Python-like groupby API
 // ===========================================================================
 
-/// High-level aggregation type for the façade groupby API.
+/// High-level aggregation type for the user-facing groupby API.
 ///
 /// This mirrors cuDF-Python's aggregation names. Internally each variant maps
 /// to the corresponding [`Aggregation`] for the low-level
@@ -331,7 +350,7 @@ impl AggSpec {
     }
 }
 
-/// Options for the façade groupby operation.
+/// Options for the high-level groupby operation.
 #[derive(Debug, Clone)]
 pub struct GroupByOptions {
     null_policy: NullPolicy,
@@ -387,7 +406,7 @@ impl<'a> GroupBy<'a> {
 
         use crate::{
             dataframe::DataFrame,
-            internal::resolve::{build_keys_table_from_columns, resolve_column_names},
+            internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         };
 
         if specs.is_empty() {
@@ -413,37 +432,38 @@ impl<'a> GroupBy<'a> {
             }
         }
 
-        // Build keys table.
-        let keys_table = build_keys_table_from_columns(columns, &key_indices)?;
-        let keys_view = keys_table.view()?;
+        // Build a borrowed key projection over the existing columns.
+        let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
 
         // Group specs by value column (preserving request order).
-        let mut owned_value_cols: Vec<Column> = Vec::new();
+        let mut value_views: Vec<ColumnView<'_>> = Vec::new();
         let mut request_meta: Vec<(usize, Vec<Aggregation>)> = Vec::new();
         let mut result_names: Vec<String> = Vec::new();
 
-        let mut col_name_to_owned_idx: IndexMap<String, usize> = IndexMap::new();
-        let mut owned_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
+        let mut col_name_to_view_idx: IndexMap<String, usize> = IndexMap::new();
+        let mut view_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
         let mut output_order: Vec<(usize, usize)> = Vec::new();
 
         for spec in specs {
-            let owned_idx = if let Some(&idx) = col_name_to_owned_idx.get(spec.column.as_str()) {
+            let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
                 idx
             } else {
-                let arc_col = columns.get(spec.column.as_str()).unwrap();
-                let owned = arc_col.copy()?;
-                let idx = owned_value_cols.len();
-                owned_value_cols.push(owned);
-                col_name_to_owned_idx.insert(spec.column.clone(), idx);
+                let arc_col = columns.get(spec.column.as_str()).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in DataFrame", spec.column))
+                        .with_operation("dataframe::agg")
+                })?;
+                let idx = value_views.len();
+                value_views.push(arc_col.view()?);
+                col_name_to_view_idx.insert(spec.column.clone(), idx);
                 idx
             };
 
-            let group_idx = if let Some(&idx) = owned_idx_to_group_idx.get(&owned_idx) {
+            let group_idx = if let Some(&idx) = view_idx_to_group_idx.get(&view_idx) {
                 idx
             } else {
                 let idx = request_meta.len();
-                request_meta.push((owned_idx, Vec::new()));
-                owned_idx_to_group_idx.insert(owned_idx, idx);
+                request_meta.push((view_idx, Vec::new()));
+                view_idx_to_group_idx.insert(view_idx, idx);
                 idx
             };
 
@@ -454,21 +474,18 @@ impl<'a> GroupBy<'a> {
             result_names.push(spec.output_name());
         }
 
-        // Build AggregationRequests.
-        let value_views: Vec<_> = owned_value_cols.iter().map(|c| c.view()).collect::<Result<Vec<_>>>()?;
-
         let agg_slices: Vec<Vec<Aggregation>> = request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
 
         let requests: Vec<AggregationRequest<'_>> = request_meta
             .iter()
             .enumerate()
-            .map(|(i, (owned_idx, _))| AggregationRequest {
-                values: &value_views[*owned_idx],
+            .map(|(i, (view_idx, _))| AggregationRequest {
+                values: &value_views[*view_idx],
                 aggregations: &agg_slices[i],
             })
             .collect();
 
-        let gb_result = groupby_aggregate(&keys_view, &requests, self.options.null_policy)?;
+        let gb_result = groupby_aggregate(keys_table.table(), &requests, self.options.null_policy)?;
 
         // Reorder result columns to match original spec order.
         let mut grouped_results: Vec<Vec<Option<Column>>> =

@@ -1,4 +1,4 @@
-//! Facade Semantic Baseline Tests (FC-AUDIT)
+//! High-Level API Semantic Baseline Tests (FC-AUDIT)
 //!
 //! These tests lock down the current borrow/share/copy semantics of every
 //! public accessor and conversion on `DataFrame` and `Series` **before** any
@@ -27,30 +27,24 @@
 //! | `with_columns(exprs)`      | GPU-allocating per expr    | Yes (owned)    | OK                     |
 //! | `drop()` / `drop_columns()`| Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `filter(&Series)`          | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `filter_by_mask()`         | GPU-allocating             | Yes (owned)    | **Awkward**: "filter" already implies mask; `_by_mask` is redundant |
-//! | `filter_by_mask_owned()`   | GPU-allocating             | Yes (owned)    | **Awkward**: `_owned` suffix unclear to newcomers |
+//! | `filter_by_mask()`         | GPU-allocating             | Yes (owned)    | OK (advanced entry point) |
 //! | `filter_isin()`            | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `filter_isin_owned()`      | GPU-allocating             | Yes (owned)    | **Awkward**: `_owned` suffix |
-//! | `sort()`                   | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `sort_owned()`             | GPU-allocating             | Yes (owned)    | **Awkward**: `_owned` suffix |
 //! | `sort_values()`            | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `head()` / `tail()`        | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `head_owned()` / `tail_owned()` | GPU-allocating        | Yes (owned)    | **Awkward**: `_owned` suffix |
 //! | `slice()`                  | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `gather()`                 | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `distinct()`               | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `drop_nulls()`             | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `drop_nulls_any()`         | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `drop_nulls_any_owned()`   | GPU-allocating             | Yes (owned)    | **Awkward**: `_owned` suffix |
-//! | `dropna(DropNaOptions)`    | GPU-allocating             | Yes (owned)    | OK (cuDF-style facade) |
-//! | `drop_duplicates(DistinctOptions)` | GPU-allocating      | Yes (owned)    | OK (cuDF-style facade) |
-//! | `fillna(col, &Scalar)`     | GPU-allocating             | Yes (owned)    | OK (cuDF-style facade) |
+//! | `dropna(DropNaOptions)`    | GPU-allocating             | Yes (owned)    | OK (cuDF-style high-level API) |
+//! | `drop_duplicates(DistinctOptions)` | GPU-allocating      | Yes (owned)    | OK (cuDF-style high-level API) |
+//! | `fillna(col, &Scalar)`     | GPU-allocating             | Yes (owned)    | OK (cuDF-style high-level API) |
 //! | `fillna_with_series()`     | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `replace_nulls()`          | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `cast_column()`            | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `concat()`                 | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `inner_join()` etc.        | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `merge()`                  | GPU-allocating             | Yes (owned)    | OK (cuDF-style facade) |
+//! | `merge()`                  | GPU-allocating             | Yes (owned)    | OK (cuDF-style high-level API) |
 //! | `groupby()`                | Zero-copy (returns builder)| No (borrows)   | OK                     |
 //! | `factorize(col)`           | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `read_parquet()` etc.      | Host→GPU (I/O)             | Yes (owned)    | OK                     |
@@ -88,9 +82,8 @@
 //!
 //! # Flagged names (actively misleading)
 //!
-//! 1. **`DataFrame::column()`** — Returns a `SeriesView`, not a `Column` or `Series`.
-//!    A user reading `.column("x")` expects an owned column or at least a `ColumnView`.
-//! 2. **`Series::column()`** — Returns `&Column`. Confuses facade/core boundary.
+//! 1. ~~`DataFrame::column()`~~ — Removed. Replaced by `series_view()`.
+//! 2. ~~`Series::column()`~~ — Removed. Replaced by `as_column()`.
 //! 3. **`DataFrame::into_table()`** — Implies a zero-cost ownership transfer,
 //!    but may deep-copy shared columns.
 //!
@@ -100,7 +93,7 @@
 //!    *why* consuming self matters (memory lifetime). Could be `*_move` or
 //!    the borrow variant could just be removed in favor of always-consuming.
 //! 2. **`Series::column_arc()`** — Leaks implementation detail (`Arc`) into
-//!    the public facade API.
+//!    the public high-level API.
 //! 3. **`DataFrame::filter_by_mask()`** — Redundant with `filter()`.
 //! 4. **`Series::column_view()`** — Redundant with `view()` except it returns
 //!    bare `ColumnView` instead of `SeriesView`. The name is confusing alongside
@@ -108,16 +101,9 @@
 //!
 //! All tests require a GPU.
 
-#![allow(deprecated)]
-
 use std::sync::Arc;
 
-use cudf::{
-    column::Column,
-    dataframe::DataFrame,
-    series::Series,
-    types::TypeId,
-};
+use cudf::{column::Column, dataframe::DataFrame, series::Series, types::TypeId};
 
 // ===========================================================================
 // Helpers
@@ -134,11 +120,11 @@ fn sample_df() -> DataFrame {
 ///
 /// Two columns sharing the same GPU buffer will have the same pointer.
 fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.column(name).unwrap().device_data_ptr().unwrap()
+    df.series_view(name).unwrap().device_data_ptr().unwrap()
 }
 
 // ===========================================================================
-// 1. DataFrame::column() — returns borrowed SeriesView
+// 1. DataFrame::series_view() — returns borrowed SeriesView
 // ===========================================================================
 
 /// `column()` returns a `SeriesView` (borrowed), not an owned `Series`.
@@ -146,7 +132,7 @@ fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
 #[test]
 fn df_column_returns_series_view_with_name() {
     let df = sample_df();
-    let sv = df.column("id").unwrap();
+    let sv = df.series_view("id").unwrap();
 
     // SeriesView carries the column name
     assert_eq!(sv.name(), Some("id"));
@@ -162,7 +148,7 @@ fn df_column_returns_series_view_with_name() {
 #[test]
 fn df_column_view_points_to_same_gpu_data_as_series() {
     let df = sample_df();
-    let sv = df.column("id").unwrap();
+    let sv = df.series_view("id").unwrap();
     let view_ptr = sv.device_data_ptr().unwrap();
 
     let series = df.series("id").unwrap();
@@ -178,8 +164,8 @@ fn df_column_view_points_to_same_gpu_data_as_series() {
 #[test]
 fn df_column_two_calls_same_device_ptr() {
     let df = sample_df();
-    let sv1 = df.column("id").unwrap();
-    let sv2 = df.column("id").unwrap();
+    let sv1 = df.series_view("id").unwrap();
+    let sv2 = df.series_view("id").unwrap();
 
     assert_eq!(sv1.device_data_ptr().unwrap(), sv2.device_data_ptr().unwrap());
 }
@@ -206,11 +192,8 @@ fn df_series_shares_device_pointer() {
     let df = sample_df();
     let s = df.series("id").unwrap();
 
-    let sv = df.column("id").unwrap();
-    assert_eq!(
-        s.column_view().unwrap().device_data_ptr().unwrap(),
-        sv.device_data_ptr().unwrap(),
-    );
+    let sv = df.series_view("id").unwrap();
+    assert_eq!(s.column_view().unwrap().device_data_ptr().unwrap(), sv.device_data_ptr().unwrap(),);
 }
 
 /// `series()` produces an owned value that can outlive the DataFrame.
@@ -251,7 +234,7 @@ fn df_series_two_calls_share_arc() {
 #[test]
 fn df_to_table_deep_copies() {
     let df = sample_df();
-    let table = df.to_table().unwrap();
+    let table = df.to_table_copy().unwrap();
 
     let tv = table.view().unwrap();
     assert_eq!(tv.num_columns().unwrap(), 2);
@@ -271,11 +254,11 @@ fn df_to_table_deep_copies() {
 #[test]
 fn df_to_table_source_still_usable() {
     let df = sample_df();
-    let _table = df.to_table().unwrap();
+    let _table = df.to_table_copy().unwrap();
 
     // DataFrame is still fully readable
-    assert_eq!(df.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -287,14 +270,10 @@ fn df_to_table_source_still_usable() {
 #[test]
 fn df_into_table_unique_owner_no_extra_copy() {
     // Build a DataFrame without any other references to the columns.
-    let df = DataFrame::new(
-        vec!["a".into()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let original_ptr = device_ptr(&df, "a");
-    let (table, names) = df.into_table().unwrap();
+    let (table, names) = df.try_into_table().unwrap();
 
     assert_eq!(names, vec!["a"]);
     let tv = table.view().unwrap();
@@ -302,10 +281,7 @@ fn df_into_table_unique_owner_no_extra_copy() {
 
     // When the Arc was unique, into_table() can unwrap without copying,
     // so the device pointer should be the same.
-    assert_eq!(
-        original_ptr, table_ptr,
-        "into_table() with unique Arc should transfer without copy"
-    );
+    assert_eq!(original_ptr, table_ptr, "into_table() with unique Arc should transfer without copy");
 }
 
 /// When the DataFrame shares columns (Arc strong count > 1),
@@ -321,30 +297,24 @@ fn df_into_table_shared_columns_deep_copies() {
     let original_ptr = device_ptr(&df, "id");
     assert_eq!(original_ptr, external_ptr, "series shares same Arc");
 
-    let (table, names) = df.into_table().unwrap();
+    let (table, names) = df.try_into_table().unwrap();
     assert_eq!(names, vec!["id", "score"]);
 
     let tv = table.view().unwrap();
     let table_ptr = tv.column(0).unwrap().device_data_ptr().unwrap();
 
     // The shared column must have been deep-copied.
-    assert_ne!(
-        table_ptr, external_ptr,
-        "into_table() with shared Arc must deep-copy; pointers should differ"
-    );
+    assert_ne!(table_ptr, external_ptr, "into_table() with shared Arc must deep-copy; pointers should differ");
 
     // External series is still valid (Arc keeps it alive).
-    assert_eq!(
-        external_series.column_view().unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2, 3],
-    );
+    assert_eq!(external_series.column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
 }
 
 /// `into_table()` consumes the DataFrame — data values are preserved.
 #[test]
 fn df_into_table_values_preserved() {
     let df = sample_df();
-    let (table, names) = df.into_table().unwrap();
+    let (table, names) = df.try_into_table().unwrap();
 
     assert_eq!(names, vec!["id", "score"]);
     let tv = table.view().unwrap();
@@ -353,86 +323,40 @@ fn df_into_table_values_preserved() {
 }
 
 // ===========================================================================
-// 5. *_owned methods — what "owned" means
+// 5. *_owned methods — schema-only consuming variants
 // ===========================================================================
 
-/// `filter_by_mask_owned` consumes self but produces the same result
-/// as the borrowing `filter_by_mask` variant.
-#[test]
-fn filter_by_mask_owned_same_result_as_borrow() {
-    let df1 = sample_df();
-    let df2 = sample_df();
-
-    let mask = Column::from_slice(&[true, false, true]).unwrap();
-    let mask_view = mask.view().unwrap();
-
-    let borrow_result = df1.filter_by_mask(&mask_view).unwrap();
-    let owned_result = df2.filter_by_mask_owned(&mask_view).unwrap();
-
-    assert_eq!(
-        borrow_result.column("id").unwrap().to_vec::<i32>().unwrap(),
-        owned_result.column("id").unwrap().to_vec::<i32>().unwrap(),
-    );
-    assert_eq!(
-        borrow_result.column("score").unwrap().to_vec::<f64>().unwrap(),
-        owned_result.column("score").unwrap().to_vec::<f64>().unwrap(),
-    );
-}
-
-/// `filter_by_mask_owned` produces a new GPU allocation — the result
+/// `filter_by_mask` produces a new GPU allocation — the result
 /// has different device pointers from the source.
 ///
 /// # Cost
 /// GPU-allocating: a new table is produced containing the filtered rows.
 #[test]
-fn filter_by_mask_owned_allocates_new_gpu_data() {
+fn filter_by_mask_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
     let mask = Column::from_slice(&[true, false, true]).unwrap();
     let mask_view = mask.view().unwrap();
-    let filtered = df.filter_by_mask_owned(&mask_view).unwrap();
+    let filtered = df.filter_by_mask(&mask_view).unwrap();
 
     // Different number of rows → must be a new GPU allocation.
     let filtered_ptr = device_ptr(&filtered, "id");
     assert_ne!(original_ptr, filtered_ptr);
 }
 
-/// `sort_owned` consumes self and produces the same result as `sort`.
+/// `sort_values` produces consistent results across calls.
 #[test]
-fn sort_owned_same_result_as_borrow() {
+fn sort_values_consistent_results() {
     let df1 = sample_df();
     let df2 = sample_df();
 
-    let borrow_result = df1.sort(&["id"], &[cudf::sorting::Order::Descending]).unwrap();
-    let owned_result = df2.sort_owned(&["id"], &[cudf::sorting::Order::Descending]).unwrap();
+    let result1 = df1.sort_values(&["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
+    let result2 = df2.sort_values(&["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(
-        borrow_result.column("id").unwrap().to_vec::<i32>().unwrap(),
-        owned_result.column("id").unwrap().to_vec::<i32>().unwrap(),
-    );
-}
-
-/// `head_owned` / `tail_owned` produce the same results as head/tail.
-#[test]
-fn head_tail_owned_same_results() {
-    let df1 = sample_df();
-    let df2 = sample_df();
-
-    let h1 = df1.head(2).unwrap();
-    let h2 = df2.head_owned(2).unwrap();
-    assert_eq!(
-        h1.column("id").unwrap().to_vec::<i32>().unwrap(),
-        h2.column("id").unwrap().to_vec::<i32>().unwrap(),
-    );
-
-    let df3 = sample_df();
-    let df4 = sample_df();
-    let t1 = df3.tail(2).unwrap();
-    let t2 = df4.tail_owned(2).unwrap();
-    assert_eq!(
-        t1.column("id").unwrap().to_vec::<i32>().unwrap(),
-        t2.column("id").unwrap().to_vec::<i32>().unwrap(),
+        result1.series_view("id").unwrap().to_vec::<i32>().unwrap(),
+        result2.series_view("id").unwrap().to_vec::<i32>().unwrap(),
     );
 }
 
@@ -512,24 +436,25 @@ fn series_column_returns_ref() {
     let s = Series::new::<i32>("c", &[1, 2, 3]).unwrap();
 
     // column() returns &Column
-    let col_ref: &Column = s.column();
+    let col_ref: &Column = s.as_column();
     let cv = col_ref.view().unwrap();
     assert_eq!(cv.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// `Series::column_arc()` returns a reference to the Arc itself,
-/// allowing callers to clone it for shared ownership.
+/// `Series::into_inner()` consumes the Series and returns the `Arc<Column>`.
+/// A clone of the Series shares the same device data.
 #[test]
-fn series_column_arc_shares_arc() {
+fn series_into_inner_shares_arc() {
     let s = Series::new::<i32>("c", &[1, 2, 3]).unwrap();
 
-    let arc_ref: &Arc<Column> = s.column_arc();
-    let cloned = Arc::clone(arc_ref);
+    let arc1 = s.clone().into_inner();
+    let arc2 = s.into_inner();
 
     // Both point to the same device data
-    let ptr1 = s.column().view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = cloned.view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = arc1.view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = arc2.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
+    assert!(Arc::ptr_eq(&arc1, &arc2));
 }
 
 /// `Series::column_view()` returns a bare `ColumnView` (no name),
@@ -592,29 +517,26 @@ fn df_view_borrows_all_columns() {
     assert_eq!(dfv.num_columns(), 2);
     assert_eq!(dfv.column_names(), vec!["id", "score"]);
 
-    let id_sv = dfv.column("id").unwrap();
+    let id_sv = dfv.get("id").unwrap().unwrap();
     assert_eq!(id_sv.name(), Some("id"));
     assert_eq!(id_sv.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// `DataFrameView::column()` returns a `SeriesView` that points to the
-/// same GPU data as `DataFrame::column()`.
+/// `DataFrameView::get()` returns a `SeriesView` that points to the
+/// same GPU data as `DataFrame::series_view()`.
 #[test]
 fn df_view_column_same_device_ptr() {
     let df = sample_df();
     let dfv = df.view();
 
-    let dfv_sv = dfv.column("id").unwrap();
-    let df_sv = df.column("id").unwrap();
+    let dfv_sv = dfv.get("id").unwrap().unwrap();
+    let df_sv = df.series_view("id").unwrap();
 
-    assert_eq!(
-        dfv_sv.device_data_ptr().unwrap(),
-        df_sv.device_data_ptr().unwrap(),
-    );
+    assert_eq!(dfv_sv.device_data_ptr().unwrap(), df_sv.device_data_ptr().unwrap(),);
 }
 
 // ===========================================================================
-// Supplementary: facade methods' GPU-allocating nature
+// Supplementary: high-level methods' GPU-allocating nature
 // ===========================================================================
 
 /// `filter()` with a Series mask produces a new GPU allocation.
@@ -625,7 +547,7 @@ fn df_filter_gpu_allocates() {
 
     let filtered = df.filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
 
     // New allocation — different device pointer
     assert_ne!(device_ptr(&df, "id"), device_ptr(&filtered, "id"));

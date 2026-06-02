@@ -34,7 +34,7 @@ use crate::{
     error::Result,
     scalar::Scalar,
     series::Series,
-    types::{CudfType, TypeId},
+    types::{CudfType, DataType},
     unary::{self, UnaryOperator},
 };
 
@@ -95,7 +95,7 @@ pub enum Expr {
     /// Element-wise unary operation.
     UnaryOp { op: UnaryOperator, input: Box<Expr> },
     /// Cast to a target type.
-    Cast { input: Box<Expr>, target: TypeId },
+    Cast { input: Box<Expr>, target: DataType },
     /// Null-check: produces BOOL8 where `true` = null.
     IsNull(Box<Expr>),
     /// Validity-check: produces BOOL8 where `true` = non-null.
@@ -113,8 +113,11 @@ impl Expr {
     }
 
     /// Cast the result to the given type.
-    pub fn cast(self, target: TypeId) -> Expr {
-        Expr::Cast { input: Box::new(self), target }
+    ///
+    /// Accepts either a [`DataType`] (canonical, supports decimal scale) or a
+    /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
+    pub fn cast(self, target: impl Into<DataType>) -> Expr {
+        Expr::Cast { input: Box::new(self), target: target.into() }
     }
 
     /// Element-wise greater-than comparison.

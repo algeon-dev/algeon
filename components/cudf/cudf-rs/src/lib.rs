@@ -1,30 +1,11 @@
 //! Safe Rust bindings for cuDF — GPU-accelerated DataFrames.
 //!
-//! This crate provides an idiomatic Rust API over the cuDF C++ library via
-//! the `cudf-sys` FFI crate. The primary user-facing types are [`DataFrame`]
-//! and [`Series`], which provide a cuDF-Python-like experience with zero-copy
-//! metadata operations and GPU-only data operations.
+//! Start with [`DataFrame`] and [`Series`]. They provide a cuDF-Python-like
+//! experience with immutable-value semantics, `Arc`-shared columns, and
+//! GPU-only data operations. Use [`Column`]/[`Table`] only when you need
+//! fine-grained GPU memory control.
 //!
-//! # Key Types
-//!
-//! **Façade layer** (start here):
-//! - [`DataFrame`] — A named, ordered collection of GPU columns with
-//!   immutable-value semantics.
-//! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
-//! - [`SeriesView`] — A named, borrowed view of a column (via Deref to
-//!   [`ColumnView`]).
-//! - [`DataFrameView`] — A named, borrowed view of all columns in a DataFrame.
-//!
-//! **Core layer** (for advanced / low-level use):
-//! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
-//! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
-//! - [`Table`] — An owned GPU table (collection of columns).
-//! - [`TableView`] — A non-owning borrow of a table.
-//! - [`Scalar`] — A single value on the GPU.
-//! - [`CudaStream`] — A standalone CUDA stream wrapper; current compute APIs
-//!   still run on cuDF's default stream.
-//!
-//! # Example
+//! # Quick Start
 //!
 //! ```no_run
 //! use cudf::{DataFrame, Series};
@@ -43,6 +24,32 @@
 //! let score = df.series("score").unwrap();
 //! assert_eq!(score.len(), 3);
 //! ```
+//!
+//! # Primary Types
+//!
+//! - [`DataFrame`] — A named, ordered collection of GPU columns with
+//!   immutable-value semantics.
+//! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
+//! - [`SeriesView`] — A named, borrowed view of a column.
+//! - [`DataFrameView`] — A named, borrowed view of all columns in a DataFrame.
+//!
+//! # High-Level Operations
+//!
+//! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
+//! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
+//! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
+//!
+//! # Advanced Usage
+//!
+//! The core types give direct control over GPU memory layout and lifetimes.
+//! Most users should not need these.
+//!
+//! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
+//! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
+//! - [`Table`] — An owned GPU table (collection of columns).
+//! - [`TableView`] — A non-owning borrow of a table.
+//! - [`Scalar`] — A single value on the GPU.
+//! - For CUDA stream management, see the [`stream`] module.
 
 #[cfg(feature = "arrow")]
 pub mod arrow;
@@ -58,7 +65,7 @@ pub mod expr;
 pub mod filter;
 pub mod groupby;
 pub mod hashing;
-// Internal helpers — `TempTableView` is re-exported below.
+// Internal helpers — not part of the public API.
 pub(crate) mod internal;
 pub mod io;
 pub mod join;
@@ -77,12 +84,14 @@ pub mod table;
 pub mod types;
 pub mod unary;
 
-// Re-export façade types at crate root.
-// Re-export core types at crate root.
-pub use column::{Column, ColumnView, DeviceSlice};
-pub use dataframe::{DataFrame, DistinctOptions, DropNaOptions};
+// — Primary entry points —
+// — Core types (advanced — most users should prefer DataFrame/Series) —
+pub use column::{Column, ColumnView};
+pub use dataframe::{DataFrame, DataFrameJoinResult, DistinctOptions, DropNaOptions};
 pub use dataframe_view::DataFrameView;
+// — Types and error —
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
+// — High-level operations —
 pub use expr::Expr;
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};
 pub use join::{JoinType, MergeOptions};
@@ -90,7 +99,5 @@ pub use scalar::Scalar;
 pub use series::{IntoSeries, Series};
 pub use series_view::SeriesView;
 pub use sorting::SortOptions;
-pub use stream::CudaStream;
 pub use table::{Table, TableView};
-pub use internal::temp_table::TempTableView;
-pub use types::{CudfType, DataType, TypeId};
+pub use types::{CudfType, DataType, NullEquality, NullPolicy, TypeId};
