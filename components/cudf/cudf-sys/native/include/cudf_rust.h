@@ -7,6 +7,7 @@
 #include "execution_context.h"
 #include "types.h"
 #include "column.h"
+#include "device_buffer.h"
 #include "table.h"
 #include "scalar.h"
 #include "stream.h"

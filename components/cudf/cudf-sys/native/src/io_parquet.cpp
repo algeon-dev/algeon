@@ -1,4 +1,5 @@
 #include "io.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/io/parquet.hpp>
@@ -21,6 +22,16 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    int32_t num_columns,
                                    int64_t skip_rows, int64_t num_rows,
                                    cudf_table_handle* out) {
+  return cudf_io_read_parquet_ex(filepath, columns, num_columns, skip_rows,
+                                 num_rows, out, nullptr);
+}
+
+cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
+                                       const char** columns,
+                                       int32_t num_columns,
+                                       int64_t skip_rows, int64_t num_rows,
+                                       cudf_table_handle* out,
+                                       cudf_exec_options_t const* exec_options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
@@ -40,6 +51,12 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
@@ -64,9 +81,7 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
     }
 
     auto options = builder.build();
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto result = cudf::io::read_parquet(options, stream, mr);
+    auto result = cudf::io::read_parquet(options, exec.stream, exec.mr);
 
     *out = static_cast<cudf_table_handle>(result.tbl.release());
     return CUDF_SUCCESS;
@@ -78,6 +93,15 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
                                     const char* filepath,
                                     const char** column_names,
                                     int32_t num_columns) {
+  return cudf_io_write_parquet_ex(table, filepath, column_names, num_columns,
+                                  nullptr);
+}
+
+cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
+                                        const char* filepath,
+                                        const char** column_names,
+                                        int32_t num_columns,
+                                        cudf_exec_options_t const* exec_options) {
   CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   if (num_columns < 0) {
@@ -88,6 +112,12 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
     CUDF_RUST_NULL_CHECK(column_names, "column_names is null");
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::table_view*>(table);
     auto sink = cudf::io::sink_info(std::string(filepath));
 
@@ -108,7 +138,9 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
     }
 
     auto options = builder.build();
-    cudf::io::write_parquet(options);
+    // NOTE: write_parquet only accepts stream, not mr (it writes to a sink,
+    // not an allocator). The mr from exec_options is ignored for writes.
+    cudf::io::write_parquet(options, exec.stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -122,6 +154,22 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
                                                   cudf_table_handle* out_table,
                                                   char*** out_names,
                                                   int32_t* out_num_names) {
+  return cudf_io_read_parquet_with_metadata_ex(filepath, columns, num_columns,
+                                               skip_rows, num_rows, out_table,
+                                               out_names, out_num_names,
+                                               nullptr);
+}
+
+cudf_status_t cudf_io_read_parquet_with_metadata_ex(
+    const char* filepath,
+    const char** columns,
+    int32_t num_columns,
+    int64_t skip_rows,
+    int64_t num_rows,
+    cudf_table_handle* out_table,
+    char*** out_names,
+    int32_t* out_num_names,
+    cudf_exec_options_t const* exec_options) {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
   *out_table = nullptr;
   CUDF_RUST_NULL_CHECK(out_names, "out_names is null");
@@ -145,6 +193,12 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
@@ -169,9 +223,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
     }
 
     auto options = builder.build();
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto result = cudf::io::read_parquet(options, stream, mr);
+    auto result = cudf::io::read_parquet(options, exec.stream, exec.mr);
 
     // Extract column names from metadata
     auto const& schema_info = result.metadata.schema_info;

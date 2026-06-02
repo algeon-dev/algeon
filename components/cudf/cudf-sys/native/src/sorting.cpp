@@ -1,4 +1,5 @@
 #include "sorting.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/sorting.hpp>
@@ -64,6 +65,15 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
                         const cudf_null_order_t* null_precedence,
                         int32_t num_keys,
                         cudf_table_handle* out) {
+  return cudf_sort_ex(input, column_order, null_precedence, num_keys, out, nullptr);
+}
+
+cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
+                            const cudf_order_t* column_order,
+                            const cudf_null_order_t* null_precedence,
+                            int32_t num_keys,
+                            cudf_table_handle* out,
+                            cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -72,9 +82,13 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::table_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
@@ -91,7 +105,7 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
       }
     }
 
-    auto result = cudf::sort(*view, orders, null_orders, stream, mr);
+    auto result = cudf::sort(*view, orders, null_orders, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -103,6 +117,15 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
                                const cudf_null_order_t* null_precedence,
                                int32_t num_keys,
                                cudf_table_handle* out) {
+  return cudf_stable_sort_ex(input, column_order, null_precedence, num_keys, out, nullptr);
+}
+
+cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
+                                   const cudf_order_t* column_order,
+                                   const cudf_null_order_t* null_precedence,
+                                   int32_t num_keys,
+                                   cudf_table_handle* out,
+                                   cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -111,9 +134,13 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::table_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
@@ -130,7 +157,7 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
       }
     }
 
-    auto result = cudf::stable_sort(*view, orders, null_orders, stream, mr);
+    auto result = cudf::stable_sort(*view, orders, null_orders, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -143,6 +170,17 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
                                const cudf_null_order_t* null_precedence,
                                int32_t num_key_columns,
                                cudf_table_handle* out) {
+  return cudf_sort_by_key_ex(values, keys, column_order, null_precedence,
+                             num_key_columns, out, nullptr);
+}
+
+cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
+                                   cudf_table_view_handle keys,
+                                   const cudf_order_t* column_order,
+                                   const cudf_null_order_t* null_precedence,
+                                   int32_t num_key_columns,
+                                   cudf_table_handle* out,
+                                   cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(values, "values is null");
@@ -152,10 +190,14 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* vals = static_cast<cudf::table_view*>(values);
     auto* ks = static_cast<cudf::table_view*>(keys);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
@@ -173,7 +215,7 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
     }
 
     auto result =
-        cudf::sort_by_key(*vals, *ks, orders, null_orders, stream, mr);
+        cudf::sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -186,6 +228,17 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
                                       const cudf_null_order_t* null_precedence,
                                       int32_t num_key_columns,
                                       cudf_table_handle* out) {
+  return cudf_stable_sort_by_key_ex(values, keys, column_order, null_precedence,
+                                    num_key_columns, out, nullptr);
+}
+
+cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
+                                          cudf_table_view_handle keys,
+                                          const cudf_order_t* column_order,
+                                          const cudf_null_order_t* null_precedence,
+                                          int32_t num_key_columns,
+                                          cudf_table_handle* out,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(values, "values is null");
@@ -195,10 +248,14 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* vals = static_cast<cudf::table_view*>(values);
     auto* ks = static_cast<cudf::table_view*>(keys);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
@@ -216,7 +273,7 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
     }
 
     auto result =
-        cudf::stable_sort_by_key(*vals, *ks, orders, null_orders, stream, mr);
+        cudf::stable_sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -228,6 +285,15 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
                                 const cudf_null_order_t* null_precedence,
                                 int32_t num_keys,
                                 cudf_column_handle* out) {
+  return cudf_sorted_order_ex(input, column_order, null_precedence, num_keys, out, nullptr);
+}
+
+cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
+                                    const cudf_order_t* column_order,
+                                    const cudf_null_order_t* null_precedence,
+                                    int32_t num_keys,
+                                    cudf_column_handle* out,
+                                    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -236,9 +302,13 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::table_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     std::vector<cudf::order> orders;
     std::vector<cudf::null_order> null_orders;
@@ -255,7 +325,7 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
       }
     }
 
-    auto result = cudf::sorted_order(*view, orders, null_orders, stream, mr);
+    auto result = cudf::sorted_order(*view, orders, null_orders, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
