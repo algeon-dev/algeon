@@ -9,7 +9,7 @@ use datafusion_nexus::graph_sql::parity::{OracleLookup, ParityManifest, ParitySp
 ///
 /// The manifest is passed through so the oracle's
 /// `header.dataset_sha256` is cross-checked against the currently
-/// vendored dataset bytes; a stale oracle generated from older bytes
+/// prepared local dataset bytes; a stale oracle generated from older bytes
 /// surfaces as a `Mismatch` rather than silently passing.
 pub fn lookup(data_root: &Path, manifest: &ParityManifest, spec: &ParitySpec) -> OracleLookup {
     load_oracle(data_root, spec, Some(manifest))
@@ -26,7 +26,7 @@ pub fn lookup(data_root: &Path, manifest: &ParityManifest, spec: &ParitySpec) ->
 pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
     format!(
         "to populate oracle JSON for `{label}`, run:\n      \
-         cargo run --release --features cugraph --bin refresh_cugraph_oracle -- \
+         cargo run --release -p datafusion-nexus-tools --features cugraph-oracle --bin refresh_cugraph_oracle -- \
          --algorithm {algorithm} --dataset {dataset}\n      \
          (writes to {oracle})",
         label = spec.label,

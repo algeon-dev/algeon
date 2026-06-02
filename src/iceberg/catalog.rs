@@ -35,7 +35,7 @@ use iceberg::{
 };
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_PROFILE_NAME, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
-    GLUE_CATALOG_PROP_CATALOG_ID, GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalogBuilder,
+    GLUE_CATALOG_PROP_CATALOG_ID, GLUE_CATALOG_PROP_URI, GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalogBuilder,
 };
 use iceberg_catalog_rest::{REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE, RestCatalogBuilder};
 use iceberg_storage_opendal::OpenDalStorageFactory;
@@ -451,7 +451,7 @@ fn namespace_ident_from_flat_name(namespace: &str) -> Result<NamespaceIdent> {
 /// ID and profile).  Table identity is not part of this config; it is resolved
 /// at runtime via [`IcebergCatalogBackend::list_tables`] and
 /// [`IcebergCatalogBackend::load_table`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GlueIcebergCatalogConfig {
     /// Internal catalog handle passed to `GlueCatalogBuilder::load`.
     /// Independent of the DataFusion catalog name chosen by the operator.
@@ -464,6 +464,36 @@ pub struct GlueIcebergCatalogConfig {
     pub catalog_id: Option<String>,
     /// Optional AWS profile selector; empty values are ignored at connect time.
     pub profile: Option<String>,
+    /// Optional Glue-compatible endpoint URI, e.g. a local Moto server.
+    ///
+    /// This maps to `iceberg-catalog-glue`'s `uri` prop and may contain
+    /// endpoint credentials, so it is redacted from [`Debug`].
+    pub uri: Option<String>,
+    /// Optional FileIO `s3.endpoint`, e.g. a local RustFS/MinIO server.
+    ///
+    /// This is independent of the Glue endpoint URI and is redacted from
+    /// [`Debug`] because endpoint URLs can carry userinfo.
+    pub s3_endpoint: Option<String>,
+    /// Optional FileIO `s3.region`. Defaults to [`Self::region`] when unset.
+    pub s3_region: Option<String>,
+    /// Optional FileIO `s3.path-style-access`.
+    pub s3_path_style_access: Option<bool>,
+}
+
+impl fmt::Debug for GlueIcebergCatalogConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GlueIcebergCatalogConfig")
+            .field("catalog_handle", &self.catalog_handle)
+            .field("warehouse", &self.warehouse)
+            .field("region", &self.region)
+            .field("catalog_id", &self.catalog_id)
+            .field("profile", &self.profile)
+            .field("uri", &self.uri.as_ref().map(|_| "<redacted>"))
+            .field("s3_endpoint", &self.s3_endpoint.as_ref().map(|_| "<redacted>"))
+            .field("s3_region", &self.s3_region)
+            .field("s3_path_style_access", &self.s3_path_style_access)
+            .finish()
+    }
 }
 
 impl GlueIcebergCatalogConfig {
@@ -475,6 +505,10 @@ impl GlueIcebergCatalogConfig {
             region: region.into(),
             catalog_id: None,
             profile: None,
+            uri: None,
+            s3_endpoint: None,
+            s3_region: None,
+            s3_path_style_access: None,
         }
     }
 
@@ -490,26 +524,77 @@ impl GlueIcebergCatalogConfig {
         self
     }
 
+    /// Sets a Glue-compatible endpoint URI, such as a local Moto server.
+    pub fn with_uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = Some(uri.into());
+        self
+    }
+
+    /// Sets the FileIO `s3.endpoint` used by tables loaded from this catalog.
+    pub fn with_s3_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.s3_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Sets the FileIO `s3.region` used by tables loaded from this catalog.
+    pub fn with_s3_region(mut self, region: impl Into<String>) -> Self {
+        self.s3_region = Some(region.into());
+        self
+    }
+
+    /// Sets the FileIO `s3.path-style-access` flag.
+    pub fn with_s3_path_style_access(mut self, path_style: bool) -> Self {
+        self.s3_path_style_access = Some(path_style);
+        self
+    }
+
     /// Builds the table-format Parquet read-strategy config for this Glue
     /// catalog. The config is credential-free and references the native source
     /// storage profile by id.
     pub fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
         let mut config = TableFormatParquetReadStrategyConfig::from_env();
         config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
+        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
+            config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
+        }
         config
     }
 
     /// Builds the native source storage profile for this Glue catalog using the
     /// same AWS credential environment accepted by the Glue catalog loader.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
-        let mut s3 = S3SourceStorageProfile::default_chain().with_region(self.region.clone());
-        if let (Some(access_key_id), Some(secret_access_key)) = (
+        let region = self.s3_region.as_ref().filter(|value| !value.trim().is_empty()).unwrap_or(&self.region);
+        let mut s3 = S3SourceStorageProfile::default_chain().with_region(region.clone());
+        let has_s3_endpoint = self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty());
+        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
+            s3 = s3.with_endpoint(endpoint.clone());
+        }
+        if let Some(path_style) = self.s3_path_style_access {
+            s3 = s3.with_path_style_access(path_style);
+        }
+
+        let explicit_s3_credentials = (
+            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)),
+        );
+        let aws_credentials = (
             super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
             super::non_empty(get(crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
-        ) {
-            let session_token = super::non_empty(
+            super::non_empty(
                 get(crate::iceberg::AWS_SESSION_TOKEN_ENV).or_else(|| get(crate::iceberg::AWS_SECURITY_TOKEN_ENV)),
-            );
+            ),
+        );
+        if let (Some(access_key_id), Some(secret_access_key), session_token) = explicit_s3_credentials {
+            s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
+        } else if has_s3_endpoint {
+            // Local/S3-compatible endpoints must not silently reuse a
+            // developer's ambient AWS credentials. Operators that need signed
+            // requests for such endpoints should set DATAFUSION_NEXUS_ICEBERG_S3_*.
+            s3 = s3.with_unsigned_requests();
+        } else if let (Some(access_key_id), Some(secret_access_key), session_token) = aws_credentials {
+            // Preserve the existing real-AWS behavior while still allowing
+            // local S3-compatible tests to override with DATAFUSION_NEXUS_ICEBERG_S3_*.
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
         }
         SourceStorageProfile::s3(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, s3)
@@ -520,6 +605,64 @@ impl GlueIcebergCatalogConfig {
     pub fn source_storage_profile_from_env(&self) -> SourceStorageProfile {
         self.source_storage_profile_with_env(|name| std::env::var(name).ok())
     }
+}
+
+fn glue_catalog_props(
+    config: &GlueIcebergCatalogConfig,
+    mut get: impl FnMut(&str) -> Option<String>,
+) -> HashMap<String, String> {
+    let mut props = HashMap::from([
+        (GLUE_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
+        (AWS_REGION_NAME.to_string(), config.region.clone()),
+    ]);
+    if let Some(uri) = config.uri.as_ref().filter(|v| !v.trim().is_empty()) {
+        props.insert(GLUE_CATALOG_PROP_URI.to_string(), uri.clone());
+    }
+    if let Some(id) = config.catalog_id.as_ref().filter(|v| !v.trim().is_empty()) {
+        props.insert(GLUE_CATALOG_PROP_CATALOG_ID.to_string(), id.clone());
+    }
+    if let Some(profile) = config.profile.as_ref().filter(|v| !v.trim().is_empty()) {
+        props.insert(AWS_PROFILE_NAME.to_string(), profile.clone());
+    }
+    if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|v| !v.trim().is_empty()) {
+        props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
+        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+    }
+    if let Some(region) = config.s3_region.as_ref().filter(|v| !v.trim().is_empty()) {
+        props.insert(S3_REGION.to_string(), region.clone());
+    }
+    if let Some(path_style) = config.s3_path_style_access {
+        props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
+    }
+
+    if let (Some(key_id), Some(secret)) = (
+        super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
+    ) {
+        props.insert(AWS_ACCESS_KEY_ID.to_string(), key_id);
+        props.insert(AWS_SECRET_ACCESS_KEY.to_string(), secret);
+    }
+    if let Some(token) = super::non_empty(
+        get(crate::iceberg::AWS_SESSION_TOKEN_ENV).or_else(|| get(crate::iceberg::AWS_SECURITY_TOKEN_ENV)),
+    ) {
+        props.insert(AWS_SESSION_TOKEN.to_string(), token);
+    }
+
+    if let (Some(key_id), Some(secret)) = (
+        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+    ) {
+        props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
+        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
+        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+    }
+    if let Some(token) = super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+        props.insert(S3_SESSION_TOKEN.to_string(), token);
+    }
+
+    props
 }
 
 // ---------------------------------------------------------------------------
@@ -567,30 +710,9 @@ impl GlueIcebergCatalogBackend {
     /// session token can come from `AWS_SESSION_TOKEN` or `AWS_SECURITY_TOKEN`.
     pub async fn from_config(
         config: GlueIcebergCatalogConfig,
-        mut get: impl FnMut(&str) -> Option<String>,
+        get: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self> {
-        let mut props = HashMap::from([
-            (GLUE_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
-            (AWS_REGION_NAME.to_string(), config.region.clone()),
-        ]);
-        if let Some(id) = config.catalog_id.as_ref().filter(|v| !v.trim().is_empty()) {
-            props.insert(GLUE_CATALOG_PROP_CATALOG_ID.to_string(), id.clone());
-        }
-        if let Some(profile) = config.profile.as_ref().filter(|v| !v.trim().is_empty()) {
-            props.insert(AWS_PROFILE_NAME.to_string(), profile.clone());
-        }
-        if let (Some(key_id), Some(secret)) = (
-            super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
-        ) {
-            props.insert(AWS_ACCESS_KEY_ID.to_string(), key_id);
-            props.insert(AWS_SECRET_ACCESS_KEY.to_string(), secret);
-        }
-        if let Some(token) = super::non_empty(
-            get(crate::iceberg::AWS_SESSION_TOKEN_ENV).or_else(|| get(crate::iceberg::AWS_SECURITY_TOKEN_ENV)),
-        ) {
-            props.insert(AWS_SESSION_TOKEN.to_string(), token);
-        }
+        let props = glue_catalog_props(&config, get);
         let parquet_read_strategy_config = config.parquet_read_strategy_config();
         let mut backend = Self::from_props(config.catalog_handle, props).await?;
         backend.parquet_read_strategy_config = Some(parquet_read_strategy_config);
@@ -779,6 +901,7 @@ impl RestIcebergCatalogConfig {
     /// explicit `DATAFUSION_NEXUS_ICEBERG_S3_*` credential environment.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
         let mut s3 = S3SourceStorageProfile::default_chain();
+        let has_s3_endpoint = self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty());
         if let Some(region) = self.s3_region.as_ref().filter(|region| !region.trim().is_empty()) {
             s3 = s3.with_region(region.clone());
         }
@@ -794,6 +917,8 @@ impl RestIcebergCatalogConfig {
         ) {
             let session_token = super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV));
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
+        } else if has_s3_endpoint {
+            s3 = s3.with_unsigned_requests();
         }
         SourceStorageProfile::s3(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, s3)
     }
@@ -1129,6 +1254,22 @@ mod rest_tests {
     }
 
     #[test]
+    fn rest_source_storage_profile_does_not_use_ambient_aws_credentials_for_local_s3_endpoint() {
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse")
+            .with_s3_endpoint("http://localhost:9000")
+            .with_s3_path_style_access(true);
+        let env = |name: &str| match name {
+            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
+            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
+            _ => None,
+        };
+
+        let profile = config.source_storage_profile_with_env(env);
+
+        assert_eq!(profile.s3_profile().credential, nexus_query_engine::S3SourceStorageCredential::Unsigned);
+    }
+
+    #[test]
     fn glue_source_storage_profile_uses_glue_region_and_aws_static_credentials() {
         let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-west-2");
         let env = |name: &str| match name {
@@ -1156,6 +1297,107 @@ mod rest_tests {
             },
             other => panic!("expected static credentials, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn glue_props_include_moto_uri_s3_endpoint_and_explicit_s3_credentials() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_uri("http://localhost:5001")
+            .with_s3_endpoint("http://localhost:9000")
+            .with_s3_region("us-east-1")
+            .with_s3_path_style_access(true);
+        let env = |name: &str| match name {
+            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("moto-access".to_string()),
+            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("moto-secret".to_string()),
+            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            _ => None,
+        };
+
+        let props = glue_catalog_props(&config, env);
+
+        assert_eq!(props.get(GLUE_CATALOG_PROP_URI).map(String::as_str), Some("http://localhost:5001"));
+        assert_eq!(props.get(S3_ENDPOINT).map(String::as_str), Some("http://localhost:9000"));
+        assert_eq!(props.get(S3_REGION).map(String::as_str), Some("us-east-1"));
+        assert_eq!(props.get(S3_PATH_STYLE_ACCESS).map(String::as_str), Some("true"));
+        assert_eq!(props.get(AWS_ACCESS_KEY_ID).map(String::as_str), Some("moto-access"));
+        assert_eq!(props.get(AWS_SECRET_ACCESS_KEY).map(String::as_str), Some("moto-secret"));
+        assert_eq!(props.get(S3_ACCESS_KEY_ID).map(String::as_str), Some("rustfs-access"));
+        assert_eq!(props.get(S3_SECRET_ACCESS_KEY).map(String::as_str), Some("rustfs-secret"));
+        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("rustfs-token"));
+        assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
+        assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn glue_parquet_strategy_and_source_profile_include_local_s3_endpoint() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_s3_endpoint("http://user:secret@localhost:9000/catalog?signature=secret#frag")
+            .with_s3_region("us-west-2")
+            .with_s3_path_style_access(true);
+        let env = |name: &str| match name {
+            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-ignored".to_string()),
+            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-ignored".to_string()),
+            _ => None,
+        };
+
+        let strategy = config.parquet_read_strategy_config();
+        let profile = config.source_storage_profile_with_env(env);
+
+        assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/catalog"));
+        let s3 = profile.s3_profile();
+        assert_eq!(s3.region.as_deref(), Some("us-west-2"));
+        assert_eq!(s3.endpoint.as_deref(), Some("http://user:secret@localhost:9000/catalog?signature=secret#frag"));
+        assert_eq!(s3.virtual_hosted_style_request, Some(false));
+        match &s3.credential {
+            nexus_query_engine::S3SourceStorageCredential::Static {
+                access_key_id,
+                secret_access_key,
+                session_token,
+            } => {
+                assert_eq!(access_key_id, "rustfs-access");
+                assert_eq!(secret_access_key, "rustfs-secret");
+                assert_eq!(session_token.as_deref(), Some("rustfs-token"));
+            },
+            other => panic!("expected explicit S3 static credentials, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn glue_source_storage_profile_does_not_use_ambient_aws_credentials_for_local_s3_endpoint() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_s3_endpoint("http://localhost:9000")
+            .with_s3_path_style_access(true);
+        let env = |name: &str| match name {
+            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
+            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
+            _ => None,
+        };
+
+        let profile = config.source_storage_profile_with_env(env);
+
+        assert_eq!(profile.s3_profile().credential, nexus_query_engine::S3SourceStorageCredential::Unsigned);
+    }
+
+    #[test]
+    fn glue_config_debug_redacts_uri_and_s3_endpoint() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_uri("https://user:glue-secret@glue.local")
+            .with_s3_endpoint("https://user:s3-secret@s3.local");
+
+        let rendered = format!("{config:?}");
+
+        assert!(!rendered.contains("glue-secret"), "Glue URI must be redacted: {rendered}");
+        assert!(!rendered.contains("glue.local"), "Glue URI host must be redacted: {rendered}");
+        assert!(!rendered.contains("s3-secret"), "S3 endpoint must be redacted: {rendered}");
+        assert!(!rendered.contains("s3.local"), "S3 endpoint host must be redacted: {rendered}");
+        assert!(rendered.contains("us-east-1"), "non-secret region should be visible: {rendered}");
+        assert!(rendered.contains("<redacted>"), "redaction marker should be visible: {rendered}");
     }
 
     #[test]

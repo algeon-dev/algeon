@@ -126,7 +126,7 @@ fn server_config_rejects_unknown_native_memory_policy() {
 #[cfg(not(feature = "iceberg"))]
 #[test]
 fn server_config_rejects_iceberg_env_without_iceberg_feature() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string())]);
+    let env = BTreeMap::from([(DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains("--features server,iceberg"));
@@ -343,7 +343,7 @@ fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
 #[test]
 fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
@@ -421,7 +421,7 @@ fn server_config_session_profile_defaults_to_cpu_fallback_without_iceberg() {
 #[test]
 fn server_config_session_profile_defaults_to_native_when_iceberg_configured() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
@@ -439,7 +439,7 @@ fn server_config_session_profile_defaults_to_native_when_iceberg_configured() {
 fn server_config_session_profile_env_overrides_iceberg_default() {
     use datafusion_nexus::server::DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV;
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
         (DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV, "cpu_fallback".to_string()),
@@ -512,7 +512,7 @@ fn apply_session_profile_cpu_fallback_preserves_base_target_partitions() {
 #[test]
 fn build_session_config_picks_native_profile_when_iceberg_configured() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
@@ -533,7 +533,7 @@ fn build_session_config_picks_native_profile_when_iceberg_configured() {
 #[test]
 fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV, "nation".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
@@ -541,7 +541,7 @@ fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
-    assert_eq!(iceberg.namespace, "demo_db", "GLUE_DATABASE must map to namespace field");
+    assert_eq!(iceberg.namespace, "tpch_sf1", "GLUE_DATABASE must map to namespace field");
     assert_eq!(iceberg.catalog_name, "glue", "default catalog name must be glue");
     assert_eq!(expect_glue_backend(&iceberg).catalog_handle, "glue", "default glue catalog handle must be glue");
 }
@@ -560,34 +560,76 @@ fn expect_rest_backend(
 #[test]
 fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
     };
     let env = BTreeMap::from([
         (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
         (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV, "us-east-2".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
         (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_GLUE".to_string()),
         (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "glue-secret".to_string()),
+        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
+        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].id(), "table_format_s3");
-    assert_eq!(profiles[0].s3_profile().region.as_deref(), Some("us-east-1"));
+    assert_eq!(profiles[0].s3_profile().region.as_deref(), Some("us-east-2"));
+    assert_eq!(profiles[0].s3_profile().endpoint.as_deref(), Some("http://localhost:9000"));
+    assert_eq!(profiles[0].s3_profile().virtual_hosted_style_request, Some(false));
     match &profiles[0].s3_profile().credential {
         S3SourceStorageCredential::Static { access_key_id, secret_access_key, session_token } => {
-            assert_eq!(access_key_id, "AKIA_GLUE");
-            assert_eq!(secret_access_key, "glue-secret");
+            assert_eq!(access_key_id, "AKIA_LOCAL");
+            assert_eq!(secret_access_key, "local-secret");
             assert_eq!(session_token, &None);
         },
         other => panic!("expected Glue static source profile credentials, got {other:?}"),
     }
     let iceberg = config.iceberg.expect("iceberg config must be present");
+    let glue = expect_glue_backend(&iceberg);
 
-    assert_eq!(expect_glue_backend(&iceberg).region, "us-east-1");
+    assert_eq!(glue.region, "us-east-1");
+    assert_eq!(glue.uri.as_deref(), Some("http://localhost:5001"));
+    assert_eq!(glue.s3_endpoint.as_deref(), Some("http://localhost:9000"));
+    assert_eq!(glue.s3_region.as_deref(), Some("us-east-2"));
+    assert_eq!(glue.s3_path_style_access, Some(true));
     assert_eq!(iceberg.catalog_name, "glue", "default catalog name for glue kind");
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
+    use datafusion_nexus::server::{
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV, "https://user:glue-secret@glue.local".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "https://user:s3-secret@s3.local".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    let rendered = format!("{config:?}");
+
+    assert!(!rendered.contains("glue-secret"), "Glue endpoint credentials must be redacted: {rendered}");
+    assert!(!rendered.contains("glue.local"), "Glue endpoint host must be redacted: {rendered}");
+    assert!(!rendered.contains("s3-secret"), "S3 endpoint credentials must be redacted: {rendered}");
+    assert!(!rendered.contains("s3.local"), "S3 endpoint host must be redacted: {rendered}");
+    assert!(rendered.contains("<redacted>"), "redaction marker should be visible: {rendered}");
 }
 
 #[cfg(feature = "iceberg")]
@@ -596,7 +638,7 @@ fn server_iceberg_config_invalid_kind_is_rejected() {
     use datafusion_nexus::server::{DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV};
     let env = BTreeMap::from([
         (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "delta".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "demo_db".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
     assert!(error.to_string().contains("glue"), "error should name the accepted kinds: {error}");

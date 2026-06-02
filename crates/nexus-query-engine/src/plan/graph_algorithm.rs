@@ -49,53 +49,53 @@ pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithm
 /// Native graph algorithm supported by the cuGraph operator boundary.
 ///
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].
-/// Ref: https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/
+/// Ref: <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphAlgorithm {
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank>
     PageRank,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#breadth-first-search-bfs
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#breadth-first-search-bfs>
     Bfs,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#louvain
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#louvain>
     Louvain,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#eigenvector-centrality
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#eigenvector-centrality>
     EigenvectorCentrality,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#katz-centrality
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#katz-centrality>
     KatzCentrality,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#hits-centrality
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#hits-centrality>
     Hits,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp>
     Sssp,
     /// In-degree and out-degree for every vertex.
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.degrees/
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.degrees/>
     DegreesAll,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.in_degree/
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.in_degree/>
     InDegreesAll,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.out_degree/
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.out_degree/>
     OutDegreesAll,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#weakly-connected-components
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#weakly-connected-components>
     WeaklyConnectedComponents,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#strongly-connected-components
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#strongly-connected-components>
     StronglyConnectedComponents,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#triangle-counting
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#triangle-counting>
     TriangleCountAll,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#core-number
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#core-number>
     CoreNumber,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#k-core
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#k-core>
     KCore,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/>
     MinimumSpanningTree,
     /// PageRank variant that uses strict convergence/error behavior.
     /// TODO: link?
     PageRankStrict,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#leiden
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#leiden>
     Leiden,
     /// Ensemble clustering for graphs.
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#ecg
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#ecg>
     Ecg,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization>
     SpectralModularityMaximization,
-    /// https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#balanced-cut
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#balanced-cut>
     BalancedCutClustering,
 }
 

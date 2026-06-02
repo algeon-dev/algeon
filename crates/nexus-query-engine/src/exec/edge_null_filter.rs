@@ -75,10 +75,10 @@ pub(super) fn filter_null_edge_rows(
     Ok(output)
 }
 
-fn edge_filter_columns<'a>(
-    edge_columns: &'a GraphEdgeColumnBindings,
+fn edge_filter_columns(
+    edge_columns: &GraphEdgeColumnBindings,
     scope: EdgeNullFilterScope,
-) -> Vec<(&'static str, &'a str)> {
+) -> Vec<(&'static str, &str)> {
     let mut columns =
         vec![("source", edge_columns.source.as_str()), ("destination", edge_columns.destination.as_str())];
     if scope.weight

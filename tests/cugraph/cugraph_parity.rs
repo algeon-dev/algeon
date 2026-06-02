@@ -1,8 +1,8 @@
 //! Registry-driven cuGraph parity harness.
 //!
 //! Default `cargo test --features cugraph` exercises the CPU-only path:
-//! dataset SHA-256 verification, parity spec shape, and oracle JSON
-//! header validation when a checked-in file is present. The actual GPU
+//! local dataset SHA-256 verification, parity spec shape, and oracle JSON
+//! header validation when a generated file is present. The actual GPU
 //! parity comparisons are landed alongside Python cuGraph availability
 //! and run under `--include-ignored` with the GPU lock held; that work
 //! is left as a follow-up. See
@@ -23,17 +23,18 @@ use datafusion_nexus::{
 
 #[test]
 fn parity_manifest_loads_and_dataset_checksums_match() {
-    let loaded =
-        datasets::load_and_verify().expect("cuGraph manifest must load and every vendored dataset SHA-256 must match");
+    let loaded = datasets::load_and_verify().unwrap_or_else(|error| {
+        panic!("cuGraph manifest must load and every local dataset SHA-256 must match: {error}")
+    });
     assert!(
         loaded.manifest.datasets.iter().any(|d| d.id == "karate"),
-        "vendored manifest must include the karate dataset",
+        "local manifest must include the karate dataset",
     );
 }
 
 #[test]
 fn parity_specs_reference_existing_datasets() {
-    let loaded = datasets::load_and_verify().expect("manifest must load");
+    let loaded = datasets::load_and_verify().unwrap_or_else(|error| panic!("manifest must load: {error}"));
     for spec in CUGRAPH_PARITY_SPECS {
         assert!(
             loaded.manifest.dataset(spec.dataset).is_some(),
@@ -74,7 +75,7 @@ fn parity_specs_declare_a_comparator_family() {
 
 #[test]
 fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
-    let loaded = datasets::load_and_verify().expect("manifest must load");
+    let loaded = datasets::load_and_verify().unwrap_or_else(|error| panic!("manifest must load: {error}"));
     let mut missing = Vec::new();
     let mut mismatches = Vec::new();
     let mut present = 0usize;
@@ -117,10 +118,10 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
             ));
         }
     }
-    assert!(mismatches.is_empty(), "checked-in oracle JSON disagrees with parity spec:\n{}", mismatches.join("\n"),);
+    assert!(mismatches.is_empty(), "local oracle JSON disagrees with parity spec:\n{}", mismatches.join("\n"),);
     if !missing.is_empty() {
         // Milestone 1a lands the infrastructure ahead of running Python
-        // cuGraph against the vendored datasets. The harness reports a
+        // cuGraph against the local datasets. The harness reports a
         // structured "needs refresh" message rather than failing the
         // default CPU-only run, but emits it on stderr so refreshes
         // are visible in CI logs.

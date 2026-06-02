@@ -84,7 +84,7 @@ fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_host_buffer_
         Some("23456".to_string()),
         Some("aws_glue".to_string()),
         [file_scan_task(
-            "s3://example-warehouse/tpch_sf1/lineitem/data-0001.parquet",
+            "s3://lakehouse/warehouse/tpch_sf1/lineitem/data-0001.parquet",
             DataFileFormat::Parquet,
             vec![],
         )],
@@ -139,11 +139,7 @@ fn non_parquet_object_store_data_files_are_rejected_with_structured_reasons() {
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("24680".to_string()),
         Some("aws_glue".to_string()),
-        [file_scan_task(
-            "s3://example-warehouse/tpch_sf1/lineitem/data-0001.orc",
-            DataFileFormat::Orc,
-            vec![],
-        )],
+        [file_scan_task("s3://lakehouse/warehouse/tpch_sf1/lineitem/data-0001.orc", DataFileFormat::Orc, vec![])],
     )
     .unwrap();
 
@@ -156,7 +152,7 @@ fn non_parquet_object_store_data_files_are_rejected_with_structured_reasons() {
     assert_eq!(facts["catalog_type"], "aws_glue");
     assert_eq!(facts["native_source_read_capability"], "object_store:s3");
     assert_eq!(facts["rejected_feature_list"], "iceberg_non_parquet_data_file");
-    assert!(!facts.values().any(|value| value.contains("xdr-int")));
+    assert!(!facts.values().any(|value| value.contains("local-dev")));
 }
 
 #[test]

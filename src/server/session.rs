@@ -143,6 +143,18 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                 if let Some(profile) = &glue.profile {
                     catalog_config = catalog_config.with_profile(profile.clone());
                 }
+                if let Some(uri) = &glue.uri {
+                    catalog_config = catalog_config.with_uri(uri.clone());
+                }
+                if let Some(endpoint) = &glue.s3_endpoint {
+                    catalog_config = catalog_config.with_s3_endpoint(endpoint.clone());
+                }
+                if let Some(region) = &glue.s3_region {
+                    catalog_config = catalog_config.with_s3_region(region.clone());
+                }
+                if let Some(path_style) = glue.s3_path_style_access {
+                    catalog_config = catalog_config.with_s3_path_style_access(path_style);
+                }
                 let backend =
                     crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_env(catalog_config).await.map_err(
                         |error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error),

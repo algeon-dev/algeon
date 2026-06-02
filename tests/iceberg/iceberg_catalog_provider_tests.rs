@@ -1,7 +1,6 @@
 //! Tests for the dynamic Iceberg catalog/schema provider (Milestone 2).
 //!
 //! All tests in this file are credential-free and use a `MockIcebergCatalogBackend`.
-//! Live Glue/S3 integration tests are marked `#[ignore]`.
 
 #![cfg(feature = "iceberg")]
 
@@ -73,9 +72,9 @@ impl IcebergCatalogBackend for MockIcebergCatalogBackend {
 
 fn mock_backend_with_tpch() -> MockIcebergCatalogBackend {
     MockIcebergCatalogBackend::new(
-        vec![NamespaceIdent::new("demo_db".to_string())],
+        vec![NamespaceIdent::new("tpch_sf1".to_string())],
         HashMap::from([(
-            "demo_db".to_string(),
+            "tpch_sf1".to_string(),
             vec!["tpch_sf1_nation".to_string(), "tpch_sf1_lineitem".to_string(), "tpch_sf1_orders".to_string()],
         )]),
     )
@@ -91,7 +90,7 @@ async fn catalog_provider_schema_names_from_namespace_list() {
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
 
     let names = provider.schema_names();
-    assert_eq!(names, vec!["demo_db"]);
+    assert_eq!(names, vec!["tpch_sf1"]);
 }
 
 #[tokio::test]
@@ -99,7 +98,7 @@ async fn catalog_provider_schema_lookup() {
     let backend = Arc::new(mock_backend_with_tpch());
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
 
-    assert!(provider.schema("demo_db").is_some());
+    assert!(provider.schema("tpch_sf1").is_some());
     assert!(provider.schema("nonexistent_db").is_none());
 }
 
@@ -107,7 +106,7 @@ async fn catalog_provider_schema_lookup() {
 async fn schema_provider_table_names_from_table_list() {
     let backend = Arc::new(mock_backend_with_tpch());
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
-    let schema = provider.schema("demo_db").unwrap();
+    let schema = provider.schema("tpch_sf1").unwrap();
 
     let mut names = schema.table_names();
     names.sort();
@@ -118,7 +117,7 @@ async fn schema_provider_table_names_from_table_list() {
 async fn schema_provider_table_exist_matches_discovered_names() {
     let backend = Arc::new(mock_backend_with_tpch());
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
-    let schema = provider.schema("demo_db").unwrap();
+    let schema = provider.schema("tpch_sf1").unwrap();
 
     assert!(schema.table_exist("tpch_sf1_nation"));
     assert!(schema.table_exist("tpch_sf1_lineitem"));
@@ -131,7 +130,7 @@ async fn schema_provider_table_exist_matches_discovered_names() {
 async fn schema_provider_table_returns_none_for_unknown_name() {
     let backend = Arc::new(mock_backend_with_tpch());
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
-    let schema = provider.schema("demo_db").unwrap();
+    let schema = provider.schema("tpch_sf1").unwrap();
 
     let result = schema.table("ghost_table").await.unwrap();
     assert!(result.is_none(), "unknown table should return None, not error");
@@ -199,14 +198,14 @@ async fn scoped_catalog_provider_exposes_only_requested_namespace() {
 async fn scoped_catalog_provider_does_not_enumerate_global_namespace_list() {
     let backend = Arc::new(MockIcebergCatalogBackend::new(
         vec![NamespaceIdent::new("unrelated".to_string())],
-        HashMap::from([("demo_db".to_string(), vec!["tpch_sf1_nation".to_string()])]),
+        HashMap::from([("tpch_sf1".to_string(), vec!["tpch_sf1_nation".to_string()])]),
     ));
-    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "demo_db", IcebergProviderKind::Gpu)
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "tpch_sf1", IcebergProviderKind::Gpu)
         .await
         .unwrap();
 
-    assert_eq!(provider.schema_names(), vec!["demo_db"]);
-    assert_eq!(provider.schema("demo_db").unwrap().table_names(), vec!["tpch_sf1_nation"]);
+    assert_eq!(provider.schema_names(), vec!["tpch_sf1"]);
+    assert_eq!(provider.schema("tpch_sf1").unwrap().table_names(), vec!["tpch_sf1_nation"]);
     assert!(provider.schema("unrelated").is_none());
 }
 
@@ -225,15 +224,15 @@ async fn seeded_alias_resolves_through_schema_provider() {
     // Seed a MemTable under the alias "nation".
     let schema = Arc::new(Schema::new(vec![Field::new("n_nationkey", DataType::Int32, false)]));
     let mem_table = Arc::new(MemTable::try_new(schema, vec![vec![]]).unwrap());
-    let schema_provider = provider.schema_concrete("demo_db").unwrap();
+    let schema_provider = provider.schema_concrete("tpch_sf1").unwrap();
     schema_provider.seed_table("nation".to_string(), mem_table).await;
 
     // The alias should be resolvable via the schema provider.
-    let resolved = provider.schema("demo_db").unwrap().table("nation").await.unwrap();
+    let resolved = provider.schema("tpch_sf1").unwrap().table("nation").await.unwrap();
     assert!(resolved.is_some(), "seeded alias 'nation' should resolve");
 
     // The real table name should also be discoverable (backend would load it).
-    assert!(provider.schema("demo_db").unwrap().table_exist("tpch_sf1_nation"));
+    assert!(provider.schema("tpch_sf1").unwrap().table_exist("tpch_sf1_nation"));
 }
 
 #[tokio::test]
@@ -243,7 +242,7 @@ async fn seeding_same_alias_twice_keeps_first() {
 
     let backend = Arc::new(mock_backend_with_tpch());
     let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
-    let schema_provider = provider.schema_concrete("demo_db").unwrap();
+    let schema_provider = provider.schema_concrete("tpch_sf1").unwrap();
 
     let make_table = |tag: &str| {
         // Embed the tag in a field name so we can distinguish the two providers.
@@ -290,7 +289,7 @@ async fn information_schema_schemata_lists_namespaces() {
         })
         .collect();
 
-    assert!(schema_names.contains(&"demo_db".to_string()), "demo_db must appear in schemata");
+    assert!(schema_names.contains(&"tpch_sf1".to_string()), "tpch_sf1 must appear in schemata");
 }
 
 #[tokio::test]
@@ -300,7 +299,7 @@ async fn information_schema_tables_lists_discovered_tables() {
     let ctx = session_with_catalog("glue", provider).await;
 
     let sql = "SELECT table_name FROM information_schema.tables \
-               WHERE table_catalog = 'glue' AND table_schema = 'demo_db' \
+               WHERE table_catalog = 'glue' AND table_schema = 'tpch_sf1' \
                ORDER BY table_name";
     let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
     let table_names: Vec<String> = batches
@@ -410,83 +409,11 @@ async fn seed_prevents_backend_load_on_first_table_access() {
     // Seed the table before any query touches it.
     let schema = Arc::new(Schema::new(vec![Field::new("n_nationkey", DataType::Int32, false)]));
     let mem_table = Arc::new(MemTable::try_new(schema, vec![vec![]]).unwrap());
-    let schema_provider = provider.schema_concrete("demo_db").unwrap();
+    let schema_provider = provider.schema_concrete("tpch_sf1").unwrap();
     schema_provider.seed_table("tpch_sf1_nation".to_string(), mem_table).await;
 
     // Querying the seeded table should NOT call load_table.
     let result = schema_provider.table("tpch_sf1_nation").await.unwrap();
     assert!(result.is_some());
     assert_eq!(load_count.load(Ordering::SeqCst), 0, "seed should prevent a backend load");
-}
-
-// ---------------------------------------------------------------------------
-// Live smoke tests (require Glue/S3 credentials — ignored by default)
-// ---------------------------------------------------------------------------
-
-/// Full Milestone 2 pipeline: backend → catalog provider → schema → table list.
-/// Verifies that `build_scoped_catalog_provider_from_backend` exposes only the
-/// configured namespace and its TPC-H tables from a real Glue catalog.
-#[tokio::test]
-#[ignore = "requires live AWS Glue/S3 credentials and network access"]
-async fn glue_dynamic_catalog_provider_discovers_tables_live() {
-    use datafusion_nexus::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
-
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .or_else(|_| std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE"))
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live test");
-    let warehouse = std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_WAREHOUSE for live test");
-    let region = std::env::var("AWS_REGION")
-        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-        .expect("set AWS_REGION for live test");
-
-    let mut config = GlueIcebergCatalogConfig::new("glue", warehouse, region);
-    if let Ok(catalog_id) = std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID") {
-        config = config.with_catalog_id(catalog_id);
-    }
-
-    let backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(GlueIcebergCatalogBackend::from_config_env(config).await.unwrap());
-    let provider =
-        build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "glue", &namespace, IcebergProviderKind::Gpu)
-            .await
-            .unwrap();
-
-    let schema_names = provider.schema_names();
-    eprintln!("discovered scoped namespaces: {schema_names:?}");
-    assert_eq!(schema_names, vec![namespace.clone()], "scoped catalog must expose only '{namespace}'");
-
-    let schema = provider.schema(&namespace).unwrap();
-    let table_names = schema.table_names();
-    eprintln!("discovered tables in '{namespace}': {table_names:?}");
-    assert!(!table_names.is_empty(), "expected at least one table in '{namespace}'");
-    assert!(
-        table_names.iter().any(|n| n.contains("lineitem") || n.contains("orders") || n.contains("nation")),
-        "no expected TPC-H table found; discovered: {table_names:?}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires live AWS Glue/S3 credentials and network access"]
-async fn glue_backend_lists_namespaces_live() {
-    use datafusion_nexus::iceberg::catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
-
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .or_else(|_| std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE"))
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live test");
-    let warehouse = std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_WAREHOUSE for live test");
-    let region = std::env::var("AWS_REGION")
-        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-        .expect("set AWS_REGION for live test");
-
-    let config = GlueIcebergCatalogConfig::new("glue", warehouse, region);
-    let backend = GlueIcebergCatalogBackend::from_config_env(config).await.unwrap();
-
-    let namespaces = backend.list_namespaces().await.unwrap();
-    assert!(!namespaces.is_empty(), "live Glue catalog should have at least one namespace");
-
-    let target = NamespaceIdent::new(namespace.clone());
-    let has_namespace = namespaces.iter().any(|ns| ns.as_ref() == target.as_ref());
-    assert!(has_namespace, "namespace '{namespace}' not found in live Glue catalog");
 }
