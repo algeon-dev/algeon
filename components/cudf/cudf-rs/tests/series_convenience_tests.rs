@@ -5,7 +5,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{error::ErrorKind, series::Series, sorting::SortOptions, types::TypeId};
+use cudf::{column::Column, error::ErrorKind, series::Series, sorting::SortOptions, types::TypeId};
 
 // ===========================================================================
 // is_null / is_not_null
@@ -318,7 +318,8 @@ fn test_factorize_basic() {
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 5);
-    assert_eq!(codes.name(), None);
+    assert_eq!(codes.name(), Some("x_codes"));
+    assert_eq!(uniques.name(), Some("x_uniques"));
 
     // Verify round-trip: same input values get same codes.
     let code_vals = codes.view().unwrap().to_vec::<i32>().unwrap();
@@ -344,6 +345,8 @@ fn test_factorize_strings() {
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 4);
+    assert_eq!(codes.name(), Some("x_codes"));
+    assert_eq!(uniques.name(), Some("x_uniques"));
 
     let code_vals = codes.view().unwrap().to_vec::<i32>().unwrap();
     // codes[0] == codes[2] (both map to "a")
@@ -352,6 +355,16 @@ fn test_factorize_strings() {
     let mut uniq_vals = uniques.view().unwrap().to_strings().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
+    let column = Column::from_slice(&[10i32, 20, 10, 30]).unwrap();
+    let s = Series::from_column(column).unwrap();
+    let (codes, uniques) = s.factorize().unwrap();
+
+    assert_eq!(codes.name(), None);
+    assert_eq!(uniques.name(), None);
 }
 
 // ===========================================================================

@@ -19,7 +19,10 @@
 //! assert_eq!(score.len(), 3);
 //! ```
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 
@@ -94,6 +97,148 @@ pub struct DataFrameJoinResult {
     pub left: DataFrame,
     /// Right-side result: key columns + right payload columns.
     pub right: DataFrame,
+}
+
+/// Options for [`DataFrame::read_csv_with_options`].
+///
+/// This is the schema-aware CSV facade for `DataFrame`. Unlike the lower-level
+/// [`crate::io::csv::CsvReaderOptions`], it can also resolve DataFrame column
+/// names from either an explicit override, the CSV header row, or generated
+/// fallback names.
+#[derive(Debug, Clone)]
+pub struct DataFrameCsvReaderOptions {
+    filepath: PathBuf,
+    delimiter: u8,
+    has_header: bool,
+    column_names: Option<Vec<String>>,
+}
+
+impl DataFrameCsvReaderOptions {
+    /// Create options to read a CSV file into a `DataFrame`.
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true, column_names: None }
+    }
+
+    /// Set the field delimiter character (default: `,`).
+    pub fn delimiter(mut self, d: u8) -> Self {
+        self.delimiter = d;
+        self
+    }
+
+    /// Set whether the file has a header row (default: `true`).
+    pub fn has_header(mut self, has: bool) -> Self {
+        self.has_header = has;
+        self
+    }
+
+    /// Override the output DataFrame column names.
+    ///
+    /// When set, these names take precedence over both header-derived names
+    /// and generated fallback names.
+    pub fn column_names(mut self, names: &[&str]) -> Self {
+        self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
+        self
+    }
+
+    fn to_table_options(&self) -> CsvReaderOptions {
+        CsvReaderOptions::new(&self.filepath).delimiter(self.delimiter).has_header(self.has_header)
+    }
+
+    fn resolve_column_names(&self, num_columns: usize) -> Result<Vec<String>> {
+        let operation = "dataframe::read_csv_with_options";
+
+        if let Some(names) = self.column_names.as_ref() {
+            validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
+            return Ok(names.clone());
+        }
+
+        if self.has_header {
+            let names = self.read_header_names()?;
+            validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
+            return Ok(names);
+        }
+
+        Ok((0..num_columns).map(|idx| format!("column_{idx}")).collect())
+    }
+
+    fn read_header_names(&self) -> Result<Vec<String>> {
+        let operation = "dataframe::read_csv_with_options";
+
+        let mut reader =
+            ::csv::ReaderBuilder::new().has_headers(true).delimiter(self.delimiter).from_path(&self.filepath).map_err(
+                |source| {
+                    Error::new(ErrorKind::IoError, "failed to open CSV file for header parsing")
+                        .with_operation(operation)
+                        .with_context("path", self.filepath.display().to_string())
+                        .set_source(source)
+                },
+            )?;
+
+        let headers = reader.headers().map_err(|source| {
+            Error::new(ErrorKind::IoError, "failed to read CSV header")
+                .with_operation(operation)
+                .with_context("path", self.filepath.display().to_string())
+                .set_source(source)
+        })?;
+
+        Ok(headers.iter().map(str::to_owned).collect())
+    }
+}
+
+/// Options for [`DataFrame::write_csv_with_options`].
+///
+/// This is the schema-aware CSV facade for `DataFrame`. Column names always
+/// come from the DataFrame schema; this type only controls file-format knobs
+/// such as delimiter and whether the header row is included.
+#[derive(Debug, Clone)]
+pub struct DataFrameCsvWriterOptions {
+    filepath: PathBuf,
+    delimiter: u8,
+    include_header: bool,
+}
+
+impl DataFrameCsvWriterOptions {
+    /// Create options to write a `DataFrame` to a CSV file.
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', include_header: true }
+    }
+
+    /// Set the field delimiter character (default: `,`).
+    pub fn delimiter(mut self, d: u8) -> Self {
+        self.delimiter = d;
+        self
+    }
+
+    /// Set whether to include a header row (default: `true`).
+    pub fn include_header(mut self, include: bool) -> Self {
+        self.include_header = include;
+        self
+    }
+
+    fn to_table_options(&self, column_names: &[&str]) -> CsvWriterOptions {
+        CsvWriterOptions::new(&self.filepath)
+            .column_names(column_names)
+            .delimiter(self.delimiter)
+            .include_header(self.include_header)
+    }
+}
+
+fn validate_dataframe_csv_column_name_count(
+    name_count: usize,
+    num_columns: usize,
+    operation: &'static str,
+) -> Result<()> {
+    if name_count != num_columns {
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            format!("column name count ({name_count}) does not match table column count ({num_columns})"),
+        )
+        .with_operation(operation)
+        .with_context("column_name_count", name_count.to_string())
+        .with_context("table_column_count", num_columns.to_string()));
+    }
+
+    Ok(())
 }
 
 /// Options for [`DataFrame::dropna`].
@@ -701,11 +846,11 @@ impl DataFrame {
     /// Read a CSV file into a `DataFrame`.
     ///
     /// If the caller does not provide explicit names through
-    /// [`CsvReaderOptions::column_names`], names come from the header row when
-    /// `has_header == true`, or fall back to generated names such as
+    /// [`DataFrameCsvReaderOptions::column_names`], names come from the header
+    /// row when `has_header == true`, or fall back to generated names such as
     /// `"column_0"` when reading headerless CSV.
     pub fn read_csv(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_csv_with_options(CsvReaderOptions::new(path))
+        Self::read_csv_with_options(DataFrameCsvReaderOptions::new(path))
     }
 
     /// Read a CSV file into a `DataFrame` using caller-provided options.
@@ -713,29 +858,29 @@ impl DataFrame {
     /// When `has_header == true`, the high-level facade parses the header row
     /// on the host to recover schema names. This metadata parsing does not
     /// materialize data columns through host memory.
-    pub fn read_csv_with_options(options: CsvReaderOptions) -> Result<Self> {
-        let table = csv::read_csv(&options)?;
+    pub fn read_csv_with_options(options: DataFrameCsvReaderOptions) -> Result<Self> {
+        let table = csv::read_csv(&options.to_table_options())?;
         let num_columns = {
             let view = table.view()?;
             view.num_columns()? as usize
         };
-        let names = csv::resolve_column_names(&options, num_columns)?;
+        let names = options.resolve_column_names(num_columns)?;
         Self::from_table(table, names)
     }
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
     /// as the output header row.
     pub fn write_csv(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_csv_with_options(CsvWriterOptions::new(path))
+        self.write_csv_with_options(DataFrameCsvWriterOptions::new(path))
     }
 
     /// Write this `DataFrame` to a CSV file using caller-provided options.
     ///
     /// The DataFrame's schema names are always used as the output column
     /// names so the high-level round-trip path remains truthful.
-    pub fn write_csv_with_options(&self, options: CsvWriterOptions) -> Result<()> {
+    pub fn write_csv_with_options(&self, options: DataFrameCsvWriterOptions) -> Result<()> {
         let names: Vec<&str> = self.column_names();
-        let opts = options.column_names(&names);
+        let opts = options.to_table_options(&names);
         let tv = self.build_table_view()?;
         csv::write_csv(tv.table(), &opts)
     }
@@ -2224,6 +2369,13 @@ fn merge_join_result_with_suffixes(
 /// let x = Series::new::<i32>("source_x", &[1, 2, 3]).unwrap();
 /// let y = Series::new::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 /// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
+/// ```
+///
+/// ```compile_fail
+/// use cudf::column::Column;
+///
+/// let x = Column::from_slice(&[1i32, 2, 3]).unwrap();
+/// let _ = cudf::dataframe! { "x" => x }.unwrap();
 /// ```
 #[macro_export]
 macro_rules! dataframe {

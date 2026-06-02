@@ -87,7 +87,10 @@ pub mod unary;
 // — Primary entry points —
 // — Core types (advanced — most users should prefer DataFrame/Series) —
 pub use column::{Column, ColumnView};
-pub use dataframe::{DataFrame, DataFrameJoinResult, DistinctOptions, DropNaOptions};
+pub use dataframe::{
+    DataFrame, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, DataFrameJoinResult, DistinctOptions,
+    DropNaOptions,
+};
 pub use dataframe_view::DataFrameView;
 // — Types and error —
 pub use error::{Error, ErrorKind, ErrorStatus, Result};

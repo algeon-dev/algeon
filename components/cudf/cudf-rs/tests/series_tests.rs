@@ -177,7 +177,7 @@ fn test_gt_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
-    assert_eq!(mask.name(), None); // result is unnamed
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
 
@@ -187,6 +187,7 @@ fn test_lt_scalar_f64() {
     let mask = s.lt_scalar(5.0f64).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("y"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -196,6 +197,7 @@ fn test_eq_scalar_i32() {
     let mask = s.eq_scalar(2i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("z"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
@@ -205,6 +207,7 @@ fn test_eq_scalar_str() {
     let mask = s.eq_scalar_str("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -214,6 +217,7 @@ fn test_ne_scalar_str() {
     let mask = s.ne_scalar_str("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
@@ -224,6 +228,7 @@ fn test_gt_scalar_str() {
     let mask = s.gt_scalar_str("apple").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -233,6 +238,7 @@ fn test_lt_scalar_str() {
     let mask = s.lt_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -242,6 +248,7 @@ fn test_ge_scalar_str() {
     let mask = s.ge_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -251,6 +258,7 @@ fn test_le_scalar_str() {
     let mask = s.le_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
@@ -274,6 +282,7 @@ fn test_ne_scalar_i32() {
     let mask = s.ne_scalar(2i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -283,6 +292,7 @@ fn test_ge_scalar_i32() {
     let mask = s.ge_scalar(5i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -292,6 +302,7 @@ fn test_le_scalar_i32() {
     let mask = s.le_scalar(5i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
@@ -421,7 +432,7 @@ fn test_add_scalar_i32() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.add_scalar(10i32).unwrap();
 
-    assert_eq!(result.name(), None);
+    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 12, 13]);
 }
@@ -431,6 +442,7 @@ fn test_sub_scalar_i32() {
     let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
     let result = s.sub_scalar(5i32).unwrap();
 
+    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![5, 15, 25]);
 }
 
@@ -439,6 +451,7 @@ fn test_mul_scalar_f64() {
     let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
     let result = s.mul_scalar(2.0f64).unwrap();
 
+    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
@@ -447,6 +460,7 @@ fn test_div_scalar_f64() {
     let s = Series::new::<f64>("x", &[10.0, 20.0, 30.0]).unwrap();
     let result = s.div_scalar(5.0f64).unwrap();
 
+    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
