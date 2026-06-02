@@ -1,6 +1,6 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, table::Table};
+use cudf::{Series, column::Column, dataframe::DataFrame, error::ErrorKind, table::Table};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
@@ -174,10 +174,10 @@ fn test_empty_dataframe() {
 
 #[test]
 fn test_dataframe_macro_basic() {
-    let x_col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let y_col = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let x = Series::new::<i32>("source_x", &[1, 2, 3]).unwrap();
+    let y = Series::new::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 
-    let df = cudf::dataframe! { "x" => x_col, "y" => y_col }.unwrap();
+    let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.column_names(), &["x", "y"]);
@@ -187,9 +187,9 @@ fn test_dataframe_macro_basic() {
 
 #[test]
 fn test_dataframe_macro_single_column() {
-    let col = Column::from_slice(&[1i32, 2]).unwrap();
+    let series = Series::new::<i32>("source_only", &[1, 2]).unwrap();
 
-    let df = cudf::dataframe! { "only" => col }.unwrap();
+    let df = cudf::dataframe! { "only" => series }.unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.column_names(), &["only"]);
@@ -197,8 +197,8 @@ fn test_dataframe_macro_single_column() {
 
 #[test]
 fn test_dataframe_macro_trailing_comma() {
-    let a = Column::from_slice(&[1i32]).unwrap();
-    let b = Column::from_slice(&[2i32]).unwrap();
+    let a = Series::new::<i32>("source_a", &[1]).unwrap();
+    let b = Series::new::<i32>("source_b", &[2]).unwrap();
 
     let df = cudf::dataframe! {
         "a" => a,
@@ -208,4 +208,14 @@ fn test_dataframe_macro_trailing_comma() {
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.column_names(), &["a", "b"]);
+}
+
+#[test]
+fn test_dataframe_macro_uses_pair_names_not_series_names() {
+    let source = Series::new::<i32>("upstream_name", &[11, 22]).unwrap();
+
+    let df = cudf::dataframe! { "renamed" => source }.unwrap();
+
+    assert_eq!(df.column_names(), &["renamed"]);
+    assert_eq!(df.series("renamed").unwrap().name(), Some("renamed"));
 }
