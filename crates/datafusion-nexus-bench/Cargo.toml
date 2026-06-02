@@ -1,0 +1,74 @@
+[package]
+name = "datafusion-nexus-bench"
+description = "Benchmark, report, triage, and stress binaries for datafusion-nexus."
+version = "0.1.0"
+edition = "2024"
+rust-version = { workspace = true }
+build = "build.rs"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+iceberg = [
+  "datafusion-nexus/iceberg",
+  "dep:aws-config",
+  "dep:aws-credential-types",
+  "dep:iceberg",
+  "dep:object_store",
+  "dep:tempfile",
+]
+cugraph = [
+  "datafusion-nexus/cugraph",
+  "nexus-query-engine/cugraph",
+  "dep:cugraph",
+  "dep:cugraph-sys",
+]
+
+[dependencies]
+datafusion-nexus = { path = "../..", default-features = false }
+nexus-query-engine = { path = "../nexus-query-engine", default-features = false }
+datafusion = "53.1"
+arrow = { workspace = true }
+parquet = { workspace = true }
+cudf = { workspace = true }
+# Direct (non-transitive) dep on cudf-sys so THIS crate's build.rs receives
+# DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"` metadata,
+# mirroring the root crate's rpath bake.
+cudf-sys = { path = "../../../cudf-rs/cudf-sys" }
+cugraph = { workspace = true, optional = true }
+cugraph-sys = { workspace = true, optional = true }
+futures = "0.3"
+serde_json = "1.0"
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
+aws-config = { version = "1.8", optional = true }
+aws-credential-types = { version = "1.2", optional = true }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", optional = true }
+object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
+tempfile = { version = "3.27", optional = true }
+
+[lib]
+name = "datafusion_nexus_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "native_iceberg_tpch_benchmark"
+required-features = ["iceberg"]
+
+[[bin]]
+name = "native_iceberg_smoke_report"
+required-features = ["iceberg"]
+
+[[bin]]
+name = "query_service_iceberg_stress"
+required-features = ["iceberg"]
+
+[[bin]]
+name = "cugraph_sql_construction_report"
+required-features = ["cugraph"]
+
+[[test]]
+name = "iceberg_bin_tests"
+required-features = ["iceberg"]

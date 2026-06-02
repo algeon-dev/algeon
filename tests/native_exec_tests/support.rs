@@ -31,9 +31,8 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_nexus::{
-    CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, TPCH_TABLES, tpch_report_session_config,
-};
+use datafusion_nexus::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
+use datafusion_nexus_bench::{TPCH_TABLES, tpch_report_session_config};
 use nexus_query_engine::{
     ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LocalParquetFile,
     LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,

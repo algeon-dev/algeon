@@ -14,17 +14,19 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CUDF_TPCDS_PARQUET_DIR_ENV, CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
+    CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
     NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAdaptivePipelineDiagnostics, NativeCudfExecutionConfig,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
     NativeDataFusionRuntimeOutcome, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics,
     NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityFloatTolerance, ParityStageStatus, ParityStatus, PlanningReport, TPCDS_QUERIES, TPCDS_TABLES,
-    TpcdsWorkloadResult, compare_record_batches, default_tpcds_sf1_parquet_root, discover_tpcds_table_layout,
+    ParityFloatTolerance, ParityStageStatus, ParityStatus, PlanningReport, compare_record_batches,
     lower_physical_plan_to_native, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
-    tpcds_datafusion_planning_workload_items_with_optimizer_config,
+};
+use datafusion_nexus_bench::{
+    CUDF_TPCDS_PARQUET_DIR_ENV, TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, default_tpcds_sf1_parquet_root,
+    discover_tpcds_table_layout, tpcds_datafusion_planning_workload_items_with_optimizer_config,
     tpcds_parity_workload_items_with_session_configs as raw_tpcds_parity_workload_items, tpcds_report_session_config,
 };
 

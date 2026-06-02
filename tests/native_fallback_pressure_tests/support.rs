@@ -644,42 +644,6 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-pub(super) fn copy_tiny_tpch_as_directory_layout(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-    file_names: &[&str],
-) {
-    for table in TPCH_TABLES {
-        let table_dir = destination.join(table);
-        fs::create_dir_all(&table_dir).unwrap();
-        let source_file = source.join(format!("{table}.parquet"));
-        for file_name in file_names {
-            fs::copy(&source_file, table_dir.join(file_name)).unwrap();
-        }
-    }
-}
-
-pub(super) fn copy_tiny_tpch_as_sibling_split_layout(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-    split_tables: &[&str],
-    split_count: usize,
-) {
-    assert!(split_count >= 1, "split_count must be >= 1");
-    fs::create_dir_all(destination).unwrap();
-    for table in TPCH_TABLES {
-        let source_file = source.join(format!("{table}.parquet"));
-        if split_tables.contains(table) {
-            for shard in 0..split_count {
-                let shard_name = format!("{table}_{shard:04}.parquet");
-                fs::copy(&source_file, destination.join(shard_name)).unwrap();
-            }
-        } else {
-            fs::copy(&source_file, destination.join(format!("{table}.parquet"))).unwrap();
-        }
-    }
-}
-
 pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
