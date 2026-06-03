@@ -3,13 +3,43 @@
 //! Phase 1 keeps the domain substrate private, so these tests use hidden
 //! debug hooks instead of a public runtime API.
 
+use std::{ffi::c_void, ptr};
+
 use cudf::{
     Agg, AggSpec, Column, DataFrame, ErrorKind, Scalar, Series, Table, memory::DeviceMemoryResource, stream::CudaStream,
 };
-use cudf_sys::{cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation};
+use cudf_sys::{
+    cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
+    cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
+};
 
 fn reset_sync_observation() {
     unsafe { cudf_test_exec_reset_observation() };
+}
+
+fn reset_exec_observation() {
+    unsafe { cudf_test_exec_reset_observation() };
+}
+
+fn last_exec_stream_value() -> usize {
+    let mut out: usize = 0;
+    let status = unsafe { cudf_test_exec_last_stream_value(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last exec stream observation");
+    out
+}
+
+fn last_exec_mr_value() -> usize {
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last exec mr observation");
+    out as usize
+}
+
+fn current_device_resource_value() -> usize {
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_test_current_device_resource_raw(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read current device resource");
+    out as usize
 }
 
 fn last_sync_stream_value() -> usize {
@@ -367,6 +397,42 @@ fn series_high_level_ops_preserve_explicit_domain_identity() {
     let (codes, uniques) = base.factorize().unwrap();
     assert_eq!(codes.as_column().__debug_execution_domain_id(), 76);
     assert_eq!(uniques.as_column().__debug_execution_domain_id(), 76);
+}
+
+#[test]
+fn series_fillna_uses_retained_explicit_domain_stream() {
+    let nullable = explicit_nullable_i32_series("nullable", &[1, 0, 3], &[true, false, true], 80);
+    let expected_stream = nullable.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let filled = nullable.fillna(99i32).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(filled.as_column().__debug_execution_domain_id(), 80);
+    let host: Vec<i32> = filled.view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![1, 99, 3]);
+}
+
+#[test]
+fn dataframe_fillna_with_series_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([(
+        "value",
+        explicit_nullable_i32_series("value", &[1, 0, 3], &[true, false, true], 81),
+    )])
+    .unwrap();
+    let fill = explicit_i32_series("fill", &[10, 20, 30], 81);
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let filled = df.fillna_with_series("value", &fill).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(filled.__debug_execution_domain_id(), 81);
+    let host: Vec<i32> = filled.series("value").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![1, 20, 3]);
 }
 
 #[test]

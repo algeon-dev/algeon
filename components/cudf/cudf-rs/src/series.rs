@@ -482,8 +482,9 @@ impl Series {
     pub fn fillna<T: CudfType>(&self, value: T) -> Result<Series> {
         let cv = self.column.view()?;
         let scalar = Scalar::from_value(value)?;
-        let col =
-            replace::replace_nulls(&cv, &scalar)?.with_execution_domain(Arc::clone(self.column.execution_domain()));
+        let exec_options = self.column.execution_domain().explicit_exec_options_raw();
+        let col = replace::replace_nulls_with_exec_options(&cv, &scalar, exec_options.as_ref(), "series::fillna")?
+            .with_execution_domain(Arc::clone(self.column.execution_domain()));
         self.with_inherited_name(col)
     }
 
@@ -502,7 +503,14 @@ impl Series {
         )?;
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
-        let col = replace::replace_nulls_column(&cv, &other_cv)?.with_execution_domain(output_domain);
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let col = replace::replace_nulls_column_with_exec_options(
+            &cv,
+            &other_cv,
+            exec_options.as_ref(),
+            "series::fillna_with_series",
+        )?
+        .with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 

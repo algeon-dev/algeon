@@ -25,12 +25,26 @@ use crate::{
 /// // result: [1, 99, 3]
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
+    replace_nulls_with_exec_options(input, replacement, None, "replace::replace_nulls")
+}
+
+pub(crate) fn replace_nulls_with_exec_options(
+    input: &ColumnView<'_>,
+    replacement: &Scalar,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: input (ColumnView) and replacement (Scalar) handles are valid
-        // (NonNull maintained by their types).
-        unsafe { cudf_sys::cudf_replace_nulls_scalar(input.raw_handle(), replacement.raw_handle(), &mut out) },
-        "replace::replace_nulls",
+    let status = match exec_options {
+        None => unsafe { cudf_sys::cudf_replace_nulls_scalar(input.raw_handle(), replacement.raw_handle(), &mut out) },
+        Some(options) => unsafe {
+            cudf_sys::cudf_replace_nulls_scalar_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
+        },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
@@ -58,11 +72,26 @@ pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Col
 /// // result: [1, 20, 3]
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
+    replace_nulls_column_with_exec_options(input, replacement, None, "replace::replace_nulls_column")
+}
+
+pub(crate) fn replace_nulls_column_with_exec_options(
+    input: &ColumnView<'_>,
+    replacement: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: input and replacement handles are valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_replace_nulls_column(input.raw_handle(), replacement.raw_handle(), &mut out) },
-        "replace::replace_nulls_column",
+    let status = match exec_options {
+        None => unsafe { cudf_sys::cudf_replace_nulls_column(input.raw_handle(), replacement.raw_handle(), &mut out) },
+        Some(options) => unsafe {
+            cudf_sys::cudf_replace_nulls_column_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
+        },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
