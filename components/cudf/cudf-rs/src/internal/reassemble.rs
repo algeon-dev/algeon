@@ -29,6 +29,7 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
     let view = table.view()?;
     let row_count = if view.num_columns()? > 0 { view.num_rows()? } else { 0 };
     drop(view);
+    let table_domain = Arc::clone(table.execution_domain());
 
     let cols = table.into_columns()?;
     if cols.len() != names.len() {
@@ -43,8 +44,9 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
         map.insert(name, Arc::new(col));
     }
 
-    let domain = crate::dataframe::derive_frame_domain_from_columns(
+    let domain = crate::dataframe::resolve_frame_domain_from_authoritative_source(
         &map,
+        &table_domain,
         "internal::reassemble::dataframe_from_table_and_names",
     )?;
 

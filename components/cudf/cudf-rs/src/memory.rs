@@ -21,7 +21,10 @@
 //! .unwrap();
 //! ```
 
-use std::ptr::{self, NonNull};
+use std::{
+    ptr::{self, NonNull},
+    sync::Arc,
+};
 
 use crate::error::{self, Result};
 
@@ -31,8 +34,13 @@ use crate::error::{self, Result};
 ///
 /// This type currently models resource ownership only; it is not yet a knob
 /// that changes allocator selection for other `cudf` operations.
+#[derive(Clone)]
 pub struct DeviceMemoryResource {
-    handle: NonNull<std::ffi::c_void>,
+    handle: Arc<DeviceMemoryResourceHandle>,
+}
+
+struct DeviceMemoryResourceHandle {
+    raw: NonNull<std::ffi::c_void>,
 }
 
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
@@ -50,7 +58,11 @@ impl DeviceMemoryResource {
             unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut handle) },
             "memory::device_memory_resource::cuda",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("cudf_memory_resource_create_cuda returned null on success") })
+        Ok(Self {
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: NonNull::new(handle).expect("cudf_memory_resource_create_cuda returned null on success"),
+            }),
+        })
     }
 
     /// Create a pool memory resource handle.
@@ -68,16 +80,29 @@ impl DeviceMemoryResource {
                 ("maximum_pool_size", maximum_pool_size.to_string()),
             ],
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("cudf_memory_resource_create_pool returned null on success") })
+        Ok(Self {
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: NonNull::new(handle).expect("cudf_memory_resource_create_pool returned null on success"),
+            }),
+        })
+    }
+
+    pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
+        self.handle.raw.as_ptr()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_raw_handle_value(&self) -> usize {
+        self.handle.raw.as_ptr() as usize
     }
 }
 
-impl Drop for DeviceMemoryResource {
+impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once.
+        // SAFETY: self.raw is valid (NonNull from construction). The shared
+        // handle is destroyed exactly once when the last clone drops.
         unsafe {
-            cudf_sys::cudf_memory_resource_destroy(self.handle.as_ptr());
+            cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr());
         }
     }
 }

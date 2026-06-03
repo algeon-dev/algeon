@@ -104,6 +104,21 @@ fn column_copy_preserves_execution_domain_identity() {
 }
 
 #[test]
+fn column_copy_uses_retained_explicit_domain_stream_and_mr() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(42).unwrap();
+    let expected_stream = col.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let copied = col.copy().unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(copied.__debug_execution_domain_id(), 42);
+}
+
+#[test]
 fn table_copy_and_release_preserve_execution_domain_identity() {
     let first = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7).unwrap();
     let second = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7).unwrap();
@@ -117,6 +132,23 @@ fn table_copy_and_release_preserve_execution_domain_identity() {
     let released = copied.into_columns().unwrap();
     assert_eq!(released.len(), 2);
     assert!(released.iter().all(|col| col.__debug_execution_domain_id() == table.__debug_execution_domain_id()));
+}
+
+#[test]
+fn table_copy_uses_retained_explicit_domain_stream_and_mr() {
+    let first = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(43).unwrap();
+    let second = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(43).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let copied = table.copy().unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(copied.__debug_execution_domain_id(), 43);
 }
 
 #[test]
@@ -436,6 +468,59 @@ fn dataframe_fillna_with_series_uses_retained_explicit_domain_stream_and_mr() {
 }
 
 #[test]
+fn dataframe_gather_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30], 92))]).unwrap();
+    let indices = explicit_i32_series("gather", &[2, 0], 92);
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let gathered = df.gather(&indices).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(gathered.__debug_execution_domain_id(), 92);
+    let host: Vec<i32> = gathered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![30, 10]);
+}
+
+#[test]
+fn dataframe_filter_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30], 93))]).unwrap();
+    let mask = explicit_bool_series("mask", &[true, false, true], 93);
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let filtered = df.filter(&mask).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(filtered.__debug_execution_domain_id(), 93);
+    let host: Vec<i32> = filtered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![10, 30]);
+}
+
+#[test]
+fn dataframe_slice_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30, 40], 94))]).unwrap();
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let sliced = df.slice(1, 2).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(sliced.__debug_execution_domain_id(), 94);
+    let host: Vec<i32> = sliced.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![20, 30]);
+}
+
+#[test]
 fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
     let df = DataFrame::from_columns([
         ("key", explicit_i32_series("key", &[1, 1, 2, 2], 77)),
@@ -455,6 +540,132 @@ fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
             .__debug_execution_domain_id()
             == 77)
     );
+}
+
+#[test]
+fn zero_column_dataframe_try_into_table_and_from_table_preserve_explicit_domain() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 78))]).unwrap();
+    let zero = df.drop(["id"]).unwrap();
+
+    assert_eq!(zero.num_columns(), 0);
+    assert_eq!(zero.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(zero.__debug_execution_domain_id(), 78);
+
+    let (table, names) = zero.try_into_table().unwrap();
+    assert!(names.is_empty());
+    assert_eq!(table.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(table.__debug_execution_domain_id(), 78);
+
+    let roundtrip = DataFrame::from_table(table, names).unwrap();
+    assert_eq!(roundtrip.num_columns(), 0);
+    assert_eq!(roundtrip.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(roundtrip.__debug_execution_domain_id(), 78);
+}
+
+#[test]
+fn zero_column_dataframe_to_table_copy_preserves_explicit_domain() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 79))]).unwrap();
+    let zero = df.select(std::iter::empty::<&str>()).unwrap();
+
+    assert_eq!(zero.num_columns(), 0);
+    assert_eq!(zero.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(zero.__debug_execution_domain_id(), 79);
+
+    let copied = zero.to_table_copy().unwrap();
+    assert_eq!(copied.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(copied.__debug_execution_domain_id(), 79);
+}
+
+#[test]
+fn dataframe_to_table_copy_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([
+        ("id", explicit_i32_series("id", &[1, 2, 3], 90)),
+        ("value", explicit_i32_series("value", &[10, 20, 30], 90)),
+    ])
+    .unwrap();
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let copied = df.to_table_copy().unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(copied.__debug_execution_domain_id(), 90);
+}
+
+#[test]
+fn dataframe_try_into_table_shared_copy_uses_retained_explicit_domain_stream_and_mr() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 91))]).unwrap();
+    let _shared = df.series("id").unwrap();
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    let (table, names) = df.try_into_table().unwrap();
+
+    assert_eq!(names, vec!["id"]);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(table.__debug_execution_domain_id(), 91);
+}
+
+#[test]
+fn zero_column_dataframe_concat_preserves_explicit_domain() {
+    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 80))]).unwrap().drop(["id"]).unwrap();
+    let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 80))])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap();
+
+    let combined = left.concat(&right).unwrap();
+
+    assert_eq!(combined.num_columns(), 0);
+    assert_eq!(combined.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(combined.__debug_execution_domain_id(), 80);
+}
+
+#[test]
+fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
+    let zero =
+        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 81))]).unwrap().drop(["id"]).unwrap();
+    let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
+
+    let err = zero.with_column("value", ambient).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:81"));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "ambient_default"));
+}
+
+#[test]
+fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
+    let zero =
+        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 82))]).unwrap().drop(["id"]).unwrap();
+    let explicit = explicit_i32_series("value", &[10, 20, 30], 82);
+
+    let result = zero.with_column("value", explicit).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 82);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 82);
+}
+
+#[test]
+fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
+    let zero =
+        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))]).unwrap().drop(["id"]).unwrap();
+    let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
+
+    let err = zero.assign([("value", ambient)]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:83"));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "ambient_default"));
 }
 
 #[test]

@@ -8,6 +8,32 @@ use crate::{
     table::{Table, TableView},
 };
 
+fn gather_impl(
+    input: &TableView<'_>,
+    gather_map: &ColumnView<'_>,
+    bounds_policy: i32,
+    bounds_policy_label: &'static str,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_gather_ex(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_gather(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("bounds_policy", bounds_policy_label.to_owned()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    Ok(unsafe { Table::from_raw(out) })
+}
+
 /// Gather (select) rows from a table by index.
 ///
 /// Produces a new table whose row `i` is `source_table[gather_map[i]]`.
@@ -30,16 +56,16 @@ use crate::{
 /// // result row 0 = source row 2 (30), result row 1 = source row 0 (10)
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let mut out = ptr::null_mut();
-    let policy = 0i32; // Nullify
-    error::check_status_in_with(
-        // SAFETY: input and gather_map handles are valid (NonNull maintained by their types).
-        unsafe { cudf_sys::cudf_gather(input.raw_handle(), gather_map.raw_handle(), policy, &mut out) },
-        "copying::gather",
-        [("bounds_policy", "nullify".to_owned())],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    gather_impl(input, gather_map, 0, "nullify", None, "copying::gather")
+}
+
+pub(crate) fn gather_with_exec_options(
+    input: &TableView<'_>,
+    gather_map: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    gather_impl(input, gather_map, 0, "nullify", exec_options, operation)
 }
 
 /// Gather (select) rows from a table by index, without bounds checking.
@@ -70,15 +96,14 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let mut out = ptr::null_mut();
-    let policy = 1i32; // DontCheck
-    error::check_status_in_with(
-        // SAFETY: input and gather_map handles are valid. Caller guarantees
-        // all indices are in bounds (unsafe fn contract).
-        unsafe { cudf_sys::cudf_gather(input.raw_handle(), gather_map.raw_handle(), policy, &mut out) },
-        "copying::gather_unchecked",
-        [("bounds_policy", "dont_check".to_owned())],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    gather_impl(input, gather_map, 1, "dont_check", None, "copying::gather_unchecked")
+}
+
+pub(crate) unsafe fn gather_unchecked_with_exec_options(
+    input: &TableView<'_>,
+    gather_map: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    gather_impl(input, gather_map, 1, "dont_check", exec_options, operation)
 }

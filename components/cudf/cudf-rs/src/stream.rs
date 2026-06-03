@@ -5,7 +5,10 @@
 //! but the high-level API (`DataFrame`, `Series`) does not yet expose
 //! stream control — operations still run on cuDF's default stream.
 
-use std::ptr::{self, NonNull};
+use std::{
+    ptr::{self, NonNull},
+    sync::Arc,
+};
 
 use crate::error::{self, Result};
 
@@ -16,8 +19,13 @@ use crate::error::{self, Result};
 ///
 /// Today this type lets callers manage or inspect standalone CUDA stream
 /// state, but it does not steer the stream used by other `cudf` operations.
+#[derive(Clone)]
 pub struct CudaStream {
-    handle: NonNull<std::ffi::c_void>,
+    handle: Arc<CudaStreamHandle>,
+}
+
+struct CudaStreamHandle {
+    raw: NonNull<std::ffi::c_void>,
 }
 
 // SAFETY: CUDA streams are thread-safe by design — operations can be enqueued
@@ -33,7 +41,11 @@ impl CudaStream {
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, "stream::new")?;
-        Ok(Self { handle: NonNull::new(handle).expect("cudf_stream_create returned null on success") })
+        Ok(Self {
+            handle: Arc::new(CudaStreamHandle {
+                raw: NonNull::new(handle).expect("cudf_stream_create returned null on success"),
+            }),
+        })
     }
 
     /// Block the calling thread until all operations already enqueued on this
@@ -41,7 +53,7 @@ impl CudaStream {
     pub fn synchronize(&self) -> Result<()> {
         // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.as_ptr()) },
+            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.raw.as_ptr()) },
             "stream::synchronize",
         )
     }
@@ -52,19 +64,37 @@ impl CudaStream {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_is_ready(self.handle.as_ptr(), &mut out) },
+            unsafe { cudf_sys::cudf_stream_is_ready(self.handle.raw.as_ptr(), &mut out) },
             "stream::is_ready",
         )?;
         Ok(out != 0)
     }
+
+    pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
+        self.handle.raw.as_ptr()
+    }
+
+    pub(crate) fn debug_handle_value(&self) -> Result<usize> {
+        let mut out: usize = 0;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_test_stream_handle_value(self.handle.raw.as_ptr(), &mut out) },
+            "stream::debug_handle_value",
+        )?;
+        Ok(out)
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_raw_handle_value(&self) -> usize {
+        self.debug_handle_value().expect("failed to read CUDA stream debug handle value")
+    }
 }
 
-impl Drop for CudaStream {
+impl Drop for CudaStreamHandle {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once.
+        // SAFETY: self.raw is valid (NonNull from construction). The shared
+        // handle is destroyed exactly once when the last clone drops.
         unsafe {
-            cudf_sys::cudf_stream_destroy(self.handle.as_ptr());
+            cudf_sys::cudf_stream_destroy(self.raw.as_ptr());
         }
     }
 }

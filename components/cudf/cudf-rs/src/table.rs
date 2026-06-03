@@ -90,8 +90,15 @@ impl Table {
     /// Deep-copy this table.
     pub fn copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        let exec_options = self.domain.explicit_exec_options_raw();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
-        error::check_status_in(unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) }, "table::copy")?;
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), options, &mut handle) },
+                None => unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) },
+            },
+            "table::copy",
+        )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
     }
 
@@ -118,6 +125,10 @@ impl Table {
     pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
         self.domain = domain;
         self
+    }
+
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
     }
 
     /// Consume this table and return its columns as owned [`Column`] values.
@@ -178,6 +189,16 @@ impl Table {
     #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+        self.domain.debug_mr_value()
     }
 }
 

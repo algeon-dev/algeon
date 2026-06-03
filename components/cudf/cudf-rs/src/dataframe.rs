@@ -31,6 +31,7 @@ use crate::{
     copying,
     dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
+    execution_context::__DebugExecutionContext,
     execution_domain::ExecutionDomain,
     filter, groupby,
     io::{
@@ -267,6 +268,38 @@ pub(crate) fn derive_frame_domain_from_columns(
     }
 
     Ok(domain)
+}
+
+pub(crate) fn frame_domain_matches_columns(
+    columns: &IndexMap<String, Arc<Column>>,
+    frame_domain: &Arc<ExecutionDomain>,
+) -> bool {
+    columns.values().all(|column| ExecutionDomain::same_identity(frame_domain, column.execution_domain()))
+}
+
+pub(crate) fn resolve_frame_domain_from_authoritative_source(
+    columns: &IndexMap<String, Arc<Column>>,
+    authoritative_domain: &Arc<ExecutionDomain>,
+    operation: &'static str,
+) -> Result<Arc<ExecutionDomain>> {
+    if columns.is_empty() {
+        return Ok(Arc::clone(authoritative_domain));
+    }
+
+    for (name, column) in columns {
+        if !ExecutionDomain::same_identity(authoritative_domain, column.execution_domain()) {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "all columns in a dataframe must share the authoritative execution domain",
+            )
+            .with_operation(operation)
+            .with_context("left_domain", authoritative_domain.debug_label())
+            .with_context("right_domain", column.execution_domain().debug_label())
+            .with_context("column_name", name.clone()));
+        }
+    }
+
+    Ok(Arc::clone(authoritative_domain))
 }
 
 /// Options for [`DataFrame::dropna`].
@@ -546,6 +579,7 @@ impl DataFrame {
         let num_cols = view.num_columns()?;
         let row_count = if num_cols > 0 { view.num_rows()? as usize } else { 0 };
         drop(view);
+        let table_domain = Arc::clone(table.execution_domain());
 
         let expected = names.len() as i32;
         if expected != num_cols {
@@ -563,7 +597,7 @@ impl DataFrame {
             map.insert(name, Arc::new(col));
         }
 
-        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_table")?;
+        let domain = resolve_frame_domain_from_authoritative_source(&map, &table_domain, "dataframe::from_table")?;
         Ok(Self { columns: map, row_count, domain })
     }
 
@@ -664,6 +698,10 @@ impl DataFrame {
         row_count: usize,
         domain: Arc<ExecutionDomain>,
     ) -> Self {
+        debug_assert!(
+            frame_domain_matches_columns(&columns, &domain),
+            "dataframe::from_raw_parts requires all column domains to match the frame domain",
+        );
         Self { columns, row_count, domain }
     }
 
@@ -792,12 +830,13 @@ impl DataFrame {
         let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
         for (name, arc_col) in &self.columns {
             let col = arc_col
-                .copy()
-                .map_err(|e| e.with_operation("dataframe::to_table_copy").with_context("column_name", name.clone()))?;
+                .copy_into_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")
+                .map_err(|e| e.with_context("column_name", name.clone()))?;
             cols.push(col);
         }
 
-        Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))
+        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))?;
+        Ok(table.with_execution_domain(Arc::clone(&self.domain)))
     }
 
     /// Consume the `DataFrame`, returning an owned table and column names.
@@ -818,15 +857,16 @@ impl DataFrame {
         for (name, arc_col) in self.columns {
             let col = match Arc::try_unwrap(arc_col) {
                 Ok(col) => col,
-                Err(shared) => shared.copy().map_err(|e| {
-                    e.with_operation("dataframe::try_into_table").with_context("column_name", name.clone())
-                })?,
+                Err(shared) => shared
+                    .copy_into_domain(Arc::clone(&self.domain), "dataframe::try_into_table")
+                    .map_err(|e| e.with_context("column_name", name.clone()))?,
             };
             names.push(name);
             cols.push(col);
         }
 
         let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?;
+        let table = table.with_execution_domain(Arc::clone(&self.domain));
         Ok((table, names))
     }
 
@@ -893,6 +933,83 @@ impl DataFrame {
     #[doc(hidden)]
     pub fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+        self.domain.debug_mr_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_sort_values_with_execution_context<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        ctx: &__DebugExecutionContext<'_>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.sort_values_impl(
+            by,
+            options,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::sort_values_with_execution_context",
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_merge_with_execution_context(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        ctx: &__DebugExecutionContext<'_>,
+    ) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.merge_impl(
+            right,
+            options,
+            output_domain.explicit_exec_options_raw(),
+            Some(output_domain),
+            "dataframe::__debug_merge_with_execution_context",
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_gather_with_execution_context(
+        &self,
+        indices: &Series,
+        ctx: &__DebugExecutionContext<'_>,
+    ) -> Result<Self> {
+        ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        let cv = indices.column_view()?;
+        self.gather_by_column_view_impl(
+            &cv,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::__debug_gather_with_execution_context",
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_filter_with_execution_context(
+        &self,
+        mask: &Series,
+        ctx: &__DebugExecutionContext<'_>,
+    ) -> Result<Self> {
+        ExecutionDomain::compatible_domain(&self.domain, mask.as_column().execution_domain(), "dataframe::filter")?;
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        let mask_view = self.validate_series_mask(mask)?;
+        self.filter_by_mask_impl(
+            &mask_view,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::__debug_filter_with_execution_context",
+        )
     }
 
     // -- I/O -----------------------------------------------------------------
@@ -1037,12 +1154,13 @@ impl DataFrame {
     ///
     /// Returns an error if `indices` is not `Int32`.
     pub fn gather_by_column_view(&self, indices: &ColumnView<'_>) -> Result<Self> {
-        if indices.is_empty()? {
-            return self.empty_with_same_schema();
-        }
-        let tv = self.build_table_view()?;
-        let result_table = copying::gather(tv.table(), indices)?.with_execution_domain(Arc::clone(&self.domain));
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let output_domain = Arc::clone(&self.domain);
+        self.gather_by_column_view_impl(
+            indices,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::gather_by_column_view",
+        )
     }
 
     // -- Filter, sort, deduplicate -------------------------------------------
@@ -1078,11 +1196,13 @@ impl DataFrame {
     /// GPU allocation dominates runtime cost, so a consuming variant would
     /// provide negligible benefit.
     pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
-        self.validate_mask_view(mask, "dataframe::filter_by_mask")?;
-        let tv = self.build_table_view()?;
-        let result_table =
-            filter::apply_boolean_mask(tv.table(), mask)?.with_execution_domain(Arc::clone(&self.domain));
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let output_domain = Arc::clone(&self.domain);
+        self.filter_by_mask_impl(
+            mask,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::filter_by_mask",
+        )
     }
 
     /// Filter rows to those where `column` values appear in a `Series`.
@@ -1194,9 +1314,24 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        self.sort_values_impl(by, options, None, Arc::clone(&self.domain), "dataframe::sort_values")
+    }
+
+    fn sort_values_impl<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let by: Vec<String> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: Vec<&str> = by.iter().map(|s| s.as_str()).collect();
-        let key_indices = resolve_column_names(&self.columns, &by_refs, "dataframe::sort_values")?;
+        let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
         let (orders, null_orders) = options.resolve(by_refs.len())?;
 
         let null_order_ref = null_orders.as_deref();
@@ -1208,16 +1343,39 @@ impl DataFrame {
         let tv = self.build_table_view()?;
 
         let result_table = if all_in_order {
-            let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
-            sort_fn(tv.table(), Some(&orders), null_order_ref)?
+            if let Some(exec_options) = exec_options.as_ref() {
+                sorting::sort_with_exec_options(
+                    tv.table(),
+                    Some(&orders),
+                    null_order_ref,
+                    options.stable,
+                    exec_options,
+                    operation,
+                )?
+            } else {
+                let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
+                sort_fn(tv.table(), Some(&orders), null_order_ref)?
+            }
         } else {
             // Project the sort keys directly from the already-built full
             // table view, then reorder the full table according to those keys.
             let keys_table = tv.table().select_columns(&key_indices)?;
-            let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
-            sort_by_key_fn(tv.table(), &keys_table, Some(&orders), null_order_ref)?
+            if let Some(exec_options) = exec_options.as_ref() {
+                sorting::sort_by_key_with_exec_options(
+                    tv.table(),
+                    &keys_table,
+                    Some(&orders),
+                    null_order_ref,
+                    options.stable,
+                    exec_options,
+                    operation,
+                )?
+            } else {
+                let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
+                sort_by_key_fn(tv.table(), &keys_table, Some(&orders), null_order_ref)?
+            }
         }
-        .with_execution_domain(Arc::clone(&self.domain));
+        .with_execution_domain(output_domain);
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1338,7 +1496,18 @@ impl DataFrame {
     /// - `left_on` and `right_on` have different lengths
     /// - A key column is not found in its respective DataFrame
     pub fn merge(&self, right: &DataFrame, options: join::MergeOptions) -> Result<Self> {
-        let operation: &'static str = "dataframe::merge";
+        self.merge_impl(right, options, None, None, "dataframe::merge")
+    }
+
+    fn merge_impl(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        forced_output_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let operation: &'static str = operation;
 
         // Resolve key names from options.
         let (left_on_strs, right_on_strs, shared_keys) = resolve_merge_keys(&options, operation)?;
@@ -1360,12 +1529,14 @@ impl DataFrame {
         let join_type = options.join_type();
 
         // Execute the split join with null_equality from options.
-        let split = self.join_split_on_impl_with_null_eq(
+        let split = self.join_split_on_impl_with_null_eq_and_context(
             right,
             &left_on_refs,
             &right_on_refs,
             join_type,
             options.null_eq(),
+            exec_options.as_ref(),
+            forced_output_domain,
             operation,
         )?;
 
@@ -1408,26 +1579,32 @@ impl DataFrame {
             .with_context("right_on_count", right_on_refs.len().to_string()));
         }
 
-        self.join_split_on_impl_with_null_eq(
+        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation)?;
+        self.join_split_on_impl_with_null_eq_and_context(
             right,
             &left_on_refs,
             &right_on_refs,
             options.join_type(),
             options.null_eq(),
+            None,
+            Some(output_domain),
             operation,
         )
     }
     /// Internal split-join dispatch with configurable null equality.
-    fn join_split_on_impl_with_null_eq(
+    fn join_split_on_impl_with_null_eq_and_context(
         &self,
         right: &DataFrame,
         left_on: &[&str],
         right_on: &[&str],
         join_type: join::JoinType,
         null_equality: join::NullEquality,
+        exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+        forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
-        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation)?;
+        let compatible_input_domain = ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation)?;
+        let output_domain = forced_output_domain.unwrap_or(compatible_input_domain);
 
         if left_on.len() != right_on.len() {
             return Err(Error::new(
@@ -1453,16 +1630,41 @@ impl DataFrame {
         let lp_table = build_borrowed_table_view_from_columns(&self.columns, &left_payload_indices)?;
         let rp_table = build_borrowed_table_view_from_columns(&right.columns, &right_payload_indices)?;
 
-        let result = match join_type {
-            join::JoinType::Inner => {
-                join::inner_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
-            },
-            join::JoinType::Left => {
-                join::left_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
-            },
-            join::JoinType::Full => {
-                join::full_join(lk_table.table(), rk_table.table(), lp_table.table(), rp_table.table(), null_equality)?
-            },
+        let result = if let Some(exec_options) = exec_options {
+            join::join_with_exec_options(
+                lk_table.table(),
+                rk_table.table(),
+                lp_table.table(),
+                rp_table.table(),
+                null_equality,
+                join_type,
+                exec_options,
+                operation,
+            )?
+        } else {
+            match join_type {
+                join::JoinType::Inner => join::inner_join(
+                    lk_table.table(),
+                    rk_table.table(),
+                    lp_table.table(),
+                    rp_table.table(),
+                    null_equality,
+                )?,
+                join::JoinType::Left => join::left_join(
+                    lk_table.table(),
+                    rk_table.table(),
+                    lp_table.table(),
+                    rp_table.table(),
+                    null_equality,
+                )?,
+                join::JoinType::Full => join::full_join(
+                    lk_table.table(),
+                    rk_table.table(),
+                    lp_table.table(),
+                    rp_table.table(),
+                    null_equality,
+                )?,
+            }
         };
 
         // Build schemas: left side uses left key names, right side uses right key names.
@@ -1860,6 +2062,13 @@ impl DataFrame {
     /// Returns an error if the row counts do not match.
     pub fn with_column(&self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
+        if self.columns.is_empty() {
+            ExecutionDomain::compatible_domain(
+                &self.domain,
+                series.as_column().execution_domain(),
+                "dataframe::with_column",
+            )?;
+        }
         let col_rows = series.len();
         let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
@@ -1900,6 +2109,13 @@ impl DataFrame {
     /// for columns that are not being replaced.
     pub fn with_column_owned(mut self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
+        if self.columns.is_empty() {
+            ExecutionDomain::compatible_domain(
+                &self.domain,
+                series.as_column().execution_domain(),
+                "dataframe::with_column_owned",
+            )?;
+        }
         let col_rows = series.len();
         let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
@@ -1961,6 +2177,13 @@ impl DataFrame {
         for (name, series) in pairs {
             let name = name.as_ref();
             let series_rows = series.len();
+            if self.columns.is_empty() {
+                ExecutionDomain::compatible_domain(
+                    &self.domain,
+                    series.as_column().execution_domain(),
+                    "dataframe::assign",
+                )?;
+            }
 
             if let Some(self_rows) = expected_rows {
                 if series_rows != self_rows {
@@ -2043,13 +2266,9 @@ impl DataFrame {
 
         let cv = col.view()?;
         let exec_options = col.execution_domain().explicit_exec_options_raw();
-        let new_col = replace::replace_nulls_with_exec_options(
-            &cv,
-            value,
-            exec_options.as_ref(),
-            "dataframe::replace_nulls",
-        )?
-        .with_execution_domain(Arc::clone(col.execution_domain()));
+        let new_col =
+            replace::replace_nulls_with_exec_options(&cv, value, exec_options.as_ref(), "dataframe::replace_nulls")?
+                .with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -2236,6 +2455,37 @@ use crate::internal::resolve::{
 };
 
 impl DataFrame {
+    fn gather_by_column_view_impl(
+        &self,
+        indices: &ColumnView<'_>,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        if indices.is_empty()? {
+            return self.empty_with_same_schema_in_domain(output_domain);
+        }
+        let tv = self.build_table_view()?;
+        let result_table = copying::gather_with_exec_options(tv.table(), indices, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    fn filter_by_mask_impl(
+        &self,
+        mask: &ColumnView<'_>,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        self.validate_mask_view(mask, operation)?;
+        let tv = self.build_table_view()?;
+        let result_table =
+            filter::apply_boolean_mask_with_exec_options(tv.table(), mask, exec_options.as_ref(), operation)?
+                .with_execution_domain(output_domain);
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
     /// Internal: gather a contiguous range of rows into a new `DataFrame`,
     /// preserving the schema.
     fn gather_range(&self, start: usize, len: usize) -> Result<Self> {
@@ -2246,9 +2496,17 @@ impl DataFrame {
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
         let map = Column::from_slice(&indices)?;
         let tv = self.build_table_view()?;
+        let exec_options = self.domain.explicit_exec_options_raw();
         // SAFETY: indices are constructed from `start..start+len` which the
         // callers have already validated against row_count.
-        let result_table = unsafe { copying::gather_unchecked(tv.table(), &map.view()?)? }
+        let result_table = unsafe {
+            copying::gather_unchecked_with_exec_options(
+                tv.table(),
+                &map.view()?,
+                exec_options.as_ref(),
+                "dataframe::gather_range",
+            )?
+        }
             .with_execution_domain(Arc::clone(&self.domain));
 
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -2262,20 +2520,16 @@ impl DataFrame {
     /// operations such as [`select`](Self::select) and [`drop`](Self::drop),
     /// it intentionally resets the logical row count to zero.
     fn empty_with_same_schema(&self) -> Result<Self> {
+        self.empty_with_same_schema_in_domain(Arc::clone(&self.domain))
+    }
+
+    fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {
         let mut new_columns = IndexMap::with_capacity(self.columns.len());
         for (name, col) in &self.columns {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
-            new_columns.insert(
-                name.clone(),
-                Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(col.execution_domain()))),
-            );
+            new_columns.insert(name.clone(), Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(&domain))));
         }
-        let domain = if new_columns.is_empty() {
-            Arc::clone(&self.domain)
-        } else {
-            derive_frame_domain_from_columns(&new_columns, "dataframe::empty_with_same_schema")?
-        };
         Ok(Self { columns: new_columns, row_count: 0, domain })
     }
 }

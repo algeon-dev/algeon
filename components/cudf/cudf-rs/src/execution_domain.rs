@@ -2,6 +2,7 @@
 
 use std::{
     num::NonZeroU64,
+    os::raw::c_void,
     sync::{Arc, OnceLock},
 };
 
@@ -68,6 +69,73 @@ impl ExecutionDomain {
         match self.kind {
             DomainKind::AmbientDefault => "ambient_default".to_string(),
             DomainKind::Explicit { identity, .. } => format!("explicit:{}", identity.get()),
+        }
+    }
+
+    pub(crate) fn debug_stream_value(&self) -> usize {
+        match &self.kind {
+            DomainKind::AmbientDefault => 0,
+            DomainKind::Explicit { _stream, .. } => _stream.debug_handle_value().unwrap_or(0),
+        }
+    }
+
+    pub(crate) fn debug_mr_value(&self) -> usize {
+        match &self.kind {
+            DomainKind::AmbientDefault => 0,
+            DomainKind::Explicit { _mr, .. } => _mr.__debug_raw_handle_value(),
+        }
+    }
+
+    pub(crate) fn synchronize_for_host_visibility(&self, operation: &'static str) -> Result<()> {
+        match &self.kind {
+            DomainKind::AmbientDefault => Ok(()),
+            DomainKind::Explicit { _stream, .. } => _stream
+                .synchronize()
+                .map_err(|e| e.with_operation(operation).with_context("sync_stream", self.debug_label())),
+        }
+    }
+
+    pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
+        match &self.kind {
+            DomainKind::AmbientDefault => None,
+            DomainKind::Explicit { _stream, _mr, .. } => Some(cudf_sys::cudf_exec_options_t {
+                struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
+                stream: _stream.as_raw() as *mut c_void,
+                mr: _mr.as_raw() as *mut c_void,
+                flags: 0,
+                reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+            }),
+        }
+    }
+
+    pub(crate) fn resolve_with_borrowed_override(
+        input: &Arc<Self>,
+        stream: Option<&CudaStream>,
+        mr: Option<&DeviceMemoryResource>,
+        operation: &'static str,
+    ) -> Result<Arc<Self>> {
+        match &input.kind {
+            DomainKind::AmbientDefault => {
+                if stream.is_some() || mr.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "borrowed execution-context overrides cannot promote ambient-default objects",
+                    )
+                    .with_operation(operation)
+                    .with_context("operation_domain", input.debug_label())
+                    .with_context("borrowed_override_stream", stream.is_some().to_string())
+                    .with_context("borrowed_override_memory_resource", mr.is_some().to_string()));
+                }
+
+                Ok(Arc::clone(input))
+            },
+            DomainKind::Explicit { _stream, _mr, identity } => Ok(Arc::new(Self {
+                kind: DomainKind::Explicit {
+                    _stream: stream.map(|stream| Arc::new(stream.clone())).unwrap_or_else(|| Arc::clone(_stream)),
+                    _mr: mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(_mr)),
+                    identity: *identity,
+                },
+            })),
         }
     }
 

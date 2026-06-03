@@ -50,6 +50,15 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
 cudf_status_t cudf_column_copy_from_view(cudf_column_view_handle src,
                                          cudf_column_handle* out);
 
+/// Deep-copy a column from a column_view with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
+                                            const cudf_exec_options_t* options,
+                                            cudf_column_handle* out);
+
 /// Destroy an owning column handle.
 void cudf_column_destroy(cudf_column_handle handle);
 

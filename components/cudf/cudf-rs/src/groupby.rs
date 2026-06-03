@@ -9,6 +9,7 @@ use std::{os::raw::c_void, ptr, sync::Arc};
 use crate::{
     column::{Column, ColumnView},
     error::{self, Error, ErrorKind, Result},
+    execution_context::__DebugExecutionContext,
     table::{Table, TableView},
 };
 
@@ -52,6 +53,134 @@ pub struct GroupByResult {
     /// Aggregation results, one `Vec<Column>` per request. Each inner vec
     /// has one column per aggregation in the corresponding request.
     pub results: Vec<Vec<Column>>,
+}
+
+fn groupby_aggregate_impl(
+    keys: &TableView<'_>,
+    requests: &[AggregationRequest<'_>],
+    null_policy: NullPolicy,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<GroupByResult> {
+    let num_requests = i32::try_from(requests.len()).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "number of aggregation requests exceeds i32::MAX")
+            .with_operation(operation)
+            .with_context("num_requests", requests.len().to_string())
+    })?;
+
+    // Collect values column view handles.
+    let value_handles: Vec<*mut c_void> = requests.iter().map(|r| r.values.raw_handle()).collect();
+
+    // Collect agg_counts and create aggregation handles.
+    let mut agg_counts: Vec<i32> = Vec::with_capacity(requests.len());
+    let mut all_agg_handles: Vec<*mut c_void> = Vec::new();
+
+    for req in requests {
+        if req.aggregations.is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "each aggregation request must contain at least one aggregation",
+            )
+            .with_operation(operation)
+            .with_context("request_index", agg_counts.len().to_string())
+            .with_context("num_requests", num_requests.to_string()));
+        }
+
+        let agg_count = i32::try_from(req.aggregations.len()).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "aggregation count per request exceeds i32::MAX")
+                .with_operation(operation)
+                .with_context("request_index", agg_counts.len().to_string())
+                .with_context("agg_count", req.aggregations.len().to_string())
+        })?;
+        agg_counts.push(agg_count);
+
+        for agg in req.aggregations {
+            match agg {
+                Aggregation::Std { ddof } | Aggregation::Variance { ddof } if *ddof < 0 => {
+                    return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
+                        .with_operation(operation)
+                        .with_context("request_index", agg_counts.len().to_string())
+                        .with_context("ddof", ddof.to_string()));
+                },
+                _ => {},
+            }
+            let handle = unsafe { create_agg_handle(agg)? };
+            all_agg_handles.push(handle);
+        }
+    }
+
+    let mut out_keys = ptr::null_mut();
+    let mut out_values: *mut *mut c_void = ptr::null_mut();
+    let mut out_total_columns: i32 = 0;
+
+    let status = if let Some(options) = exec_options {
+        unsafe {
+            cudf_sys::cudf_groupby_aggregate_ex(
+                keys.raw_handle(),
+                value_handles.as_ptr(),
+                all_agg_handles.as_ptr(),
+                agg_counts.as_ptr(),
+                num_requests,
+                i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
+                null_policy as i32,
+                &mut out_keys,
+                &mut out_values,
+                &mut out_total_columns,
+                options,
+            )
+        }
+    } else {
+        unsafe {
+            cudf_sys::cudf_groupby_aggregate(
+                keys.raw_handle(),
+                value_handles.as_ptr(),
+                all_agg_handles.as_ptr(),
+                agg_counts.as_ptr(),
+                num_requests,
+                i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
+                null_policy as i32,
+                &mut out_keys,
+                &mut out_values,
+                &mut out_total_columns,
+            )
+        }
+    };
+
+    for handle in &all_agg_handles {
+        unsafe { cudf_sys::cudf_aggregation_destroy(*handle) };
+    }
+
+    let total_requested_aggs: i32 = agg_counts.iter().sum();
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("num_requests", num_requests.to_string()),
+            ("total_requested_aggs", total_requested_aggs.to_string()),
+            ("null_policy", (null_policy as i32).to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    let keys_table = unsafe { Table::from_raw(out_keys) };
+    let total = out_total_columns as usize;
+    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
+
+    let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
+    let mut offset = 0;
+    for count in &agg_counts {
+        let n = *count as usize;
+        let mut cols = Vec::with_capacity(n);
+        for i in 0..n {
+            cols.push(unsafe { Column::from_raw(col_array[offset + i]) });
+        }
+        offset += n;
+        results.push(cols);
+    }
+
+    unsafe { cudf_sys::cudf_free_column_array(out_values) };
+
+    Ok(GroupByResult { keys: keys_table, results })
 }
 
 /// Create a C-side aggregation handle from an `Aggregation` enum.
@@ -138,121 +267,17 @@ pub fn groupby_aggregate(
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
 ) -> Result<GroupByResult> {
-    let num_requests = i32::try_from(requests.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of aggregation requests exceeds i32::MAX")
-            .with_operation("groupby::groupby_aggregate")
-            .with_context("num_requests", requests.len().to_string())
-    })?;
+    groupby_aggregate_impl(keys, requests, null_policy, None, "groupby::groupby_aggregate")
+}
 
-    // Collect values column view handles.
-    let value_handles: Vec<*mut c_void> = requests.iter().map(|r| r.values.raw_handle()).collect();
-
-    // Collect agg_counts and create aggregation handles.
-    let mut agg_counts: Vec<i32> = Vec::with_capacity(requests.len());
-    let mut all_agg_handles: Vec<*mut c_void> = Vec::new();
-
-    for req in requests {
-        if req.aggregations.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "each aggregation request must contain at least one aggregation",
-            )
-            .with_operation("groupby::groupby_aggregate")
-            .with_context("request_index", agg_counts.len().to_string())
-            .with_context("num_requests", num_requests.to_string()));
-        }
-
-        let agg_count = i32::try_from(req.aggregations.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "aggregation count per request exceeds i32::MAX")
-                .with_operation("groupby::groupby_aggregate")
-                .with_context("request_index", agg_counts.len().to_string())
-                .with_context("agg_count", req.aggregations.len().to_string())
-        })?;
-        agg_counts.push(agg_count);
-
-        for agg in req.aggregations {
-            match agg {
-                Aggregation::Std { ddof } | Aggregation::Variance { ddof } if *ddof < 0 => {
-                    return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
-                        .with_operation("groupby::groupby_aggregate")
-                        .with_context("request_index", agg_counts.len().to_string())
-                        .with_context("ddof", ddof.to_string()));
-                },
-                _ => {},
-            }
-            // SAFETY: create_agg_handle calls FFI with valid parameters.
-            let handle = unsafe { create_agg_handle(agg)? };
-            all_agg_handles.push(handle);
-        }
-    }
-
-    let mut out_keys = ptr::null_mut();
-    // This receives a pointer to a heap-allocated array of column handles
-    // (cudf_column_handle* = void**).
-    let mut out_values: *mut *mut c_void = ptr::null_mut();
-    let mut out_total_columns: i32 = 0;
-
-    // SAFETY: keys handle is valid. value_handles, all_agg_handles, and agg_counts
-    // are valid slices with correct lengths.
-    let status = unsafe {
-        cudf_sys::cudf_groupby_aggregate(
-            keys.raw_handle(),
-            value_handles.as_ptr(),
-            all_agg_handles.as_ptr(),
-            agg_counts.as_ptr(),
-            num_requests,
-            i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
-            null_policy as i32,
-            &mut out_keys,
-            &mut out_values,
-            &mut out_total_columns,
-        )
-    };
-
-    // Destroy aggregation handles regardless of success/failure.
-    for handle in &all_agg_handles {
-        // SAFETY: Each handle was returned by a successful create_agg_handle call.
-        unsafe { cudf_sys::cudf_aggregation_destroy(*handle) };
-    }
-
-    let total_requested_aggs: i32 = agg_counts.iter().sum();
-    error::check_status_in_with(
-        status,
-        "groupby::groupby_aggregate",
-        [
-            ("num_requests", num_requests.to_string()),
-            ("total_requested_aggs", total_requested_aggs.to_string()),
-            ("null_policy", (null_policy as i32).to_string()),
-        ],
-    )?;
-
-    // SAFETY: out_keys was returned by a successful FFI call, transferring ownership.
-    let keys_table = unsafe { Table::from_raw(out_keys) };
-
-    // Collect result columns from the flat array.
-    let total = out_total_columns as usize;
-    // SAFETY: out_values and out_total_columns were set by a successful FFI call.
-    // from_raw_parts is valid because the C shim allocated `total` elements.
-    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
-
-    let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
-    let mut offset = 0;
-    for count in &agg_counts {
-        let n = *count as usize;
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            // SAFETY: Each column handle in col_array was returned by the FFI call.
-            cols.push(unsafe { Column::from_raw(col_array[offset + i]) });
-        }
-        offset += n;
-        results.push(cols);
-    }
-
-    // SAFETY: out_values was allocated by the C shim. Column handles were already
-    // taken ownership of above, so we only free the array container.
-    unsafe { cudf_sys::cudf_free_column_array(out_values) };
-
-    Ok(GroupByResult { keys: keys_table, results })
+pub(crate) fn groupby_aggregate_with_exec_options(
+    keys: &TableView<'_>,
+    requests: &[AggregationRequest<'_>],
+    null_policy: NullPolicy,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<GroupByResult> {
+    groupby_aggregate_impl(keys, requests, null_policy, Some(exec_options), operation)
 }
 
 // ===========================================================================
@@ -402,6 +427,32 @@ impl<'a> GroupBy<'a> {
     /// - `specs` is empty
     /// - Any key or value column name is not in the DataFrame's schema
     pub fn agg(self, specs: &[AggSpec]) -> Result<crate::dataframe::DataFrame> {
+        let output_domain = Arc::clone(self.df.execution_domain());
+        self.agg_impl(specs, None, output_domain, "groupby::GroupBy::agg")
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_agg_with_execution_context(
+        self,
+        specs: &[AggSpec],
+        ctx: &__DebugExecutionContext<'_>,
+    ) -> Result<crate::dataframe::DataFrame> {
+        let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
+        self.agg_impl(
+            specs,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "groupby::GroupBy::__debug_agg_with_execution_context",
+        )
+    }
+
+    fn agg_impl(
+        self,
+        specs: &[AggSpec],
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<crate::execution_domain::ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<crate::dataframe::DataFrame> {
         use indexmap::IndexMap;
 
         use crate::{
@@ -411,14 +462,14 @@ impl<'a> GroupBy<'a> {
 
         if specs.is_empty() {
             return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")
-                .with_operation("groupby::GroupBy::agg"));
+                .with_operation(operation));
         }
 
         let columns = self.df.columns_map();
 
         // Resolve key column names to indices.
         let key_refs: Vec<&str> = self.keys.iter().map(|s| s.as_str()).collect();
-        let key_indices = resolve_column_names(columns, &key_refs, "groupby::GroupBy::agg")?;
+        let key_indices = resolve_column_names(columns, &key_refs, operation)?;
 
         // Validate all value column names exist.
         for spec in specs {
@@ -427,7 +478,7 @@ impl<'a> GroupBy<'a> {
                     ErrorKind::InvalidOperation,
                     format!("column '{}' not found in schema", spec.column),
                 )
-                .with_operation("groupby::GroupBy::agg")
+                .with_operation(operation)
                 .with_context("column_name", spec.column.clone()));
             }
         }
@@ -450,7 +501,7 @@ impl<'a> GroupBy<'a> {
             } else {
                 let arc_col = columns.get(spec.column.as_str()).ok_or_else(|| {
                     Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in DataFrame", spec.column))
-                        .with_operation("dataframe::agg")
+                        .with_operation(operation)
                 })?;
                 let idx = value_views.len();
                 value_views.push(arc_col.view()?);
@@ -485,8 +536,17 @@ impl<'a> GroupBy<'a> {
             })
             .collect();
 
-        let gb_result = groupby_aggregate(keys_table.table(), &requests, self.options.null_policy)?;
-        let output_domain = Arc::clone(self.df.execution_domain());
+        let gb_result = if let Some(exec_options) = exec_options.as_ref() {
+            groupby_aggregate_with_exec_options(
+                keys_table.table(),
+                &requests,
+                self.options.null_policy,
+                exec_options,
+                operation,
+            )?
+        } else {
+            groupby_aggregate(keys_table.table(), &requests, self.options.null_policy)?
+        };
 
         // Reorder result columns to match original spec order.
         let mut grouped_results: Vec<Vec<Option<Column>>> = gb_result
@@ -502,7 +562,7 @@ impl<'a> GroupBy<'a> {
             let group_count = grouped_results.len();
             let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, "groupby result group index out of bounds")
-                    .with_operation("groupby::GroupBy::agg")
+                    .with_operation(operation)
                     .with_context("request_index", request_index.to_string())
                     .with_context("group_index", group_idx.to_string())
                     .with_context("group_count", group_count.to_string())
@@ -510,14 +570,14 @@ impl<'a> GroupBy<'a> {
 
             let col_slot = group.get_mut(*agg_idx).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, "groupby result index out of bounds")
-                    .with_operation("groupby::GroupBy::agg")
+                    .with_operation(operation)
                     .with_context("request_index", request_index.to_string())
                     .with_context("agg_index", agg_idx.to_string())
             })?;
 
             let col = col_slot.take().ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, "groupby result column consumed more than once")
-                    .with_operation("groupby::GroupBy::agg")
+                    .with_operation(operation)
                     .with_context("request_index", request_index.to_string())
                     .with_context("agg_index", agg_idx.to_string())
             })?;
