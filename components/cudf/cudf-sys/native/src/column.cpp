@@ -97,6 +97,16 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          const uint8_t* null_mask,
                                          int32_t null_count,
                                          cudf_column_handle* out) {
+  return cudf_column_create_numeric_ex(
+      type_id, data, size, null_mask, null_count, nullptr, out);
+}
+
+cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
+                                            const void* data, int32_t size,
+                                            const uint8_t* null_mask,
+                                            int32_t null_count,
+                                            cudf_exec_options_t const* options,
+                                            cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   if (size < 0) {
@@ -115,15 +125,18 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
   }
   CUDF_RUST_TRY {
     cudf::data_type dtype(to_cudf_type_id(type_id));
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     // Compute element size for the given fixed-width type.
     auto elem_size = cudf::size_of(dtype);
     size_t data_bytes = static_cast<size_t>(size) * elem_size;
 
     // Copy host data to device.
-    rmm::device_buffer dev_data(data, data_bytes, stream, mr);
+    rmm::device_buffer dev_data(data, data_bytes, exec.stream, exec.mr);
 
     // Copy null mask to device if provided.
     rmm::device_buffer dev_null_mask{};
@@ -133,7 +146,7 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
           cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
       // We receive packed bytes from Rust — copy them to a device buffer
       // of the right alignment size.
-      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, stream, mr);
+      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, exec.stream, exec.mr);
     }
 
     auto col = std::make_unique<cudf::column>(

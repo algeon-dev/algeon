@@ -13,6 +13,7 @@ use crate::{
     execution_domain::ExecutionDomain,
     internal::temp_table::TempTableView,
     replace,
+    runtime::Runtime,
     scalar::Scalar,
     series_view::SeriesView,
     sorting::SortOptions,
@@ -88,11 +89,32 @@ impl Series {
         Ok(s)
     }
 
+    /// Create a `Series` from a host slice inside the given explicit runtime.
+    pub fn new_with_runtime<T: CudfType>(runtime: &Runtime, name: impl Into<String>, data: &[T]) -> Result<Self> {
+        let column = Column::from_slice_with_runtime(runtime, data)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
     /// Create a nullable `Series` from host data and a validity mask.
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     pub fn new_nullable<T: CudfType>(name: impl Into<String>, data: &[T], validity: &[bool]) -> Result<Self> {
         let column = Column::from_slice_nullable(data, validity)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create a nullable `Series` inside the given explicit runtime.
+    pub fn new_nullable_with_runtime<T: CudfType>(
+        runtime: &Runtime,
+        name: impl Into<String>,
+        data: &[T],
+        validity: &[bool],
+    ) -> Result<Self> {
+        let column = Column::from_slice_nullable_with_runtime(runtime, data, validity)?;
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
         Ok(s)

@@ -306,6 +306,16 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_create_numeric_ex(
+        type_id: cudf_type_id_t,
+        data: *const c_void,
+        size: i32,
+        null_mask: *const u8,
+        null_count: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_column_copy_ex(

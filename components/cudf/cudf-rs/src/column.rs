@@ -6,6 +6,7 @@
 use crate::{
     error::{self, Error, ErrorKind, Result},
     execution_domain::ExecutionDomain,
+    runtime::Runtime,
 };
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
@@ -77,58 +78,91 @@ impl Column {
     /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     /// ```
     pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
-        let mut handle = ptr::null_mut();
-        let size = usize_to_i32_len(data.len(), "data", "column::from_slice")?;
-        // SAFETY: data.as_ptr() is valid for `size` elements of T. T::TYPE_ID
-        // correctly describes the element type. No null mask (ptr::null(), 0).
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_create_numeric(
-                    T::TYPE_ID.to_raw(),
-                    data.as_ptr() as *const c_void,
-                    size,
-                    ptr::null(),
-                    0,
-                    &mut handle,
+        Self::from_slice_impl(data, None, None, "column::from_slice")
+    }
+
+    /// Create a column from a host slice inside the given explicit runtime.
+    pub fn from_slice_with_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
+        Self::from_slice_impl(
+            data,
+            None,
+            Some(Arc::clone(runtime.execution_domain())),
+            "column::from_slice_with_runtime",
+        )
+    }
+
+    fn from_slice_impl<T: CudfType>(
+        data: &[T],
+        validity: Option<&[bool]>,
+        domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        if let Some(validity) = validity {
+            if data.len() != validity.len() {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    "data and validity slices must have the same length",
                 )
+                .with_operation(operation)
+                .with_context("data_len", data.len().to_string())
+                .with_context("validity_len", validity.len().to_string()));
+            }
+        }
+
+        let mut handle = ptr::null_mut();
+        let size = usize_to_i32_len(data.len(), "data", operation)?;
+        let null_mask = validity.map(crate::types::validity_to_bitmask);
+        let null_count = validity.map(crate::types::count_nulls).unwrap_or(0);
+        let exec_options = domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+        // SAFETY: data and optional null_mask are valid for the reported sizes.
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_column_create_numeric_ex(
+                        T::TYPE_ID.to_raw(),
+                        data.as_ptr() as *const c_void,
+                        size,
+                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
+                        null_count,
+                        options,
+                        &mut handle,
+                    )
+                },
+                None => unsafe {
+                    cudf_sys::cudf_column_create_numeric(
+                        T::TYPE_ID.to_raw(),
+                        data.as_ptr() as *const c_void,
+                        size,
+                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
+                        null_count,
+                        &mut handle,
+                    )
+                },
             },
-            "column::from_slice",
+            operation,
         )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+        Ok(Self::from_handle_with_domain(handle, domain.unwrap_or_else(ExecutionDomain::ambient_default)))
     }
 
     /// Create a nullable column from host data and a validity mask.
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     pub fn from_slice_nullable<T: CudfType>(data: &[T], validity: &[bool]) -> Result<Self> {
-        if data.len() != validity.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "data and validity slices must have the same length")
-                .with_operation("column::from_slice_nullable")
-                .with_context("data_len", data.len().to_string())
-                .with_context("validity_len", validity.len().to_string()));
-        }
+        Self::from_slice_impl(data, Some(validity), None, "column::from_slice_nullable")
+    }
 
-        let size = usize_to_i32_len(data.len(), "data", "column::from_slice_nullable")?;
-        let null_mask = crate::types::validity_to_bitmask(validity);
-        let null_count = crate::types::count_nulls(validity);
-
-        let mut handle = ptr::null_mut();
-        // SAFETY: data and null_mask are valid host pointers with matching lengths.
-        // null_count is derived from validity. T::TYPE_ID describes the element type.
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_create_numeric(
-                    T::TYPE_ID.to_raw(),
-                    data.as_ptr() as *const c_void,
-                    size,
-                    null_mask.as_ptr(),
-                    null_count,
-                    &mut handle,
-                )
-            },
-            "column::from_slice_nullable",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+    /// Create a nullable column from host data inside the given explicit runtime.
+    pub fn from_slice_nullable_with_runtime<T: CudfType>(
+        runtime: &Runtime,
+        data: &[T],
+        validity: &[bool],
+    ) -> Result<Self> {
+        Self::from_slice_impl(
+            data,
+            Some(validity),
+            Some(Arc::clone(runtime.execution_domain())),
+            "column::from_slice_nullable_with_runtime",
+        )
     }
 
     /// Deep-copy this column.
@@ -397,6 +431,11 @@ impl Column {
     #[doc(hidden)]
     pub fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+        self.domain.debug_mr_value()
     }
 
     #[doc(hidden)]

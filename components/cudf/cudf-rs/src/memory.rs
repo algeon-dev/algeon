@@ -1,9 +1,10 @@
 //! Device memory resource management (RMM).
 //!
-//! These handles are currently standalone owned RMM objects. The low-level `_ex`
-//! FFI shims in `cudf-sys` accept explicit memory-resource handles, but the
-//! high-level API (`DataFrame`, `Series`) does not yet expose memory-resource
-//! control — allocations still use cuDF's current device resource.
+//! These handles back explicit retained execution domains via [`crate::Runtime`]
+//! and borrowed overrides via [`crate::ExecutionContext`].
+//! The low-level `_ex` FFI shims in `cudf-sys` accept explicit memory-resource
+//! handles, and the current high-level public slice can route selected
+//! operations and constructors through them.
 //!
 //! # Example
 //!
@@ -32,8 +33,9 @@ use crate::error::{self, Result};
 ///
 /// Wraps an `rmm::mr::device_memory_resource` via the C shim.
 ///
-/// This type currently models resource ownership only; it is not yet a knob
-/// that changes allocator selection for other `cudf` operations.
+/// Use this with [`crate::Runtime::builder`] to seed a retained explicit
+/// execution domain, or with [`crate::ExecutionContext::with_memory_resource`]
+/// to override allocator selection for one supported operation.
 #[derive(Clone)]
 pub struct DeviceMemoryResource {
     handle: Arc<DeviceMemoryResourceHandle>,

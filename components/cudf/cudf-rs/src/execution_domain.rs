@@ -3,7 +3,10 @@
 use std::{
     num::NonZeroU64,
     os::raw::c_void,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -13,13 +16,14 @@ use crate::{
 };
 
 static AMBIENT_DEFAULT_DOMAIN: OnceLock<Arc<ExecutionDomain>> = OnceLock::new();
+static NEXT_EXPLICIT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct ExecutionDomain {
     kind: DomainKind,
 }
 
 pub(crate) enum DomainKind {
     AmbientDefault,
-    Explicit { _stream: Arc<CudaStream>, _mr: Arc<DeviceMemoryResource>, identity: ExecutionIdentity },
+    Explicit { stream: Arc<CudaStream>, mr: Arc<DeviceMemoryResource>, identity: ExecutionIdentity },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,16 +43,24 @@ impl ExecutionIdentity {
 }
 
 impl ExecutionDomain {
+    fn next_identity() -> Result<ExecutionIdentity> {
+        ExecutionIdentity::new(NEXT_EXPLICIT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
     pub(crate) fn ambient_default() -> Arc<Self> {
         Arc::clone(AMBIENT_DEFAULT_DOMAIN.get_or_init(|| Arc::new(Self { kind: DomainKind::AmbientDefault })))
+    }
+
+    pub(crate) fn from_handles(stream: CudaStream, mr: DeviceMemoryResource) -> Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            kind: DomainKind::Explicit { stream: Arc::new(stream), mr: Arc::new(mr), identity: Self::next_identity()? },
+        }))
     }
 
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
-        Ok(Arc::new(Self {
-            kind: DomainKind::Explicit { _stream: stream, _mr: mr, identity: ExecutionIdentity::new(identity)? },
-        }))
+        Ok(Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } }))
     }
 
     pub(crate) fn debug_kind(&self) -> &'static str {
@@ -75,21 +87,21 @@ impl ExecutionDomain {
     pub(crate) fn debug_stream_value(&self) -> usize {
         match &self.kind {
             DomainKind::AmbientDefault => 0,
-            DomainKind::Explicit { _stream, .. } => _stream.debug_handle_value().unwrap_or(0),
+            DomainKind::Explicit { stream, .. } => stream.debug_handle_value().unwrap_or(0),
         }
     }
 
     pub(crate) fn debug_mr_value(&self) -> usize {
         match &self.kind {
             DomainKind::AmbientDefault => 0,
-            DomainKind::Explicit { _mr, .. } => _mr.__debug_raw_handle_value(),
+            DomainKind::Explicit { mr, .. } => mr.__debug_raw_handle_value(),
         }
     }
 
     pub(crate) fn synchronize_for_host_visibility(&self, operation: &'static str) -> Result<()> {
         match &self.kind {
             DomainKind::AmbientDefault => Ok(()),
-            DomainKind::Explicit { _stream, .. } => _stream
+            DomainKind::Explicit { stream, .. } => stream
                 .synchronize()
                 .map_err(|e| e.with_operation(operation).with_context("sync_stream", self.debug_label())),
         }
@@ -98,41 +110,57 @@ impl ExecutionDomain {
     pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
         match &self.kind {
             DomainKind::AmbientDefault => None,
-            DomainKind::Explicit { _stream, _mr, .. } => Some(cudf_sys::cudf_exec_options_t {
+            DomainKind::Explicit { stream, mr, .. } => Some(cudf_sys::cudf_exec_options_t {
                 struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
-                stream: _stream.as_raw() as *mut c_void,
-                mr: _mr.as_raw() as *mut c_void,
+                stream: stream.as_raw() as *mut c_void,
+                mr: mr.as_raw() as *mut c_void,
                 flags: 0,
                 reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
             }),
         }
     }
 
+    pub(crate) fn explicit_stream(&self) -> Option<&CudaStream> {
+        match &self.kind {
+            DomainKind::AmbientDefault => None,
+            DomainKind::Explicit { stream, .. } => Some(stream.as_ref()),
+        }
+    }
+
+    pub(crate) fn explicit_memory_resource(&self) -> Option<&DeviceMemoryResource> {
+        match &self.kind {
+            DomainKind::AmbientDefault => None,
+            DomainKind::Explicit { mr, .. } => Some(mr.as_ref()),
+        }
+    }
+
     pub(crate) fn resolve_with_borrowed_override(
         input: &Arc<Self>,
-        stream: Option<&CudaStream>,
-        mr: Option<&DeviceMemoryResource>,
+        override_stream: Option<&CudaStream>,
+        override_mr: Option<&DeviceMemoryResource>,
         operation: &'static str,
     ) -> Result<Arc<Self>> {
         match &input.kind {
             DomainKind::AmbientDefault => {
-                if stream.is_some() || mr.is_some() {
+                if override_stream.is_some() || override_mr.is_some() {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
                         "borrowed execution-context overrides cannot promote ambient-default objects",
                     )
                     .with_operation(operation)
                     .with_context("operation_domain", input.debug_label())
-                    .with_context("borrowed_override_stream", stream.is_some().to_string())
-                    .with_context("borrowed_override_memory_resource", mr.is_some().to_string()));
+                    .with_context("borrowed_override_stream", override_stream.is_some().to_string())
+                    .with_context("borrowed_override_memory_resource", override_mr.is_some().to_string()));
                 }
 
                 Ok(Arc::clone(input))
             },
-            DomainKind::Explicit { _stream, _mr, identity } => Ok(Arc::new(Self {
+            DomainKind::Explicit { stream, mr, identity } => Ok(Arc::new(Self {
                 kind: DomainKind::Explicit {
-                    _stream: stream.map(|stream| Arc::new(stream.clone())).unwrap_or_else(|| Arc::clone(_stream)),
-                    _mr: mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(_mr)),
+                    stream: override_stream
+                        .map(|stream| Arc::new(stream.clone()))
+                        .unwrap_or_else(|| Arc::clone(stream)),
+                    mr: override_mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(mr)),
                     identity: *identity,
                 },
             })),
