@@ -94,7 +94,7 @@ fn adaptive_admission_unsupported_adaptive_rows_reference_strict_gaps_without_st
     assert_eq!(row.runtime_action_counts.retry_count, 0);
     assert_eq!(row.runtime_action_counts.spill_count, 0);
     assert_eq!(row.runtime_action_counts.downgrade_count, 0);
-    assert_eq!(row.rejection_reason, Some("missing_strict_contracts"));
+    assert_eq!(row.rejection_reason, Some("unsupported_join_node_capability"));
     assert!(row.missing_strict_contracts.iter().any(|missing| {
         missing.required_contract == "unsupported_join_node_capability"
             && missing.contract_status == ContractStatus::RejectedByCapability

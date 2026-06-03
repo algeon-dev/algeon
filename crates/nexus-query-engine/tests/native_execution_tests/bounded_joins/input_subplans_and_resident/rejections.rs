@@ -78,7 +78,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
 }
 
 #[test]
-fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
+fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-join-input");
     let left_path = dir.join("left.parquet");
@@ -137,21 +137,18 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
     let plan = builder.finish_with_host_sink(join);
     let context = bounded_join_execution_context(&runtime);
 
-    let result =
-        execute_query_plan(&context, &plan).expect("aggregate join input should execute through compiled path");
-    let batch = result.output().as_host_arrow().expect("bounded aggregate join input should produce host Arrow");
-    let metrics = result.metrics();
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("grouped aggregate join-build input needs explicit strict envelope admission"),
+        Err(error) => error,
+    };
+    assert_bounded_join_rejection_contract(&error);
+    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
+    assert_eq!(
+        error.fact_value("bounded_join_rejection_reason"),
+        Some("source_leaf_pipeline_requires_source_filter_projection")
+    );
 
-    assert_eq!(batch.num_rows(), 2);
-    let mut rows = (0..batch.num_rows())
-        .map(|row| (int32_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
-        .collect::<Vec<_>>();
-    rows.sort_unstable();
-    assert_eq!(rows, vec![(1, 15), (2, 20)]);
-    assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert!(metrics.compiled_pipeline_tasks_executed > 0);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.hash_join_build_count, 1);
+    fs::remove_dir_all(dir).unwrap();
 }
 
 fn write_aggregate_join_input_parquets(

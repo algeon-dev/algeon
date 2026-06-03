@@ -5,11 +5,11 @@ use std::{
 
 use arrow::datatypes::{Field, Schema};
 
+use super::rewrite;
 use crate::{
     expr::Expr,
     plan::{
-        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink,
-        SchemaBehavior,
+        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -127,7 +127,7 @@ pub(crate) fn optimize_local_parquet_source_reuse(
 
     let mut rewriter = LocalParquetSourceReuseRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
-    let new_sink = sink_with_input(plan.sink(), new_root);
+    let new_sink = rewrite::sink_with_input(plan.sink(), new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
     LocalParquetSourceReuseResult {
         plan: rewritten_plan,
@@ -145,7 +145,7 @@ fn discover_source_reuse_candidates(
     plan: &QueryPlan,
     options: &LocalParquetSourceReuseOptions,
 ) -> SourceReuseDiscovery {
-    let reachable = sink_reachable_nodes(plan);
+    let reachable = rewrite::sink_reachable_nodes(plan);
     let mut groups = BTreeMap::<SourceGroupKey, Vec<SourceVariant>>::new();
     for node in plan.nodes() {
         if !reachable.contains(&node.id) {
@@ -476,85 +476,12 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_subtree(filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_subtree(projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_subtree(aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_subtree(window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_subtree(sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_subtree(limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let mut union = union.clone();
-                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::Union(union)
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_subtree(graph.input);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
         let id = NodeId::from_index_for_internal_use(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
-    }
-}
-
-fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
-    let mut reachable = BTreeSet::new();
-    let mut stack = vec![plan.sink().input()];
-    while let Some(node_id) = stack.pop() {
-        if !reachable.insert(node_id) {
-            continue;
-        }
-        if let Some(node) = plan.node(node_id) {
-            stack.extend(node.input_ids().iter().copied());
-        }
-    }
-    reachable
-}
-
-fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
     }
 }

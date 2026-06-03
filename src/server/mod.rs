@@ -45,6 +45,12 @@ pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_
 pub use error::{Result, ServerError};
 pub use session::{apply_session_profile, build_session_config, build_session_context};
 
+#[cfg(feature = "iceberg")]
+pub use crate::{
+    CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
+    CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+};
+
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
 /// Graceful shutdown sequence on signal:
@@ -523,6 +529,7 @@ mod tests {
                 s3_region: None,
                 s3_path_style_access: None,
             }),
+            parquet_read_strategy_config: crate::TableFormatParquetReadStrategyConfig::default(),
         };
 
         let mut config = base_config(ServerSessionProfile::CpuFallback);

@@ -2,7 +2,8 @@ use nexus_query_engine::{
     MemoryReservationEventAction, MemoryReservationEventOutcome,
     exec::reservation_contract_testing::{
         probe_alias_contract, probe_alias_outlives_source_release_contract, probe_denial_capacity_after_alias,
-        probe_source_cache_alias_relabel_contract, probe_transfer_contract,
+        probe_join_materialization_txn_rollback_contract, probe_source_cache_alias_relabel_contract,
+        probe_transfer_contract,
     },
 };
 
@@ -115,6 +116,37 @@ fn reservation_tracker_denial_capacity_ignores_alias_tokens() {
     assert_eq!(denied.current_reserved_bytes, 70);
     assert_eq!(denied.granted_bytes, 30);
     assert_eq!(denied.charged_delta_bytes, 0);
+}
+
+#[test]
+fn join_materialization_txn_rollback_records_release_events() {
+    let probe = probe_join_materialization_txn_rollback_contract().expect("rollback probe should run");
+
+    assert_eq!(probe.reserved_after_rollback, 0);
+    let events = &probe.metrics.reservation_events;
+    let actions = events.iter().map(|event| event.action).collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            MemoryReservationEventAction::Reserve,
+            MemoryReservationEventAction::Reserve,
+            MemoryReservationEventAction::Release,
+            MemoryReservationEventAction::Release,
+        ]
+    );
+    let boundaries = events.iter().map(|event| event.memory_boundary.as_str()).collect::<Vec<_>>();
+    assert_eq!(boundaries, ["join_one_shot_indices", "join_output", "join_output", "join_one_shot_indices"]);
+    let deltas = events.iter().map(|event| event.charged_delta_bytes).collect::<Vec<_>>();
+    assert_eq!(deltas, [30, 40, -40, -30]);
+    let current = events.iter().map(|event| event.current_reserved_bytes).collect::<Vec<_>>();
+    assert_eq!(current, [30, 70, 30, 0]);
+
+    let task = probe.metrics.task_runtime_metrics.get("t4").expect("rollback releases should be task-attributed");
+    assert_eq!(task.operator_kind, "join_materialize");
+    assert_eq!(task.reservation_released_bytes, 70);
+    let operator =
+        probe.metrics.task_operator_metrics.get("join_materialize").expect("operator aggregate should be recorded");
+    assert_eq!(operator.reservation_released_bytes, 70);
 }
 
 #[test]

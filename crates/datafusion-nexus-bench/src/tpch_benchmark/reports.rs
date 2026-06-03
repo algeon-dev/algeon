@@ -10,6 +10,184 @@ use formatting::*;
 
 pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 32;
 pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\tmax_task_reservation_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\tsource_fetch_bytes\tsource_fetch_count\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\tadaptive_retry_count\tadaptive_spill_count\tadaptive_downgrade_count\tadaptive_memory_history_lookup_count\tadaptive_memory_history_hit_count\tadaptive_memory_history_miss_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
+    "query_id",
+    "planning_outcome",
+    "bounded_status",
+    "reason_code",
+    "unsupported_category",
+    "strict_bounded_contract_rows",
+    "strict_bounded_compiled_graphs",
+    "adaptive_pipeline_rows",
+    "native_candidate_shape_family",
+    "post_native_execution_path",
+    "rejected_before_execution",
+    "cpu_runtime_started",
+    "native_runtime_started",
+    "runtime_outcome",
+    "cpu_failure",
+    "cpu_failure_code",
+    "cpu_failure_kind",
+    "cpu_failure_status",
+    "cpu_failure_operation",
+    "cpu_failure_facts",
+    "runtime_failure",
+    "runtime_failure_code",
+    "runtime_failure_kind",
+    "runtime_failure_status",
+    "runtime_failure_operation",
+    "runtime_failure_facts",
+    "parity_status",
+    "cpu_wall_ms",
+    "native_wall_ms",
+    "speedup_vs_cpu",
+    "cpu_output_batches",
+    "native_output_batches",
+    "cpu_output_rows",
+    "native_output_rows",
+    "cpu_output_bytes",
+    "native_output_bytes",
+    "cpu_output_fingerprint",
+    "native_output_fingerprint",
+    "output_fingerprint",
+    "gpu_resident_input_handoffs",
+    "host_to_device_uploads",
+    "host_to_device_uploaded_rows",
+    "host_to_device_uploaded_bytes",
+    "device_to_host_materializations",
+    "device_to_host_materialized_rows",
+    "device_to_host_materialized_bytes",
+    "device_to_device_copies",
+    "device_to_device_copied_bytes",
+    "parquet_files",
+    "parquet_bytes_known",
+    "row_groups_selected",
+    "read_columns",
+    "resident_dataframe_peak_bytes",
+    "allocator_high_water_bytes",
+    "reservation_requested_bytes",
+    "reservation_granted_bytes",
+    "reservation_live_peak_bytes",
+    "reservation_denied_count",
+    "max_task_reservation_bytes",
+    "max_task_observed_peak_bytes",
+    "max_task_retained_bytes",
+    "graph_runtime_rows",
+    "task_operator_rows",
+    "task_runtime_rows",
+    "dynamic_filter_produced_count",
+    "dynamic_filter_skipped_count",
+    "dynamic_filter_applied_count",
+    "dynamic_filter_row_groups_pruned",
+    "dynamic_filter_source_bytes_pruned",
+    "dynamic_filter_reader_predicate_rows_before",
+    "dynamic_filter_reader_predicate_rows_after",
+    "dynamic_filter_reader_predicate_rows_filtered",
+    "dynamic_filter_post_decode_rows_before",
+    "dynamic_filter_post_decode_rows_after",
+    "dynamic_filter_post_decode_rows_filtered",
+    "dynamic_filter_source_post_decode_rows_filtered",
+    "dynamic_filter_filter_post_decode_rows_filtered",
+    "dynamic_filter_join_probe_post_decode_rows_filtered",
+    "dynamic_filter_post_decode_reduction_stage",
+    "dynamic_filter_measured_reduction_status",
+    "dynamic_filter_work_avoidance_status",
+    "dynamic_filter_runtime_rows",
+    "task_high_water_rows",
+    "peak_memory_operator_class",
+    "peak_memory_operator_class_bytes",
+    "task_reservation_operator_class",
+    "task_reservation_operator_class_bytes",
+    "runtime_operator_class",
+    "runtime_operator_class_ms",
+    "source_predicate_pushdown_status",
+    "partitioned_join_count",
+    "join_partitioning_status",
+    "aggregate_merge_status",
+    "source_chunks_planned",
+    "source_chunks_attempted",
+    "source_chunks_committed",
+    "source_chunks_retried",
+    "source_read_prefetches_started",
+    "source_read_prefetches_completed",
+    "source_read_prefetches_skipped",
+    "source_read_prefetches_abandoned",
+    "source_cache_hits",
+    "source_cache_misses",
+    "source_cache_inserts",
+    "source_cache_insert_skipped",
+    "source_cache_retained_bytes",
+    "source_fetch_bytes",
+    "source_fetch_count",
+    "row_groups_planned",
+    "row_groups_committed",
+    "partial_aggregate_count",
+    "partial_aggregate_input_rows",
+    "partial_aggregate_rows",
+    "partial_aggregate_retained_bytes",
+    "final_merge_attempts",
+    "final_merge_levels",
+    "final_merge_max_fan_in",
+    "aggregate_libcudf_runtime_probe_count",
+    "aggregate_libcudf_runtime_probe_elapsed_ns",
+    "aggregate_libcudf_runtime_probe_input_rows",
+    "aggregate_exact_cardinality_probe_count",
+    "aggregate_exact_cardinality_probe_elapsed_ns",
+    "aggregate_exact_cardinality_probe_input_rows",
+    "aggregate_prepared_sort_groupby_elapsed_ns",
+    "aggregate_encoded_key_partial_elapsed_ns",
+    "retry_count",
+    "retry_resource_exhausted_count",
+    "retry_reservation_failure_count",
+    "adaptive_retry_count",
+    "adaptive_spill_count",
+    "adaptive_downgrade_count",
+    "adaptive_memory_history_lookup_count",
+    "adaptive_memory_history_hit_count",
+    "adaptive_memory_history_miss_count",
+    "hash_join_build_count",
+    "filtered_join_build_count",
+    "one_shot_join_count",
+    "hash_join_cache_hits",
+    "hash_join_cache_misses",
+    "hash_join_durable_cache_hits",
+    "hash_join_durable_cache_misses",
+    "hash_join_durable_cache_inserts",
+    "hash_join_hash_table_bytes",
+    "filtered_join_hash_table_bytes",
+    "filtered_join_probe_state_bytes",
+    "mixed_join_size_data_bytes",
+    "one_shot_join_index_bytes",
+    "one_shot_join_materialization_bytes",
+    "one_shot_join_output_bytes",
+    "join_gather_map_bytes",
+    "aggregate_strategy_rows",
+    "join_strategy_rows",
+    "parquet_read_time_ms",
+    "source_read_time_ms",
+    "source_read_queue_wait_time_ms",
+    "source_cache_lookup_time_ms",
+    "host_fetch_budget_wait_time_ms",
+    "source_fetch_concurrency_wait_time_ms",
+    "source_fetch_time_ms",
+    "source_decode_time_ms",
+    "operator_time_ms",
+    "chunk_operator_time_ms",
+    "final_merge_time_ms",
+    "final_sort_time_ms",
+    "materialization_time_ms",
+];
+
+pub(super) trait TsvRow {
+    const COLUMNS: &'static [&'static str];
+    const SCHEMA_VERSION: u32;
+
+    fn fields(&self) -> Vec<String>;
+
+    fn to_tsv_line(&self) -> String {
+        self.fields().join("\t")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchBenchmarkReport {
@@ -23,7 +201,7 @@ impl NativeTpchBenchmarkReport {
         let mut output = String::new();
         push_line(
             &mut output,
-            format_args!("# native_tpch_benchmark_tsv_schema_version={NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION}"),
+            format_args!("# native_tpch_benchmark_tsv_schema_version={}", NativeTpchBenchmarkTsvRow::SCHEMA_VERSION),
         );
         write_tpch_dataset_metadata(&mut output, &self.metadata);
         push_line(&mut output, format_args!("# tpch_benchmark_query_ids={}", self.config.query_ids.join(",")));
@@ -63,6 +241,7 @@ impl NativeTpchBenchmarkReport {
             self.config.max_source_reads_in_flight,
             self.config.native_source_cache_policy,
         );
+        debug_assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
@@ -267,6 +446,10 @@ impl NativeTpchBenchmarkRow {
     }
 
     fn to_tsv_line(&self, memory_policy: NativeTpchMemoryPolicy) -> String {
+        NativeTpchBenchmarkTsvRow { row: self, memory_policy }.to_tsv_line()
+    }
+
+    fn fields(&self, memory_policy: NativeTpchMemoryPolicy) -> Vec<String> {
         let task_high_water_summaries = task_high_water_summaries(&self.metrics);
         let peak_memory = dominant_peak_memory_class(&task_high_water_summaries);
         let task_reservation = dominant_task_reservation_class(&task_high_water_summaries);
@@ -438,7 +621,21 @@ impl NativeTpchBenchmarkRow {
             optional_f64_text(self.timing_metrics.final_sort_time_ms),
             optional_f64_text(self.timing_metrics.materialization_time_ms),
         ];
-        fields.join("\t")
+        fields.into_iter().collect()
+    }
+}
+
+pub(super) struct NativeTpchBenchmarkTsvRow<'a> {
+    row: &'a NativeTpchBenchmarkRow,
+    memory_policy: NativeTpchMemoryPolicy,
+}
+
+impl TsvRow for NativeTpchBenchmarkTsvRow<'_> {
+    const COLUMNS: &'static [&'static str] = NATIVE_TPCH_BENCHMARK_TSV_COLUMNS;
+    const SCHEMA_VERSION: u32 = NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION;
+
+    fn fields(&self) -> Vec<String> {
+        self.row.fields(self.memory_policy)
     }
 }
 

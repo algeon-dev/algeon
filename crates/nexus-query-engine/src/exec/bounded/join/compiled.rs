@@ -31,6 +31,7 @@ mod partitioned;
 mod prepared;
 mod residual;
 mod streamed;
+pub(in crate::exec) mod transaction;
 
 use cross::*;
 use filtered::*;
@@ -41,6 +42,7 @@ use partitioned::*;
 use prepared::*;
 use residual::*;
 use streamed::*;
+use transaction::*;
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),
@@ -1450,8 +1452,18 @@ fn materialize_compiled_indices_output(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    let mut txn = JoinMaterializationTxn::with_sides(left, right);
+    txn.set_gather_map_reservation(gather_map_reservation);
     let overrides = execution_overrides(context);
-    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
+    txn.set_indices(indices);
+    let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    let (left, right) = txn.sides();
     super::common::trace_preflight_entry(
         "materialize_compiled_indices_output",
         execution_strategy,
@@ -1464,7 +1476,7 @@ fn materialize_compiled_indices_output(
         right.rows,
         right.bytes,
     );
-    let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
+    let output_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         context,
         node_id,
         &left.frame,
@@ -1480,6 +1492,7 @@ fn materialize_compiled_indices_output(
         },
         Err(error) => {
             super::common::trace_preflight_failed("materialize_compiled_indices_output", node_id, reservations, &error);
+            txn.rollback(reservations, metrics);
             return Err(error);
         },
     };
@@ -1488,7 +1501,7 @@ fn materialize_compiled_indices_output(
         metrics.record_one_shot_join_index_bytes(index_bytes);
         metrics.record_one_shot_join_materialization_bytes(output_reservation_bytes);
     }
-    let mut output_reservation = reservations.try_reserve(
+    let output_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_output",
@@ -1497,32 +1510,54 @@ fn materialize_compiled_indices_output(
             node_id,
         ),
         metrics,
-    )?;
-    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
-    let output = indices.materialize_output(
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    txn.set_output_reservation(output_reservation);
+    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
+        txn.rollback(reservations, metrics);
+        return Err(error);
+    }
+    let (left, right) = txn.sides();
+    let output = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
     metrics.operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
     if one_shot_index_bytes.is_some() {
         metrics.record_one_shot_join_output_bytes(output_bytes);
     }
     if let Err(error) =
-        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+        reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
         drop(output);
-        drop(indices);
-        reservations.release(gather_map_reservation, metrics);
-        drop(left);
-        drop(right);
+        txn.rollback(reservations, metrics);
         return Err(error);
     }
+    let (left, right) = txn.sides();
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
@@ -1546,9 +1581,6 @@ fn materialize_compiled_indices_output(
             output_bytes,
         },
     ));
-    drop(indices);
-    reservations.release(gather_map_reservation, metrics);
-    drop(left);
-    drop(right);
-    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
+    txn.release_gather_map_reservation(reservations, metrics);
+    Ok(txn.commit_frame(GpuDataFrame::new(output), reservations, metrics))
 }

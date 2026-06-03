@@ -121,12 +121,14 @@ pub use session::{
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
 };
 pub use table_format::{
-    CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-    TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-    TableFormatDirectDeviceReadDisposition, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
-    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
-    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
-    resolve_table_format_parquet_source_with_metadata,
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping,
+    TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
+    TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
+    TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
+    TableFormatParquetSourceMetadata, TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner,
+    TableFormatReadCapability, TableFormatScalarValue, TableFormatScanDiagnostics, TableFormatScanPlan,
+    TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
 };

@@ -2,7 +2,11 @@ use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
-use nexus_query_engine::GraphAlgorithm as NativeGraphAlgorithm;
+use nexus_query_engine::{
+    GraphAlgorithm as NativeGraphAlgorithm, GraphAlgorithmParams as NativeGraphAlgorithmParams,
+    GraphConstructionOptions as NativeGraphConstructionOptions,
+    GraphConstructionPolicy as NativeGraphConstructionPolicy, GraphKCoreDegreeType as NativeGraphKCoreDegreeType,
+};
 
 use super::plan_error;
 use crate::NativeCudfExecutionConfig;
@@ -52,7 +56,7 @@ pub struct CugraphSqlConfig {
 impl Default for CugraphSqlConfig {
     fn default() -> Self {
         Self {
-            allowed_algorithms: CugraphAlgorithm::all().into_iter().collect(),
+            allowed_algorithms: CugraphAlgorithm::all().collect(),
             default_graph_options: CugraphGraphOptions::default(),
             experimental_functions: false,
             native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
@@ -128,6 +132,28 @@ impl CugraphAlgorithm {
 
     pub fn native_algorithm(self) -> NativeGraphAlgorithm {
         self.definition().native_algorithm
+    }
+
+    pub(crate) fn requires_source_vertex(self) -> bool {
+        self.native_algorithm().requires_source_vertex()
+    }
+
+    pub(crate) fn weight_col_policy(self) -> &'static str {
+        self.native_algorithm().weight_policy().as_str()
+    }
+
+    pub(crate) fn output_schema_kind(self) -> &'static str {
+        self.native_algorithm().output_schema_kind().as_str()
+    }
+
+    pub(crate) fn has_mode_schemas(self) -> bool {
+        self.native_algorithm().output_schema_kind().has_mode_schemas()
+    }
+
+    pub(crate) fn effective_default_graph_options(self, defaults: &CugraphGraphOptions) -> CugraphGraphOptions {
+        CugraphGraphOptions::from_native(
+            &self.native_algorithm().definition().default_graph_options(&defaults.to_native()),
+        )
     }
 }
 
@@ -309,6 +335,24 @@ impl Default for CugraphGraphOptions {
     }
 }
 
+impl CugraphGraphOptions {
+    pub(crate) fn to_native(&self) -> NativeGraphConstructionOptions {
+        NativeGraphConstructionOptions {
+            directed: self.directed,
+            renumber: self.renumber,
+            policy: self.construction_policy.to_native(),
+        }
+    }
+
+    pub(crate) fn from_native(options: &NativeGraphConstructionOptions) -> Self {
+        Self {
+            directed: options.directed,
+            renumber: options.renumber,
+            construction_policy: CugraphGraphConstructionPolicy::from_native(options.policy),
+        }
+    }
+}
+
 /// SQL-facing selector for the cuGraph edge-list ingress contract.
 ///
 /// Mirrors `cugraph::cudf_interop::GraphConstructionPolicy` and is the public
@@ -344,12 +388,26 @@ impl CugraphGraphConstructionPolicy {
             Self::RawLibcugraph => "raw_libcugraph",
         }
     }
+
+    pub(crate) const fn to_native(self) -> NativeGraphConstructionPolicy {
+        match self {
+            Self::PythonCugraph => NativeGraphConstructionPolicy::PythonCugraph,
+            Self::RawLibcugraph => NativeGraphConstructionPolicy::RawLibcugraph,
+        }
+    }
+
+    pub(crate) const fn from_native(policy: NativeGraphConstructionPolicy) -> Self {
+        match policy {
+            NativeGraphConstructionPolicy::PythonCugraph => Self::PythonCugraph,
+            NativeGraphConstructionPolicy::RawLibcugraph => Self::RawLibcugraph,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CugraphAlgorithmParams {
     PageRank(CugraphPageRankParams),
-    Bfs(CugraphBfsParams),
+    Bfs(Box<CugraphBfsParams>),
     Louvain(CugraphLouvainParams),
     EigenvectorCentrality(CugraphEigenvectorCentralityParams),
     KatzCentrality(CugraphKatzCentralityParams),
@@ -369,6 +427,113 @@ pub enum CugraphAlgorithmParams {
     Ecg(CugraphEcgParams),
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
     BalancedCutClustering(CugraphSpectralClusteringParams),
+}
+
+impl CugraphAlgorithmParams {
+    pub(crate) fn from_native_defaults(
+        algorithm: CugraphAlgorithm,
+        source_vertex: Option<CugraphBfsSourceVertex>,
+    ) -> Self {
+        match algorithm.native_algorithm().definition().default_params() {
+            NativeGraphAlgorithmParams::PageRank(params) => Self::PageRank(CugraphPageRankParams {
+                alpha: params.alpha,
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+            }),
+            NativeGraphAlgorithmParams::Bfs(params) => Self::Bfs(Box::new(CugraphBfsParams {
+                source_vertex: source_vertex.unwrap_or(CugraphBfsSourceVertex::Int64(params.source_vertex)),
+                depth_limit: params.depth_limit,
+                predicates: CugraphBfsPredicateInputs::default(),
+                output: CugraphBfsOutputOptions::default(),
+            })),
+            NativeGraphAlgorithmParams::Louvain(params) => {
+                Self::Louvain(CugraphLouvainParams { resolution: params.resolution })
+            },
+            NativeGraphAlgorithmParams::EigenvectorCentrality(params) => {
+                Self::EigenvectorCentrality(CugraphEigenvectorCentralityParams {
+                    epsilon: params.epsilon,
+                    max_iterations: params.max_iterations,
+                })
+            },
+            NativeGraphAlgorithmParams::KatzCentrality(params) => Self::KatzCentrality(CugraphKatzCentralityParams {
+                alpha: params.alpha,
+                beta: params.beta,
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+            }),
+            NativeGraphAlgorithmParams::Hits(params) => Self::Hits(CugraphHitsParams {
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+                normalize: params.normalize,
+            }),
+            NativeGraphAlgorithmParams::Sssp(params) => Self::Sssp(CugraphSsspParams {
+                source_vertex: source_vertex
+                    .unwrap_or(CugraphBfsSourceVertex::Int64(params.source_vertex))
+                    .as_i64()
+                    .expect("SSSP parser rejects non-numeric source_vertex"),
+                cutoff: params.cutoff,
+            }),
+            NativeGraphAlgorithmParams::DegreesAll(_) => Self::DegreesAll(CugraphDegreesAllParams),
+            NativeGraphAlgorithmParams::InDegreesAll(_) => Self::InDegreesAll(CugraphInDegreesAllParams),
+            NativeGraphAlgorithmParams::OutDegreesAll(_) => Self::OutDegreesAll(CugraphOutDegreesAllParams),
+            NativeGraphAlgorithmParams::WeaklyConnectedComponents(_) => {
+                Self::WeaklyConnectedComponents(CugraphWccParams)
+            },
+            NativeGraphAlgorithmParams::StronglyConnectedComponents(_) => {
+                Self::StronglyConnectedComponents(CugraphSccParams)
+            },
+            NativeGraphAlgorithmParams::TriangleCountAll(_) => Self::TriangleCountAll(CugraphTriangleCountAllParams),
+            NativeGraphAlgorithmParams::CoreNumber(params) => Self::CoreNumber(CugraphCoreNumberParams {
+                degree_type: CugraphKCoreDegreeType::from_native(params.degree_type),
+            }),
+            NativeGraphAlgorithmParams::KCore(params) => Self::KCore(CugraphKCoreParams {
+                k: params.k,
+                degree_type: CugraphKCoreDegreeType::from_native(params.degree_type),
+            }),
+            NativeGraphAlgorithmParams::MinimumSpanningTree(_) => Self::MinimumSpanningTree(CugraphMstParams),
+            NativeGraphAlgorithmParams::PageRankStrict(params) => Self::PageRankStrict(CugraphPageRankParams {
+                alpha: params.alpha,
+                epsilon: params.epsilon,
+                max_iterations: params.max_iterations,
+            }),
+            NativeGraphAlgorithmParams::Leiden(params) => Self::Leiden(CugraphLeidenParams {
+                max_level: params.max_level,
+                resolution: params.resolution,
+                theta: params.theta,
+                seed: params.seed,
+            }),
+            NativeGraphAlgorithmParams::Ecg(params) => Self::Ecg(CugraphEcgParams {
+                min_weight: params.min_weight,
+                ensemble_size: params.ensemble_size,
+                max_level: params.max_level,
+                threshold: params.threshold,
+                resolution: params.resolution,
+                seed: params.seed,
+            }),
+            NativeGraphAlgorithmParams::SpectralModularityMaximization(params) => {
+                Self::SpectralModularityMaximization(CugraphSpectralClusteringParams {
+                    n_clusters: params.n_clusters,
+                    n_eigenvectors: params.n_eigenvectors,
+                    evs_tolerance: params.evs_tolerance,
+                    evs_max_iterations: params.evs_max_iterations,
+                    k_means_tolerance: params.k_means_tolerance,
+                    k_means_max_iterations: params.k_means_max_iterations,
+                    seed: params.seed,
+                })
+            },
+            NativeGraphAlgorithmParams::BalancedCutClustering(params) => {
+                Self::BalancedCutClustering(CugraphSpectralClusteringParams {
+                    n_clusters: params.n_clusters,
+                    n_eigenvectors: params.n_eigenvectors,
+                    evs_tolerance: params.evs_tolerance,
+                    evs_max_iterations: params.evs_max_iterations,
+                    k_means_tolerance: params.k_means_tolerance,
+                    k_means_max_iterations: params.k_means_max_iterations,
+                    seed: params.seed,
+                })
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -707,6 +872,14 @@ impl CugraphKCoreDegreeType {
             Self::InOut => "in_out",
         }
     }
+
+    pub(crate) const fn from_native(degree_type: NativeGraphKCoreDegreeType) -> Self {
+        match degree_type {
+            NativeGraphKCoreDegreeType::In => Self::In,
+            NativeGraphKCoreDegreeType::Out => Self::Out,
+            NativeGraphKCoreDegreeType::InOut => Self::InOut,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -815,63 +988,7 @@ impl Default for CugraphSpectralClusteringParams {
 }
 
 pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
-    let fields = match algorithm {
-        CugraphAlgorithm::PageRank | CugraphAlgorithm::EigenvectorCentrality | CugraphAlgorithm::KatzCentrality => {
-            // Centrality-style algorithms expose one score per vertex.
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)]
-        },
-        CugraphAlgorithm::Bfs => vec![
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", DataType::Int64, true),
-        ],
-        CugraphAlgorithm::Louvain => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::Hits => vec![
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("hub_score", DataType::Float64, false),
-            Field::new("authority_score", DataType::Float64, false),
-        ],
-        CugraphAlgorithm::Sssp => vec![
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("distance", DataType::Float64, false),
-            Field::new("predecessor", DataType::Int64, true),
-        ],
-        CugraphAlgorithm::DegreesAll => vec![
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("in_degree", DataType::Int64, false),
-            Field::new("out_degree", DataType::Int64, false),
-        ],
-        CugraphAlgorithm::InDegreesAll => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("in_degree", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::OutDegreesAll => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("out_degree", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::WeaklyConnectedComponents | CugraphAlgorithm::StronglyConnectedComponents => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::TriangleCountAll => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("triangle_count", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::CoreNumber => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("core_number", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => {
-            vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)]
-        },
-        CugraphAlgorithm::PageRankStrict => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)]
-        },
-        CugraphAlgorithm::Leiden
-        | CugraphAlgorithm::Ecg
-        | CugraphAlgorithm::SpectralModularityMaximization
-        | CugraphAlgorithm::BalancedCutClustering => {
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)]
-        },
-    };
-    Arc::new(Schema::new(fields))
+    algorithm.native_algorithm().definition().base_result_schema()
 }
 
 /// SQL output schema for one BFS call after applying output options.

@@ -1,8 +1,7 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
-    CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport,
-    capability::{CapabilityAnalysis, ContractStatus},
-    strict_bounded_pipeline_admission,
+    CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    capability::ContractStatus, strict_bounded_pipeline_admission, strict_bounded_pipeline_rejection_projection,
 };
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
@@ -146,8 +145,7 @@ pub(super) fn rejected_plan_contract_diagnostics(
         return Ok(NativeStrictBoundedContractDiagnostics::default());
     }
 
-    let analysis = plan.capability_analysis();
-    let Some(blocking_row) = first_blocking_contract_row(&analysis)? else {
+    let Some(blocking_row) = first_blocking_contract_row(plan)? else {
         return Ok(NativeStrictBoundedContractDiagnostics::default());
     };
     Ok(NativeStrictBoundedContractDiagnostics {
@@ -161,11 +159,20 @@ pub(super) fn rejected_plan_contract_diagnostics(
     })
 }
 
-fn first_blocking_contract_row(
-    analysis: &CapabilityAnalysis,
-) -> DataFusionResult<Option<StrictBoundedContractGateRow>> {
+fn first_blocking_contract_row(plan: &QueryPlan) -> DataFusionResult<Option<StrictBoundedContractGateRow>> {
+    if let Some(projection) = strict_bounded_pipeline_rejection_projection(plan).map_err(strict_bounded_report_error)? {
+        return StrictBoundedContractGateRow::from_capability_rejection_projection(
+            StrictBoundedExecutionMode::UnsupportedStrictBounded,
+            0,
+            &projection,
+        )
+        .map(Some)
+        .map_err(strict_bounded_report_error);
+    }
+
+    let analysis = plan.capability_analysis();
     let report =
-        StrictBoundedContractReport::from_capability_analysis(analysis).map_err(strict_bounded_report_error)?;
+        StrictBoundedContractReport::from_capability_analysis(&analysis).map_err(strict_bounded_report_error)?;
     Ok(report.gate_rows().iter().find(|row| row.contract_status != ContractStatus::Modeled).cloned())
 }
 

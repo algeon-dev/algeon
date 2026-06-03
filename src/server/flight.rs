@@ -281,9 +281,7 @@ impl DatafusionCudfFlightSqlService {
                 return Err(server_shutdown_status(&query_id));
             }
         };
-        if let Err(status) = verify_flight_info_plan(&logical_plan, ticket_kind) {
-            return Err(status);
-        }
+        verify_flight_info_plan(&logical_plan, ticket_kind)?;
         let schema = logical_plan.schema().as_arrow().clone();
 
         // Both ticket variants carry the per-execution `query_id` UTF-8 bytes

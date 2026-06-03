@@ -1198,6 +1198,50 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     };
     assert_eq!(*reason, "closed_multi_join_subgraph_unsupported_node");
     assert_eq!(facts.get("operator").map(String::as_str), Some("aggregate"));
+
+    let projection = analysis.first_rejection_projection().expect("strict envelope rejection should be projected");
+    assert!(matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Admission(_)));
+
+    assert!(
+        nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+            .expect("strict admission should not fail")
+            .is_none(),
+        "strict admission must reject through the same envelope projection"
+    );
+
+    let adaptive_admission = nexus_query_engine::adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("join plan should produce adaptive admission evidence");
+    let adaptive_row = adaptive_admission.report().row();
+    assert_eq!(adaptive_row.candidate_status, nexus_query_engine::AdaptiveCandidateStatus::Rejected);
+    assert_eq!(adaptive_row.rejection_reason, Some(projection.reason));
+    assert!(
+        adaptive_row.missing_strict_contracts.iter().any(|contract| contract.required_contract == projection.reason),
+        "adaptive rejection should expose the same projected strict gap"
+    );
+
+    let unsupported_facts = plan
+        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        .expect("unsupported envelope should produce bounded rejection facts");
+    assert_eq!(unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str), Some(projection.reason));
+    for (key, value) in &projection.facts {
+        let needle = format!("{key}={value}");
+        assert!(
+            unsupported_facts.get("bounded_join_rejection_facts").is_some_and(|facts| facts.contains(&needle)),
+            "unsupported facts should include projected fact {needle}"
+        );
+    }
+
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .expect("unsupported envelope should still produce a strict contract report");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    let blocking_row = report
+        .gate_rows()
+        .iter()
+        .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
+        .expect("strict report should expose the same envelope projection");
+    assert_eq!(blocking_row.required_contract, projection.reason);
+    assert_eq!(blocking_row.memory_boundary, projection.memory_boundary);
 }
 
 #[test]
@@ -1870,6 +1914,39 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
         value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
     }));
     assert_modeled_reservation_facts_are_consistent(&facts, "multi_join_with_aggregate_over_join_subplan_topk");
+}
+
+#[test]
+fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_post_root_filtering_join() {
+    let plan =
+        aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin);
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "single-output keyed post-root filtering joins should not hide the aggregate-over-join TopK root:\n{plan}"
+    );
+    assert!(
+        analysis
+            .invariants
+            .iter()
+            .any(|invariant| matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
+                && invariant.nodes.len() == 5),
+        "post-root filtering join should be part of the post-root stage order evidence"
+    );
+
+    let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis)
+        .expect("post-root filtering join TopK plan should compile");
+    assert_eq!(
+        nexus_query_engine::exec::compiled_bounded_pipeline_support(&pipeline)
+            .expect("graph support check should not fail"),
+        nexus_query_engine::exec::CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        nexus_query_engine::exec::compiled_bounded_query_plan_support(&plan, &pipeline)
+            .expect("plan-aware support check should not fail"),
+        nexus_query_engine::exec::CompiledBoundedPipelineSupport::Supported
+    );
 }
 
 #[test]

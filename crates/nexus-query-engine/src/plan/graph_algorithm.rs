@@ -150,7 +150,22 @@ impl GraphAlgorithm {
     /// When `false`, a bound `weight` column is irrelevant to the result and a
     /// null weight must not cause its edge to be dropped from the graph.
     pub fn consumes_weight(self) -> bool {
-        self.definition().consumes_weight
+        self.definition().weight_policy().consumes_weight()
+    }
+
+    /// Whether this algorithm requires a source vertex argument.
+    pub fn requires_source_vertex(self) -> bool {
+        self.definition().source_vertex_requirement().requires_source_vertex()
+    }
+
+    /// Weight-column policy declared by the native graph descriptor.
+    pub fn weight_policy(self) -> GraphWeightPolicy {
+        self.definition().weight_policy()
+    }
+
+    /// Output-schema shape declared by the native graph descriptor.
+    pub fn output_schema_kind(self) -> GraphOutputSchemaKind {
+        self.definition().output_schema_kind()
     }
 }
 
@@ -192,6 +207,90 @@ impl fmt::Display for GraphLayoutRequirement {
     }
 }
 
+/// Source-vertex contract for a graph algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphSourceVertexRequirement {
+    /// The algorithm does not accept a source vertex.
+    None,
+    /// The algorithm requires exactly one source vertex.
+    Required,
+}
+
+impl GraphSourceVertexRequirement {
+    /// Stable lowercase source-vertex requirement code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Required => "required",
+        }
+    }
+
+    /// Whether the algorithm requires a source vertex.
+    pub const fn requires_source_vertex(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
+/// Weight-column policy for a graph algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphWeightPolicy {
+    /// A bound weight column is accepted as graph-construction metadata but is
+    /// ignored by the algorithm's current semantic result.
+    Ignored,
+    /// A bound weight column is optional and changes algorithm results when
+    /// present.
+    Optional,
+    /// A bound weight column is required for semantically valid execution.
+    Required,
+}
+
+impl GraphWeightPolicy {
+    /// Stable lowercase policy code used by metadata projections.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ignored => "ignored",
+            Self::Optional => "optional",
+            Self::Required => "required",
+        }
+    }
+
+    /// Whether this policy means the native executor consumes weights as an
+    /// algorithm input when a weight column is bound.
+    pub const fn consumes_weight(self) -> bool {
+        matches!(self, Self::Optional | Self::Required)
+    }
+
+    /// Whether a weight column is mandatory for this algorithm.
+    pub const fn requires_weight(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
+/// Native output-schema descriptor for a graph algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphOutputSchemaKind {
+    /// The SQL-visible schema is the native stable base schema.
+    Fixed,
+    /// The native descriptor owns the base schema, while an adapter layer may
+    /// expose call-specific modes derived from it.
+    DefaultMode,
+}
+
+impl GraphOutputSchemaKind {
+    /// Stable lowercase schema-kind code used by metadata projections.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::DefaultMode => "default_mode",
+        }
+    }
+
+    /// Whether this algorithm has adapter-visible mode schemas.
+    pub const fn has_mode_schemas(self) -> bool {
+        matches!(self, Self::DefaultMode)
+    }
+}
+
 /// Registry-level metadata for a graph operation.
 ///
 /// One entry per [`GraphAlgorithm`] variant. The registry is the place new
@@ -207,30 +306,118 @@ pub struct GraphOperationDefinition {
     pub name: &'static str,
     /// cuGraph layout requirement for this operation.
     pub layout_requirement: GraphLayoutRequirement,
-    /// Whether the algorithm consumes edge weights as a semantic input.
-    ///
-    /// Only weighted algorithms (e.g. SSSP, minimum spanning tree) read the
-    /// bound `weight` column. For the remaining algorithms a bound `weight`
-    /// column does not affect the result we currently produce, so a null
-    /// weight on an edge must never cause that edge to be dropped from the
-    /// graph. See [`GraphAlgorithm::consumes_weight`].
-    ///
-    /// Note: some `false` entries (PageRank/PageRankStrict, Louvain/Leiden/ECG,
-    /// spectral modularity maximization) are weight-*capable* in upstream
-    /// cuGraph but are intentionally marked `false` here because their weighted
-    /// variants are not yet wired (weight is deferred to Milestone 2). `false`
-    /// means "this engine does not currently feed weight into the algorithm",
-    /// not "the algorithm is inherently unweighted". When a weighted variant is
-    /// exposed, flip its entry to `true` so the weight column is validated,
-    /// projected, and null-gated like SSSP — otherwise a user-supplied weight
-    /// would be silently ignored.
-    pub consumes_weight: bool,
 }
 
 impl GraphOperationDefinition {
+    /// Source-vertex requirement for this algorithm.
+    pub const fn source_vertex_requirement(&self) -> GraphSourceVertexRequirement {
+        match self.algorithm {
+            GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => GraphSourceVertexRequirement::Required,
+            _ => GraphSourceVertexRequirement::None,
+        }
+    }
+
+    /// Weight-column policy for this algorithm.
+    pub const fn weight_policy(&self) -> GraphWeightPolicy {
+        match self.algorithm {
+            GraphAlgorithm::MinimumSpanningTree => GraphWeightPolicy::Required,
+            GraphAlgorithm::Sssp => GraphWeightPolicy::Optional,
+            _ => GraphWeightPolicy::Ignored,
+        }
+    }
+
+    /// Base output-schema descriptor for this algorithm.
+    pub const fn output_schema_kind(&self) -> GraphOutputSchemaKind {
+        match self.algorithm {
+            GraphAlgorithm::Bfs => GraphOutputSchemaKind::DefaultMode,
+            _ => GraphOutputSchemaKind::Fixed,
+        }
+    }
+
     /// Stable SQL-facing result schema for this algorithm.
     pub fn output_schema(&self) -> SchemaRef {
         stable_graph_result_schema(self.algorithm)
+    }
+
+    /// Native base result schema for this algorithm.
+    pub fn base_result_schema(&self) -> SchemaRef {
+        stable_graph_result_schema(self.algorithm)
+    }
+
+    /// Shared graph-construction defaults after algorithm-level overrides.
+    pub fn default_graph_options(&self, defaults: &GraphConstructionOptions) -> GraphConstructionOptions {
+        let mut options = defaults.clone();
+        if matches!(
+            self.algorithm,
+            GraphAlgorithm::WeaklyConnectedComponents
+                | GraphAlgorithm::TriangleCountAll
+                | GraphAlgorithm::CoreNumber
+                | GraphAlgorithm::KCore
+        ) {
+            options.directed = false;
+        }
+        options
+    }
+
+    /// Default native parameter payload for metadata and planning projections.
+    ///
+    /// Source-vertex algorithms use `0` as a placeholder because the real
+    /// source vertex remains a required SQL/parser input, not a defaulted
+    /// option.
+    pub fn default_params(&self) -> GraphAlgorithmParams {
+        match self.algorithm {
+            GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+            GraphAlgorithm::Bfs => GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+            GraphAlgorithm::Louvain => GraphAlgorithmParams::Louvain(GraphLouvainParams::default()),
+            GraphAlgorithm::EigenvectorCentrality => {
+                GraphAlgorithmParams::EigenvectorCentrality(GraphEigenvectorCentralityParams::default())
+            },
+            GraphAlgorithm::KatzCentrality => {
+                GraphAlgorithmParams::KatzCentrality(GraphKatzCentralityParams::default())
+            },
+            GraphAlgorithm::Hits => GraphAlgorithmParams::Hits(GraphHitsParams::default()),
+            GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: 0, cutoff: None }),
+            GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
+            GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
+            GraphAlgorithm::OutDegreesAll => GraphAlgorithmParams::OutDegreesAll(GraphOutDegreesAllParams),
+            GraphAlgorithm::WeaklyConnectedComponents => {
+                GraphAlgorithmParams::WeaklyConnectedComponents(GraphWccParams)
+            },
+            GraphAlgorithm::StronglyConnectedComponents => {
+                GraphAlgorithmParams::StronglyConnectedComponents(GraphSccParams)
+            },
+            GraphAlgorithm::TriangleCountAll => GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+            GraphAlgorithm::CoreNumber => GraphAlgorithmParams::CoreNumber(GraphCoreNumberParams::default()),
+            GraphAlgorithm::KCore => GraphAlgorithmParams::KCore(GraphKCoreParams::default()),
+            GraphAlgorithm::MinimumSpanningTree => GraphAlgorithmParams::MinimumSpanningTree(GraphMstParams),
+            GraphAlgorithm::PageRankStrict => GraphAlgorithmParams::PageRankStrict(GraphPageRankParams::default()),
+            GraphAlgorithm::Leiden => GraphAlgorithmParams::Leiden(GraphLeidenParams::default()),
+            GraphAlgorithm::Ecg => GraphAlgorithmParams::Ecg(GraphEcgParams::default()),
+            GraphAlgorithm::SpectralModularityMaximization => {
+                GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams::default())
+            },
+            GraphAlgorithm::BalancedCutClustering => {
+                GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams::default())
+            },
+        }
+    }
+
+    /// Result schema for an algorithm parameter payload.
+    ///
+    /// This preserves native-owned parameter-sensitive schema semantics. SQL
+    /// adapters may still apply a final user-facing overlay for modes that are
+    /// not part of the native IR.
+    pub fn result_schema_for_params(&self, params: &GraphAlgorithmParams) -> SchemaRef {
+        assert_eq!(self.algorithm, params.algorithm(), "graph algorithm and parameter variant must match");
+        let mut fields =
+            self.base_result_schema().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+        if let GraphAlgorithmParams::Bfs(params) = params
+            && params.return_target_info
+        {
+            fields.push(Field::new("target_found", arrow::datatypes::DataType::Boolean, false));
+            fields.push(Field::new("target_distance", arrow::datatypes::DataType::Int64, true));
+        }
+        Arc::new(Schema::new(fields))
     }
 }
 
@@ -243,127 +430,106 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         algorithm: GraphAlgorithm::PageRank,
         name: "pagerank",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Bfs,
         name: "bfs",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Louvain,
         name: "louvain",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::EigenvectorCentrality,
         name: "eigenvector_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KatzCentrality,
         name: "katz_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Hits,
         name: "hits",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Sssp,
         name: "sssp",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: true,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::DegreesAll,
         name: "degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::InDegreesAll,
         name: "in_degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::OutDegreesAll,
         name: "out_degrees_all",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::WeaklyConnectedComponents,
         name: "weakly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::StronglyConnectedComponents,
         name: "strongly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::TriangleCountAll,
         name: "triangle_count_all",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::CoreNumber,
         name: "core_number",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KCore,
         name: "k_core",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::MinimumSpanningTree,
         name: "minimum_spanning_tree",
         layout_requirement: GraphLayoutRequirement::Any,
-        consumes_weight: true,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::PageRankStrict,
         name: "pagerank_strict",
         layout_requirement: GraphLayoutRequirement::Transposed,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Leiden,
         name: "leiden",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Ecg,
         name: "ecg",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::SpectralModularityMaximization,
         name: "spectral_modularity_maximization",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::BalancedCutClustering,
         name: "balanced_cut_clustering",
         layout_requirement: GraphLayoutRequirement::Forward,
-        consumes_weight: false,
     },
 ];
 
@@ -1078,7 +1244,8 @@ impl GraphAlgorithmSpec {
         graph_options: GraphConstructionOptions,
         params: GraphAlgorithmParams,
     ) -> Self {
-        Self::new(algorithm, edge_columns, graph_options, params, stable_graph_result_schema(algorithm))
+        let output_schema = algorithm.definition().result_schema_for_params(&params);
+        Self::new(algorithm, edge_columns, graph_options, params, output_schema)
     }
 }
 
@@ -1204,16 +1371,5 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
 /// Most graph algorithms use [`stable_graph_result_schema`] exactly. BFS can
 /// opt into target metadata columns through [`GraphBfsParams::return_target_info`].
 pub fn graph_result_schema_for_params(params: &GraphAlgorithmParams) -> SchemaRef {
-    let mut fields = stable_graph_result_schema(params.algorithm())
-        .fields()
-        .iter()
-        .map(|field| field.as_ref().clone())
-        .collect::<Vec<_>>();
-    if let GraphAlgorithmParams::Bfs(params) = params
-        && params.return_target_info
-    {
-        fields.push(Field::new("target_found", arrow::datatypes::DataType::Boolean, false));
-        fields.push(Field::new("target_distance", arrow::datatypes::DataType::Int64, true));
-    }
-    Arc::new(Schema::new(fields))
+    params.algorithm().definition().result_schema_for_params(params)
 }

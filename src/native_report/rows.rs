@@ -8,7 +8,20 @@
 
 use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
-use super::metrics::NativeDataFusionExecutionMetrics;
+use super::{
+    metrics::NativeDataFusionExecutionMetrics,
+    schema::{
+        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
+        NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
+        NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
+    },
+    tsv::{
+        TsvRow, format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
+        format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows, format_source_diagnostics,
+        format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
+        format_task_runtime_rows,
+    },
+};
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 
 /// One row in the native planning TSV.
@@ -317,4 +330,476 @@ pub struct NativeSourceDiagnosticSummary {
     pub pure_filter_column_count: usize,
     /// Stable feature labels rejected for this source.
     pub rejected_features: Vec<String>,
+}
+
+impl TsvRow for NativeFallbackPressureRow {
+    const COLUMNS: &'static [&'static str] = NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS;
+    const SCHEMA_VERSION: u32 = NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION;
+
+    fn fields(&self) -> Vec<String> {
+        vec![
+            self.query_id.clone(),
+            self.physical_root.clone(),
+            self.physical_shape.clone(),
+            self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
+            self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
+            self.outcome.as_str().to_string(),
+            self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
+            self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
+            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            format_join_diagnostics(&self.join_diagnostics),
+            format_source_diagnostics(&self.source_diagnostics),
+            self.rejected_before_execution.to_string(),
+        ]
+    }
+}
+
+impl TsvRow for NativeDataFusionPlanningRow {
+    const COLUMNS: &'static [&'static str] = NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS;
+    const SCHEMA_VERSION: u32 = NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION;
+
+    fn fields(&self) -> Vec<String> {
+        vec![
+            self.query_id.clone(),
+            self.physical_root.clone(),
+            self.physical_shape.clone(),
+            self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
+            self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
+            self.outcome.as_str().to_string(),
+            self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
+            self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
+            format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
+            format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
+            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            super::tsv::format_native_optimizer_diagnostics(&self.native_optimizer),
+            self.edge_normalize_inserted.to_string(),
+            format_join_diagnostics(&self.join_diagnostics),
+            format_source_diagnostics(&self.source_diagnostics),
+            self.post_native_plan_root.clone(),
+            self.post_native_execution_path.as_str().to_string(),
+            self.native_plan_fragment_count.to_string(),
+            self.host_datafusion_boundary_count.to_string(),
+            self.rejected_before_execution.to_string(),
+        ]
+    }
+}
+
+impl TsvRow for NativeDataFusionExecutionRow {
+    const COLUMNS: &'static [&'static str] = NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS;
+    const SCHEMA_VERSION: u32 = NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION;
+
+    fn fields(&self) -> Vec<String> {
+        vec![
+            self.query_id.clone(),
+            self.physical_root.clone(),
+            self.physical_shape.clone(),
+            self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
+            self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
+            self.planning_outcome.as_str().to_string(),
+            self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
+            self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
+            format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
+            format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
+            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            self.post_native_plan_root.clone(),
+            self.post_native_execution_path.as_str().to_string(),
+            self.native_plan_fragment_count.to_string(),
+            self.host_datafusion_boundary_count.to_string(),
+            self.rejected_before_execution.to_string(),
+            self.native_runtime_started.to_string(),
+            self.runtime_outcome.as_str().to_string(),
+            self.runtime_failure.clone().unwrap_or_else(|| "none".to_string()),
+            self.output_batches.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+            self.output_rows.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+            self.output_bytes.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+            self.metrics.gpu_resident_input_handoffs.to_string(),
+            self.metrics.host_to_device_uploads.to_string(),
+            self.metrics.host_to_device_uploaded_rows.to_string(),
+            self.metrics.host_to_device_uploaded_bytes.to_string(),
+            self.metrics.device_to_host_materializations.to_string(),
+            self.metrics.device_to_host_materialized_rows.to_string(),
+            self.metrics.device_to_host_materialized_bytes.to_string(),
+            self.metrics.device_to_device_copies.to_string(),
+            self.metrics.device_to_device_copied_bytes.to_string(),
+            self.metrics.parquet_files.to_string(),
+            self.metrics.parquet_bytes_known.to_string(),
+            self.metrics.row_groups_selected.to_string(),
+            self.metrics.read_columns.to_string(),
+            self.metrics.resident_dataframe_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            self.metrics.allocator_high_water_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            self.metrics.reservation_requested_bytes.to_string(),
+            self.metrics.reservation_granted_bytes.to_string(),
+            self.metrics.reservation_live_peak_bytes.to_string(),
+            self.metrics.reservation_denied_count.to_string(),
+            self.metrics.max_task_reservation_bytes.to_string(),
+            self.metrics.max_task_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            self.metrics.max_task_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            format_graph_runtime_rows(&self.metrics.graph_runtime_rows),
+            format_task_operator_rows(&self.metrics.task_operator_rows),
+            format_task_runtime_rows(&self.metrics.task_runtime_rows),
+            self.metrics.dynamic_filter_produced_count.to_string(),
+            self.metrics.dynamic_filter_skipped_count.to_string(),
+            self.metrics.dynamic_filter_applied_count.to_string(),
+            self.metrics.dynamic_filter_row_groups_pruned.to_string(),
+            self.metrics.dynamic_filter_source_bytes_pruned.to_string(),
+            self.metrics.dynamic_filter_reader_predicate_rows_before.to_string(),
+            self.metrics.dynamic_filter_reader_predicate_rows_after.to_string(),
+            self.metrics.dynamic_filter_reader_predicate_rows_filtered.to_string(),
+            self.metrics.dynamic_filter_post_decode_rows_before.to_string(),
+            self.metrics.dynamic_filter_post_decode_rows_after.to_string(),
+            self.metrics.dynamic_filter_post_decode_rows_filtered.to_string(),
+            self.metrics.dynamic_filter_source_post_decode_rows_filtered.to_string(),
+            self.metrics.dynamic_filter_filter_post_decode_rows_filtered.to_string(),
+            self.metrics.dynamic_filter_join_probe_post_decode_rows_filtered.to_string(),
+            self.metrics.dynamic_filter_post_decode_reduction_stage().as_str().to_string(),
+            self.metrics.dynamic_filter_measured_reduction_status().as_str().to_string(),
+            self.metrics.dynamic_filter_work_avoidance_status().as_str().to_string(),
+            format_dynamic_filter_runtime_rows(&self.metrics.dynamic_filter_runtime_rows),
+            self.metrics.source_chunks_planned.to_string(),
+            self.metrics.source_chunks_attempted.to_string(),
+            self.metrics.source_chunks_committed.to_string(),
+            self.metrics.source_chunks_retried.to_string(),
+            self.metrics.source_read_prefetches_started.to_string(),
+            self.metrics.source_read_prefetches_completed.to_string(),
+            self.metrics.source_read_prefetches_skipped.to_string(),
+            self.metrics.source_read_prefetches_abandoned.to_string(),
+            self.metrics.source_cache_hits.to_string(),
+            self.metrics.source_cache_misses.to_string(),
+            self.metrics.source_cache_inserts.to_string(),
+            self.metrics.source_cache_insert_skipped.to_string(),
+            self.metrics.source_cache_retained_bytes.to_string(),
+            self.metrics.row_groups_planned.to_string(),
+            self.metrics.row_groups_committed.to_string(),
+            self.metrics.partial_aggregate_count.to_string(),
+            self.metrics.partial_aggregate_input_rows.to_string(),
+            self.metrics.partial_aggregate_rows.to_string(),
+            self.metrics.partial_aggregate_retained_bytes.to_string(),
+            self.metrics.final_merge_attempts.to_string(),
+            self.metrics.final_merge_levels.to_string(),
+            self.metrics.final_merge_max_fan_in.to_string(),
+            self.metrics.aggregate_libcudf_runtime_probe_count().to_string(),
+            self.metrics.aggregate_libcudf_runtime_probe_elapsed_ns().to_string(),
+            self.metrics.aggregate_libcudf_runtime_probe_input_rows().to_string(),
+            self.metrics.aggregate_exact_cardinality_probe_count().to_string(),
+            self.metrics.aggregate_exact_cardinality_probe_elapsed_ns().to_string(),
+            self.metrics.aggregate_exact_cardinality_probe_input_rows().to_string(),
+            self.metrics.aggregate_prepared_sort_groupby_elapsed_ns().to_string(),
+            self.metrics.aggregate_encoded_key_partial_elapsed_ns().to_string(),
+            self.metrics.retry_count.to_string(),
+            self.metrics.retry_resource_exhausted_count.to_string(),
+            self.metrics.retry_reservation_failure_count.to_string(),
+            self.metrics.adaptive_retry_count.to_string(),
+            self.metrics.adaptive_spill_count.to_string(),
+            self.metrics.adaptive_downgrade_count.to_string(),
+            self.metrics.adaptive_memory_history_lookup_count.to_string(),
+            self.metrics.adaptive_memory_history_hit_count.to_string(),
+            self.metrics.adaptive_memory_history_miss_count.to_string(),
+            self.metrics.hash_join_build_count.to_string(),
+            self.metrics.filtered_join_build_count.to_string(),
+            self.metrics.one_shot_join_count.to_string(),
+            self.metrics.hash_join_cache_hits.to_string(),
+            self.metrics.hash_join_cache_misses.to_string(),
+            self.metrics.hash_join_durable_cache_hits.to_string(),
+            self.metrics.hash_join_durable_cache_misses.to_string(),
+            self.metrics.hash_join_durable_cache_inserts.to_string(),
+            self.metrics.hash_join_hash_table_bytes.to_string(),
+            self.metrics.filtered_join_hash_table_bytes.to_string(),
+            self.metrics.filtered_join_probe_state_bytes.to_string(),
+            self.metrics.mixed_join_size_data_bytes.to_string(),
+            self.metrics.one_shot_join_index_bytes.to_string(),
+            self.metrics.one_shot_join_materialization_bytes.to_string(),
+            self.metrics.one_shot_join_output_bytes.to_string(),
+            self.metrics.join_gather_map_bytes.to_string(),
+            format_aggregate_strategy_rows(&self.metrics.aggregate_strategy_rows),
+            format_join_strategy_rows(&self.metrics.join_strategy_rows),
+            self.metrics.source_fetch_bytes.to_string(),
+            self.metrics.source_fetch_count.to_string(),
+            optional_duration_ms_text(self.metrics.host_fetch_budget_wait_time_ns),
+            optional_duration_ms_text(self.metrics.source_fetch_concurrency_wait_time_ns),
+            optional_duration_ms_text(self.metrics.source_fetch_time_ns),
+            optional_duration_ms_text(self.metrics.source_decode_time_ns),
+            format_source_diagnostics(&self.source_diagnostics),
+        ]
+    }
+}
+
+fn optional_duration_ms_text(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| format!("{:.3}", value as f64 / 1_000_000.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::schema::{
+            NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+            NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
+        },
+        *,
+    };
+
+    #[test]
+    fn native_report_row_contract_headers_match_public_constants() {
+        assert_eq!(NativeFallbackPressureRow::COLUMNS.join("\t"), NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
+        assert_eq!(NativeFallbackPressureRow::SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION);
+        assert_eq!(NativeDataFusionPlanningRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
+        assert_eq!(NativeDataFusionPlanningRow::SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION);
+        assert_eq!(NativeDataFusionExecutionRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
+        assert_eq!(NativeDataFusionExecutionRow::SCHEMA_VERSION, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn native_report_row_field_counts_match_columns() {
+        let fallback = NativeFallbackPressureRow {
+            query_id: "q".to_string(),
+            physical_root: "Root".to_string(),
+            physical_shape: "Root(Source)".to_string(),
+            native_candidate_shape: None,
+            native_candidate_shape_family: None,
+            outcome: NativeFallbackPressureOutcome::Rejected,
+            reason_code: Some("unsupported_operator".to_string()),
+            unsupported_category: Some("operator_sort".to_string()),
+            adaptive_pipeline_rows: Vec::new(),
+            join_diagnostics: Vec::new(),
+            source_diagnostics: Vec::new(),
+            rejected_before_execution: true,
+        };
+        assert_eq!(fallback.fields().len(), NativeFallbackPressureRow::COLUMNS.len());
+        assert_eq!(
+            fallback.to_tsv_line(),
+            "q\tRoot\tRoot(Source)\tnone\tnone\trejected\tunsupported_operator\toperator_sort\tnone\tnone\tnone\ttrue"
+        );
+
+        let planning = NativeDataFusionPlanningRow {
+            query_id: "q".to_string(),
+            physical_root: "Root".to_string(),
+            physical_shape: "Root(Source)".to_string(),
+            native_candidate_shape: None,
+            native_candidate_shape_family: None,
+            outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+            reason_code: Some("unsupported_operator".to_string()),
+            unsupported_category: Some("operator_sort".to_string()),
+            strict_bounded_contract_rows: Vec::new(),
+            strict_bounded_compiled_graphs: Vec::new(),
+            adaptive_pipeline_rows: Vec::new(),
+            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            edge_normalize_inserted: false,
+            join_diagnostics: Vec::new(),
+            source_diagnostics: Vec::new(),
+            post_native_plan_root: "Root".to_string(),
+            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+            native_plan_fragment_count: 0,
+            host_datafusion_boundary_count: 0,
+            rejected_before_execution: true,
+        };
+        assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
+        assert_eq!(
+            planning.to_tsv_line(),
+            "q\tRoot\tRoot(Source)\tnone\tnone\trejected_before_execution\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tcpu\t0\t0\ttrue"
+        );
+
+        let execution = NativeDataFusionExecutionRow {
+            query_id: "q".to_string(),
+            physical_root: "Root".to_string(),
+            physical_shape: "Root(Source)".to_string(),
+            native_candidate_shape: None,
+            native_candidate_shape_family: None,
+            planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+            reason_code: Some("unsupported_operator".to_string()),
+            unsupported_category: Some("operator_sort".to_string()),
+            strict_bounded_contract_rows: Vec::new(),
+            strict_bounded_compiled_graphs: Vec::new(),
+            adaptive_pipeline_rows: Vec::new(),
+            source_diagnostics: Vec::new(),
+            post_native_plan_root: "Root".to_string(),
+            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+            native_plan_fragment_count: 0,
+            host_datafusion_boundary_count: 0,
+            rejected_before_execution: true,
+            native_runtime_started: false,
+            runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+            runtime_failure: None,
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            metrics: NativeDataFusionExecutionMetrics::default(),
+        };
+        assert_eq!(execution.fields().len(), NativeDataFusionExecutionRow::COLUMNS.len());
+        let expected_execution_fields = NativeDataFusionExecutionRow::COLUMNS
+            .iter()
+            .map(|column| match *column {
+                "query_id" => "q",
+                "physical_root" | "post_native_plan_root" => "Root",
+                "physical_shape" => "Root(Source)",
+                "planning_outcome" => "rejected_before_execution",
+                "reason_code" => "unsupported_operator",
+                "unsupported_category" => "operator_sort",
+                "post_native_execution_path" => "cpu",
+                "rejected_before_execution" => "true",
+                "native_runtime_started" => "false",
+                "runtime_outcome" => "not_started",
+                "output_batches" | "output_rows" | "output_bytes" => "not_run",
+                "dynamic_filter_measured_reduction_status" | "dynamic_filter_work_avoidance_status" => "unknown",
+                "native_candidate_shape"
+                | "native_candidate_shape_family"
+                | "strict_bounded_contract_rows"
+                | "strict_bounded_compiled_graphs"
+                | "adaptive_pipeline_rows"
+                | "runtime_failure"
+                | "resident_dataframe_peak_bytes"
+                | "allocator_high_water_bytes"
+                | "max_task_observed_peak_bytes"
+                | "max_task_retained_bytes"
+                | "graph_runtime_rows"
+                | "task_operator_rows"
+                | "task_runtime_rows"
+                | "dynamic_filter_post_decode_reduction_stage"
+                | "dynamic_filter_runtime_rows"
+                | "aggregate_strategy_rows"
+                | "join_strategy_rows"
+                | "host_fetch_budget_wait_time_ms"
+                | "source_fetch_concurrency_wait_time_ms"
+                | "source_fetch_time_ms"
+                | "source_decode_time_ms"
+                | "source_diagnostics" => "none",
+                _ => "0",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(execution.to_tsv_line(), expected_execution_fields.join("\t"));
+    }
+
+    #[test]
+    fn native_execution_row_serializes_literal_metric_order() {
+        let execution = NativeDataFusionExecutionRow {
+            query_id: "q_exec".to_string(),
+            physical_root: "RootExec".to_string(),
+            physical_shape: "RootExec(Source)".to_string(),
+            native_candidate_shape: Some("candidate_shape".to_string()),
+            native_candidate_shape_family: Some("candidate_family".to_string()),
+            planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+            reason_code: None,
+            unsupported_category: None,
+            strict_bounded_contract_rows: Vec::new(),
+            strict_bounded_compiled_graphs: Vec::new(),
+            adaptive_pipeline_rows: Vec::new(),
+            source_diagnostics: Vec::new(),
+            post_native_plan_root: "NativeCudfExec".to_string(),
+            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+            native_plan_fragment_count: 7,
+            host_datafusion_boundary_count: 2,
+            rejected_before_execution: false,
+            native_runtime_started: true,
+            runtime_outcome: NativeDataFusionRuntimeOutcome::Succeeded,
+            runtime_failure: None,
+            output_batches: Some(3),
+            output_rows: Some(111),
+            output_bytes: Some(2222),
+            metrics: NativeDataFusionExecutionMetrics {
+                gpu_resident_input_handoffs: 10,
+                host_to_device_uploads: 11,
+                host_to_device_uploaded_rows: 12,
+                host_to_device_uploaded_bytes: 13,
+                device_to_host_materializations: 14,
+                device_to_host_materialized_rows: 15,
+                device_to_host_materialized_bytes: 16,
+                device_to_device_copies: 17,
+                device_to_device_copied_bytes: 18,
+                parquet_files: 19,
+                parquet_bytes_known: 20,
+                row_groups_selected: 21,
+                read_columns: 22,
+                resident_dataframe_peak_bytes: Some(23),
+                allocator_high_water_bytes: Some(24),
+                reservation_requested_bytes: 25,
+                reservation_granted_bytes: 26,
+                reservation_live_peak_bytes: 27,
+                reservation_denied_count: 28,
+                max_task_reservation_bytes: 29,
+                max_task_observed_peak_bytes: Some(30),
+                max_task_retained_bytes: Some(31),
+                dynamic_filter_produced_count: 32,
+                dynamic_filter_skipped_count: 33,
+                dynamic_filter_applied_count: 34,
+                dynamic_filter_row_groups_pruned: 35,
+                dynamic_filter_source_bytes_pruned: 36,
+                dynamic_filter_reader_predicate_rows_before: 37,
+                dynamic_filter_reader_predicate_rows_after: 38,
+                dynamic_filter_reader_predicate_rows_filtered: 39,
+                dynamic_filter_post_decode_rows_before: 40,
+                dynamic_filter_post_decode_rows_after: 41,
+                dynamic_filter_post_decode_rows_filtered: 42,
+                dynamic_filter_source_post_decode_rows_filtered: 43,
+                dynamic_filter_filter_post_decode_rows_filtered: 44,
+                dynamic_filter_join_probe_post_decode_rows_filtered: 45,
+                source_chunks_planned: 46,
+                source_chunks_attempted: 47,
+                source_chunks_committed: 48,
+                source_chunks_retried: 49,
+                source_read_prefetches_started: 50,
+                source_read_prefetches_completed: 51,
+                source_read_prefetches_skipped: 52,
+                source_read_prefetches_abandoned: 53,
+                source_cache_hits: 54,
+                source_cache_misses: 55,
+                source_cache_inserts: 56,
+                source_cache_insert_skipped: 57,
+                source_cache_retained_bytes: 58,
+                row_groups_planned: 59,
+                row_groups_committed: 60,
+                partial_aggregate_count: 61,
+                partial_aggregate_input_rows: 62,
+                partial_aggregate_rows: 63,
+                partial_aggregate_retained_bytes: 64,
+                final_merge_attempts: 65,
+                final_merge_levels: 66,
+                final_merge_max_fan_in: 67,
+                retry_count: 68,
+                retry_resource_exhausted_count: 69,
+                retry_reservation_failure_count: 70,
+                adaptive_retry_count: 71,
+                adaptive_spill_count: 72,
+                adaptive_downgrade_count: 73,
+                adaptive_memory_history_lookup_count: 74,
+                adaptive_memory_history_hit_count: 75,
+                adaptive_memory_history_miss_count: 76,
+                hash_join_build_count: 77,
+                filtered_join_build_count: 78,
+                one_shot_join_count: 79,
+                hash_join_cache_hits: 80,
+                hash_join_cache_misses: 81,
+                hash_join_durable_cache_hits: 82,
+                hash_join_durable_cache_misses: 83,
+                hash_join_durable_cache_inserts: 84,
+                hash_join_hash_table_bytes: 85,
+                filtered_join_hash_table_bytes: 86,
+                filtered_join_probe_state_bytes: 87,
+                mixed_join_size_data_bytes: 88,
+                one_shot_join_index_bytes: 89,
+                one_shot_join_materialization_bytes: 90,
+                one_shot_join_output_bytes: 91,
+                join_gather_map_bytes: 92,
+                source_fetch_bytes: 93,
+                source_fetch_count: 94,
+                host_fetch_budget_wait_time_ns: Some(1_000_000),
+                source_fetch_concurrency_wait_time_ns: Some(2_500_000),
+                source_fetch_time_ns: Some(3_750_000),
+                source_decode_time_ns: Some(4_125_000),
+                ..NativeDataFusionExecutionMetrics::default()
+            },
+        };
+
+        assert_eq!(execution.fields().len(), NativeDataFusionExecutionRow::COLUMNS.len());
+        assert_eq!(
+            execution.to_tsv_line(),
+            concat!(
+                "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\taccepted_replaced\tnone\tnone\t",
+                "none\tnone\tnone\tNativeCudfExec\tnative\t7\t2\tfalse\ttrue\tsucceeded\tnone\t3\t111\t2222\t",
+                "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
+                "none\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
+                "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
+                "46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t56\t57\t58\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
+                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t71\t72\t73\t74\t75\t76\t77\t78\t79\t80\t81\t82\t83\t",
+                "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\t93\t94\t1.000\t2.500\t3.750\t4.125\tnone"
+            )
+        );
+    }
 }

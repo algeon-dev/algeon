@@ -37,7 +37,7 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
     let items = analytical_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let report = NativeDataFusionPlanningReport::collect(items);
 
-    assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(planning_query_count(&report), ANALYTICAL_OLAP_QUERY_COUNT);
     assert!(
         ANALYTICAL_OLAP_QUERIES.iter().any(
             |query| query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
@@ -46,7 +46,7 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
     );
 
     for query in ANALYTICAL_OLAP_QUERIES {
-        let row = planning_row(&report, query.id);
+        let row = planning_replacement_row(&report, query.id);
         assert!(
             row.adaptive_pipeline_rows.is_empty(),
             "{} strict planning row must not carry adaptive evidence",
@@ -119,9 +119,9 @@ async fn native_pipeline_analytical_olap_adaptive_planning_report_uses_adaptive_
     .unwrap();
     let report = NativeDataFusionPlanningReport::collect(items);
 
-    assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(planning_query_count(&report), ANALYTICAL_OLAP_QUERY_COUNT);
     for query in ANALYTICAL_OLAP_QUERIES {
-        let row = planning_row(&report, query.id);
+        let row = planning_replacement_row(&report, query.id);
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
         assert!(
             row.strict_bounded_contract_rows.is_empty(),

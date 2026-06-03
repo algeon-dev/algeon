@@ -1,10 +1,21 @@
-use std::{collections::BTreeMap, fmt, fs, net::SocketAddr, path::PathBuf, time::Duration};
+#[cfg(feature = "iceberg")]
+use std::fmt;
+use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
 use super::{
     auth::AuthConfig,
     error::{Result, ServerError},
+};
+#[cfg(feature = "iceberg")]
+use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
+#[cfg(feature = "iceberg")]
+use crate::{
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+    TableFormatParquetReadStrategyPreference,
 };
 use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
 #[cfg(feature = "cugraph")]
@@ -183,7 +194,7 @@ impl std::fmt::Display for ServerSessionProfile {
 }
 
 #[cfg(feature = "iceberg")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IcebergServerConfig {
     /// DataFusion catalog name (e.g. "iceberg" or "glue").  Exposed as the
     /// first part of `catalog.namespace.table` three-part addressing.
@@ -199,6 +210,22 @@ pub struct IcebergServerConfig {
     /// combinations unrepresentable (a Glue payload cannot carry a REST URI and
     /// vice versa). Selected by [`DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV`].
     pub backend: IcebergCatalogBackendConfig,
+    /// Server-validated table-format Parquet strategy passed into catalog
+    /// planning paths. Server mode must not let those paths reread process env.
+    pub parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+}
+
+#[cfg(feature = "iceberg")]
+impl fmt::Debug for IcebergServerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IcebergServerConfig")
+            .field("catalog_name", &self.catalog_name)
+            .field("namespace", &self.namespace)
+            .field("tables", &self.tables)
+            .field("backend", &self.backend)
+            .field("parquet_read_strategy_config", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Backend-specific Iceberg catalog connection config.
@@ -285,7 +312,9 @@ impl ServerConfig {
                 DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
                 DEFAULT_STATEMENT_TICKET_TTL_SECS,
             )?);
-        let mut native_optimizer_config = native_optimizer_config(&mut values)?;
+        let native_optimizer_config = native_optimizer_config(&mut values)?;
+        #[cfg(feature = "iceberg")]
+        let mut native_optimizer_config = native_optimizer_config;
 
         #[cfg(feature = "iceberg")]
         let iceberg = iceberg_config(&mut values)?;
@@ -501,6 +530,11 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+        CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
+        CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+        CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+        CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
     ]);
     if !requested {
         return Ok(None);
@@ -556,8 +590,98 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         IcebergCatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
         IcebergCatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
     };
+    let parquet_read_strategy_config = iceberg_parquet_read_strategy_config(values, &backend)?;
 
-    Ok(Some(IcebergServerConfig { catalog_name, namespace, tables, backend }))
+    Ok(Some(IcebergServerConfig { catalog_name, namespace, tables, backend, parquet_read_strategy_config }))
+}
+
+#[cfg(feature = "iceberg")]
+fn iceberg_parquet_read_strategy_config(
+    values: &mut EnvValues<'_>,
+    backend: &IcebergCatalogBackendConfig,
+) -> Result<TableFormatParquetReadStrategyConfig> {
+    let mut config = table_format_parquet_read_strategy_config(values)?;
+    config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
+    if let Some(endpoint) = iceberg_backend_s3_endpoint(backend).filter(|endpoint| !endpoint.trim().is_empty()) {
+        config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
+    }
+    Ok(config)
+}
+
+#[cfg(feature = "iceberg")]
+fn iceberg_backend_s3_endpoint(backend: &IcebergCatalogBackendConfig) -> Option<&str> {
+    match backend {
+        IcebergCatalogBackendConfig::Glue(glue) => glue.s3_endpoint.as_deref(),
+        IcebergCatalogBackendConfig::Rest(rest) => rest.s3_endpoint.as_deref(),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn table_format_parquet_read_strategy_config(
+    values: &mut EnvValues<'_>,
+) -> Result<TableFormatParquetReadStrategyConfig> {
+    let preference = values
+        .string(CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV)
+        .map(|raw| parse_table_format_parquet_read_strategy(&raw))
+        .transpose()?
+        .unwrap_or_default();
+    let remote_kvikio_experimental =
+        values.optional_bool(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV)?.unwrap_or(false);
+    let lakehouse_cache_root = values.string(CUDF_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
+    let lakehouse_cache_policy = values
+        .string(CUDF_LAKEHOUSE_CACHE_POLICY_ENV)
+        .map(|raw| parse_lakehouse_cache_policy(&raw))
+        .transpose()?
+        .unwrap_or_default();
+    let lakehouse_cache_max_bytes = match values.optional_u64(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV)? {
+        Some(0) => {
+            return Err(ServerError::invalid_config(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "must be greater than zero"));
+        },
+        Some(value) => Some(value),
+        None => None,
+    };
+    let storage_endpoint = values
+        .string(DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV)
+        .or_else(|| values.string(AWS_ENDPOINT_URL_S3_ENV))
+        .or_else(|| values.string(AWS_ENDPOINT_URL_ENV))
+        .map(|endpoint| credential_free_endpoint_identity(&endpoint));
+
+    Ok(TableFormatParquetReadStrategyConfig {
+        preference,
+        remote_kvikio_experimental,
+        lakehouse_cache_root,
+        lakehouse_cache_policy,
+        lakehouse_cache_max_bytes,
+        storage_endpoint,
+        ..Default::default()
+    })
+}
+
+#[cfg(feature = "iceberg")]
+fn parse_table_format_parquet_read_strategy(raw: &str) -> Result<TableFormatParquetReadStrategyPreference> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(TableFormatParquetReadStrategyPreference::Auto),
+        "host_buffer" => Ok(TableFormatParquetReadStrategyPreference::HostBuffer),
+        "local_cache" => Ok(TableFormatParquetReadStrategyPreference::LocalCache),
+        "remote_kvikio" => Ok(TableFormatParquetReadStrategyPreference::RemoteKvikio),
+        other => Err(ServerError::invalid_config(
+            CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+            format!("must be `auto`, `host_buffer`, `local_cache`, or `remote_kvikio`, got `{other}`"),
+        )),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn parse_lakehouse_cache_policy(raw: &str) -> Result<TableFormatLakehouseCachePolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "disabled" => Ok(TableFormatLakehouseCachePolicy::Disabled),
+        "read_through" => Ok(TableFormatLakehouseCachePolicy::ReadThrough),
+        "fill_before_read" => Ok(TableFormatLakehouseCachePolicy::FillBeforeRead),
+        other => Err(ServerError::invalid_config(
+            CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+            format!("must be `disabled`, `read_through`, or `fill_before_read`, got `{other}`"),
+        )),
+    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -725,6 +849,11 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        crate::CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+        crate::CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
+        crate::CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+        crate::CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+        crate::CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
     ]) {
         return Err(ServerError::invalid_config(
             DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,

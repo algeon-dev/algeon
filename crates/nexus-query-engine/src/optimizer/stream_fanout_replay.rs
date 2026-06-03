@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink, UnionNode};
+use super::rewrite;
+use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const STREAM_FANOUT_REPLAY_RULE_NAME: &str = "stream_fanout_replay";
@@ -106,7 +107,7 @@ pub(crate) fn optimize_stream_fanout_replay(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let applied_fanouts = rewriter.applied_fanouts;
     let changed = rewriter.changed;
-    let new_sink = rewrite_sink(plan.sink(), new_root);
+    let new_sink = rewrite::rewrite_sink(plan.sink(), new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
@@ -183,58 +184,7 @@ impl<'a> StreamFanoutReplayRewriter<'a> {
     }
 
     fn clone_kind_with_input_mapper(&mut self, kind: &PlanNode, mode: CloneMode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_input(filter.input, mode);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_input(projection.input, mode);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_input(aggregate.input, mode);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_input(window.input, mode);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_input(sort.input, mode);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_input(limit.input, mode);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_input(join.inputs[0], mode), self.rewrite_input(join.inputs[1], mode)];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let inputs = union.inputs.iter().map(|input| self.rewrite_input(*input, mode)).collect();
-                PlanNode::Union(UnionNode { inputs })
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_input(edge_normalize.input, mode);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_input(graph.input, mode);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_input(input, mode))
     }
 
     fn rewrite_input(&mut self, input: NodeId, mode: CloneMode) -> NodeId {
@@ -343,11 +293,4 @@ fn stream_replayable_subtree_inner(plan: &QueryPlan, node_id: NodeId, visiting: 
     };
     visiting.remove(&node_id);
     replayable
-}
-
-fn rewrite_sink(sink: &ResultSink, input: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
-    }
 }

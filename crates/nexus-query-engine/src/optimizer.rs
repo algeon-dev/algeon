@@ -7,6 +7,7 @@
 mod semijoin_reduction;
 
 mod aggregate_join_pushdown;
+mod diagnostics;
 mod dimension_pruning;
 mod dynamic_filter;
 mod join_build_side;
@@ -14,6 +15,7 @@ mod join_filter_reassociation;
 mod local_parquet_source_reuse;
 mod outer_join_null_rejection;
 mod projection_simplification;
+mod rewrite;
 mod shared_subplan_materialization;
 mod stream_fanout_replay;
 

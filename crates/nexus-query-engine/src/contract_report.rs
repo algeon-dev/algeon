@@ -9,9 +9,10 @@ use std::fmt;
 pub use crate::mode::StrictBoundedExecutionMode;
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
-        EdgeConsumer, InvariantId, ReservationRequirement, ReservationRequirementScope, ResultSinkKind,
-        lower_level_unresolved_preflight_gap, strict_unresolved_preflight_gap,
+        CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionOwner, CapabilityRejectionProjection,
+        ContractQuality, ContractStatus, EdgeConsumer, InvariantId, NodeOperator, ReservationRequirement,
+        ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap,
+        strict_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, ReservationGate, ReservationGateId, ReservationGateOwner},
@@ -40,13 +41,9 @@ impl StrictBoundedContractReport {
 
     /// Builds a report from compiled reservation gates and validates capability backing.
     pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
-        let execution_mode = if analysis.has_rejections()
-            || pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled)
-        {
-            StrictBoundedExecutionMode::UnsupportedStrictBounded
-        } else {
-            StrictBoundedExecutionMode::StrictBounded
-        };
+        let execution_mode = strict_execution_mode_for_analysis(analysis, || {
+            pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled)
+        });
 
         let mut gate_rows = Vec::with_capacity(pipeline.gates().len());
         for gate in pipeline.gates() {
@@ -54,6 +51,7 @@ impl StrictBoundedContractReport {
             validate_requirement_is_backed_by_capability_analysis(analysis, gate.requirement())?;
             gate_rows.push(row);
         }
+        append_rejection_projection_if_needed(execution_mode, analysis, &mut gate_rows)?;
         Self::new(execution_mode, gate_rows)
     }
 
@@ -62,13 +60,9 @@ impl StrictBoundedContractReport {
     /// This is used before pipeline compilation or when admission failed before
     /// concrete reservation gates could be emitted.
     pub fn from_capability_analysis(analysis: &CapabilityAnalysis) -> Result<Self> {
-        let execution_mode = if analysis.has_rejections()
-            || analysis.requirements.iter().any(|requirement| requirement.status != ContractStatus::Modeled)
-        {
-            StrictBoundedExecutionMode::UnsupportedStrictBounded
-        } else {
-            StrictBoundedExecutionMode::StrictBounded
-        };
+        let execution_mode = strict_execution_mode_for_analysis(analysis, || {
+            analysis.requirements.iter().any(|requirement| requirement.status != ContractStatus::Modeled)
+        });
         let mut gate_rows = Vec::new();
 
         for node in &analysis.nodes {
@@ -120,16 +114,7 @@ impl StrictBoundedContractReport {
             }
         }
 
-        if execution_mode == StrictBoundedExecutionMode::UnsupportedStrictBounded
-            && gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
-            && let Some(projection) = analysis.first_rejection_projection()
-        {
-            gate_rows.push(StrictBoundedContractGateRow::from_capability_rejection_projection(
-                execution_mode,
-                gate_rows.len(),
-                &projection,
-            )?);
-        }
+        append_rejection_projection_if_needed(execution_mode, analysis, &mut gate_rows)?;
 
         Self::new(execution_mode, gate_rows)
     }
@@ -172,6 +157,49 @@ impl StrictBoundedContractReport {
         }
         validate_report_execution_mode(execution_mode, &gate_rows)?;
         Ok(Self { execution_mode, gate_rows })
+    }
+}
+
+fn append_rejection_projection_if_needed(
+    execution_mode: StrictBoundedExecutionMode,
+    analysis: &CapabilityAnalysis,
+    gate_rows: &mut Vec<StrictBoundedContractGateRow>,
+) -> Result<()> {
+    if execution_mode == StrictBoundedExecutionMode::UnsupportedStrictBounded
+        && gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
+        && analysis_has_join_operator(analysis)
+        && let Some(projection) = analysis.first_rejection_projection()
+    {
+        gate_rows.push(StrictBoundedContractGateRow::from_capability_rejection_projection(
+            execution_mode,
+            gate_rows.len(),
+            &projection,
+        )?);
+    }
+    Ok(())
+}
+
+fn analysis_has_join_operator(analysis: &CapabilityAnalysis) -> bool {
+    analysis.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. }))
+}
+
+fn strict_execution_mode_for_analysis(
+    analysis: &CapabilityAnalysis,
+    has_non_modeled_gates: impl FnOnce() -> bool,
+) -> StrictBoundedExecutionMode {
+    let has_non_modeled_gates = has_non_modeled_gates();
+    match analysis.strict_bounded_envelope_admission() {
+        CapabilityEnvelopeAdmission::Admitted { .. } if !has_non_modeled_gates => {
+            StrictBoundedExecutionMode::StrictBounded
+        },
+        CapabilityEnvelopeAdmission::Rejected { .. }
+            if !analysis_has_join_operator(analysis) && !has_non_modeled_gates =>
+        {
+            StrictBoundedExecutionMode::StrictBounded
+        },
+        CapabilityEnvelopeAdmission::Admitted { .. } | CapabilityEnvelopeAdmission::Rejected { .. } => {
+            StrictBoundedExecutionMode::UnsupportedStrictBounded
+        },
     }
 }
 

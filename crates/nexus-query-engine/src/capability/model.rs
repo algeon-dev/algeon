@@ -714,6 +714,8 @@ pub enum ResidentResource {
 pub struct CapabilityRejectionProjection {
     /// Local owner whose rejection is projected into diagnostics.
     pub owner: CapabilityRejectionOwner,
+    /// Stable rejection category for report/fact projections.
+    pub category: CapabilityRejectionCategory,
     /// Contract scope used by strict bounded reports.
     pub contract_scope: ReservationRequirementScope,
     /// Stable diagnostic boundary label.
@@ -722,6 +724,43 @@ pub struct CapabilityRejectionProjection {
     pub reason: &'static str,
     /// Stable fact-key map copied from the rejected capability decision.
     pub facts: BTreeMap<&'static str, String>,
+}
+
+/// Stable category for rejected capability or envelope admission projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapabilityRejectionCategory {
+    /// A lower-level cudf-rs/libcudf contract is not available yet.
+    MissingLowerLevelContract,
+    /// An expression family is not supported by the native engine.
+    UnsupportedExpressionFamily,
+    /// An Arrow data type is not supported by the native engine.
+    UnsupportedArrowDtype,
+    /// A native plan node operator or local operator shape is unsupported.
+    UnsupportedNodeOperator,
+    /// A producer-consumer edge contract is missing.
+    MissingEdgeContract,
+    /// A subgraph invariant or envelope proof is missing.
+    MissingSubgraphInvariant,
+    /// The final sink boundary is outside strict bounded host materialization.
+    UnsupportedSinkBoundary,
+    /// The compiled pipeline graph is outside the strict runtime envelope.
+    UnsupportedCompiledPipelineEnvelope,
+}
+
+impl CapabilityRejectionCategory {
+    /// Stable snake-case label emitted in diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingLowerLevelContract => "missing_lower_level_contract",
+            Self::UnsupportedExpressionFamily => "unsupported_expression_family",
+            Self::UnsupportedArrowDtype => "unsupported_arrow_dtype",
+            Self::UnsupportedNodeOperator => "unsupported_node_operator",
+            Self::MissingEdgeContract => "missing_edge_contract",
+            Self::MissingSubgraphInvariant => "missing_subgraph_invariant",
+            Self::UnsupportedSinkBoundary => "unsupported_sink_boundary",
+            Self::UnsupportedCompiledPipelineEnvelope => "unsupported_compiled_pipeline_envelope",
+        }
+    }
 }
 
 /// Local capability owner projected into strict bounded contract diagnostics.
@@ -740,6 +779,75 @@ pub enum CapabilityRejectionOwner {
     Invariant(InvariantId),
     /// Rejection owned by a compiled-envelope admission gate.
     Admission(&'static str),
+}
+
+/// Strict bounded execution envelope selected by native capability admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StrictBoundedEnvelope {
+    /// A single join is the sink root.
+    RootJoin,
+    /// A single join feeds admitted post-root operators.
+    SingleJoinPostRootPipeline,
+    /// A closed multi-join subgraph feeds the sink.
+    ClosedMultiJoinSubgraph,
+    /// A multi-join subplan feeds aggregate/final top-k stages.
+    MultiJoinAggregateOverJoinSubplanTopK,
+    /// Mixed keyed/residual join output feeds a resident grouped aggregate input.
+    MixedKeyedResidualJoinResidentGroupedAggregateInput,
+    /// Hash join resident grouped aggregate feeds post-join aggregate/top-k.
+    HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+    /// Keyed hash join consumes a shared resident subplan.
+    KeyedHashJoinResidentSubplan,
+    /// Keyless conditional join consumes an input subplan.
+    KeylessConditionalJoinInputSubplan,
+    /// Keyless conditional join consumes aggregate-over-join subplan inputs.
+    KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+    /// Multi-join resident grouped aggregate participates in a subquery filter.
+    MultiJoinResidentGroupedAggregateSubqueryFilter,
+    /// Native union pipeline over admitted branch-local work.
+    UnionPipeline,
+}
+
+impl StrictBoundedEnvelope {
+    /// Stable snake-case label emitted in diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RootJoin => "root_join",
+            Self::SingleJoinPostRootPipeline => "single_join_post_root_pipeline",
+            Self::ClosedMultiJoinSubgraph => "closed_multi_join_subgraph",
+            Self::MultiJoinAggregateOverJoinSubplanTopK => "multi_join_aggregate_over_join_subplan_topk",
+            Self::MixedKeyedResidualJoinResidentGroupedAggregateInput => {
+                "mixed_keyed_residual_join_resident_grouped_aggregate_input"
+            },
+            Self::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK => {
+                "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk"
+            },
+            Self::KeyedHashJoinResidentSubplan => "keyed_hash_join_resident_subplan",
+            Self::KeylessConditionalJoinInputSubplan => "keyless_conditional_join_input_subplan",
+            Self::KeylessConditionalJoinAggregateOverJoinSubplanInputs => {
+                "keyless_conditional_join_aggregate_over_join_subplan_inputs"
+            },
+            Self::MultiJoinResidentGroupedAggregateSubqueryFilter => {
+                "multi_join_resident_grouped_aggregate_subquery_filter"
+            },
+            Self::UnionPipeline => "union_pipeline",
+        }
+    }
+}
+
+/// Capability authority result for strict bounded envelope selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityEnvelopeAdmission {
+    /// The analysis selected a strict bounded envelope.
+    Admitted {
+        /// Selected envelope.
+        envelope: StrictBoundedEnvelope,
+    },
+    /// The analysis rejected strict bounded admission with one projection.
+    Rejected {
+        /// Structured report/fact projection for the rejection.
+        projection: CapabilityRejectionProjection,
+    },
 }
 
 /// Capability analysis for one lowered native query plan.
@@ -791,74 +899,142 @@ impl CapabilityAnalysis {
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
+    /// Selects the one strict bounded envelope admitted by this analysis, or a
+    /// structured projection explaining why no strict envelope is admissible.
+    pub fn strict_bounded_envelope_admission(&self) -> CapabilityEnvelopeAdmission {
+        if let Some(projection) = self.first_local_rejection_projection() {
+            return CapabilityEnvelopeAdmission::Rejected { projection };
+        }
+        if let Some(projection) = self.first_requirement_rejection_projection() {
+            return CapabilityEnvelopeAdmission::Rejected { projection };
+        }
+        if let Some(envelope) = self.selected_strict_bounded_envelope() {
+            return CapabilityEnvelopeAdmission::Admitted { envelope };
+        }
+        if let Some(projection) = self.first_raw_admission_rejection_projection() {
+            return CapabilityEnvelopeAdmission::Rejected { projection };
+        }
+        CapabilityEnvelopeAdmission::Rejected {
+            projection: CapabilityRejectionProjection {
+                owner: CapabilityRejectionOwner::Admission("strict_bounded_envelope_admission"),
+                category: CapabilityRejectionCategory::MissingSubgraphInvariant,
+                contract_scope: ReservationRequirementScope::Subgraph,
+                memory_boundary: "strict_bounded_envelope_admission",
+                reason: "strict_bounded_capability_admission_not_satisfied",
+                facts: BTreeMap::from([("strict_bounded_envelope_admission", "false".to_string())]),
+            },
+        }
+    }
+
     /// Returns whether the strict closed multi-join envelope is admitted.
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
-        self.closed_multi_join_subgraph_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::ClosedMultiJoinSubgraph)
     }
 
     /// Returns whether the strict root-join envelope is admitted.
     pub fn admits_root_join(&self) -> bool {
-        self.root_join_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::RootJoin)
     }
 
     /// Returns whether the strict single-join post-root envelope is admitted.
     pub fn admits_single_join_post_root_pipeline(&self) -> bool {
-        self.single_join_post_root_pipeline_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::SingleJoinPostRootPipeline)
     }
 
     /// Returns whether the strict multi-join aggregate/top-k envelope is admitted.
     pub fn admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
-        self.multi_join_aggregate_over_join_subplan_topk_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK)
     }
 
     /// Returns whether the strict mixed keyed/residual aggregate-input envelope is admitted.
     pub fn admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
-        self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput)
     }
 
     /// Returns whether the strict hash-join aggregate post-join/top-k envelope is admitted.
     pub fn admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool {
-        self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission
-            == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(
+            StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+        )
     }
 
     /// Returns whether the strict shared resident-subplan envelope is admitted.
     pub fn admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
-        self.keyed_hash_join_resident_subplan_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::KeyedHashJoinResidentSubplan)
     }
 
     /// Returns whether the strict keyless conditional input-subplan envelope is admitted.
     pub fn admits_keyless_conditional_join_input_subplan_pipeline(&self) -> bool {
-        self.keyless_conditional_join_input_subplan_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::KeylessConditionalJoinInputSubplan)
     }
 
     /// Returns whether the strict keyless aggregate-over-inputs envelope is admitted.
     pub fn admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool {
-        self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs)
     }
 
     /// Returns whether the strict resident aggregate subquery-filter envelope is admitted.
     pub fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
-        self.multi_join_resident_grouped_aggregate_subquery_filter_admission == CapabilityDecision::Satisfied
+        self.admits_strict_bounded_envelope(StrictBoundedEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter)
     }
 
     /// Returns true when any strict bounded join compiled envelope is admitted.
     pub fn admits_strict_bounded_join(&self) -> bool {
-        self.admits_root_join()
-            || self.admits_single_join_post_root_pipeline()
-            || self.admits_keyless_conditional_join_input_subplan_pipeline()
-            || self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-            || self.admits_closed_multi_join_subgraph()
-            || self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline()
-            || self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-            || self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
-            || self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
-            || self.admits_keyed_hash_join_resident_subplan_pipeline()
-            || self.union_pipeline_admission == CapabilityDecision::Satisfied
+        matches!(self.strict_bounded_envelope_admission(), CapabilityEnvelopeAdmission::Admitted { .. })
     }
 
     /// Projects the first local rejection or lower-level block into report diagnostics.
     pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
+        match self.strict_bounded_envelope_admission() {
+            CapabilityEnvelopeAdmission::Admitted { .. } => None,
+            CapabilityEnvelopeAdmission::Rejected { projection } => Some(projection),
+        }
+    }
+
+    fn admits_strict_bounded_envelope(&self, expected: StrictBoundedEnvelope) -> bool {
+        matches!(
+            self.strict_bounded_envelope_admission(),
+            CapabilityEnvelopeAdmission::Admitted { envelope } if envelope == expected
+        )
+    }
+
+    fn selected_strict_bounded_envelope(&self) -> Option<StrictBoundedEnvelope> {
+        [
+            (StrictBoundedEnvelope::RootJoin, &self.root_join_admission),
+            (StrictBoundedEnvelope::SingleJoinPostRootPipeline, &self.single_join_post_root_pipeline_admission),
+            (StrictBoundedEnvelope::ClosedMultiJoinSubgraph, &self.closed_multi_join_subgraph_admission),
+            (
+                StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK,
+                &self.multi_join_aggregate_over_join_subplan_topk_admission,
+            ),
+            (
+                StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
+                &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+            ),
+            (
+                StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+                &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+            ),
+            (StrictBoundedEnvelope::KeyedHashJoinResidentSubplan, &self.keyed_hash_join_resident_subplan_admission),
+            (
+                StrictBoundedEnvelope::KeylessConditionalJoinInputSubplan,
+                &self.keyless_conditional_join_input_subplan_admission,
+            ),
+            (
+                StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+                &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+            ),
+            (
+                StrictBoundedEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
+                &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
+            ),
+            (StrictBoundedEnvelope::UnionPipeline, &self.union_pipeline_admission),
+        ]
+        .into_iter()
+        .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
+    }
+
+    fn first_local_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         self.nodes
             .iter()
             .find_map(|node| {
@@ -892,64 +1068,79 @@ impl CapabilityAnalysis {
                     ))
                 })
             })
-            .or_else(|| {
-                [
-                    ("root_join_admission", &self.root_join_admission),
-                    ("single_join_post_root_pipeline_admission", &self.single_join_post_root_pipeline_admission),
-                    ("closed_multi_join_subgraph_admission", &self.closed_multi_join_subgraph_admission),
-                    (
-                        "multi_join_aggregate_over_join_subplan_topk_admission",
-                        &self.multi_join_aggregate_over_join_subplan_topk_admission,
-                    ),
-                    (
-                        "mixed_keyed_residual_join_resident_grouped_aggregate_input_admission",
-                        &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
-                    ),
-                    (
-                        "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission",
-                        &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
-                    ),
-                    ("keyed_hash_join_resident_subplan_admission", &self.keyed_hash_join_resident_subplan_admission),
-                    (
-                        "keyless_conditional_join_input_subplan_admission",
-                        &self.keyless_conditional_join_input_subplan_admission,
-                    ),
-                    (
-                        "keyless_conditional_join_aggregate_over_join_subplan_inputs_admission",
-                        &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
-                    ),
-                    (
-                        "multi_join_resident_grouped_aggregate_subquery_filter_admission",
-                        &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
-                    ),
-                    ("union_pipeline_admission", &self.union_pipeline_admission),
-                ]
-                .into_iter()
-                .find_map(|(admission, decision)| {
-                    Some(capability_rejection_projection(
-                        CapabilityRejectionOwner::Admission(admission),
-                        ReservationRequirementScope::Subgraph,
-                        "admission_capability",
-                        decision.rejection_reason()?,
-                        decision.rejection_facts()?,
-                    ))
-                })
-            })
-            .or_else(|| {
-                self.requirements.iter().find_map(|requirement| {
-                    (requirement.status == ContractStatus::BlockedByLowerLevel).then(|| CapabilityRejectionProjection {
-                        owner: CapabilityRejectionOwner::Admission("lower_level_contract"),
-                        contract_scope: ReservationRequirementScope::Subgraph,
-                        memory_boundary: "lower_level_contract",
-                        reason: "blocked_lower_level_contract",
-                        facts: BTreeMap::from([
-                            ("reservation_kind", requirement.kind.as_str().to_string()),
-                            ("required_contract", requirement.required_contract.to_string()),
-                            ("contract_status", requirement.status.as_str().to_string()),
-                        ]),
-                    })
-                })
-            })
+    }
+
+    fn first_raw_admission_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
+        [
+            ("root_join_admission", &self.root_join_admission),
+            ("single_join_post_root_pipeline_admission", &self.single_join_post_root_pipeline_admission),
+            ("closed_multi_join_subgraph_admission", &self.closed_multi_join_subgraph_admission),
+            (
+                "multi_join_aggregate_over_join_subplan_topk_admission",
+                &self.multi_join_aggregate_over_join_subplan_topk_admission,
+            ),
+            (
+                "mixed_keyed_residual_join_resident_grouped_aggregate_input_admission",
+                &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+            ),
+            (
+                "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission",
+                &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+            ),
+            ("keyed_hash_join_resident_subplan_admission", &self.keyed_hash_join_resident_subplan_admission),
+            (
+                "keyless_conditional_join_input_subplan_admission",
+                &self.keyless_conditional_join_input_subplan_admission,
+            ),
+            (
+                "keyless_conditional_join_aggregate_over_join_subplan_inputs_admission",
+                &self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+            ),
+            (
+                "multi_join_resident_grouped_aggregate_subquery_filter_admission",
+                &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
+            ),
+            ("union_pipeline_admission", &self.union_pipeline_admission),
+        ]
+        .into_iter()
+        .find_map(|(admission, decision)| {
+            Some(capability_rejection_projection(
+                CapabilityRejectionOwner::Admission(admission),
+                ReservationRequirementScope::Subgraph,
+                "admission_capability",
+                decision.rejection_reason()?,
+                decision.rejection_facts()?,
+            ))
+        })
+    }
+
+    fn first_requirement_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
+        self.requirements.iter().find(|requirement| requirement.status != ContractStatus::Modeled).map(|requirement| {
+            let (reason, category) = match requirement.status {
+                ContractStatus::BlockedByLowerLevel => {
+                    ("blocked_lower_level_contract", CapabilityRejectionCategory::MissingLowerLevelContract)
+                },
+                ContractStatus::DeferredUntilPrerequisite => {
+                    ("deferred_strict_bounded_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
+                },
+                ContractStatus::RejectedByCapability => {
+                    ("rejected_strict_bounded_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
+                },
+                ContractStatus::Modeled => unreachable!("modeled requirements are filtered above"),
+            };
+            CapabilityRejectionProjection {
+                owner: CapabilityRejectionOwner::Admission("lower_level_contract"),
+                category,
+                contract_scope: ReservationRequirementScope::Subgraph,
+                memory_boundary: "lower_level_contract",
+                reason,
+                facts: BTreeMap::from([
+                    ("reservation_kind", requirement.kind.as_str().to_string()),
+                    ("required_contract", requirement.required_contract.to_string()),
+                    ("contract_status", requirement.status.as_str().to_string()),
+                ]),
+            }
+        })
     }
 }
 
@@ -960,7 +1151,36 @@ fn capability_rejection_projection(
     reason: &'static str,
     facts: &BTreeMap<&'static str, String>,
 ) -> CapabilityRejectionProjection {
-    CapabilityRejectionProjection { owner, contract_scope, memory_boundary, reason, facts: facts.clone() }
+    let category = capability_rejection_category(&owner, memory_boundary, reason, facts);
+    CapabilityRejectionProjection { owner, category, contract_scope, memory_boundary, reason, facts: facts.clone() }
+}
+
+fn capability_rejection_category(
+    owner: &CapabilityRejectionOwner,
+    memory_boundary: &str,
+    reason: &str,
+    facts: &BTreeMap<&'static str, String>,
+) -> CapabilityRejectionCategory {
+    if reason == "blocked_lower_level_contract" || memory_boundary == "lower_level_contract" {
+        return CapabilityRejectionCategory::MissingLowerLevelContract;
+    }
+    if facts.contains_key("expression_family") {
+        return CapabilityRejectionCategory::UnsupportedExpressionFamily;
+    }
+    if facts.contains_key("data_type")
+        || facts.contains_key("dtype")
+        || reason.contains("data_type")
+        || reason.contains("dtype")
+    {
+        return CapabilityRejectionCategory::UnsupportedArrowDtype;
+    }
+    match owner {
+        CapabilityRejectionOwner::Node(_) => CapabilityRejectionCategory::UnsupportedNodeOperator,
+        CapabilityRejectionOwner::Edge { .. } => CapabilityRejectionCategory::MissingEdgeContract,
+        CapabilityRejectionOwner::Invariant(_) | CapabilityRejectionOwner::Admission(_) => {
+            CapabilityRejectionCategory::MissingSubgraphInvariant
+        },
+    }
 }
 
 impl ContractStatus {

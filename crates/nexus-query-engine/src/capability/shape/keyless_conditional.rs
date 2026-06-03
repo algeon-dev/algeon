@@ -1,4 +1,5 @@
 use super::*;
+use crate::plan::AggregateNode;
 
 pub(in crate::capability) fn keyless_conditional_join_input_subplan_shape_decision(
     plan: &QueryPlan,
@@ -68,12 +69,13 @@ pub(in crate::capability) fn keyless_conditional_join_aggregate_over_join_subpla
         AggregateGrouping::Grouped,
         "keyless_grouped_aggregate_subplan_input",
     )?;
-    let (scalar_aggregate_id, scalar_aggregate_projection_id) = projection_wrapped_aggregate_over_join_subplan_root(
-        plan,
-        root_join.inputs[join_side_index(JoinSide::Right)],
-        AggregateGrouping::Scalar,
-        "keyless_scalar_aggregate_subplan_input",
-    )?;
+    let (scalar_aggregate_id, scalar_aggregate_projection_id, scalar_aggregate_shared_producer_id) =
+        projection_wrapped_scalar_aggregate_over_join_or_shared_grouped_aggregate_root(
+            plan,
+            root_join.inputs[join_side_index(JoinSide::Right)],
+            grouped_aggregate_id,
+            "keyless_scalar_aggregate_subplan_input",
+        )?;
 
     Ok(KeylessConditionalJoinAggregateOverJoinSubplanInputsShape {
         root_join_id,
@@ -81,6 +83,7 @@ pub(in crate::capability) fn keyless_conditional_join_aggregate_over_join_subpla
         grouped_aggregate_projection_id,
         scalar_aggregate_id,
         scalar_aggregate_projection_id,
+        scalar_aggregate_shared_producer_id,
         post_root_projection_id,
         final_sort_id,
     })
@@ -197,6 +200,34 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
     grouping: AggregateGrouping,
     reason_prefix: &'static str,
 ) -> Result<(NodeId, NodeId), CapabilityDecision> {
+    let (aggregate_id, projection_id) = projection_wrapped_aggregate_root(plan, node_id, grouping, reason_prefix)?;
+    let aggregate = aggregate_node(plan, aggregate_id, reason_prefix)?;
+    validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
+    Ok((aggregate_id, projection_id))
+}
+
+pub(in crate::capability) fn projection_wrapped_scalar_aggregate_over_join_or_shared_grouped_aggregate_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    grouped_aggregate_id: NodeId,
+    reason_prefix: &'static str,
+) -> Result<(NodeId, NodeId, Option<NodeId>), CapabilityDecision> {
+    let (aggregate_id, projection_id) =
+        projection_wrapped_aggregate_root(plan, node_id, AggregateGrouping::Scalar, reason_prefix)?;
+    let aggregate = aggregate_node(plan, aggregate_id, reason_prefix)?;
+    if aggregate.input == grouped_aggregate_id {
+        return Ok((aggregate_id, projection_id, Some(grouped_aggregate_id)));
+    }
+    validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
+    Ok((aggregate_id, projection_id, None))
+}
+
+fn projection_wrapped_aggregate_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    grouping: AggregateGrouping,
+    reason_prefix: &'static str,
+) -> Result<(NodeId, NodeId), CapabilityDecision> {
     let Some(node) = plan.node(node_id) else {
         return Err(CapabilityDecision::rejected(
             "aggregate_over_join_subplan_input_missing_projection",
@@ -214,6 +245,16 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
         ));
     };
     let aggregate_id = projection.input;
+    let aggregate = aggregate_node(plan, aggregate_id, reason_prefix)?;
+    validate_aggregate_grouping(aggregate_id, aggregate, grouping, reason_prefix)?;
+    Ok((aggregate_id, node_id))
+}
+
+fn aggregate_node<'a>(
+    plan: &'a QueryPlan,
+    aggregate_id: NodeId,
+    reason_prefix: &'static str,
+) -> Result<&'a AggregateNode, CapabilityDecision> {
     let Some(aggregate_node) = plan.node(aggregate_id) else {
         return Err(CapabilityDecision::rejected(
             "aggregate_over_join_subplan_input_missing_aggregate",
@@ -230,6 +271,15 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
             ],
         ));
     };
+    Ok(aggregate)
+}
+
+fn validate_aggregate_grouping(
+    aggregate_id: NodeId,
+    aggregate: &AggregateNode,
+    grouping: AggregateGrouping,
+    reason_prefix: &'static str,
+) -> Result<(), CapabilityDecision> {
     match grouping {
         AggregateGrouping::Grouped if aggregate.spec.group_exprs.is_empty() => {
             return Err(CapabilityDecision::rejected(
@@ -249,8 +299,7 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
         },
         AggregateGrouping::Grouped | AggregateGrouping::Scalar | AggregateGrouping::GroupingSets => {},
     }
-    validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
-    Ok((aggregate_id, node_id))
+    Ok(())
 }
 
 pub(in crate::capability) fn validate_source_filter_projection_leaf_pipeline_for_capability(

@@ -40,12 +40,12 @@ use nexus_query_engine::{
     GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs, stable_graph_result_schema,
+    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
 };
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, plan_error,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsSourceVertex,
+    CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, plan_error,
 };
 use crate::{
     error::{Error, ErrorCode},
@@ -846,7 +846,7 @@ fn prepare_bfs_logical_gpu_inputs(
     }
 
     let mut execution_spec = spec.clone();
-    execution_spec.output_schema = bfs_numeric_execution_schema(params.output);
+    execution_spec.output_schema = bfs_numeric_execution_schema(params);
     Ok(PreparedCugraphInputs {
         execution_spec,
         edge_schema: mapped_edge_schema,
@@ -986,26 +986,35 @@ fn remap_bfs_logical_schema(schema: &SchemaRef, columns: &[&str]) -> Result<Sche
     Ok(Arc::new(Schema::new(fields)))
 }
 
-fn bfs_numeric_execution_schema(output: CugraphBfsOutputOptions) -> SchemaRef {
-    let mut fields = match output.mode {
-        CugraphBfsOutputMode::Raw => stable_graph_result_schema(native_algorithm(CugraphAlgorithm::Bfs)),
+fn bfs_numeric_execution_schema(params: &super::CugraphBfsParams) -> SchemaRef {
+    let native_schema = bfs_native_result_schema(params.output.return_target_info);
+    let fields: Vec<_> = match params.output.mode {
+        CugraphBfsOutputMode::Raw => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
         CugraphBfsOutputMode::Normalized => Arc::new(Schema::new(vec![
-            arrow::datatypes::Field::new("vertex", DataType::Int64, false),
-            arrow::datatypes::Field::new("distance", DataType::Int64, true),
-            arrow::datatypes::Field::new("predecessor", DataType::Int64, true),
+            normalized_bfs_base_field(&native_schema, "vertex", false),
+            normalized_bfs_base_field(&native_schema, "distance", true),
+            normalized_bfs_base_field(&native_schema, "predecessor", true),
             arrow::datatypes::Field::new("reachable", DataType::Boolean, false),
-        ])),
-        CugraphBfsOutputMode::Path => stable_graph_result_schema(native_algorithm(CugraphAlgorithm::Bfs)),
-    }
-    .fields()
-    .iter()
-    .map(|field| field.as_ref().clone())
-    .collect::<Vec<_>>();
-    if output.return_target_info {
-        fields.push(arrow::datatypes::Field::new("target_found", DataType::Boolean, false));
-        fields.push(arrow::datatypes::Field::new("target_distance", DataType::Int64, true));
-    }
+        ]))
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .chain(native_schema.fields().iter().skip(3).map(|field| field.as_ref().clone()))
+        .collect(),
+        CugraphBfsOutputMode::Path => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
+    };
     Arc::new(Schema::new(fields))
+}
+
+fn bfs_native_result_schema(return_target_info: bool) -> SchemaRef {
+    let mut native_params = GraphBfsParams::new(0, None);
+    native_params.return_target_info = return_target_info;
+    GraphAlgorithm::Bfs.definition().result_schema_for_params(&GraphAlgorithmParams::Bfs(Box::new(native_params)))
+}
+
+fn normalized_bfs_base_field(schema: &SchemaRef, name: &str, nullable: bool) -> arrow::datatypes::Field {
+    let field = schema.field_with_name(name).expect("native BFS descriptor must expose raw BFS base fields");
+    arrow::datatypes::Field::new(field.name(), field.data_type().clone(), nullable)
 }
 
 fn decode_bfs_logical_gpu_output(
@@ -1024,12 +1033,13 @@ fn decode_bfs_logical_gpu_output(
         .copy_into_runtime(context.runtime())
         .map_err(cudf_logical_mapping_error)?;
     let mut columns = vec![("vertex", vertex), ("distance", distance), ("predecessor", predecessor)];
-    if raw.column_names().iter().any(|name| *name == "reachable") {
+    let raw_column_names = raw.column_names();
+    if raw_column_names.contains(&"reachable") {
         let reachable =
             cudf_series(&raw, "reachable")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
         columns.push(("reachable", reachable));
     }
-    if raw.column_names().iter().any(|name| *name == "target_found") {
+    if raw_column_names.contains(&"target_found") {
         let target_found = cudf_series(&raw, "target_found")?
             .copy_into_runtime(context.runtime())
             .map_err(cudf_logical_mapping_error)?;
@@ -1650,8 +1660,11 @@ fn native_graph_spec(
     if let Some(edge_id) = &spec.edge_id_col {
         edge_columns = edge_columns.with_edge_id(edge_id.clone());
     }
+    let algorithm = native_algorithm(spec.algorithm);
+    let params = native_algorithm_params(&spec.params, predicate_nodes);
+    let output_schema = algorithm.definition().result_schema_for_params(&params);
     GraphAlgorithmSpec::new(
-        native_algorithm(spec.algorithm),
+        algorithm,
         edge_columns,
         GraphConstructionOptions {
             directed: spec.graph_options.directed,
@@ -1666,29 +1679,9 @@ fn native_graph_spec(
                 }
             },
         },
-        native_algorithm_params(&spec.params, predicate_nodes),
-        native_graph_output_schema(spec),
+        params,
+        output_schema,
     )
-}
-
-fn native_graph_output_schema(spec: &CugraphAlgorithmSpec) -> SchemaRef {
-    match &spec.params {
-        CugraphAlgorithmParams::Bfs(params) => bfs_raw_graph_output_schema(params.output.return_target_info),
-        _ => stable_graph_result_schema(native_algorithm(spec.algorithm)),
-    }
-}
-
-fn bfs_raw_graph_output_schema(return_target_info: bool) -> SchemaRef {
-    let mut fields = stable_graph_result_schema(GraphAlgorithm::Bfs)
-        .fields()
-        .iter()
-        .map(|field| field.as_ref().clone())
-        .collect::<Vec<_>>();
-    if return_target_info {
-        fields.push(arrow::datatypes::Field::new("target_found", DataType::Boolean, false));
-        fields.push(arrow::datatypes::Field::new("target_distance", DataType::Int64, true));
-    }
-    Arc::new(Schema::new(fields))
 }
 
 fn bfs_normalized_output_projection(

@@ -16,6 +16,7 @@ use parquet::{
     },
 };
 
+use super::rewrite;
 use crate::{
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan},
@@ -151,7 +152,7 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
     }
 
     let mut nodes = plan.nodes().to_vec();
-    let parent_counts = parent_counts(&plan);
+    let parent_counts = rewrite::parent_counts(&plan);
     let mut diagnostics = DimensionDerivedRowGroupPruningDiagnostics::default();
     let mut changed = false;
 
@@ -416,18 +417,6 @@ fn projection_expr_lineages(
         Expr::Alias { expr, .. } => projection_expr_lineages(plan, parent_counts, input, expr),
         _ => Vec::new(),
     }
-}
-
-fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
-    let mut counts = vec![0; plan.node_count()];
-    for node in plan.nodes() {
-        for input in node.input_ids() {
-            if let Some(count) = counts.get_mut(input.index()) {
-                *count += 1;
-            }
-        }
-    }
-    counts
 }
 
 fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalParquetSource> {

@@ -106,12 +106,7 @@ pub use tpcds_parity::{
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches,
     sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
-use tsv::{
-    format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
-    format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows, format_native_optimizer_diagnostics,
-    format_source_diagnostics, format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows,
-    format_task_operator_rows, format_task_runtime_rows, stable_tsv_field, write_workload_dataset_metadata,
-};
+use tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata};
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
     NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,

@@ -552,7 +552,15 @@ impl GlueIcebergCatalogConfig {
     /// catalog. The config is credential-free and references the native source
     /// storage profile by id.
     pub fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
-        let mut config = TableFormatParquetReadStrategyConfig::from_env();
+        self.parquet_read_strategy_config_from(TableFormatParquetReadStrategyConfig::from_env())
+    }
+
+    /// Applies this catalog's credential-free endpoint/profile metadata to a
+    /// caller-owned table-format Parquet read-strategy config.
+    pub fn parquet_read_strategy_config_from(
+        &self,
+        mut config: TableFormatParquetReadStrategyConfig,
+    ) -> TableFormatParquetReadStrategyConfig {
         config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
         if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
             config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
@@ -714,6 +722,26 @@ impl GlueIcebergCatalogBackend {
     ) -> Result<Self> {
         let props = glue_catalog_props(&config, get);
         let parquet_read_strategy_config = config.parquet_read_strategy_config();
+        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+    }
+
+    /// Builds a connected Glue backend from a config and caller-owned
+    /// table-format Parquet read-strategy config.
+    pub async fn from_config_with_parquet_read_strategy_config(
+        config: GlueIcebergCatalogConfig,
+        get: impl FnMut(&str) -> Option<String>,
+        parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+    ) -> Result<Self> {
+        let props = glue_catalog_props(&config, get);
+        let parquet_read_strategy_config = config.parquet_read_strategy_config_from(parquet_read_strategy_config);
+        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+    }
+
+    async fn from_config_with_resolved_parquet_read_strategy_config(
+        config: GlueIcebergCatalogConfig,
+        props: HashMap<String, String>,
+        parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+    ) -> Result<Self> {
         let mut backend = Self::from_props(config.catalog_handle, props).await?;
         backend.parquet_read_strategy_config = Some(parquet_read_strategy_config);
         Ok(backend)
@@ -889,7 +917,15 @@ impl RestIcebergCatalogConfig {
     /// catalog. The config is credential-free and references the native source
     /// storage profile by id.
     pub fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
-        let mut config = TableFormatParquetReadStrategyConfig::from_env();
+        self.parquet_read_strategy_config_from(TableFormatParquetReadStrategyConfig::from_env())
+    }
+
+    /// Applies this catalog's credential-free endpoint/profile metadata to a
+    /// caller-owned table-format Parquet read-strategy config.
+    pub fn parquet_read_strategy_config_from(
+        &self,
+        mut config: TableFormatParquetReadStrategyConfig,
+    ) -> TableFormatParquetReadStrategyConfig {
         config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
         if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
             config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
@@ -1061,6 +1097,26 @@ impl RestIcebergCatalogBackend {
     ) -> Result<Self> {
         let props = rest_catalog_props(&config, get);
         let parquet_read_strategy_config = config.parquet_read_strategy_config();
+        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+    }
+
+    /// Builds a connected REST backend from a config and caller-owned
+    /// table-format Parquet read-strategy config.
+    pub async fn from_config_with_parquet_read_strategy_config(
+        config: RestIcebergCatalogConfig,
+        get: impl FnMut(&str) -> Option<String>,
+        parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+    ) -> Result<Self> {
+        let props = rest_catalog_props(&config, get);
+        let parquet_read_strategy_config = config.parquet_read_strategy_config_from(parquet_read_strategy_config);
+        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+    }
+
+    async fn from_config_with_resolved_parquet_read_strategy_config(
+        config: RestIcebergCatalogConfig,
+        props: HashMap<String, String>,
+        parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+    ) -> Result<Self> {
         let mut backend = Self::from_props(config.catalog_handle, props).await?;
         backend.parquet_read_strategy_config = Some(parquet_read_strategy_config);
         Ok(backend)
@@ -1211,6 +1267,71 @@ mod rest_tests {
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
         assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/catalog"));
+    }
+
+    #[test]
+    fn rest_parquet_strategy_config_uses_injected_server_strategy() {
+        let injected = TableFormatParquetReadStrategyConfig {
+            preference: crate::TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/rest-cache")),
+            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::FillBeforeRead,
+            lakehouse_cache_max_bytes: Some(1024),
+            ..Default::default()
+        };
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse")
+            .with_s3_endpoint("http://localhost:9000");
+
+        let strategy = config.parquet_read_strategy_config_from(injected);
+
+        assert_eq!(strategy.preference, crate::TableFormatParquetReadStrategyPreference::LocalCache);
+        assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/rest-cache")));
+        assert_eq!(strategy.lakehouse_cache_policy, crate::TableFormatLakehouseCachePolicy::FillBeforeRead);
+        assert_eq!(strategy.lakehouse_cache_max_bytes, Some(1024));
+        assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000"));
+    }
+
+    #[derive(Debug)]
+    struct StrategyMockBackend {
+        parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
+    }
+
+    #[async_trait]
+    impl IcebergCatalogBackend for StrategyMockBackend {
+        async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
+            Ok(vec![NamespaceIdent::new("tpch_sf1".to_string())])
+        }
+
+        async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
+            Ok(vec![TableIdent::new(namespace.clone(), "nation".to_string())])
+        }
+
+        async fn load_table(&self, _table: &TableIdent) -> Result<iceberg::table::Table> {
+            unreachable!("this test only inspects schema-provider construction")
+        }
+
+        fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
+            self.parquet_read_strategy_config.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_provider_carries_backend_strategy_into_schema_provider() {
+        let strategy = TableFormatParquetReadStrategyConfig {
+            preference: crate::TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/provider-cache")),
+            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::FillBeforeRead,
+            ..Default::default()
+        };
+        let backend = Arc::new(StrategyMockBackend { parquet_read_strategy_config: Some(strategy.clone()) });
+
+        let provider =
+            build_scoped_catalog_provider_from_backend(backend, "rest", "tpch_sf1", IcebergProviderKind::Gpu)
+                .await
+                .unwrap();
+        let schema = provider.schema_concrete("tpch_sf1").expect("scoped schema provider");
+
+        assert_eq!(schema.parquet_read_strategy_config, Some(strategy));
     }
 
     #[test]
@@ -1366,6 +1487,31 @@ mod rest_tests {
             },
             other => panic!("expected explicit S3 static credentials, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn glue_parquet_strategy_config_uses_injected_server_strategy() {
+        let injected = TableFormatParquetReadStrategyConfig {
+            preference: crate::TableFormatParquetReadStrategyPreference::RemoteKvikio,
+            remote_kvikio_experimental: true,
+            lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/glue-cache")),
+            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::ReadThrough,
+            lakehouse_cache_max_bytes: Some(2048),
+            storage_endpoint: Some("https://ambient.example.invalid".to_string()),
+            ..Default::default()
+        };
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_s3_endpoint("http://user:secret@localhost:9000/catalog?signature=secret#frag");
+
+        let strategy = config.parquet_read_strategy_config_from(injected);
+
+        assert_eq!(strategy.preference, crate::TableFormatParquetReadStrategyPreference::RemoteKvikio);
+        assert!(strategy.remote_kvikio_experimental);
+        assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/glue-cache")));
+        assert_eq!(strategy.lakehouse_cache_policy, crate::TableFormatLakehouseCachePolicy::ReadThrough);
+        assert_eq!(strategy.lakehouse_cache_max_bytes, Some(2048));
+        assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/catalog"));
     }
 
     #[test]

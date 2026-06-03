@@ -73,14 +73,38 @@ pub(in crate::capability) fn multi_join_aggregate_over_join_subplan_topk_shape_d
         "multi_join_aggregate_over_join_topk_requires_final_sort",
         "final_sort",
     )?;
-    let root_join_id = projection_input_with_missing_reason(
-        plan,
-        post_root_projection_id,
-        "multi_join_aggregate_over_join_topk_missing_node",
-        "multi_join_aggregate_over_join_topk_requires_projection_before_sort",
-        "post_root_projection",
-    )?;
+    let (post_projection_input_id, post_root_projections) =
+        peel_projection_chain_ids_for_shape(plan, post_root_projection_id)?;
+    if post_root_projections.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "multi_join_aggregate_over_join_topk_requires_projection_before_sort",
+            [
+                ("node_id", post_root_projection_id.to_string()),
+                ("operator", node_kind_for_fact(plan, post_root_projection_id)),
+            ],
+        ));
+    }
+    let (root_join_id, post_root_join_ids) =
+        peel_single_output_post_root_joins_for_multi_join_aggregate_topk(plan, post_projection_input_id)?;
 
+    let (aggregate_id, aggregate_projection_id) =
+        multi_join_aggregate_over_join_subplan_topk_root_shape(plan, root_join_id)?;
+
+    Ok(MultiJoinAggregateOverJoinSubplanTopKShape {
+        root_join_id,
+        aggregate_id,
+        aggregate_projection_id,
+        post_root_join_ids,
+        post_root_projection_id,
+        final_sort_id,
+        final_limit_id,
+    })
+}
+
+fn multi_join_aggregate_over_join_subplan_topk_root_shape(
+    plan: &QueryPlan,
+    root_join_id: NodeId,
+) -> Result<(NodeId, NodeId), CapabilityDecision> {
     let root_join = join_node_with_missing_reason(
         plan,
         root_join_id,
@@ -107,15 +131,48 @@ pub(in crate::capability) fn multi_join_aggregate_over_join_subplan_topk_shape_d
     }
 
     let aggregate_input = root_join.inputs[join_side_index(aggregate_over_join_side)];
-    let (aggregate_id, aggregate_projection_id) =
-        projection_wrapped_grouped_aggregate_over_join_subplan_root(plan, aggregate_input)?;
+    projection_wrapped_grouped_aggregate_over_join_subplan_root(plan, aggregate_input)
+}
 
-    Ok(MultiJoinAggregateOverJoinSubplanTopKShape {
-        root_join_id,
-        aggregate_id,
-        aggregate_projection_id,
-        post_root_projection_id,
-        final_sort_id,
-        final_limit_id,
-    })
+fn peel_single_output_post_root_joins_for_multi_join_aggregate_topk(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(NodeId, Vec<NodeId>), CapabilityDecision> {
+    let mut current = node_id;
+    let mut post_root_join_ids = Vec::new();
+    let mut visited = std::collections::BTreeSet::new();
+
+    loop {
+        if !visited.insert(current) {
+            return Err(CapabilityDecision::rejected(
+                "multi_join_aggregate_over_join_topk_post_root_join_cycle",
+                [("node_id", current.to_string())],
+            ));
+        }
+        let Some(node) = plan.node(current) else {
+            return Err(CapabilityDecision::rejected(
+                "multi_join_aggregate_over_join_topk_missing_node",
+                [("node_id", current.to_string())],
+            ));
+        };
+        let PlanNode::Join(join) = &node.kind else {
+            return Ok((current, post_root_join_ids));
+        };
+        require_keyed_inner_hash_join_without_residual_with_nonempty_keys(
+            current,
+            join,
+            "multi_join_aggregate_over_join_topk_requires_keyed_inner_hash_join",
+        )?;
+        let output_side = output_projection_single_side(
+            join,
+            current,
+            "multi_join_aggregate_over_join_topk_post_root_join_output_side",
+        )?;
+        let output_input = join.inputs[join_side_index(output_side)];
+        if multi_join_aggregate_over_join_subplan_topk_root_shape(plan, output_input).is_err() {
+            return Ok((current, post_root_join_ids));
+        }
+        post_root_join_ids.push(current);
+        current = output_input;
+    }
 }

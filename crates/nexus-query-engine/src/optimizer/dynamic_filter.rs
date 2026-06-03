@@ -1,3 +1,4 @@
+use super::rewrite;
 use crate::{
     datatypes::is_supported_arrow_type,
     dynamic_filter::{
@@ -144,7 +145,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
 
     let mut diagnostics = DynamicFilterRouteDiscoveryDiagnostics::default();
     let mut routes = Vec::new();
-    let parent_counts = parent_counts(&plan);
+    let parent_counts = rewrite::parent_counts(&plan);
 
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
@@ -376,18 +377,6 @@ fn input_reference_count(plan: &QueryPlan, target: NodeId) -> usize {
         count = count.saturating_add(node.input_ids().iter().filter(|input| **input == target).count());
     }
     count
-}
-
-fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
-    let mut counts = vec![0; plan.node_count()];
-    for node in plan.nodes() {
-        for input in node.input_ids() {
-            if let Some(count) = counts.get_mut(input.index()) {
-                *count += 1;
-            }
-        }
-    }
-    counts
 }
 
 fn route_orientations(join: &JoinNode) -> Vec<RouteOrientation<'_>> {

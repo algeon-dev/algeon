@@ -15,13 +15,15 @@ pub use iceberg::{
     iceberg_schema_to_datafusion_arrow_schema,
 };
 pub use scan::{
-    TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
-    TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-    TableFormatDirectDeviceReadDisposition, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
-    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
-    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+    TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+    TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition, TableFormatLakehouseCachePolicy,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata,
+    TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability,
+    TableFormatScalarValue, TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
     resolve_table_format_parquet_source_with_metadata,
 };
 pub use scan_exec::CudfTableFormatScanExec;

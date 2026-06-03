@@ -6,7 +6,7 @@ mod assertions;
 use assertions::assert_tpch_datafusion_planning_report_contract;
 
 #[tokio::test]
-async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
+async fn tpch_datafusion_planning_report_tracks_primary_rows_and_partial_native_fragments() {
     let dir = unique_temp_dir("datafusion-nexus-tpch-datafusion-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 

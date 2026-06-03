@@ -397,7 +397,7 @@ fn strict_admission_rejects_q86_class_rollup_rank_topk_selected_scan() {
 }
 
 #[test]
-fn strict_admission_accepts_q86_class_rollup_rank_topk_after_aggregate_join_pushdown() {
+fn strict_admission_rejects_q86_class_rollup_rank_topk_without_envelope_after_aggregate_join_pushdown() {
     let plan = selected_q86_class_rollup_rank_topk_plan();
     let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
 
@@ -426,14 +426,15 @@ fn strict_admission_accepts_q86_class_rollup_rank_topk_after_aggregate_join_push
         invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
     });
     assert!(rejection.is_none(), "source reduced by pre-aggregate should not trip the blocking-shape guard");
+    let first_rejection = analysis.first_rejection_projection().expect("optimized shape still needs envelope proof");
     assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
-        "optimized q86-class shape should produce a strict bounded pipeline"
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
+        "optimized q86-class shape must stay out of strict execution until one envelope authority admits it: {first_rejection:?}"
     );
 }
 
 #[test]
-fn strict_admission_accepts_q70_class_left_semi_rollup_rank_topk_after_aggregate_join_pushdown() {
+fn strict_admission_rejects_q70_class_left_semi_rollup_rank_topk_without_envelope_after_aggregate_join_pushdown() {
     let plan = selected_q70_class_left_semi_rollup_rank_topk_plan();
     let raw_analysis = plan.capability_analysis();
     assert!(
@@ -472,14 +473,16 @@ fn strict_admission_accepts_q70_class_left_semi_rollup_rank_topk_after_aggregate
         invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
     });
     assert!(rejection.is_none(), "left-semi source reduced by pre-aggregate should not trip the guard");
+    let first_rejection = analysis.first_rejection_projection().expect("optimized shape still needs envelope proof");
     assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
-        "optimized q70-class left-semi shape should produce a strict bounded pipeline"
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
+        "optimized q70-class left-semi shape must stay out of strict execution until one envelope authority admits it: {first_rejection:?}"
     );
 }
 
 #[test]
-fn strict_admission_accepts_q67_class_rollup_rank_topk_projection_chain_after_aggregate_join_pushdown() {
+fn strict_admission_rejects_q67_class_rollup_rank_topk_projection_chain_without_envelope_after_aggregate_join_pushdown()
+{
     let plan = selected_q67_class_rollup_rank_topk_projection_chain_plan();
 
     // Sanity: before the rewrite the q67-class shape (projection chain over a
@@ -563,8 +566,8 @@ fn strict_admission_accepts_q67_class_rollup_rank_topk_projection_chain_after_ag
     );
     let first_rejection = analysis.first_rejection_projection();
     assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_some(),
-        "optimized q67-class projection-chain shape should produce a strict bounded pipeline\n\
+        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
+        "optimized q67-class projection-chain shape must stay out of strict execution until one envelope authority admits it\n\
          has_rejections={} first_rejection={:?}\n\
          plan:\n{}",
         analysis.has_rejections(),

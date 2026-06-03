@@ -698,6 +698,10 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     assert_eq!(row.native_optimizer.semijoin_reduction.applied_count, 1);
 
     let text = planning.to_tsv();
+    assert_eq!(
+        planning_native_optimizer_cell(&planning),
+        "rule=semijoin_reduction,considered_count=1,applied_count=1,candidates=rule=semijoin_reduction,candidate_node_id=n5,before_root_node_id=n5,after_root_node_id=n5,crossed_join_node_ids=n4,target_subtree_id=n1,key_mappings=y_key->y_key@n1,cost_gate=signal=aggregate_keyset_shape,threshold_multiplier=8,accepted=true,admission_decision=NotEvaluated,original_admitted=not_evaluated,rewritten_admitted=not_evaluated,applied=true,rejected_reason=none;rule=join_build_side_selection,considered_count=1,applied_count=0,candidates=rule=join_build_side_selection,candidate_node_id=n5,before_build_side=right,after_build_side=none,left_estimated_rows=none,right_estimated_rows=none,left_estimated_bytes=none,right_estimated_bytes=none,applied=false,rejected_reason=NoBetterBuildSide;rule=dimension_derived_row_group_pruning,considered_count=2,applied_count=0,candidates=rule=dimension_derived_row_group_pruning,candidate_node_id=n5,dimension_source_node_id=none,target_source_node_id=none,dimension_key_column=none,target_key_column=none,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,applied=false,rejected_reason=DimensionKeyLineageUnavailable|rule=dimension_derived_row_group_pruning,candidate_node_id=n5,dimension_source_node_id=none,target_source_node_id=none,dimension_key_column=none,target_key_column=none,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,applied=false,rejected_reason=DimensionKeyLineageUnavailable;rule=dynamic_filter_route_discovery,considered_count=2,route_count=1,candidates=rule=dynamic_filter_route_discovery,candidate_node_id=n4,dynamic_filter_id=none,producer_build_side=right,producer_input_node_id=n3,consumer_input_node_id=n1,consumer_kind=none,consumer_node_id=none,consumer_source_node_id=none,producer_key_column=none,consumer_key_column=none,filter_kinds=none,consumer_lowering=none,consumer_reduction_stage=none,selected_source_bytes=none,total_source_bytes=none,routed=false,rejected_reason=UnsupportedJoinShape|rule=dynamic_filter_route_discovery,candidate_node_id=n5,dynamic_filter_id=df0,producer_build_side=right,producer_input_node_id=n4,consumer_input_node_id=n0,consumer_kind=hash_join_probe,consumer_node_id=n5,consumer_source_node_id=n0,producer_key_column=y_key,consumer_key_column=x_key,filter_kinds=range+small_in_list+hash_set_contains,consumer_lowering=post_decode_only,consumer_reduction_stage=join_probe_post_decode,selected_source_bytes=none,total_source_bytes=none,routed=true,rejected_reason=none"
+    );
     assert!(text.contains("\tnative_optimizer\t"));
     assert!(text.contains("rule=semijoin_reduction,considered_count=1,applied_count=1"));
     assert!(text.contains("crossed_join_node_ids="));
@@ -734,6 +738,10 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     assert_eq!(row.native_optimizer.projection_simplification.applied_count, 1);
 
     let text = planning.to_tsv();
+    assert_eq!(
+        planning_native_optimizer_cell(&planning),
+        "rule=projection_simplification,considered_count=1,applied_count=1,candidates=rule=projection_simplification,candidate_node_id=n1,replacement_node_id=n0,applied=true,rejected_reason=none"
+    );
     assert!(text.contains("rule=projection_simplification,considered_count=1,applied_count=1"));
     assert!(text.contains("replacement_node_id="));
     assert!(text.contains("applied=true"));
@@ -764,6 +772,10 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
     )]);
 
     let text = planning.to_tsv();
+    assert_eq!(
+        planning_native_optimizer_cell(&planning),
+        "rule=join_build_side_selection,considered_count=1,applied_count=0,candidates=rule=join_build_side_selection,candidate_node_id=n2,before_build_side=right,after_build_side=none,left_estimated_rows=10,right_estimated_rows=2,left_estimated_bytes=1024,right_estimated_bytes=64,applied=false,rejected_reason=NoBetterBuildSide;rule=dimension_derived_row_group_pruning,considered_count=2,applied_count=0,candidates=rule=dimension_derived_row_group_pruning,candidate_node_id=n2,dimension_source_node_id=n0,target_source_node_id=n1,dimension_key_column=left_key,target_key_column=right_key,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,applied=false,rejected_reason=DimensionPredicateAbsent|rule=dimension_derived_row_group_pruning,candidate_node_id=n2,dimension_source_node_id=n1,target_source_node_id=n0,dimension_key_column=right_key,target_key_column=left_key,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,applied=false,rejected_reason=DimensionPredicateAbsent;rule=dynamic_filter_route_discovery,considered_count=1,route_count=1,candidates=rule=dynamic_filter_route_discovery,candidate_node_id=n2,dynamic_filter_id=df0,producer_build_side=right,producer_input_node_id=n1,consumer_input_node_id=n0,consumer_kind=local_parquet_source,consumer_node_id=n0,consumer_source_node_id=n0,producer_key_column=right_key,consumer_key_column=left_key,filter_kinds=range+small_in_list+hash_set_contains,consumer_lowering=reader_predicate,consumer_reduction_stage=source_reader,selected_source_bytes=1024,total_source_bytes=1024,routed=true,rejected_reason=none"
+    );
     assert!(text.contains("rule=dynamic_filter_route_discovery,considered_count=1,route_count=1"));
     assert!(text.contains("dynamic_filter_id=df0"));
     assert!(text.contains("filter_kinds=range+small_in_list+hash_set_contains"));
@@ -772,6 +784,49 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
     assert!(text.contains("consumer_lowering=reader_predicate"));
     assert!(text.contains("consumer_reduction_stage=source_reader"));
     assert!(!text.contains("q08"));
+}
+
+#[test]
+fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new("AggregateExec(HashJoinExec)", 1));
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: "AggregateExec".to_string(),
+        input_plan_shape: "AggregateExec(HashJoinExec)".to_string(),
+        report,
+        native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics {
+            aggregate_join_pushdown: nexus_query_engine::AggregateJoinPushdownDiagnostics {
+                considered_count: 1,
+                applied_count: 1,
+                candidates: Vec::new(),
+            },
+            ..Default::default()
+        },
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+    };
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "aggregate_join_pushdown",
+        native_exec_leaf_for_report(),
+        diagnostics,
+    )]);
+
+    assert_eq!(
+        planning_native_optimizer_cell(&planning),
+        "rule=aggregate_join_pushdown,considered_count=1,applied_count=1,candidates=none"
+    );
+}
+
+fn planning_native_optimizer_cell(planning: &NativeDataFusionPlanningReport) -> String {
+    let text = planning.to_tsv();
+    let mut table_lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = table_lines.next().expect("planning TSV header");
+    let row = table_lines.next().expect("planning TSV data row");
+    let native_optimizer_index =
+        header.split('\t').position(|column| column == "native_optimizer").expect("native_optimizer TSV column");
+    row.split('\t').nth(native_optimizer_index).expect("native_optimizer TSV cell").to_string()
 }
 
 fn semijoin_reduction_projection_plan() -> nexus_query_engine::QueryPlan {
@@ -943,6 +998,7 @@ fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
         AdaptiveCandidateStatus::Admitted,
         AdaptiveStrategy::ConservativeCompiledPipeline,
         nexus_query_engine::AdaptiveAdmissionRuntimeEvidence::default(),
+        None,
         None,
     )
     .expect("adaptive projection report should be valid")

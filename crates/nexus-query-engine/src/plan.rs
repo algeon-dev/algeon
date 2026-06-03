@@ -39,9 +39,10 @@ pub use graph_algorithm::{
     GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
     GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams,
     GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams,
-    GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams, GraphPageRankParams,
-    GraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
-    GraphWccParams, graph_result_schema_for_params, stable_graph_result_schema,
+    GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement,
+    GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams, GraphWeightPolicy,
+    graph_result_schema_for_params, stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,

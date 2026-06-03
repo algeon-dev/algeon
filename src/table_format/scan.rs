@@ -10,6 +10,21 @@ use crate::{Result, policy::FallbackReason};
 /// source object-store settings.
 pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
 
+/// Env var selecting the table-format Parquet source strategy.
+pub const CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV: &str = "CUDF_ICEBERG_PARQUET_READ_STRATEGY";
+/// Env var enabling the experimental remote KvikIO source strategy.
+pub const CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV: &str = "CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL";
+/// Env var pointing at the local lakehouse byte-cache root.
+pub const CUDF_LAKEHOUSE_CACHE_ROOT_ENV: &str = "CUDF_LAKEHOUSE_CACHE_ROOT";
+/// Env var selecting lakehouse byte-cache miss behavior.
+pub const CUDF_LAKEHOUSE_CACHE_POLICY_ENV: &str = "CUDF_LAKEHOUSE_CACHE_POLICY";
+/// Env var selecting the best-effort retained byte target for the lakehouse cache.
+pub const CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV: &str = "CUDF_LAKEHOUSE_CACHE_MAX_BYTES";
+/// Standard AWS SDK S3 endpoint override env var.
+pub const AWS_ENDPOINT_URL_S3_ENV: &str = "AWS_ENDPOINT_URL_S3";
+/// Standard AWS SDK endpoint override env var.
+pub const AWS_ENDPOINT_URL_ENV: &str = "AWS_ENDPOINT_URL";
+
 /// Table format that produced a resolved scan plan.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TableFormat {
@@ -284,7 +299,7 @@ fn table_format_parquet_read_strategy_config_from_env(
     let env_nonempty = |get: &mut dyn FnMut(&str) -> Option<String>, name: &str| {
         get(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
     };
-    let preference = match get("CUDF_ICEBERG_PARQUET_READ_STRATEGY")
+    let preference = match get(CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV)
         .unwrap_or_else(|| "auto".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -294,10 +309,10 @@ fn table_format_parquet_read_strategy_config_from_env(
         "remote_kvikio" => TableFormatParquetReadStrategyPreference::RemoteKvikio,
         _ => TableFormatParquetReadStrategyPreference::Auto,
     };
-    let remote_kvikio_experimental = get("CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL")
+    let remote_kvikio_experimental = get(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV)
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-    let lakehouse_cache_root = env_nonempty(&mut get, "CUDF_LAKEHOUSE_CACHE_ROOT").map(PathBuf::from);
-    let lakehouse_cache_policy = match get("CUDF_LAKEHOUSE_CACHE_POLICY")
+    let lakehouse_cache_root = env_nonempty(&mut get, CUDF_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
+    let lakehouse_cache_policy = match get(CUDF_LAKEHOUSE_CACHE_POLICY_ENV)
         .unwrap_or_else(|| "disabled".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -307,10 +322,10 @@ fn table_format_parquet_read_strategy_config_from_env(
         _ => TableFormatLakehouseCachePolicy::Disabled,
     };
     let lakehouse_cache_max_bytes =
-        get("CUDF_LAKEHOUSE_CACHE_MAX_BYTES").and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
+        get(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV).and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
     let storage_endpoint = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT")
-        .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL_S3"))
-        .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL"))
+        .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_S3_ENV))
+        .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_ENV))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
     let storage_profile_id = if storage_endpoint.is_some()
         || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_REGION").is_some()

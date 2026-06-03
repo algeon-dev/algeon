@@ -109,6 +109,7 @@ pub fn adaptive_bounded_pipeline_admission_with_memory_history(
         adaptive_strategy,
         runtime_evidence,
         rejection_reason,
+        admission.rejection_projection(),
     )?;
     Ok(Some(AdaptivePipelineAdmission { report, pipeline }))
 }

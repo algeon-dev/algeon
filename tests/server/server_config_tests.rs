@@ -1,6 +1,8 @@
 #![cfg(feature = "server")]
 
 use std::collections::BTreeMap;
+#[cfg(feature = "iceberg")]
+use std::path::PathBuf;
 
 use datafusion_nexus::server::{
     DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_NEXUS_SERVER_BIND_ENV,
@@ -15,7 +17,11 @@ use datafusion_nexus::server::{
     DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
-use nexus_query_engine::{MemoryControlPolicy, S3SourceStorageCredential};
+#[cfg(feature = "iceberg")]
+use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
+use nexus_query_engine::MemoryControlPolicy;
+#[cfg(feature = "iceberg")]
+use nexus_query_engine::S3SourceStorageCredential;
 
 #[test]
 fn server_config_defaults_to_single_flight_sql_admission() {
@@ -692,6 +698,117 @@ fn server_iceberg_config_kind_rest_happy_path() {
     assert_eq!(rest.s3_endpoint.as_deref(), Some("http://localhost:9000"));
     assert_eq!(rest.s3_region.as_deref(), Some("us-east-1"));
     assert_eq!(rest.s3_path_style_access, Some(true));
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_owns_table_format_parquet_strategy() {
+    use datafusion_nexus::server::{
+        CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
+        CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://user:secret@localhost:9000/rustfs?sig=secret".to_string()),
+        (CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, "local_cache".to_string()),
+        (CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, "true".to_string()),
+        (CUDF_LAKEHOUSE_CACHE_ROOT_ENV, "/tmp/nexus-cache".to_string()),
+        (CUDF_LAKEHOUSE_CACHE_POLICY_ENV, "read_through".to_string()),
+        (CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "4096".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+    let strategy = iceberg.parquet_read_strategy_config;
+
+    assert_eq!(strategy.preference, TableFormatParquetReadStrategyPreference::LocalCache);
+    assert!(strategy.remote_kvikio_experimental);
+    assert_eq!(strategy.lakehouse_cache_root, Some(PathBuf::from("/tmp/nexus-cache")));
+    assert_eq!(strategy.lakehouse_cache_policy, TableFormatLakehouseCachePolicy::ReadThrough);
+    assert_eq!(strategy.lakehouse_cache_max_bytes, Some(4096));
+    assert_eq!(strategy.storage_profile_id.as_deref(), Some("table_format_s3"));
+    assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/rustfs"));
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_rejects_unknown_table_format_parquet_strategy() {
+    use datafusion_nexus::server::{
+        CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, "surprise".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV));
+    assert!(error.to_string().contains("host_buffer"));
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_rejects_unknown_lakehouse_cache_policy() {
+    use datafusion_nexus::server::{
+        CUDF_LAKEHOUSE_CACHE_POLICY_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (CUDF_LAKEHOUSE_CACHE_POLICY_ENV, "eventual".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(CUDF_LAKEHOUSE_CACHE_POLICY_ENV));
+    assert!(error.to_string().contains("fill_before_read"));
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_rejects_invalid_table_format_strategy_bool_and_size() {
+    use datafusion_nexus::server::{
+        CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+    };
+    let required = [
+        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+    ];
+    let invalid_bool = required
+        .iter()
+        .cloned()
+        .chain([(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, "sometimes".to_string())])
+        .collect::<BTreeMap<_, _>>();
+    let invalid_bool_error = ServerConfig::from_env_get(|name| invalid_bool.get(name).cloned()).unwrap_err();
+    assert!(invalid_bool_error.to_string().contains(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV));
+
+    let zero_size = required
+        .iter()
+        .cloned()
+        .chain([(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "0".to_string())])
+        .collect::<BTreeMap<_, _>>();
+    let zero_size_error = ServerConfig::from_env_get(|name| zero_size.get(name).cloned()).unwrap_err();
+    assert!(zero_size_error.to_string().contains(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV));
 }
 
 #[cfg(feature = "iceberg")]

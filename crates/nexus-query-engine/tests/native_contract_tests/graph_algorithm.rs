@@ -5,8 +5,9 @@ use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
     GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphPageRankParams, GraphPredicateInput,
-    PlanNode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPredicateInput, GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryPlan,
+    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
 };
@@ -362,6 +363,31 @@ fn graph_operation_registry_pins_baseline_inventory() {
             stable_graph_result_schema(def.algorithm).as_ref(),
             "registry output_schema and stable_graph_result_schema must agree",
         );
+        assert_eq!(
+            def.base_result_schema().as_ref(),
+            stable_graph_result_schema(def.algorithm).as_ref(),
+            "descriptor base_result_schema and stable_graph_result_schema must agree",
+        );
+        assert_eq!(
+            def.algorithm.requires_source_vertex(),
+            def.source_vertex_requirement().requires_source_vertex(),
+            "GraphAlgorithm source requirement helper must project the descriptor",
+        );
+        assert_eq!(
+            def.algorithm.consumes_weight(),
+            def.weight_policy().consumes_weight(),
+            "GraphAlgorithm weight helper must project the descriptor",
+        );
+        assert_eq!(
+            def.algorithm.output_schema_kind(),
+            def.output_schema_kind(),
+            "GraphAlgorithm output-schema helper must project the descriptor",
+        );
+        assert_eq!(
+            def.default_params().algorithm(),
+            def.algorithm,
+            "descriptor default params must use the registry algorithm variant",
+        );
     }
 
     let mut names = GRAPH_OPERATION_REGISTRY.iter().map(|def| def.name).collect::<Vec<_>>();
@@ -378,6 +404,185 @@ fn graph_operation_registry_pins_baseline_inventory() {
         GraphAlgorithm::all().collect::<Vec<_>>(),
         GRAPH_OPERATION_REGISTRY.iter().map(|def| def.algorithm).collect::<Vec<_>>(),
         "GraphAlgorithm::all must iterate the registry order",
+    );
+}
+
+#[test]
+fn graph_operation_registry_pins_descriptor_contracts() {
+    let descriptors: Vec<_> = GRAPH_OPERATION_REGISTRY
+        .iter()
+        .map(|def| {
+            (
+                def.algorithm,
+                def.source_vertex_requirement(),
+                def.weight_policy(),
+                def.output_schema_kind(),
+                def.default_graph_options(&GraphConstructionOptions::default()).directed,
+            )
+        })
+        .collect();
+    assert_eq!(
+        descriptors,
+        vec![
+            (
+                GraphAlgorithm::PageRank,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::Bfs,
+                GraphSourceVertexRequirement::Required,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::DefaultMode,
+                true,
+            ),
+            (
+                GraphAlgorithm::Louvain,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::EigenvectorCentrality,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::KatzCentrality,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::Hits,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::Sssp,
+                GraphSourceVertexRequirement::Required,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::DegreesAll,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::InDegreesAll,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::OutDegreesAll,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::WeaklyConnectedComponents,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::StronglyConnectedComponents,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::TriangleCountAll,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::CoreNumber,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::KCore,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::MinimumSpanningTree,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Required,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::PageRankStrict,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::Leiden,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::Ecg,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::SpectralModularityMaximization,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::BalancedCutClustering,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+        ],
+        "native graph descriptor fields are part of the SQL/native graph contract",
+    );
+
+    let mut bfs_params = GraphBfsParams::new(0, None);
+    bfs_params.return_target_info = true;
+    let schema =
+        GraphAlgorithm::Bfs.definition().result_schema_for_params(&GraphAlgorithmParams::Bfs(Box::new(bfs_params)));
+    assert_eq!(
+        schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["vertex", "distance", "predecessor", "target_found", "target_distance"],
+        "BFS target-info schema is native descriptor-owned",
     );
 }
 

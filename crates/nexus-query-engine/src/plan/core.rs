@@ -127,10 +127,16 @@ impl QueryPlan {
         &self,
         boundary_policy: ExecutionBoundaryPolicy,
     ) -> Option<BTreeMap<&'static str, String>> {
-        if self.contains_join() && !self.has_strict_bounded_join_admission() {
-            Some(bounded_join_unsupported_shape_facts(self, boundary_policy))
-        } else {
-            None
+        if !self.contains_join() {
+            return None;
+        }
+
+        match crate::exec::strict_bounded_pipeline_rejection_projection(self) {
+            Ok(Some(projection)) => {
+                Some(bounded_join_unsupported_shape_facts(self, boundary_policy, Some(&projection)))
+            },
+            Ok(None) => None,
+            Err(_) => Some(bounded_join_unsupported_shape_facts(self, boundary_policy, None)),
         }
     }
 
@@ -139,13 +145,11 @@ impl QueryPlan {
         &self,
         boundary_policy: ExecutionBoundaryPolicy,
     ) -> Option<BTreeMap<&'static str, String>> {
-        (self.contains_join() && self.has_strict_bounded_join_admission())
+        if !self.contains_join() {
+            return None;
+        }
+        matches!(crate::exec::strict_bounded_pipeline_rejection_projection(self), Ok(None))
             .then(|| bounded_join_modeled_facts(self, boundary_policy))
-    }
-
-    fn has_strict_bounded_join_admission(&self) -> bool {
-        let analysis = self.capability_analysis();
-        analysis.admits_strict_bounded_join()
     }
 
     /// Returns nodes that are not reachable from the explicit sink input.

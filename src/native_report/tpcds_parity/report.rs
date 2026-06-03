@@ -161,6 +161,46 @@ pub struct NativeTpcdsParityRow {
     pub native_runtime_failure: Option<String>,
 }
 
+impl TsvRow for NativeTpcdsParityRow {
+    const COLUMNS: &'static [&'static str] = NATIVE_TPCDS_PARITY_TSV_COLUMNS;
+    const SCHEMA_VERSION: u32 = NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION;
+
+    fn fields(&self) -> Vec<String> {
+        vec![
+            self.query_id.clone(),
+            self.cpu_planning_status.as_str().to_string(),
+            self.cpu_runtime_status.as_str().to_string(),
+            self.native_planning_outcome.as_str().to_string(),
+            self.native_reason_code.as_deref().unwrap_or("none").to_string(),
+            self.native_unsupported_category.as_deref().unwrap_or("none").to_string(),
+            self.post_native_execution_path.as_str().to_string(),
+            self.native_plan_fragment_count.to_string(),
+            self.host_datafusion_boundary_count.to_string(),
+            self.native_runtime_started.to_string(),
+            self.native_runtime_outcome.as_str().to_string(),
+            self.parity_status.as_str().to_string(),
+            self.parity_detail.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+            format_optional_usize(self.cpu_output_rows),
+            format_optional_usize(self.native_output_rows),
+            format_optional_usize(self.cpu_output_batches),
+            format_optional_usize(self.native_output_batches),
+            self.cpu_output_fingerprint.as_deref().unwrap_or("none").to_string(),
+            self.native_output_fingerprint.as_deref().unwrap_or("none").to_string(),
+            self.comparison_mode.as_str().to_string(),
+            self.duckdb_output.status.as_str().to_string(),
+            self.duckdb_output.cpu_parity_status.as_str().to_string(),
+            self.duckdb_output.cpu_parity_detail.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+            format_optional_usize(self.duckdb_output.output_rows),
+            format_optional_usize(self.duckdb_output.output_batches),
+            self.duckdb_output.output_fingerprint.as_deref().unwrap_or("none").to_string(),
+            format_optional_usize(self.native_reservation_live_peak_bytes),
+            format_optional_usize(self.native_reservation_denied_count),
+            format_optional_usize(self.native_retry_count),
+            self.native_runtime_failure.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
+        ]
+    }
+}
+
 /// Planning/runtime stage status used by the parity row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStageStatus {
@@ -325,7 +365,7 @@ impl NativeTpcdsParityReport {
     /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(output, "# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}");
+        let _ = writeln!(output, "# native_tpcds_parity_tsv_schema_version={}", NativeTpcdsParityRow::SCHEMA_VERSION);
         let _ = writeln!(output, "# parity_float_tolerance_absolute={}", self.float_tolerance.absolute);
         let _ = writeln!(output, "# parity_float_tolerance_relative={}", self.float_tolerance.relative);
         if let Some(mode) = self.statistical_aggregate_execution_mode {
@@ -335,46 +375,11 @@ impl NativeTpcdsParityReport {
             let _ = writeln!(output, "# stddev_samp_execution_mode={}", mode.as_str());
         }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
+        debug_assert_eq!(NativeTpcdsParityRow::COLUMNS.join("\t"), NATIVE_TPCDS_PARITY_TSV_HEADER);
         output.push_str(NATIVE_TPCDS_PARITY_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
-            let fields = [
-                row.query_id.clone(),
-                row.cpu_planning_status.as_str().to_string(),
-                row.cpu_runtime_status.as_str().to_string(),
-                row.native_planning_outcome.as_str().to_string(),
-                row.native_reason_code.as_deref().unwrap_or("none").to_string(),
-                row.native_unsupported_category.as_deref().unwrap_or("none").to_string(),
-                row.post_native_execution_path.as_str().to_string(),
-                row.native_plan_fragment_count.to_string(),
-                row.host_datafusion_boundary_count.to_string(),
-                row.native_runtime_started.to_string(),
-                row.native_runtime_outcome.as_str().to_string(),
-                row.parity_status.as_str().to_string(),
-                row.parity_detail.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
-                format_optional_usize(row.cpu_output_rows),
-                format_optional_usize(row.native_output_rows),
-                format_optional_usize(row.cpu_output_batches),
-                format_optional_usize(row.native_output_batches),
-                row.cpu_output_fingerprint.as_deref().unwrap_or("none").to_string(),
-                row.native_output_fingerprint.as_deref().unwrap_or("none").to_string(),
-                row.comparison_mode.as_str().to_string(),
-                row.duckdb_output.status.as_str().to_string(),
-                row.duckdb_output.cpu_parity_status.as_str().to_string(),
-                row.duckdb_output
-                    .cpu_parity_detail
-                    .as_deref()
-                    .map(stable_tsv_field)
-                    .unwrap_or_else(|| "none".to_string()),
-                format_optional_usize(row.duckdb_output.output_rows),
-                format_optional_usize(row.duckdb_output.output_batches),
-                row.duckdb_output.output_fingerprint.as_deref().unwrap_or("none").to_string(),
-                format_optional_usize(row.native_reservation_live_peak_bytes),
-                format_optional_usize(row.native_reservation_denied_count),
-                format_optional_usize(row.native_retry_count),
-                row.native_runtime_failure.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
-            ];
-            let _ = writeln!(output, "{}", fields.join("\t"));
+            let _ = writeln!(output, "{}", row.to_tsv_line());
         }
         output
     }
@@ -382,6 +387,53 @@ impl NativeTpcdsParityReport {
 
 fn format_optional_usize(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tpcds_parity_row_contract_header_matches_public_constant() {
+        assert_eq!(NativeTpcdsParityRow::COLUMNS.join("\t"), NATIVE_TPCDS_PARITY_TSV_HEADER);
+        assert_eq!(NativeTpcdsParityRow::SCHEMA_VERSION, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn tpcds_parity_row_fields_match_columns() {
+        let row = NativeTpcdsParityRow {
+            query_id: "q01".to_string(),
+            cpu_planning_status: ParityStageStatus::Succeeded,
+            cpu_runtime_status: ParityStageStatus::Succeeded,
+            native_planning_outcome: NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
+            native_reason_code: Some("unsupported_operator".to_string()),
+            native_unsupported_category: Some("operator_join".to_string()),
+            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+            native_plan_fragment_count: 0,
+            host_datafusion_boundary_count: 0,
+            native_runtime_started: false,
+            native_runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+            parity_status: ParityStatus::NativeRejected,
+            parity_detail: None,
+            cpu_output_rows: Some(0),
+            native_output_rows: None,
+            cpu_output_batches: Some(0),
+            native_output_batches: None,
+            cpu_output_fingerprint: None,
+            native_output_fingerprint: None,
+            comparison_mode: ParityComparisonMode::NotApplicable,
+            duckdb_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
+            native_reservation_live_peak_bytes: None,
+            native_reservation_denied_count: None,
+            native_retry_count: None,
+            native_runtime_failure: None,
+        };
+        assert_eq!(row.fields().len(), NativeTpcdsParityRow::COLUMNS.len());
+        assert_eq!(
+            row.to_tsv_line(),
+            "q01\tsucceeded\tsucceeded\trejected_before_execution\tunsupported_operator\toperator_join\tcpu\t0\t0\tfalse\tnot_started\tnative_rejected\tnone\t0\tnone\t0\tnone\tnone\tnone\tnot_applicable\tnot_configured\tnot_compared\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone"
+        );
+    }
 }
 
 /// Workload-item input for the parity report: paired CPU + native execution

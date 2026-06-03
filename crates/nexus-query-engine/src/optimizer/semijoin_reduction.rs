@@ -4,13 +4,13 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{Field, Schema};
 
+use super::rewrite;
 use crate::{
     adaptive_report::AdaptiveCandidateStatus,
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
         JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode,
-        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior, estimated_output_bytes,
-        estimated_output_rows,
+        ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
     },
 };
 
@@ -267,7 +267,7 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let sink = sink_with_input(plan.sink(), new_root);
+    let sink = rewrite::sink_with_input(plan.sink(), new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink);
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason, None, None, None);
@@ -531,59 +531,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_subtree(filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_subtree(projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_subtree(aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_subtree(window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_subtree(sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_subtree(limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let mut union = union.clone();
-                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::Union(union)
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_subtree(graph.input);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn try_rewrite_left_semi_candidate(&mut self, candidate_node_id: NodeId, join: &JoinNode) -> Option<NodeId> {
@@ -1200,13 +1148,6 @@ fn reject_applied_candidates(
         candidate.rewritten_admitted = rewritten_admitted;
     }
     diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
-}
-
-fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
-    }
 }
 
 #[cfg(test)]

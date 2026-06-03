@@ -6,13 +6,9 @@ use serde_json::Value;
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphCoreNumberParams,
-    CugraphDegreesAllParams, CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphGraphConstructionPolicy,
-    CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphHitsParams,
-    CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams, CugraphKatzCentralityParams,
-    CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams, CugraphOutDegreesAllParams, CugraphPageRankParams,
-    CugraphSccParams, CugraphSpectralClusteringParams, CugraphSqlConfig, CugraphSsspParams, CugraphTableReference,
-    CugraphTriangleCountAllParams, CugraphWccParams, plan_error, result_schema_for_params,
+    CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable,
+    CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphSqlConfig, CugraphTableReference,
+    plan_error, result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -28,7 +24,7 @@ pub fn parse_cugraph_algorithm_spec(
     let table_name = CugraphTableReference::parse(&literal_string_arg(args, 0, "table_name")?)?;
 
     let mut next = 1;
-    let source_vertex = if algorithm == CugraphAlgorithm::Bfs || algorithm == CugraphAlgorithm::Sssp {
+    let source_vertex = if algorithm.requires_source_vertex() {
         let value = literal_source_vertex_arg(args, next, algorithm)?;
         next += 1;
         Some(value)
@@ -64,15 +60,7 @@ pub fn parse_cugraph_algorithm_spec(
     //   undirected; libcugraph accepts directed but produces different
     //   (non-comparable) results, so the adapter default aligns with the
     //   Python oracle to keep parity meaningful.
-    if matches!(
-        algorithm,
-        CugraphAlgorithm::WeaklyConnectedComponents
-            | CugraphAlgorithm::TriangleCountAll
-            | CugraphAlgorithm::CoreNumber
-            | CugraphAlgorithm::KCore
-    ) {
-        graph_options.directed = false;
-    }
+    graph_options = algorithm.effective_default_graph_options(&graph_options);
     let mut params = default_params(algorithm, source_vertex);
     if args.len() > next {
         let options_json = literal_string_arg(args, next, "options_json")?;
@@ -82,7 +70,7 @@ pub fn parse_cugraph_algorithm_spec(
     // MST is a weighted algorithm: require an explicit weight column so
     // the graph is built with edge weights rather than silently producing
     // a meaningless unweighted result.
-    if algorithm == CugraphAlgorithm::MinimumSpanningTree && weight_col.is_none() {
+    if algorithm.native_algorithm().weight_policy().requires_weight() && weight_col.is_none() {
         return Err(plan_error(
             "cugraph_minimum_spanning_tree requires a weight column; supply one as the third argument",
         ));
@@ -103,28 +91,8 @@ pub fn parse_cugraph_algorithm_spec(
 }
 
 fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
-    let valid = match algorithm {
-        CugraphAlgorithm::PageRank
-        | CugraphAlgorithm::Louvain
-        | CugraphAlgorithm::EigenvectorCentrality
-        | CugraphAlgorithm::KatzCentrality
-        | CugraphAlgorithm::Hits
-        | CugraphAlgorithm::DegreesAll
-        | CugraphAlgorithm::InDegreesAll
-        | CugraphAlgorithm::OutDegreesAll
-        | CugraphAlgorithm::WeaklyConnectedComponents
-        | CugraphAlgorithm::StronglyConnectedComponents
-        | CugraphAlgorithm::TriangleCountAll
-        | CugraphAlgorithm::CoreNumber
-        | CugraphAlgorithm::KCore
-        | CugraphAlgorithm::MinimumSpanningTree
-        | CugraphAlgorithm::PageRankStrict
-        | CugraphAlgorithm::Leiden
-        | CugraphAlgorithm::Ecg
-        | CugraphAlgorithm::SpectralModularityMaximization
-        | CugraphAlgorithm::BalancedCutClustering => matches!(len, 1 | 3 | 4 | 5),
-        CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp => matches!(len, 2 | 4 | 5 | 6),
-    };
+    let valid =
+        if algorithm.requires_source_vertex() { matches!(len, 2 | 4 | 5 | 6) } else { matches!(len, 1 | 3 | 4 | 5) };
     if valid {
         Ok(())
     } else {
@@ -137,29 +105,10 @@ fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
 }
 
 fn expected_arity(algorithm: CugraphAlgorithm) -> &'static str {
-    match algorithm {
-        CugraphAlgorithm::PageRank
-        | CugraphAlgorithm::Louvain
-        | CugraphAlgorithm::EigenvectorCentrality
-        | CugraphAlgorithm::KatzCentrality
-        | CugraphAlgorithm::Hits
-        | CugraphAlgorithm::DegreesAll
-        | CugraphAlgorithm::InDegreesAll
-        | CugraphAlgorithm::OutDegreesAll
-        | CugraphAlgorithm::WeaklyConnectedComponents
-        | CugraphAlgorithm::StronglyConnectedComponents
-        | CugraphAlgorithm::TriangleCountAll
-        | CugraphAlgorithm::CoreNumber
-        | CugraphAlgorithm::KCore
-        | CugraphAlgorithm::MinimumSpanningTree
-        | CugraphAlgorithm::PageRankStrict
-        | CugraphAlgorithm::Leiden
-        | CugraphAlgorithm::Ecg
-        | CugraphAlgorithm::SpectralModularityMaximization
-        | CugraphAlgorithm::BalancedCutClustering => "table_name [, src_col, dst_col, weight_col, options_json]",
-        CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp => {
-            "table_name, source_vertex [, src_col, dst_col, weight_col, options_json]"
-        },
+    if algorithm.requires_source_vertex() {
+        "table_name, source_vertex [, src_col, dst_col, weight_col, options_json]"
+    } else {
+        "table_name [, src_col, dst_col, weight_col, options_json]"
     }
 }
 
@@ -167,52 +116,10 @@ fn default_params(
     algorithm: CugraphAlgorithm,
     source_vertex: Option<CugraphBfsSourceVertex>,
 ) -> CugraphAlgorithmParams {
-    match algorithm {
-        CugraphAlgorithm::PageRank => CugraphAlgorithmParams::PageRank(CugraphPageRankParams::default()),
-        CugraphAlgorithm::Bfs => CugraphAlgorithmParams::Bfs(CugraphBfsParams {
-            source_vertex: source_vertex.expect("BFS arity validation requires source_vertex"),
-            depth_limit: None,
-            predicates: CugraphBfsPredicateInputs::default(),
-            output: CugraphBfsOutputOptions::default(),
-        }),
-        CugraphAlgorithm::Louvain => CugraphAlgorithmParams::Louvain(CugraphLouvainParams::default()),
-        CugraphAlgorithm::EigenvectorCentrality => {
-            CugraphAlgorithmParams::EigenvectorCentrality(CugraphEigenvectorCentralityParams::default())
-        },
-        CugraphAlgorithm::KatzCentrality => {
-            CugraphAlgorithmParams::KatzCentrality(CugraphKatzCentralityParams::default())
-        },
-        CugraphAlgorithm::Hits => CugraphAlgorithmParams::Hits(CugraphHitsParams::default()),
-        CugraphAlgorithm::Sssp => CugraphAlgorithmParams::Sssp(CugraphSsspParams {
-            source_vertex: source_vertex
-                .expect("SSSP arity validation requires source_vertex")
-                .as_i64()
-                .expect("SSSP parser rejects non-numeric source_vertex"),
-            cutoff: None,
-        }),
-        CugraphAlgorithm::DegreesAll => CugraphAlgorithmParams::DegreesAll(CugraphDegreesAllParams),
-        CugraphAlgorithm::InDegreesAll => CugraphAlgorithmParams::InDegreesAll(CugraphInDegreesAllParams),
-        CugraphAlgorithm::OutDegreesAll => CugraphAlgorithmParams::OutDegreesAll(CugraphOutDegreesAllParams),
-        CugraphAlgorithm::WeaklyConnectedComponents => {
-            CugraphAlgorithmParams::WeaklyConnectedComponents(CugraphWccParams)
-        },
-        CugraphAlgorithm::StronglyConnectedComponents => {
-            CugraphAlgorithmParams::StronglyConnectedComponents(CugraphSccParams)
-        },
-        CugraphAlgorithm::TriangleCountAll => CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams),
-        CugraphAlgorithm::CoreNumber => CugraphAlgorithmParams::CoreNumber(CugraphCoreNumberParams::default()),
-        CugraphAlgorithm::KCore => CugraphAlgorithmParams::KCore(CugraphKCoreParams::default()),
-        CugraphAlgorithm::MinimumSpanningTree => CugraphAlgorithmParams::MinimumSpanningTree(CugraphMstParams),
-        CugraphAlgorithm::PageRankStrict => CugraphAlgorithmParams::PageRankStrict(CugraphPageRankParams::default()),
-        CugraphAlgorithm::Leiden => CugraphAlgorithmParams::Leiden(CugraphLeidenParams::default()),
-        CugraphAlgorithm::Ecg => CugraphAlgorithmParams::Ecg(CugraphEcgParams::default()),
-        CugraphAlgorithm::SpectralModularityMaximization => {
-            CugraphAlgorithmParams::SpectralModularityMaximization(CugraphSpectralClusteringParams::default())
-        },
-        CugraphAlgorithm::BalancedCutClustering => {
-            CugraphAlgorithmParams::BalancedCutClustering(CugraphSpectralClusteringParams::default())
-        },
+    if algorithm.requires_source_vertex() && source_vertex.is_none() {
+        panic!("source-vertex arity validation requires source_vertex");
     }
+    CugraphAlgorithmParams::from_native_defaults(algorithm, source_vertex)
 }
 
 fn parse_options_json(

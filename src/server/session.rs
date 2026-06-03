@@ -156,16 +156,28 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                     catalog_config = catalog_config.with_s3_path_style_access(path_style);
                 }
                 let backend =
-                    crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_env(catalog_config).await.map_err(
-                        |error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error),
-                    )?;
+                    crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
+                        catalog_config,
+                        |name| std::env::var(name).ok(),
+                        iceberg.parquet_read_strategy_config.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        ServerError::session("failed to connect to Glue Iceberg catalog backend", error)
+                    })?;
                 (Arc::new(backend), "glue")
             },
             super::config::IcebergCatalogBackendConfig::Rest(rest) => {
                 let backend =
-                    crate::iceberg::catalog::RestIcebergCatalogBackend::from_config_env(rest.clone()).await.map_err(
-                        |error| ServerError::session("failed to connect to REST Iceberg catalog backend", error),
-                    )?;
+                    crate::iceberg::catalog::RestIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
+                        rest.clone(),
+                        |name| std::env::var(name).ok(),
+                        iceberg.parquet_read_strategy_config.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        ServerError::session("failed to connect to REST Iceberg catalog backend", error)
+                    })?;
                 (Arc::new(backend), "rest")
             },
         };

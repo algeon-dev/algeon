@@ -32,6 +32,7 @@ pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
+pub(in crate::exec) use join::JoinMaterializationTxn;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedJoinLeafLocalParquetSourceStream, execute_bounded_compiled_join_build_from_frame,
