@@ -228,6 +228,14 @@ pub(crate) async fn run_tpcds_subset_report(
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-tpcds-stage-").tempdir()?);
     let (ctx, native_rule) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark)?;
+    // Footer-pruning object-store registration is best-effort: a failure must
+    // leave queries running unpruned, never abort the run.
+    if let Err(error) = register_footer_pruning_object_store(&ctx, &config).await {
+        eprintln!(
+            "[lakehouse_pruning] event=register_object_store_skipped error={}",
+            stable_tsv_field(&error.to_string())
+        );
+    }
 
     for table_name in TPCDS_TABLES {
         let table_fixture = config.fixture.with_tpcds_table(table_name, &config.tpcds_scale_factor)?;
@@ -534,7 +542,16 @@ pub(crate) async fn run_query_with_registered_native_tables(
     );
     let df = ctx.sql(&sql).await?;
     let task_ctx = df.task_ctx();
-    let physical_plan = df.create_physical_plan().await?;
+    let mut physical_plan = df.create_physical_plan().await?;
+    if iceberg_footer_pruning_enabled() {
+        let unpruned_plan = Arc::clone(&physical_plan);
+        physical_plan = datafusion_nexus::native::lakehouse_pruning::prune_table_format_native_plan(
+            physical_plan,
+            &task_ctx.runtime_env(),
+        )
+        .await
+        .unwrap_or(unpruned_plan);
+    }
     let planning_row = datafusion_nexus::NativeDataFusionPlanningReport::from_retained_rule(
         query_id.clone(),
         Arc::clone(&physical_plan),
@@ -769,4 +786,37 @@ pub(crate) async fn run_query_with_registered_native_tables(
     }
 
     Ok(row)
+}
+
+fn iceberg_footer_pruning_enabled() -> bool {
+    std::env::var("CUDF_ICEBERG_FOOTER_PRUNING")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
+}
+
+/// Registers a DataFusion object store for the S3 warehouse so footer-only
+/// pruning (`prune_table_format_native_plan`) can read Parquet footers/row-group
+/// ranges over the object store. The Iceberg catalog reads data files through
+/// its own FileIO, so without this the runtime env has no S3 store registered.
+/// No-op unless footer pruning is enabled and the fixture is S3-backed.
+async fn register_footer_pruning_object_store(
+    ctx: &SessionContext,
+    config: &IcebergNativeSmokeConfig,
+) -> SmokeResult<()> {
+    if !iceberg_footer_pruning_enabled() {
+        return Ok(());
+    }
+    let Some(warehouse) = config.fixture.warehouse() else {
+        return Ok(());
+    };
+    if !warehouse.starts_with("s3://") {
+        return Ok(());
+    }
+    let store = super::cpu_baseline::build_cpu_s3_object_store(warehouse).await?;
+    let store_url = datafusion::datasource::listing::ListingTableUrl::parse(warehouse)
+        .map_err(|error| smoke_error(format!("invalid warehouse url for footer pruning: {error}")))?
+        .object_store();
+    ctx.register_object_store(store_url.as_ref(), std::sync::Arc::new(store));
+    eprintln!("[lakehouse_pruning] event=register_object_store warehouse={warehouse}");
+    Ok(())
 }

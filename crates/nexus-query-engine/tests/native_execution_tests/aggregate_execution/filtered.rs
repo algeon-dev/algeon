@@ -84,6 +84,32 @@ fn native_global_aggregate_filter_masks_false_and_null_predicates() {
     assert_eq!(float64_array(batch, 3).values().as_ref(), &[7.5]);
 }
 
+#[test]
+fn native_global_aggregate_filter_masks_count_distinct_inputs() {
+    let (_runtime, context, schema, inputs) = filtered_aggregate_input();
+    let output_schema = Arc::new(Schema::new(vec![Field::new("distinct_payload", DataType::Int64, false)]));
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("payload"), "distinct_payload")
+                .with_distinct(true)
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[2]);
+}
+
 fn filtered_aggregate_input() -> (Arc<cudf::Runtime>, ExecutionContext, Arc<Schema>, GpuResidentInputMap) {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();

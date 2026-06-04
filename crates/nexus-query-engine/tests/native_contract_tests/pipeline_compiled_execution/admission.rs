@@ -788,25 +788,16 @@ fn assert_projection_global_limit_distinct_or_dedup_admission(plan: QueryPlan, l
 }
 
 #[test]
-fn strict_admission_rejects_projection_root_global_limit_unsafe_distinct_variants() {
+fn strict_admission_accepts_projection_root_global_limit_filtered_distinct_count() {
     let filtered = projection_root_global_limit_filtered_distinct_join_aggregate_plan();
     let filtered_analysis = filtered.capability_analysis();
-    assert!(!filtered_analysis.admits_projection_global_limit_pipeline());
-    assert_eq!(
-        filtered_analysis.projection_global_limit_admission.rejection_reason(),
-        Some("projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate")
-    );
-    let filtered_projection = filtered_analysis
-        .first_rejection_projection()
-        .expect("filtered distinct should project as projection/global-limit rejection");
-    assert_eq!(filtered_projection.reason, "projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate");
-    assert_eq!(
-        filtered_projection.facts.get("aggregate_state_contract_rejection").map(String::as_str),
-        Some("filtered_distinct")
+    assert!(
+        filtered_analysis.admits_projection_global_limit_pipeline(),
+        "filtered count-distinct is modeled by masked inputs before exact NUnique/count-distinct state"
     );
     assert!(
-        strict_bounded_pipeline_admission(&filtered).expect("strict admission should not fail").is_none(),
-        "filtered distinct must not compile through generic strict admission"
+        strict_bounded_pipeline_admission(&filtered).expect("strict admission should not fail").is_some(),
+        "filtered count-distinct should compile through projection/global-limit admission"
     );
 
     let non_count = projection_root_global_limit_non_count_distinct_join_aggregate_plan();
@@ -1543,12 +1534,15 @@ fn compiled_bounded_support_accepts_root_topk_rtk9_subcontract_graphs() {
 
 #[test]
 fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_in_graph() {
-    let plan =
-        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn);
+    let plan = optimize_query_plan(
+        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn),
+        &NativeOptimizerOptions::default(),
+    )
+    .plan;
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
     let pipeline =
-        compile_pipeline(&plan, &analysis).expect("RTK-10 null-filtered aggregate fan-in plan should compile");
+        compile_pipeline(&plan, &analysis).expect("RTK-10 anti-rewritten aggregate fan-in plan should compile");
 
     assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 8);
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 3);
@@ -1567,7 +1561,7 @@ fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_
         "rtk10 null-filtered aggregate fan-in",
         &report,
         ReservationKind::CapabilityContract,
-        "root_topk_null_filtered_left_join_fan_in_subcontract",
+        "root_topk_keyed_filtered_semi_join_subcontract",
     );
     assert_modeled_gate_row(
         "rtk10 null-filtered aggregate fan-in",

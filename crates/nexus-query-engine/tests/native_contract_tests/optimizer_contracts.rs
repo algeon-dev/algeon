@@ -17,7 +17,9 @@ use nexus_query_engine::{
     SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
     SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
     SemijoinReductionOptions, SemijoinReductionRejectedReason, SharedSubplanMaterializationDiagnostics,
-    SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions, optimize_query_plan,
+    SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions,
+    apply_dimension_derived_pruning_with_stats, discover_dimension_derived_pruning_requests, optimize_query_plan,
+    seed_dimension_derived_reader_predicates,
 };
 
 use super::*;
@@ -359,7 +361,317 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
         })
         .collect::<Vec<_>>();
     assert!(source_predicates.iter().any(|predicate| predicate.contains(" OR ")));
-    assert!(result.plan.to_string().contains("__cudf_shared_scalar_count"));
+    assert!(result.plan.to_string().contains("__cudf_shared_scalar_"));
+}
+
+#[test]
+fn native_optimizer_combines_repeated_scalar_mixed_aggregate_branches_with_filtered_aggregate() {
+    let plan = repeated_scalar_mixed_aggregate_materialization_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 3);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 3);
+    assert!(candidate.group_exprs.is_empty());
+    assert!(candidate.aggregate_exprs.iter().any(|expr| expr.contains("fn=avg")));
+    assert!(candidate.aggregate_exprs.iter().any(|expr| expr.contains("distinct=true")));
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+
+    let aggregates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 9);
+    assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
+    assert!(aggregates[0].spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg));
+    assert!(
+        aggregates[0].spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Count && expr.distinct)
+    );
+    let source_predicates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => source.reader_predicate.as_ref().map(ToString::to_string),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(source_predicates.len(), 1);
+    assert!(source_predicates[0].contains(" OR "));
+    assert!(source_predicates[0].contains("ss_quantity"));
+    assert!(result.plan.to_string().contains("__cudf_shared_scalar_"));
+}
+
+#[test]
+fn native_optimizer_combines_q09_like_scalar_branches_with_different_read_columns() {
+    let plan = repeated_q09_like_scalar_materialization_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 6);
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+
+    let sources = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(
+        sources[0].read_columns,
+        vec!["ss_quantity".to_string(), "ss_ext_discount_amt".to_string(), "ss_net_paid".to_string(),]
+    );
+
+    let aggregates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 6);
+    assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
+    assert_eq!(aggregates[0].spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg).count(), 4);
+}
+
+#[test]
+fn native_optimizer_combines_q09_like_scalar_branches_when_projected_count_is_not_representative() {
+    let plan = repeated_q09_like_scalar_materialization_plan_with_order(&[
+        Q09ScalarBranch::AvgDiscount,
+        Q09ScalarBranch::Count,
+        Q09ScalarBranch::AvgNetPaid,
+    ]);
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    assert_eq!(diagnostics.candidates[0].reuse_count, 6);
+
+    let aggregates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 6);
+    assert!(
+        aggregates[0]
+            .spec
+            .aggr_exprs
+            .iter()
+            .filter(|expr| expr.function == AggregateFunction::Count)
+            .all(|expr| matches!(&expr.expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))),
+        "projected literal count-star branches should be canonicalized to COUNT(non-null-literal):\n{}",
+        result.plan
+    );
+}
+
+#[test]
+fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
+    let plan = repeated_projected_literal_count_star_scalar_materialization_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 2);
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+
+    let aggregates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 2);
+    assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
+    assert!(result.plan.to_string().contains("__cudf_shared_scalar_"));
+}
+
+#[test]
+fn native_optimizer_does_not_combine_scalar_branches_with_different_projection_local_filter_semantics() {
+    let plan = repeated_scalar_count_with_different_projected_filter_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+#[test]
+fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filters() {
+    let plan = repeated_scalar_count_with_different_local_filter_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+#[test]
+fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs() {
+    let plan = repeated_scalar_avg_with_conflicting_source_refs_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(
+        candidate.rejected_reason,
+        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+    );
+}
+
+#[test]
+fn native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate() {
+    let plan = repeated_scalar_count_with_limit_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.shared_subplan_materialization.considered_count, 0);
+}
+
+#[test]
+fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_column_names() {
+    let plan = repeated_scalar_join_count_with_duplicate_input_names_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+    );
+}
+
+#[test]
+fn native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_inputs() {
+    let plan = repeated_scalar_self_join_count_with_duplicate_rowset_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+#[test]
+fn native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_inputs() {
+    let plan = repeated_scalar_self_join_count_with_reused_source_node_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+    );
 }
 
 #[test]
@@ -559,6 +871,149 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         2
     );
     assert!(diagnostics.candidates.iter().all(|candidate| !candidate.applied));
+}
+
+#[test]
+fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter() {
+    let dir = unique_contract_temp_dir("dimension-group-filter");
+    let plan = aggregate_group_filter_dimension_pruning_plan(&dir);
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
+    assert_eq!(diagnostics.applied_count, 1);
+    let applied = diagnostics.candidates.iter().find(|candidate| candidate.applied).expect("one candidate prunes");
+    assert_eq!(applied.dimension_key_column.as_deref(), Some("d_date_sk"));
+    assert_eq!(applied.target_key_column.as_deref(), Some("ss_sold_date_sk"));
+    assert_eq!(applied.derived_min_key, Some(2));
+    assert_eq!(applied.derived_max_key, Some(3));
+    assert_eq!(applied.selected_row_groups_before, Some(4));
+    assert_eq!(applied.selected_row_groups_after, Some(2));
+
+    let sources = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let date_source = sources
+        .iter()
+        .find(|source| source.read_columns.iter().any(|column| column == "d_year"))
+        .expect("date source should remain present");
+    assert_eq!(date_source.reader_predicate.as_ref().map(ToString::to_string).as_deref(), Some("(d_year = 2000)"));
+    let fact_source = sources
+        .iter()
+        .find(|source| source.read_columns.iter().any(|column| column == "ss_sold_date_sk"))
+        .expect("fact source should remain present");
+    assert_eq!(fact_source.files[0].row_groups.as_deref(), Some(&[1, 2][..]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
+fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
+    let dir = unique_contract_temp_dir("dimension-group-filter-discovery");
+    let plan = aggregate_group_filter_dimension_pruning_plan(&dir);
+
+    assert!(discover_dimension_derived_pruning_requests(&plan).is_empty());
+
+    let seeded = seed_dimension_derived_reader_predicates(plan);
+    let requests = discover_dimension_derived_pruning_requests(&seeded);
+
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].dimension_key_column, "d_date_sk");
+    assert_eq!(requests[0].target_key_column, "ss_sold_date_sk");
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
+fn dimension_pruning_does_not_seed_unsupported_reader_predicate() {
+    let dir = unique_contract_temp_dir("dimension-group-filter-unsupported");
+    let plan = aggregate_group_filter_dimension_pruning_plan_with_predicate(
+        &dir,
+        Expr::binary(
+            Expr::try_cast(Expr::column("ss_sold_year"), DataType::Int64),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int64(2000)),
+        ),
+    );
+
+    let seeded = seed_dimension_derived_reader_predicates(plan.clone());
+
+    assert_eq!(seeded, plan);
+    assert!(discover_dimension_derived_pruning_requests(&seeded).is_empty());
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
+fn dimension_pruning_external_stats_narrow_existing_row_group_selection() {
+    let mut builder = QueryPlanBuilder::new();
+    let schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));
+    let file = LocalParquetFile::new("/tmp/external-stats-row-groups.parquet").with_row_groups(vec![1, 3]);
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![file],
+        Arc::clone(&schema),
+        vec!["fact_key".to_string()],
+    )));
+    let plan = builder.finish_gpu_resident(source);
+    let result = apply_dimension_derived_pruning_with_stats(
+        plan,
+        source,
+        &[vec![
+            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 19 }),
+            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 30, max: 39 }),
+        ]],
+        nexus_query_engine::DimensionDerivedKeyRange { min: 35, max: 35 },
+    );
+
+    assert!(result.applied);
+    assert_eq!(result.before, 2);
+    assert_eq!(result.after, 1);
+    let PlanNode::Source(source) = &result.plan.node(source).expect("source should remain present").kind else {
+        panic!("node should remain a source");
+    };
+    let SourceNode::LocalParquet(source) = source.as_ref() else {
+        panic!("source should remain local parquet");
+    };
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[3][..]));
+}
+
+#[test]
+fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
+    let dir = unique_contract_temp_dir("dimension-left-right-filter");
+    let plan = aggregate_right_group_filter_left_join_plan(&dir);
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
+    assert!(result.plan.nodes().iter().all(|node| match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => source.reader_predicate.is_none(),
+            _ => true,
+        },
+        _ => true,
+    }));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
 }
 
 #[test]
@@ -1177,6 +1632,66 @@ fn outer_join_null_rejection_rejects_shared_outer_join_output() {
         result.diagnostics.outer_join_null_rejection.candidates[0].rejected_reason,
         Some(OuterJoinNullRejectionRejectedReason::SharedOuterJoinOutput)
     );
+}
+
+#[test]
+fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
+    let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::Eligible);
+
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
+    assert_eq!(result.diagnostics.outer_join_null_rejection.applied_count, 1);
+
+    let PlanNode::Projection(projection) = &result.plan.root_node().kind else {
+        panic!("root should remain the final projection");
+    };
+    let PlanNode::Join(join) = &result.plan.node(projection.input).expect("anti join").kind else {
+        panic!("projection should consume rewritten anti join");
+    };
+    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+    assert!(join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left));
+    assert_eq!(join.spec.output_projection.len(), 2);
+}
+
+#[test]
+fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_nullable() {
+    let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullableMarker);
+
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let PlanNode::Projection(projection) = &result.plan.root_node().kind else {
+        panic!("root should remain the final projection");
+    };
+    let PlanNode::Join(join) = &result.plan.node(projection.input).expect("anti join").kind else {
+        panic!("projection should consume rewritten anti join");
+    };
+    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+}
+
+#[test]
+fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
+    let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullsMatch);
+
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options());
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
+    assert!(result.diagnostics.outer_join_null_rejection.is_empty());
+}
+
+#[test]
+fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection() {
+    let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::MarkerEscapes);
+
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options());
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
+    assert!(result.diagnostics.outer_join_null_rejection.is_empty());
 }
 
 #[test]
@@ -1995,6 +2510,414 @@ fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::QueryPlan
     builder.finish_gpu_resident(union)
 }
 
+fn repeated_scalar_mixed_aggregate_materialization_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..3 {
+        let source = builder.add_source(q28_like_store_sales_source(bucket));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new(format!("B{bucket}_LP"), DataType::Float64, true),
+            Field::new(format!("B{bucket}_CNT"), DataType::Int64, false),
+            Field::new(format!("B{bucket}_CNTD"), DataType::Int64, false),
+        ]));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("ss_list_price"), format!("B{bucket}_LP")),
+                    AggregateExpr::new(
+                        AggregateFunction::Count,
+                        Expr::column("ss_list_price"),
+                        format!("B{bucket}_CNT"),
+                    ),
+                    AggregateExpr::new(
+                        AggregateFunction::Count,
+                        Expr::column("ss_list_price"),
+                        format!("B{bucket}_CNTD"),
+                    )
+                    .with_distinct(true),
+                ],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    let output_schema = Arc::new(Schema::new(
+        branch_schemas
+            .iter()
+            .flat_map(|schema| schema.fields().iter().map(|field| field.as_ref().clone()))
+            .collect::<Vec<_>>(),
+    ));
+    let root = builder.add_limit(root, LimitSpec::fetch(100), output_schema);
+    builder.finish_gpu_resident(root)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Q09ScalarBranch {
+    Count,
+    AvgDiscount,
+    AvgNetPaid,
+}
+
+fn repeated_q09_like_scalar_materialization_plan() -> nexus_query_engine::QueryPlan {
+    repeated_q09_like_scalar_materialization_plan_with_order(&[
+        Q09ScalarBranch::Count,
+        Q09ScalarBranch::AvgDiscount,
+        Q09ScalarBranch::AvgNetPaid,
+    ])
+}
+
+fn repeated_q09_like_scalar_materialization_plan_with_order(
+    branch_order: &[Q09ScalarBranch],
+) -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        for &branch in branch_order {
+            let (aggregate_input, aggregate_expr, field_name, data_type) = match branch {
+                Q09ScalarBranch::Count => {
+                    let source = builder.add_source(q09_filter_only_count_source(bucket));
+                    let count_arg = builder.add_projection(
+                        source,
+                        vec![
+                            ProjectionOutput::new(
+                                Expr::literal(LiteralValue::Int64(1)),
+                                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+                            ),
+                            ProjectionOutput::new(
+                                Expr::column("ss_quantity"),
+                                Field::new("ss_quantity", DataType::Int32, false),
+                            ),
+                        ],
+                    );
+                    (
+                        count_arg,
+                        AggregateExpr::new(
+                            AggregateFunction::Count,
+                            Expr::column("__cudf_aggregate_arg_0"),
+                            format!("B{bucket}_CNT"),
+                        ),
+                        format!("B{bucket}_CNT"),
+                        DataType::Int64,
+                    )
+                },
+                Q09ScalarBranch::AvgDiscount => {
+                    let source = builder.add_source(q09_like_store_sales_source(bucket, branch));
+                    (
+                        source,
+                        AggregateExpr::new(
+                            AggregateFunction::Avg,
+                            Expr::column("ss_ext_discount_amt"),
+                            format!("B{bucket}_AVG_DISCOUNT"),
+                        ),
+                        format!("B{bucket}_AVG_DISCOUNT"),
+                        DataType::Float64,
+                    )
+                },
+                Q09ScalarBranch::AvgNetPaid => {
+                    let source = builder.add_source(q09_like_store_sales_source(bucket, branch));
+                    (
+                        source,
+                        AggregateExpr::new(
+                            AggregateFunction::Avg,
+                            Expr::column("ss_net_paid"),
+                            format!("B{bucket}_AVG_NET"),
+                        ),
+                        format!("B{bucket}_AVG_NET"),
+                        DataType::Float64,
+                    )
+                },
+            };
+            let output_schema = Arc::new(Schema::new(vec![Field::new(field_name, data_type, true)]));
+            let aggregate = builder.add_aggregate(
+                aggregate_input,
+                AggregateSpec::new(Vec::new(), vec![aggregate_expr]),
+                Arc::clone(&output_schema),
+            );
+            branches.push(aggregate);
+            branch_schemas.push(output_schema);
+        }
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let source = builder.add_source(q09_filter_only_count_source(bucket));
+        let empty = builder.add_projection(source, Vec::new());
+        let count_arg = builder.add_projection(
+            empty,
+            vec![ProjectionOutput::new(
+                Expr::literal(LiteralValue::Int64(1)),
+                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+            )],
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            count_arg,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::column("__cudf_aggregate_arg_0"),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_count_with_different_projected_filter_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for projected_column in ["a", "b"] {
+        let source = builder.add_source(two_value_projection_filter_source());
+        let projection_schema = Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false)]));
+        let projected = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column(projected_column), Field::new("p", DataType::Int32, false))],
+        );
+        let filtered = builder.add_filter(
+            projected,
+            Expr::binary(Expr::column("p"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+            projection_schema,
+        );
+        let output_schema =
+            Arc::new(Schema::new(vec![Field::new(format!("CNT_{projected_column}"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("CNT_{projected_column}"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_count_with_different_local_filter_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let source = builder.add_source(q09_like_store_sales_source(bucket, Q09ScalarBranch::Count));
+        let filter_schema = Arc::new(Schema::new(vec![Field::new("ss_quantity", DataType::Int32, false)]));
+        let filtered = builder.add_filter(
+            source,
+            Expr::binary(
+                Expr::column("ss_quantity"),
+                BinaryOp::GtEq,
+                Expr::literal(LiteralValue::Int32(bucket * 20 + 10)),
+            ),
+            filter_schema,
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for file_index in [0, 1] {
+        let source = builder.add_source(conflicting_ref_value_source(file_index));
+        let output_schema =
+            Arc::new(Schema::new(vec![Field::new(format!("AVG_V_{file_index}"), DataType::Float64, true)]));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), format!("AVG_V_{file_index}"))],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_count_with_limit_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let source = builder.add_source(q09_like_store_sales_source(bucket, Q09ScalarBranch::Count));
+        let limit_schema = Arc::new(Schema::new(vec![Field::new("ss_quantity", DataType::Int32, false)]));
+        let limited = builder.add_limit(source, LimitSpec::fetch(10), limit_schema);
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            limited,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let left = builder.add_source(duplicate_named_source("left", bucket));
+        let right = builder.add_source(duplicate_named_source("right", 0));
+        let join_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let joined = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "v", "v"), ColumnRef::input(1, "v", "v"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
+            join_schema,
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let left = builder.add_source(duplicate_named_source("same-rowset", bucket));
+        let right = builder.add_source(duplicate_named_source("same-rowset", 0));
+        let join_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let joined = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "v", "v"), ColumnRef::input(1, "v", "v"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
+            join_schema,
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
+fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let mut branches = Vec::new();
+    let mut branch_schemas = Vec::new();
+    for bucket in 0..2 {
+        let source = builder.add_source(duplicate_named_source("same-reused-rowset", bucket));
+        let join_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let joined = builder.add_join(
+            source,
+            source,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "v", "v"), ColumnRef::input(1, "v", "v"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
+            join_schema,
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
+        let aggregate = builder.add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    AggregateFunction::Count,
+                    Expr::literal(LiteralValue::Int64(1)),
+                    format!("B{bucket}_CNT"),
+                )],
+            ),
+            Arc::clone(&output_schema),
+        );
+        branches.push(aggregate);
+        branch_schemas.push(output_schema);
+    }
+    let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
+    builder.finish_gpu_resident(root)
+}
+
 fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let grouped_input = builder.add_source(two_file_source(["a", "b"]));
@@ -2074,6 +2997,178 @@ fn shared_fact_target_dimension_pruning_plan() -> nexus_query_engine::QueryPlan 
     builder.finish_gpu_resident(union)
 }
 
+fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engine::QueryPlan {
+    aggregate_group_filter_dimension_pruning_plan_with_predicate(
+        dir,
+        Expr::binary(Expr::column("ss_sold_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
+    )
+}
+
+fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
+    dir: &Path,
+    filter_predicate: Expr,
+) -> nexus_query_engine::QueryPlan {
+    let fact_path = dir.join("store_sales.parquet");
+    let date_path = dir.join("date_dim.parquet");
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_sold_date_sk", DataType::Int32, false),
+        Field::new("ss_item_sk", DataType::Int32, false),
+        Field::new("ss_quantity", DataType::Int32, false),
+    ]));
+    let date_schema = Arc::new(Schema::new(vec![
+        Field::new("d_date_sk", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    write_i32_record_batch_parquet(
+        &fact_path,
+        Arc::clone(&fact_schema),
+        vec![
+            Int32Array::from(vec![1, 2, 3, 4]),
+            Int32Array::from(vec![10, 20, 30, 40]),
+            Int32Array::from(vec![1, 1, 1, 1]),
+        ],
+        1,
+    );
+    write_i32_record_batch_parquet(
+        &date_path,
+        Arc::clone(&date_schema),
+        vec![Int32Array::from(vec![1, 2, 3, 4]), Int32Array::from(vec![1999, 2000, 2000, 2001])],
+        1,
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&fact_schema),
+        vec!["ss_sold_date_sk".to_string(), "ss_item_sk".to_string(), "ss_quantity".to_string()],
+    )));
+    let date = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&date_path)],
+        Arc::clone(&date_schema),
+        vec!["d_date_sk".to_string(), "d_year".to_string()],
+    )));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_sold_date_sk", DataType::Int32, false),
+        Field::new("ss_item_sk", DataType::Int32, false),
+        Field::new("ss_quantity", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    let joined = builder.add_join(
+        fact,
+        date,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "ss_sold_date_sk", "ss_sold_date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "ss_sold_date_sk", "ss_sold_date_sk"), "ss_sold_date_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ss_item_sk", "ss_item_sk"), "ss_item_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ss_quantity", "ss_quantity"), "ss_quantity"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
+        ]),
+        Arc::clone(&join_schema),
+    );
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_sold_year", DataType::Int32, false),
+        Field::new("ss_item_sk", DataType::Int32, false),
+        Field::new("ss_qty", DataType::Int64, true),
+    ]));
+    let aggregate = builder.add_aggregate(
+        joined,
+        AggregateSpec::new(
+            vec![Expr::column("d_year").alias("ss_sold_year"), Expr::column("ss_item_sk")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ss_quantity"), "ss_qty")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let filtered = builder.add_filter(aggregate, filter_predicate, aggregate_schema);
+    builder.finish_gpu_resident(filtered)
+}
+
+fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine::QueryPlan {
+    let fact_path = dir.join("left_fact.parquet");
+    let dim_path = dir.join("right_dim.parquet");
+    let fact_schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("dim_key", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    write_i32_record_batch_parquet(&fact_path, Arc::clone(&fact_schema), vec![Int32Array::from(vec![1, 2, 3])], 1);
+    write_i32_record_batch_parquet(
+        &dim_path,
+        Arc::clone(&dim_schema),
+        vec![Int32Array::from(vec![1, 2]), Int32Array::from(vec![1999, 2000])],
+        1,
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&fact_schema),
+        vec!["fact_key".to_string()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&dim_path)],
+        Arc::clone(&dim_schema),
+        vec!["dim_key".to_string(), "d_year".to_string()],
+    )));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("fact_key", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, true),
+    ]));
+    let joined = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
+        ]),
+        join_schema,
+    );
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("d_year", DataType::Int32, true),
+        Field::new("cnt", DataType::Int64, true),
+    ]));
+    let aggregate = builder.add_aggregate(
+        joined,
+        AggregateSpec::new(
+            vec![Expr::column("d_year")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "cnt")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let filtered = builder.add_filter(
+        aggregate,
+        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
+        aggregate_schema,
+    );
+    builder.finish_gpu_resident(filtered)
+}
+
+fn write_i32_record_batch_parquet(path: &Path, schema: Arc<Schema>, columns: Vec<Int32Array>, row_group_rows: usize) {
+    let arrays = columns.into_iter().map(|column| Arc::new(column) as Arc<dyn arrow::array::Array>).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).expect("test batch should be valid");
+    let file = File::create(path).expect("test parquet file should be creatable");
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be creatable");
+    writer.write(&batch).expect("test parquet batch should be writable");
+    writer.close().expect("test parquet writer should close");
+}
+
+fn unique_contract_temp_dir(label: &str) -> std::path::PathBuf {
+    let id = SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock should be monotonic").as_nanos();
+    let dir = std::env::temp_dir().join(format!("datafusion-nexus-{label}-{id}"));
+    fs::create_dir_all(&dir).expect("temporary test directory should be creatable");
+    dir
+}
+
 fn estimated_sales_source_with_quarter_predicate(quarter: i32, bytes: u64) -> SourceNode {
     let source_schema = schema(&["county", "quarter", "year", "sales"]);
     let file = LocalParquetFile::new("/tmp/store_sales.parquet")
@@ -2106,6 +3201,182 @@ fn estimated_time_source_with_hour_predicate(hour: i32) -> SourceNode {
             .with_column_roles(vec!["t_time_sk".to_string()], vec!["t_hour".to_string()])
             .with_reader_predicate(predicate),
     )
+}
+
+fn q28_like_store_sales_source(bucket: i32) -> SourceNode {
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_quantity", DataType::Int32, false),
+        Field::new("ss_list_price", DataType::Int32, true),
+        Field::new("ss_coupon_amt", DataType::Int32, true),
+        Field::new("ss_wholesale_cost", DataType::Int32, true),
+    ]));
+    let file = LocalParquetFile::new("/tmp/store_sales.parquet")
+        .with_stable_id("store_sales")
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![file],
+            source_schema,
+            vec![
+                "ss_quantity".to_string(),
+                "ss_list_price".to_string(),
+                "ss_coupon_amt".to_string(),
+                "ss_wholesale_cost".to_string(),
+            ],
+        )
+        .with_reader_predicate(q28_like_bucket_predicate(bucket)),
+    )
+}
+
+fn q09_like_store_sales_source(bucket: i32, branch: Q09ScalarBranch) -> SourceNode {
+    let all_fields = [
+        Field::new("ss_quantity", DataType::Int32, false),
+        Field::new("ss_ext_discount_amt", DataType::Float64, true),
+        Field::new("ss_net_paid", DataType::Float64, true),
+    ];
+    let read_columns = match branch {
+        Q09ScalarBranch::Count => vec!["ss_quantity".to_string()],
+        Q09ScalarBranch::AvgDiscount => vec!["ss_quantity".to_string(), "ss_ext_discount_amt".to_string()],
+        Q09ScalarBranch::AvgNetPaid => vec!["ss_quantity".to_string(), "ss_net_paid".to_string()],
+    };
+    let fields = read_columns
+        .iter()
+        .map(|column| {
+            all_fields.iter().find(|field| field.name() == column).expect("read column should have a field").clone()
+        })
+        .collect::<Vec<_>>();
+    let source_schema = Arc::new(Schema::new(fields));
+    let file = LocalParquetFile::new("/tmp/store_sales.parquet")
+        .with_stable_id("store_sales")
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], source_schema, read_columns).with_reader_predicate(between_i32(
+            "ss_quantity",
+            bucket * 20 + 1,
+            bucket * 20 + 20,
+        )),
+    )
+}
+
+fn q09_filter_only_count_source(bucket: i32) -> SourceNode {
+    let source_schema = Arc::new(Schema::new(vec![Field::new("ss_quantity", DataType::Int32, false)]));
+    let file = LocalParquetFile::new("/tmp/store_sales.parquet")
+        .with_stable_id("store_sales")
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], source_schema, vec!["ss_quantity".to_string()])
+            .with_column_roles(Vec::new(), vec!["ss_quantity".to_string()])
+            .with_reader_predicate(between_i32("ss_quantity", bucket * 20 + 1, bucket * 20 + 20)),
+    )
+}
+
+fn two_value_projection_filter_source() -> SourceNode {
+    let source_schema =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false), Field::new("b", DataType::Int32, false)]));
+    let file = LocalParquetFile::new("/tmp/two-value-projection-filter.parquet")
+        .with_stable_id("two-value-projection-filter")
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![file],
+        source_schema,
+        vec!["a".to_string(), "b".to_string()],
+    ))
+}
+
+fn conflicting_ref_value_source(file_index: usize) -> SourceNode {
+    let source_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
+    let file = LocalParquetFile::new("/tmp/conflicting-value-source.parquet")
+        .with_stable_id("conflicting-value-source")
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], source_schema, vec!["v".to_string()])
+            .with_column_file_indices(vec![file_index], vec![file_index], Vec::new())
+            .with_reader_predicate(Expr::binary(
+                Expr::column("v"),
+                BinaryOp::GtEq,
+                Expr::literal(LiteralValue::Float64(0.0)),
+            )),
+    )
+}
+
+fn duplicate_named_source(name: &str, bucket: i32) -> SourceNode {
+    let source_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+    let file = LocalParquetFile::new(format!("/tmp/{name}-duplicate-v.parquet"))
+        .with_stable_id(name)
+        .with_projected_row_group_bytes(vec![512 * 1024 * 1024], vec![512 * 1024 * 1024])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], source_schema, vec!["v".to_string()]).with_reader_predicate(
+            Expr::binary(Expr::column("v"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(bucket))),
+        ),
+    )
+}
+
+fn q28_like_bucket_predicate(bucket: i32) -> Expr {
+    let quantity_min = bucket * 5;
+    let quantity_max = quantity_min + 5;
+    let list_min = 10 + bucket * 20;
+    let coupon_min = 1000 + bucket * 100;
+    let cost_min = 30 + bucket * 10;
+    Expr::binary(
+        between_i32("ss_quantity", quantity_min, quantity_max),
+        BinaryOp::And,
+        Expr::binary(
+            between_i32("ss_list_price", list_min, list_min + 10),
+            BinaryOp::Or,
+            Expr::binary(
+                between_i32("ss_coupon_amt", coupon_min, coupon_min + 1000),
+                BinaryOp::Or,
+                between_i32("ss_wholesale_cost", cost_min, cost_min + 20),
+            ),
+        ),
+    )
+}
+
+fn between_i32(column: &str, min: i32, max: i32) -> Expr {
+    Expr::binary(
+        Expr::binary(Expr::column(column), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(min))),
+        BinaryOp::And,
+        Expr::binary(Expr::column(column), BinaryOp::LtEq, Expr::literal(LiteralValue::Int32(max))),
+    )
+}
+
+fn cross_join_scalar_branches(
+    builder: &mut QueryPlanBuilder,
+    branches: &[NodeId],
+    branch_schemas: &[Arc<Schema>],
+) -> NodeId {
+    let mut current = branches[0];
+    let mut current_fields = branch_schemas[0].fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+    for (branch, schema) in branches.iter().copied().zip(branch_schemas).skip(1) {
+        let mut output_projection = Vec::new();
+        for field in &current_fields {
+            output_projection.push(JoinOutputColumn::left(
+                ColumnRef::input(0, field.name().clone(), field.name().clone()),
+                field.name().clone(),
+            ));
+        }
+        for field in schema.fields() {
+            output_projection.push(JoinOutputColumn::right(
+                ColumnRef::input(1, field.name().clone(), field.name().clone()),
+                field.name().clone(),
+            ));
+            current_fields.push(field.as_ref().clone());
+        }
+        let output_schema = Arc::new(Schema::new(current_fields.clone()));
+        current = builder.add_join(
+            current,
+            branch,
+            JoinSpec::new(JoinType::Inner, Vec::new()).with_output_projection(output_projection),
+            output_schema,
+        );
+    }
+    current
 }
 
 fn estimated_date_source_with_day_predicate(name: &str, day: i32) -> SourceNode {
@@ -2598,6 +3869,63 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> nexus_quer
         left_join_schema,
     );
     builder.finish_gpu_resident(root)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MarkerNullFilterPlanVariant {
+    Eligible,
+    NullableMarker,
+    NullsMatch,
+    MarkerEscapes,
+}
+
+fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(gpu_source("left", &["l_key", "payload"]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("r_key", DataType::Int32, matches!(variant, MarkerNullFilterPlanVariant::NullableMarker)),
+        Field::new("r_payload", DataType::Int32, false),
+    ]));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", right_schema)));
+    let marker_schema = Arc::new(Schema::new(vec![
+        Field::new("l_key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("r_key", DataType::Int32, true),
+    ]));
+    let mut spec = JoinSpec::new(
+        JoinType::Left,
+        vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+    )
+    .with_output_projection(vec![
+        JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
+        JoinOutputColumn::left(ColumnRef::input(0, "payload", "payload"), "payload"),
+        JoinOutputColumn::right(ColumnRef::input(1, "r_key", "r_key"), "r_key"),
+    ])
+    .with_build_side(JoinSide::Right);
+    if matches!(variant, MarkerNullFilterPlanVariant::NullsMatch) {
+        spec = spec.with_null_equality(JoinNullEquality::NullsMatch);
+    }
+    let left_join = builder.add_join(left, right, spec, Arc::clone(&marker_schema));
+    let filtered = builder.add_filter(left_join, Expr::is_null(Expr::column("r_key")), marker_schema);
+    let projected = if matches!(variant, MarkerNullFilterPlanVariant::MarkerEscapes) {
+        builder.add_projection(
+            filtered,
+            vec![
+                ProjectionOutput::new(Expr::column("l_key"), Field::new("l_key", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("r_key"), Field::new("r_key", DataType::Int32, true)),
+            ],
+        )
+    } else {
+        builder.add_projection(
+            filtered,
+            vec![
+                ProjectionOutput::new(Expr::column("l_key"), Field::new("l_key", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
+            ],
+        )
+    };
+    builder.finish_gpu_resident(projected)
 }
 
 fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::QueryPlan {

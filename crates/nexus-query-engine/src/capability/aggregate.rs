@@ -53,7 +53,6 @@ pub(in crate::capability) enum AggregateStateContract {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::capability) enum UnsupportedAggregateStateContract {
     GroupingSets,
-    FilteredDistinct,
     UnsupportedDistinctFunction,
 }
 
@@ -61,7 +60,6 @@ impl UnsupportedAggregateStateContract {
     pub(in crate::capability) const fn as_str(self) -> &'static str {
         match self {
             Self::GroupingSets => "grouping_sets",
-            Self::FilteredDistinct => "filtered_distinct",
             Self::UnsupportedDistinctFunction => "unsupported_distinct_function",
         }
     }
@@ -80,9 +78,6 @@ pub(in crate::capability) fn aggregate_state_contract(
     let mut has_exact_distinct_count = false;
     for expr in &spec.aggr_exprs {
         if aggregate_expr_is_exact_distinct_count(expr) {
-            if expr.filter.is_some() {
-                return Err(UnsupportedAggregateStateContract::FilteredDistinct);
-            }
             has_exact_distinct_count = true;
         } else if expr.distinct {
             return Err(UnsupportedAggregateStateContract::UnsupportedDistinctFunction);

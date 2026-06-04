@@ -24,9 +24,12 @@ pub use aggregate_join_pushdown::{
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
 };
 pub use dimension_pruning::{
-    DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DimensionDerivedRowGroupPruningCandidateDiagnostics,
-    DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
-    DimensionDerivedRowGroupPruningRejectedReason,
+    DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DimensionDerivedApplyResult, DimensionDerivedPruningRequest,
+    DimensionDerivedRowGroupPruningCandidateDiagnostics, DimensionDerivedRowGroupPruningDiagnostics,
+    DimensionDerivedRowGroupPruningOptions, DimensionDerivedRowGroupPruningRejectedReason, KeyRange,
+    RowGroupOverlapSelection, apply_dimension_derived_pruning_with_stats, dimension_key_range_from_batch,
+    discover_dimension_derived_pruning_requests, seed_dimension_derived_reader_predicates,
+    select_overlapping_row_groups,
 };
 pub use dynamic_filter::{
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterRouteCandidateDiagnostics,

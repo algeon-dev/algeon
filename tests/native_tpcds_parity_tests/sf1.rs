@@ -474,7 +474,7 @@ async fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         ("q41", "root_topk_sort_fetch_hash_join_aggregate_subcontract"),
         ("q58", "root_topk_keyed_filtered_semi_join_subcontract"),
         ("q74", "root_topk_sort_fetch_hash_join_input_subcontract"),
-        ("q78", "root_topk_null_filtered_left_join_fan_in_subcontract"),
+        ("q78", "root_topk_keyed_filtered_semi_join_subcontract"),
         ("q83", "root_topk_keyed_filtered_semi_join_subcontract"),
         ("q06", "root_topk_distinct_aggregate_subcontract"),
         ("q61", "root_topk_keyless_or_cross_join_subcontract"),

@@ -2321,35 +2321,44 @@ fn bounded_root_topk_join_aggregate_allows_rtk9_subcontracts_with_report_rows() 
 
 #[test]
 fn bounded_root_topk_join_aggregate_allows_rtk10_null_filtered_aggregate_fan_in_subcontract() {
-    let plan =
-        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn);
-    let analysis = plan.capability_analysis();
+    for variant in [
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
+    ] {
+        let plan = nexus_query_engine::optimize_query_plan(
+            root_topk_join_aggregate_variant_plan(variant),
+            &nexus_query_engine::NativeOptimizerOptions::default(),
+        )
+        .plan;
+        let analysis = plan.capability_analysis();
 
-    assert!(
-        analysis.admits_root_topk_join_aggregate_pipeline(),
-        "RTK-10 null-filtered left-join aggregate fan-in should be admitted through a dedicated subcontract: {:?}",
-        analysis.root_topk_join_aggregate_admission
-    );
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
-        .expect("RTK-10 capability report should be valid");
-    assert_strict_report_has_modeled_subcontract(
-        &report,
-        "root_topk_null_filtered_left_join_fan_in_subcontract",
-        "rtk10_null_filtered_aggregate_fan_in",
-    );
+        assert!(
+            analysis.admits_root_topk_join_aggregate_pipeline(),
+            "RTK-10 null-filtered left-join aggregate fan-in should be admitted after rewriting marker filters to LeftAnti ({variant:?}): {:?}",
+            analysis.root_topk_join_aggregate_admission
+        );
+        let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+            .expect("RTK-10 capability report should be valid");
+        assert_strict_report_has_modeled_subcontract(
+            &report,
+            "root_topk_keyed_filtered_semi_join_subcontract",
+            "rtk10_null_filtered_aggregate_fan_in",
+        );
 
-    let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
-        .expect("strict bounded admission should not fail")
-        .expect("RTK-10 root TopK pipeline should be admitted");
-    assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
-    let compiled_report =
-        StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
-            .expect("RTK-10 compiled report should be valid");
-    assert_strict_report_has_modeled_subcontract(
-        &compiled_report,
-        "root_topk_null_filtered_left_join_fan_in_subcontract",
-        "rtk10_null_filtered_aggregate_fan_in",
-    );
+        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+            .expect("strict bounded admission should not fail")
+            .expect("RTK-10 root TopK pipeline should be admitted");
+        assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
+        let compiled_report =
+            StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+                .expect("RTK-10 compiled report should be valid");
+        assert_strict_report_has_modeled_subcontract(
+            &compiled_report,
+            "root_topk_keyed_filtered_semi_join_subcontract",
+            "rtk10_null_filtered_aggregate_fan_in",
+        );
+    }
 }
 
 #[test]
@@ -2377,7 +2386,15 @@ fn bounded_root_topk_join_aggregate_rejects_rtk10_null_filtered_aggregate_fan_in
         ),
         (
             RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction,
-            "root_topk_join_aggregate_requires_source_reduction_proof",
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
         ),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
@@ -2386,6 +2403,37 @@ fn bounded_root_topk_join_aggregate_rejects_rtk10_null_filtered_aggregate_fan_in
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
             panic!("{variant:?} should reject RTK-10 admission");
+        };
+        assert_eq!(*reason, expected_reason, "{variant:?}");
+    }
+}
+
+#[test]
+fn bounded_root_topk_join_aggregate_rejects_optimized_rtk10_unsafe_marker_shapes() {
+    for (variant, expected_reason) in [
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingFilter,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+    ] {
+        let plan = nexus_query_engine::optimize_query_plan(
+            root_topk_join_aggregate_variant_plan(variant),
+            &nexus_query_engine::NativeOptimizerOptions::default(),
+        )
+        .plan;
+        let analysis = plan.capability_analysis();
+
+        assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
+        let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
+            panic!("{variant:?} should reject optimized RTK-10 admission");
         };
         assert_eq!(*reason, expected_reason, "{variant:?}");
     }
@@ -2607,6 +2655,8 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
+            | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
+            | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild
             | RootTopKJoinAggregateVariant::Window => {
                 unreachable!("covered by other tests")
             },

@@ -151,10 +151,12 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
         };
     }
 
+    let original_plan = plan.clone();
+    let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan);
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut diagnostics = DimensionDerivedRowGroupPruningDiagnostics::default();
-    let mut changed = false;
+    let mut changed = seeded_reader_predicates;
 
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
@@ -277,6 +279,14 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
         }
     }
 
+    if seeded_reader_predicates && diagnostics.applied_count == 0 {
+        return DimensionDerivedRowGroupPruningResult {
+            plan: original_plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics,
+        };
+    }
+
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let sink = plan.sink().clone();
     let root = plan.root_id();
@@ -285,6 +295,333 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
         change,
         diagnostics,
     }
+}
+
+fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan, bool) {
+    let mut nodes = plan.nodes().to_vec();
+    let parent_counts = rewrite::parent_counts(&plan);
+    let mut changed = false;
+
+    for node in plan.nodes() {
+        let PlanNode::Filter(filter) = &node.kind else {
+            continue;
+        };
+        for conjunct in predicate_conjuncts(&filter.predicate) {
+            changed |= push_filter_conjunct_to_reader_source(
+                &plan,
+                &parent_counts,
+                &mut nodes,
+                filter.input,
+                conjunct.clone(),
+                false,
+            );
+        }
+    }
+
+    if !changed {
+        return (plan, false);
+    }
+    let root = plan.root_id();
+    let sink = plan.sink().clone();
+    (QueryPlan::from_rewritten_parts(nodes, root, sink), true)
+}
+
+/// Returns a copy of `plan` with eligible post-aggregate group-key filters
+/// mirrored onto local Parquet dimension-reader predicates.
+///
+/// The original post-aggregate filter remains in the plan. This helper is used
+/// by adapter-side object-store pruning, where row-group statistics are not
+/// available inside `nexus-query-engine` but the seeded dimension predicate is
+/// still needed to derive a key range.
+pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan) -> QueryPlan {
+    seed_reader_predicates_from_group_key_filters(plan).0
+}
+
+fn predicate_conjuncts(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
+            let mut conjuncts = predicate_conjuncts(left);
+            conjuncts.extend(predicate_conjuncts(right));
+            conjuncts
+        },
+        _ => vec![expr],
+    }
+}
+
+fn push_filter_conjunct_to_reader_source(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    nodes: &mut [QueryNode],
+    node_id: NodeId,
+    predicate: Expr,
+    crossed_aggregate: bool,
+) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source)
+                if crossed_aggregate
+                    && parent_counts.get(node_id.index()).copied().unwrap_or_default() <= 1
+                    && seed_predicate_is_supported(source, &predicate) =>
+            {
+                let Some(source) = mutable_local_parquet_source(nodes, node_id) else {
+                    return false;
+                };
+                if source.reader_predicate.as_ref() == Some(&predicate) {
+                    return false;
+                }
+                source.reader_predicate = Some(match source.reader_predicate.take() {
+                    Some(existing) => Expr::binary(existing, BinaryOp::And, predicate),
+                    None => predicate,
+                });
+                source.refresh_diagnostics();
+                true
+            },
+            _ => false,
+        },
+        PlanNode::Filter(filter) => push_filter_conjunct_to_reader_source(
+            plan,
+            parent_counts,
+            nodes,
+            filter.input,
+            predicate,
+            crossed_aggregate,
+        ),
+        PlanNode::Projection(projection) => {
+            remap_projection_predicate(&predicate, projection).is_some_and(|predicate| {
+                push_filter_conjunct_to_reader_source(
+                    plan,
+                    parent_counts,
+                    nodes,
+                    projection.input,
+                    predicate,
+                    crossed_aggregate,
+                )
+            })
+        },
+        PlanNode::Aggregate(aggregate) => {
+            remap_aggregate_group_predicate(&predicate, aggregate).is_some_and(|predicate| {
+                push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, aggregate.input, predicate, true)
+            })
+        },
+        PlanNode::Join(join) => remap_join_output_predicate(&predicate, join).is_some_and(|(side, predicate)| {
+            let input = match side {
+                JoinSide::Left => join.inputs[0],
+                JoinSide::Right => join.inputs[1],
+            };
+            push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, input, predicate, crossed_aggregate)
+        }),
+        PlanNode::Sort(sort) => {
+            push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, sort.input, predicate, crossed_aggregate)
+        },
+        PlanNode::Limit(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => false,
+    }
+}
+
+fn seed_predicate_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
+    if !predicate_is_reader_visible(source, predicate) {
+        return false;
+    }
+    let combined = match source.reader_predicate.as_ref() {
+        Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
+        None => predicate.clone(),
+    };
+    source.reader_predicate_is_supported(&combined)
+}
+
+fn predicate_is_reader_visible(source: &LocalParquetSource, predicate: &Expr) -> bool {
+    let columns = predicate_columns(predicate);
+    !columns.is_empty()
+        && columns.iter().all(|column| matches!(source.source_column_ref(column), Some(SourceColumnRef::File(_))))
+}
+
+fn remap_projection_predicate(predicate: &Expr, projection: &crate::plan::ProjectionNode) -> Option<Expr> {
+    remap_unqualified_columns(predicate, &mut |column| {
+        let output = projection.outputs.iter().find(|output| output.field.name() == column.name())?;
+        simple_projection_expr(&output.expr)
+    })
+}
+
+fn remap_aggregate_group_predicate(predicate: &Expr, aggregate: &crate::plan::AggregateNode) -> Option<Expr> {
+    if aggregate.spec.grouping_sets.is_some() {
+        return None;
+    }
+    remap_unqualified_columns(predicate, &mut |column| {
+        aggregate
+            .spec
+            .group_exprs
+            .iter()
+            .find(|expr| aggregate_group_output_name(expr) == Some(column.name()))
+            .and_then(simple_projection_expr)
+    })
+}
+
+fn remap_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(JoinSide, Expr)> {
+    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left) || join.spec.output_projection.is_empty() {
+        return None;
+    }
+    let mut side = None;
+    let remapped = remap_unqualified_columns(predicate, &mut |column| {
+        let output = join.spec.output_projection.iter().find(|output| output.output_name == column.name())?;
+        if join.spec.join_type == JoinType::Left && output.side != JoinSide::Left {
+            return None;
+        }
+        match side {
+            Some(existing) if existing != output.side => return None,
+            Some(_) => {},
+            None => side = Some(output.side),
+        }
+        Some(Expr::column(output.column.name()))
+    })?;
+    side.map(|side| (side, remapped))
+}
+
+fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef) -> Option<Expr>) -> Option<Expr> {
+    match expr {
+        Expr::Column(column) if column.qualifier().is_none() => map_column(column),
+        Expr::Column(_) => None,
+        Expr::Literal(value) => Some(Expr::Literal(value.clone())),
+        Expr::Alias { expr, alias } => Some(remap_unqualified_columns(expr, map_column)?.alias(alias.clone())),
+        Expr::Cast { expr, target_type } => {
+            Some(Expr::cast(remap_unqualified_columns(expr, map_column)?, target_type.clone()))
+        },
+        Expr::TryCast { expr, target_type } => {
+            Some(Expr::try_cast(remap_unqualified_columns(expr, map_column)?, target_type.clone()))
+        },
+        Expr::Binary { left, op, right, output_type } => Some(Expr::Binary {
+            left: Box::new(remap_unqualified_columns(left, map_column)?),
+            op: *op,
+            right: Box::new(remap_unqualified_columns(right, map_column)?),
+            output_type: output_type.clone(),
+        }),
+        Expr::Not(expr) => Some(Expr::logical_not(remap_unqualified_columns(expr, map_column)?)),
+        Expr::IsNull(expr) => Some(Expr::is_null(remap_unqualified_columns(expr, map_column)?)),
+        Expr::IsNotNull(expr) => Some(Expr::is_not_null(remap_unqualified_columns(expr, map_column)?)),
+        Expr::InList { expr, list, negated } => Some(Expr::InList {
+            expr: Box::new(remap_unqualified_columns(expr, map_column)?),
+            list: list.iter().map(|expr| remap_unqualified_columns(expr, map_column)).collect::<Option<Vec<_>>>()?,
+            negated: *negated,
+        }),
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Sqrt { .. }
+        | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
+        | Expr::Case { .. }
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => None,
+    }
+}
+
+fn simple_projection_expr(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Column(column) => Some(Expr::column(column.name())),
+        Expr::Alias { expr, .. } => simple_projection_expr(expr),
+        _ => None,
+    }
+}
+
+fn aggregate_group_output_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Column(column) => Some(column.display_name()),
+        Expr::Alias { alias, .. } => Some(alias.as_str()),
+        _ => None,
+    }
+}
+
+/// A dimension-derived fact row-group pruning opportunity discovered by plan
+/// shape alone, without reading any Parquet data.
+///
+/// [`optimize_dimension_derived_row_group_pruning`] both discovers and applies
+/// these for local-path Parquet fact sources. Table-format (Iceberg/Delta) fact
+/// sources resolve to object-store locations that the in-engine pass cannot
+/// read, so the DataFusion adapter discovers requests with
+/// [`discover_dimension_derived_pruning_requests`] and applies them with its own
+/// object-store footer reads — keeping `nexus-query-engine` free of object-store
+/// and catalog dependencies.
+///
+/// A request only records that the plan SHAPE is eligible (the dimension source
+/// carries a reader predicate); it does not guarantee the range can be derived
+/// or that any row group will be pruned. The resolver must apply the same
+/// conservative checks the local pass applies after discovery (scan-row limit,
+/// supported predicate/key evaluation, non-empty derived range, target key
+/// statistics present, and an actual row-group reduction) before narrowing the
+/// fact source, and fall back to the unpruned scan otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimensionDerivedPruningRequest {
+    /// Source node whose reader predicate, once evaluated, yields the join-key range.
+    pub dimension_source_node_id: NodeId,
+    /// Dimension source column that carries the join key.
+    pub dimension_key_column: String,
+    /// Fact source node whose row groups can be pruned by the derived range.
+    pub target_source_node_id: NodeId,
+    /// Fact source column that carries the join key.
+    pub target_key_column: String,
+}
+
+/// Discovers dimension-derived fact row-group pruning opportunities by plan
+/// shape only, without reading any Parquet data.
+///
+/// This mirrors the candidate-discovery half of
+/// [`optimize_dimension_derived_row_group_pruning`]: inner single-key joins
+/// whose dimension and fact join keys each resolve to a unique local-Parquet
+/// source lineage, where the two sources differ, the fact lineage is not reused
+/// elsewhere in the plan, and the dimension source carries a reader predicate
+/// that can bound the key. Admission limits and the actual key-range derivation
+/// are intentionally left to the caller, which supplies the per-source key
+/// range and footer statistics (for object-store sources, via its own IO).
+pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<DimensionDerivedPruningRequest> {
+    let parent_counts = rewrite::parent_counts(plan);
+    let mut requests = Vec::new();
+    for node in plan.nodes() {
+        let PlanNode::Join(join) = &node.kind else {
+            continue;
+        };
+        if !join_shape_supported(join) {
+            continue;
+        }
+        for orientation in candidate_orientations(join) {
+            let Some(dimension) =
+                unique_lineage(plan, &parent_counts, orientation.dimension_input, orientation.dimension_key.name())
+            else {
+                continue;
+            };
+            let Some(target) =
+                unique_lineage(plan, &parent_counts, orientation.target_input, orientation.target_key.name())
+            else {
+                continue;
+            };
+            if dimension.source_node_id == target.source_node_id || target.has_shared_path {
+                continue;
+            }
+            let Some(dimension_source) = local_parquet_source(plan, dimension.source_node_id) else {
+                continue;
+            };
+            if dimension_source.reader_predicate.is_none() {
+                continue;
+            }
+            requests.push(DimensionDerivedPruningRequest {
+                dimension_source_node_id: dimension.source_node_id,
+                dimension_key_column: dimension.source_column,
+                target_source_node_id: target.source_node_id,
+                target_key_column: target.source_column,
+            });
+        }
+    }
+    requests
 }
 
 fn join_shape_supported(join: &JoinNode) -> bool {
@@ -477,10 +814,77 @@ fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -
     (0..row_group_count).collect()
 }
 
+/// Inclusive integer key range derived from a filtered dimension, used to prune
+/// joined fact row groups. Exposed so an out-of-engine resolver (the
+/// DataFusion/object-store adapter) can apply the same pruning semantics to
+/// object-store table-format fact sources that this in-engine pass can only
+/// apply to local-path sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct KeyRange {
-    min: i64,
-    max: i64,
+pub struct KeyRange {
+    /// Inclusive minimum key value among rows matching the dimension predicate.
+    pub min: i64,
+    /// Inclusive maximum key value among rows matching the dimension predicate.
+    pub max: i64,
+}
+
+/// Folds one decoded dimension batch into the running join-key range, counting
+/// only rows that satisfy `predicate`.
+///
+/// Returns `None` if the predicate or key column cannot be evaluated against the
+/// batch (so the caller must abandon pruning), `Some(range)` otherwise. This is
+/// the per-batch primitive shared by the in-engine local pass
+/// ([`derive_dimension_key_range`]) and the out-of-engine resolver, which reads
+/// object-store dimension batches itself and folds them here to guarantee
+/// identical range semantics.
+pub fn dimension_key_range_from_batch(
+    range: Option<KeyRange>,
+    batch: &RecordBatch,
+    key_column: &str,
+    predicate: &Expr,
+) -> Option<Option<KeyRange>> {
+    update_key_range_from_batch(range, batch, key_column, predicate)
+}
+
+/// Selects the fact row groups whose key statistics overlap `filter`, applying
+/// the same conservative rules as the in-engine pass: row groups with unknown
+/// statistics are retained, and pruning is only reported as applied when it
+/// strictly narrows a non-empty selection.
+///
+/// `row_group_key_ranges` carries one entry per candidate row group in selection
+/// order; `None` means the key statistics were unavailable for that row group.
+pub fn select_overlapping_row_groups(
+    row_group_key_ranges: &[Option<KeyRange>],
+    filter: KeyRange,
+) -> RowGroupOverlapSelection {
+    let before = row_group_key_ranges.len();
+    let mut saw_statistics = false;
+    let mut kept = Vec::with_capacity(before);
+    for (index, range) in row_group_key_ranges.iter().enumerate() {
+        match range {
+            Some(range) => {
+                saw_statistics = true;
+                if ranges_overlap(*range, filter) {
+                    kept.push(index);
+                }
+            },
+            None => kept.push(index),
+        }
+    }
+    let applied = saw_statistics && !kept.is_empty() && kept.len() < before;
+    RowGroupOverlapSelection { kept, before, saw_statistics, applied }
+}
+
+/// Result of [`select_overlapping_row_groups`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowGroupOverlapSelection {
+    /// Indices (into the input order) of row groups to retain.
+    pub kept: Vec<usize>,
+    /// Total candidate row groups considered.
+    pub before: usize,
+    /// Whether any candidate row group exposed usable key statistics.
+    pub saw_statistics: bool,
+    /// Whether pruning strictly narrowed a non-empty selection.
+    pub applied: bool,
 }
 
 fn derive_dimension_key_range(source: &LocalParquetSource, key_column: &str) -> Option<Option<KeyRange>> {
@@ -887,6 +1291,99 @@ fn prune_target_source(
     }
     source.refresh_diagnostics();
     Some(TargetPruneResult { before, after, applied: true })
+}
+
+/// Outcome of [`apply_dimension_derived_pruning_with_stats`].
+#[derive(Debug, Clone)]
+pub struct DimensionDerivedApplyResult {
+    /// Plan with the fact source's row-group selection narrowed when pruning applied.
+    pub plan: QueryPlan,
+    /// Whether pruning strictly narrowed the fact source.
+    pub applied: bool,
+    /// Total candidate fact row groups before pruning.
+    pub before: usize,
+    /// Retained fact row groups after pruning.
+    pub after: usize,
+}
+
+/// Applies an externally-derived dimension key range to a fact `LocalParquetSource`
+/// using caller-supplied per-row-group key statistics, returning a patched plan.
+///
+/// This is the object-store-free counterpart of the in-engine
+/// [`prune_target_source`] local-footer path: an out-of-engine resolver (the
+/// DataFusion/object-store adapter) reads the fact Parquet footers itself and
+/// passes one `Vec<Option<KeyRange>>` per source file (aligned with
+/// `source.files`). Within each file the stats are in the file's
+/// CURRENTLY-SELECTED row-group order — i.e. aligned with `file.row_groups`, or
+/// all physical row groups when no selection is set — and `None` marks a row
+/// group whose key statistics are absent. Kept positions are mapped back to
+/// physical row-group ids through that existing selection, so a pre-existing
+/// `row_groups` is narrowed, never replaced by raw positions.
+///
+/// The selection rule is identical to [`prune_target_source`] and conservative —
+/// row groups with unknown stats are retained, pruning never empties a
+/// selection, and the plan is only changed when pruning strictly narrows a
+/// non-empty selection. On any mismatch (missing source, wrong file/stat arity,
+/// no usable statistics, or no reduction) the plan is returned unchanged with
+/// `applied = false`.
+pub fn apply_dimension_derived_pruning_with_stats(
+    plan: QueryPlan,
+    target_source_node_id: NodeId,
+    per_file_row_group_key_ranges: &[Vec<Option<KeyRange>>],
+    filter: KeyRange,
+) -> DimensionDerivedApplyResult {
+    let mut nodes = plan.nodes().to_vec();
+    let root = plan.root_id();
+    let sink = plan.sink().clone();
+    let unchanged = |nodes: Vec<QueryNode>| DimensionDerivedApplyResult {
+        plan: QueryPlan::from_rewritten_parts(nodes, root, sink.clone()),
+        applied: false,
+        before: 0,
+        after: 0,
+    };
+
+    let Some(source) = mutable_local_parquet_source(&mut nodes, target_source_node_id) else {
+        return unchanged(nodes);
+    };
+    if per_file_row_group_key_ranges.len() != source.files.len() {
+        return unchanged(nodes);
+    }
+
+    let mut before = 0usize;
+    let mut after = 0usize;
+    let mut saw_statistics = false;
+    let mut new_row_groups_by_file = Vec::with_capacity(source.files.len());
+    for (file, row_group_key_ranges) in source.files.iter().zip(per_file_row_group_key_ranges) {
+        // The caller supplies one key range per CURRENTLY-SELECTED row group, in
+        // selection order. Map the kept positions back to physical row-group ids
+        // through the file's existing selection so a pre-existing `row_groups`
+        // (e.g. a table-format file-level selection) is narrowed, never replaced
+        // by raw positions. If the supplied stats do not align with the file's
+        // selection, skip entirely rather than risk an unsound remap.
+        let candidates = selected_or_all_row_groups(file, row_group_key_ranges.len());
+        if candidates.len() != row_group_key_ranges.len() {
+            return unchanged(nodes);
+        }
+        let selection = select_overlapping_row_groups(row_group_key_ranges, filter);
+        before += selection.before;
+        after += selection.kept.len();
+        saw_statistics |= selection.saw_statistics;
+        new_row_groups_by_file.push(selection.kept.iter().map(|position| candidates[*position]).collect::<Vec<_>>());
+    }
+
+    if !saw_statistics || after == 0 || after >= before {
+        return unchanged(nodes);
+    }
+    for (file, row_groups) in source.files.iter_mut().zip(new_row_groups_by_file) {
+        file.row_groups = Some(row_groups);
+    }
+    source.refresh_diagnostics();
+    DimensionDerivedApplyResult {
+        plan: QueryPlan::from_rewritten_parts(nodes, root, sink),
+        applied: true,
+        before,
+        after,
+    }
 }
 
 fn row_group_key_range(row_group: &RowGroupMetaData, column_index: usize) -> Option<KeyRange> {
