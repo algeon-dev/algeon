@@ -47,6 +47,7 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(LocalParquetScan))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
@@ -64,6 +65,7 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
@@ -81,6 +83,7 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),

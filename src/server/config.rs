@@ -925,10 +925,7 @@ impl<'a> EnvValues<'a> {
     }
 
     fn positive_usize(&mut self, name: &'static str, default: usize) -> Result<usize> {
-        let value = match self.optional_usize(name)? {
-            Some(value) => value,
-            None => default,
-        };
+        let value = self.optional_usize(name)?.unwrap_or(default);
         if value == 0 {
             return Err(ServerError::invalid_config(name, "must be greater than zero"));
         }
@@ -936,10 +933,7 @@ impl<'a> EnvValues<'a> {
     }
 
     fn positive_u64(&mut self, name: &'static str, default: u64) -> Result<u64> {
-        let value = match self.optional_u64(name)? {
-            Some(value) => value,
-            None => default,
-        };
+        let value = self.optional_u64(name)?.unwrap_or(default);
         if value == 0 {
             return Err(ServerError::invalid_config(name, "must be greater than zero"));
         }

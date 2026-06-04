@@ -35,14 +35,20 @@ use std::{
 use datafusion::{
     execution::SessionStateBuilder,
     physical_plan::{ExecutionPlan, displayable},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, lower_physical_plan_to_native,
+    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
+    NativeDataFusionPlanningReport, lower_physical_plan_to_native,
 };
 use datafusion_nexus_bench::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, discover_tpcds_table_layout, tpcds_native_optimizer_config,
-    tpcds_native_report_session_config,
+    TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables, tpcds_native_optimizer_config, tpcds_native_report_session_config,
+};
+use nexus_query_engine::{
+    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+    DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
+    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, OUTER_JOIN_NULL_REJECTION_RULE_NAME, PROJECTION_SIMPLIFICATION_RULE_NAME,
+    SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
 };
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -57,13 +63,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&cfg.out_dir)?;
 
     let ctx_cpu = build_cpu_context(&cfg.root).await?;
-    let (ctx_gpu_pre, _) = build_gpu_context(&cfg.root, false).await?;
-    let (ctx_gpu_post, gpu_native_rule) = build_gpu_context(&cfg.root, true).await?;
+    let optimizer_config = tpcds_native_optimizer_config();
+    let (ctx_gpu_pre, _) = build_gpu_context(&cfg.root, false, optimizer_config.clone()).await?;
+    let (ctx_gpu_post, gpu_native_rule) = build_gpu_context(&cfg.root, true, optimizer_config.clone()).await?;
 
     let mut summary_rows: Vec<String> = Vec::new();
+    let mut current_state_rows: Vec<CurrentStateRow> = Vec::new();
     for query in &cfg.queries {
-        match triage_query(query, &cfg.out_dir, &ctx_cpu, &ctx_gpu_pre, &ctx_gpu_post, gpu_native_rule.as_ref()).await {
-            Ok(summary) => summary_rows.push(summary),
+        match triage_query(
+            query,
+            &cfg.out_dir,
+            &ctx_cpu,
+            &ctx_gpu_pre,
+            &ctx_gpu_post,
+            gpu_native_rule.as_ref(),
+            &optimizer_config,
+        )
+        .await
+        {
+            Ok(summary) => {
+                summary_rows.push(summary.markdown_row);
+                current_state_rows.push(summary.current_state);
+            },
             Err(error) => {
                 summary_rows.push(format!("| {} | error: {} |", query.id, error));
                 eprintln!("[tpcds_outlier_triage] {} failed: {}", query.id, error);
@@ -71,6 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    write_current_state_tsv(&cfg.out_dir, &current_state_rows)?;
     write_top_summary(&cfg, &summary_rows)?;
     eprintln!("[tpcds_outlier_triage] done -> {}", cfg.out_dir.display());
     Ok(())
@@ -118,12 +140,13 @@ async fn build_cpu_context(root: &Path) -> Result<SessionContext, Box<dyn Error>
 async fn build_gpu_context(
     root: &Path,
     with_native_rule: bool,
+    optimizer_config: CudfOptimizerConfig,
 ) -> Result<(SessionContext, Option<Arc<CudfNativePhysicalOptimizerRule>>), Box<dyn Error>> {
     let mut builder =
         SessionStateBuilder::new_with_default_features().with_config(tpcds_native_report_session_config());
     let mut retained_rule = None;
     if with_native_rule {
-        let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(tpcds_native_optimizer_config()));
+        let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
         retained_rule = Some(Arc::clone(&rule));
         builder = builder.with_cudf_native_rule(rule);
     }
@@ -131,15 +154,6 @@ async fn build_gpu_context(
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables(&ctx, root).await?;
     Ok((ctx, retained_rule))
-}
-
-async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> Result<(), Box<dyn Error>> {
-    for &table in TPCDS_TABLES {
-        let layout = discover_tpcds_table_layout(root, table)?;
-        let path = layout.anchor.to_str().ok_or_else(|| format!("non-utf8 path: {}", layout.anchor.display()))?;
-        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
-    }
-    Ok(())
 }
 
 fn tuned_cpu_session_config() -> SessionConfig {
@@ -165,7 +179,8 @@ async fn triage_query(
     ctx_gpu_pre: &SessionContext,
     ctx_gpu_post: &SessionContext,
     gpu_native_rule: Option<&Arc<CudfNativePhysicalOptimizerRule>>,
-) -> Result<String, Box<dyn Error>> {
+    optimizer_config: &CudfOptimizerConfig,
+) -> Result<QueryTriageSummary, Box<dyn Error>> {
     let qid = query.id;
     let dir = out_root.join(qid);
     fs::create_dir_all(&dir)?;
@@ -187,9 +202,15 @@ async fn triage_query(
     let gpu_pre_rule_plan = ctx_gpu_pre.sql(query.sql).await?.create_physical_plan().await?;
     let lowering = lower_physical_plan_to_native(Arc::clone(&gpu_pre_rule_plan));
     fs::write(dir.join("native_ir.gpu.txt"), format_native_ir(&lowering))?;
+    fs::write(dir.join("native_ir.gpu.optimized.txt"), format_optimized_native_ir(&lowering, optimizer_config))?;
     fs::write(dir.join("planning_report.gpu.txt"), format_planning_report(&lowering))?;
 
     let gpu_post_rule_plan = ctx_gpu_post.sql(query.sql).await?.create_physical_plan().await?;
+    let retained_planning_tsv = gpu_native_rule
+        .map(|rule| NativeDataFusionPlanningReport::from_retained_rule(qid, Arc::clone(&gpu_post_rule_plan), rule))
+        .map(|report| report.to_tsv())
+        .unwrap_or_else(|| "planning_report=<none: retained native rule diagnostics unavailable>\n".to_string());
+    fs::write(dir.join("planning_report.gpu.postRule.tsv"), &retained_planning_tsv)?;
     let retained_diagnostics = gpu_native_rule.and_then(|rule| rule.last_planning_diagnostics());
     let retained_planning_report = retained_diagnostics
         .as_ref()
@@ -221,15 +242,390 @@ async fn triage_query(
     )?;
 
     fs::write(dir.join("SUMMARY.md"), render_query_summary(query, &lowering))?;
+    let current_state = current_state_row(
+        query,
+        &lowering,
+        retained_diagnostics.as_ref(),
+        &retained_planning_tsv,
+        &post_rule_native_plans,
+        optimizer_config,
+    );
 
-    Ok(format!(
-        "| {} | candidates={} rewritten={} rejected={} | [link](./{}/SUMMARY.md) |",
-        qid,
-        lowering.candidate_count(),
-        lowering.rewritten_count(),
-        lowering.rejected_count(),
-        qid,
-    ))
+    Ok(QueryTriageSummary {
+        markdown_row: format!(
+            "| {} | candidates={} rewritten={} rejected={} | [link](./{}/SUMMARY.md) |",
+            qid,
+            lowering.candidate_count(),
+            lowering.rewritten_count(),
+            lowering.rejected_count(),
+            qid,
+        ),
+        current_state,
+    })
+}
+
+struct QueryTriageSummary {
+    markdown_row: String,
+    current_state: CurrentStateRow,
+}
+
+struct CurrentStateRow {
+    query_id: String,
+    direct_lowering_outcome: String,
+    direct_lowering_first_rejection: String,
+    native_optimizer_rules_applied: String,
+    first_capability_rejection_projection: String,
+    strict_bounded_envelope: String,
+    compiled_pipeline_status: String,
+    compiled_pipeline_task_count: String,
+    compiled_pipeline_edge_count: String,
+    compiled_pipeline_barrier_count: String,
+    compiled_pipeline_resource_count: String,
+    compiled_pipeline_gate_count: String,
+    post_native_execution_path: String,
+    native_plan_fragment_count: String,
+    host_datafusion_boundary_count: String,
+    post_rule_planning_outcomes: String,
+    bundle: String,
+}
+
+impl CurrentStateRow {
+    const HEADER: &'static str = concat!(
+        "query_id\tdirect_lowering_outcome\tdirect_lowering_first_rejection\t",
+        "native_optimizer_rules_applied\tfirst_capability_rejection_projection\tstrict_bounded_envelope\t",
+        "compiled_pipeline_status\tcompiled_pipeline_task_count\tcompiled_pipeline_edge_count\t",
+        "compiled_pipeline_barrier_count\tcompiled_pipeline_resource_count\tcompiled_pipeline_gate_count\t",
+        "post_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\t",
+        "post_rule_planning_outcomes\tbundle"
+    );
+
+    fn to_tsv_line(&self) -> String {
+        [
+            self.query_id.as_str(),
+            self.direct_lowering_outcome.as_str(),
+            self.direct_lowering_first_rejection.as_str(),
+            self.native_optimizer_rules_applied.as_str(),
+            self.first_capability_rejection_projection.as_str(),
+            self.strict_bounded_envelope.as_str(),
+            self.compiled_pipeline_status.as_str(),
+            self.compiled_pipeline_task_count.as_str(),
+            self.compiled_pipeline_edge_count.as_str(),
+            self.compiled_pipeline_barrier_count.as_str(),
+            self.compiled_pipeline_resource_count.as_str(),
+            self.compiled_pipeline_gate_count.as_str(),
+            self.post_native_execution_path.as_str(),
+            self.native_plan_fragment_count.as_str(),
+            self.host_datafusion_boundary_count.as_str(),
+            self.post_rule_planning_outcomes.as_str(),
+            self.bundle.as_str(),
+        ]
+        .into_iter()
+        .map(stable_tsv_field)
+        .collect::<Vec<_>>()
+        .join("\t")
+    }
+}
+
+struct OptimizedNativePlanEvidence {
+    first_capability_rejection_projection: String,
+    strict_bounded_envelope: String,
+    compiled_pipeline_status: String,
+    compiled_pipeline_task_count: String,
+    compiled_pipeline_edge_count: String,
+    compiled_pipeline_barrier_count: String,
+    compiled_pipeline_resource_count: String,
+    compiled_pipeline_gate_count: String,
+}
+
+fn current_state_row(
+    query: &TpcdsQuery,
+    lowering: &datafusion_nexus::NativeLoweringResult,
+    retained_diagnostics: Option<&datafusion_nexus::NativePlanningDiagnostics>,
+    retained_planning_tsv: &str,
+    post_rule_native_plans: &[&nexus_query_engine::QueryPlan],
+    optimizer_config: &CudfOptimizerConfig,
+) -> CurrentStateRow {
+    let optimized_evidence = optimized_native_plan_evidence(lowering, post_rule_native_plans, optimizer_config);
+    let planning = summarize_retained_planning_tsv(retained_planning_tsv);
+    CurrentStateRow {
+        query_id: query.id.to_string(),
+        direct_lowering_outcome: direct_lowering_outcome(lowering),
+        direct_lowering_first_rejection: direct_lowering_first_rejection(lowering),
+        native_optimizer_rules_applied: retained_diagnostics
+            .map(|diagnostics| native_optimizer_applied_rules(&diagnostics.native_optimizer))
+            .unwrap_or_else(|| "none".to_string()),
+        first_capability_rejection_projection: optimized_evidence.first_capability_rejection_projection,
+        strict_bounded_envelope: optimized_evidence.strict_bounded_envelope,
+        compiled_pipeline_status: optimized_evidence.compiled_pipeline_status,
+        compiled_pipeline_task_count: optimized_evidence.compiled_pipeline_task_count,
+        compiled_pipeline_edge_count: optimized_evidence.compiled_pipeline_edge_count,
+        compiled_pipeline_barrier_count: optimized_evidence.compiled_pipeline_barrier_count,
+        compiled_pipeline_resource_count: optimized_evidence.compiled_pipeline_resource_count,
+        compiled_pipeline_gate_count: optimized_evidence.compiled_pipeline_gate_count,
+        post_native_execution_path: planning.post_native_execution_path,
+        native_plan_fragment_count: planning.native_plan_fragment_count,
+        host_datafusion_boundary_count: planning.host_datafusion_boundary_count,
+        post_rule_planning_outcomes: planning.post_rule_planning_outcomes,
+        bundle: format!("{}/SUMMARY.md", query.id),
+    }
+}
+
+fn optimized_native_plan_evidence(
+    lowering: &datafusion_nexus::NativeLoweringResult,
+    post_rule_native_plans: &[&nexus_query_engine::QueryPlan],
+    optimizer_config: &CudfOptimizerConfig,
+) -> OptimizedNativePlanEvidence {
+    let plan = if let Some(plan) = lowering.plans.first() {
+        let options = native_optimizer_options_for_execution(optimizer_config);
+        nexus_query_engine::optimize_query_plan(plan.clone(), &options).plan
+    } else if let Some(plan) = post_rule_native_plans.first() {
+        (*plan).clone()
+    } else {
+        return OptimizedNativePlanEvidence {
+            first_capability_rejection_projection: "none:no_lowered_native_plan".to_string(),
+            strict_bounded_envelope: "none:no_lowered_native_plan".to_string(),
+            compiled_pipeline_status: "not_available:no_lowered_native_plan".to_string(),
+            compiled_pipeline_task_count: "none".to_string(),
+            compiled_pipeline_edge_count: "none".to_string(),
+            compiled_pipeline_barrier_count: "none".to_string(),
+            compiled_pipeline_resource_count: "none".to_string(),
+            compiled_pipeline_gate_count: "none".to_string(),
+        };
+    };
+
+    let statistical_mode = optimizer_config.statistical_aggregate_execution_mode();
+    let admission =
+        nexus_query_engine::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(&plan, statistical_mode);
+    let first_capability_rejection_projection =
+        match nexus_query_engine::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+            &plan,
+            statistical_mode,
+        ) {
+            Ok(Some(projection)) => format_capability_rejection_projection(&projection),
+            Ok(None) => "none".to_string(),
+            Err(error) => format!("error:{}:{}", error.code().as_str(), stable_inline(error.message())),
+        };
+
+    match admission {
+        Ok(Some(admission)) => OptimizedNativePlanEvidence {
+            first_capability_rejection_projection,
+            strict_bounded_envelope: admission.envelope().as_str().to_string(),
+            compiled_pipeline_status: "compiled".to_string(),
+            compiled_pipeline_task_count: admission.pipeline().tasks().len().to_string(),
+            compiled_pipeline_edge_count: admission.pipeline().edges().len().to_string(),
+            compiled_pipeline_barrier_count: admission.pipeline().barriers().len().to_string(),
+            compiled_pipeline_resource_count: admission.pipeline().resources().len().to_string(),
+            compiled_pipeline_gate_count: admission.pipeline().gates().len().to_string(),
+        },
+        Ok(None) => {
+            let analysis = plan.capability_analysis();
+            let strict_bounded_envelope = match analysis.strict_bounded_envelope_admission() {
+                nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } => {
+                    format!("not_admitted_for_mode:{},raw={}", statistical_mode.as_str(), envelope.as_str())
+                },
+                nexus_query_engine::capability::CapabilityEnvelopeAdmission::Rejected { projection } => {
+                    format!("missing:{}", projection.reason)
+                },
+            };
+            OptimizedNativePlanEvidence {
+                first_capability_rejection_projection,
+                strict_bounded_envelope,
+                compiled_pipeline_status: "not_available:not_admitted_for_mode".to_string(),
+                compiled_pipeline_task_count: "none".to_string(),
+                compiled_pipeline_edge_count: "none".to_string(),
+                compiled_pipeline_barrier_count: "none".to_string(),
+                compiled_pipeline_resource_count: "none".to_string(),
+                compiled_pipeline_gate_count: "none".to_string(),
+            }
+        },
+        Err(error) => OptimizedNativePlanEvidence {
+            first_capability_rejection_projection,
+            strict_bounded_envelope: format!("error:{}", statistical_mode.as_str()),
+            compiled_pipeline_status: format!(
+                "compile_failed:{}:{}",
+                error.code().as_str(),
+                stable_inline(error.message())
+            ),
+            compiled_pipeline_task_count: "none".to_string(),
+            compiled_pipeline_edge_count: "none".to_string(),
+            compiled_pipeline_barrier_count: "none".to_string(),
+            compiled_pipeline_resource_count: "none".to_string(),
+            compiled_pipeline_gate_count: "none".to_string(),
+        },
+    }
+}
+
+fn native_optimizer_options_for_execution(config: &CudfOptimizerConfig) -> nexus_query_engine::NativeOptimizerOptions {
+    let mut options = config.native_optimizer_options().clone();
+    options.semijoin_reduction.admission_mode = match config.native_pipeline_execution_mode() {
+        nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
+            nexus_query_engine::SemijoinReductionAdmissionMode::StrictBounded
+        },
+        nexus_query_engine::NativePipelineExecutionMode::Adaptive => {
+            nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
+        },
+    };
+    options
+}
+
+fn direct_lowering_outcome(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+    match (lowering.rewritten_count(), lowering.rejected_count()) {
+        (0, 0) => "no_candidates".to_string(),
+        (rewritten, 0) => format!("rewritten:{rewritten}"),
+        (0, rejected) => format!("rejected:{rejected}"),
+        (rewritten, rejected) => format!("mixed:rewritten={rewritten},rejected={rejected}"),
+    }
+}
+
+fn direct_lowering_first_rejection(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+    lowering
+        .report
+        .outcomes()
+        .iter()
+        .find_map(|outcome| match outcome {
+            CandidateOutcome::Rejected { candidate, reason } => {
+                Some(format!("shape={},reason={}", candidate.shape, reason.code()))
+            },
+            CandidateOutcome::Rewritten { .. } => None,
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn native_optimizer_applied_rules(diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics) -> String {
+    let mut rules = Vec::new();
+    if diagnostics.projection_simplification.applied_count > 0 {
+        rules.push(PROJECTION_SIMPLIFICATION_RULE_NAME);
+    }
+    if diagnostics.semijoin_reduction.applied_count > 0 {
+        rules.push(SEMIJOIN_REDUCTION_RULE_NAME);
+    }
+    if diagnostics.join_build_side_selection.applied_count > 0 {
+        rules.push(JOIN_BUILD_SIDE_SELECTION_RULE_NAME);
+    }
+    if diagnostics.outer_join_null_rejection.applied_count > 0 {
+        rules.push(OUTER_JOIN_NULL_REJECTION_RULE_NAME);
+    }
+    if diagnostics.join_filter_reassociation.applied_count > 0 {
+        rules.push(JOIN_FILTER_REASSOCIATION_RULE_NAME);
+    }
+    if diagnostics.dimension_derived_row_group_pruning.applied_count > 0 {
+        rules.push(DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME);
+    }
+    if diagnostics.stream_fanout_replay.applied_count > 0 {
+        rules.push(STREAM_FANOUT_REPLAY_RULE_NAME);
+    }
+    if diagnostics.local_parquet_source_reuse.applied_count > 0 {
+        rules.push(LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME);
+    }
+    if diagnostics.shared_subplan_materialization.applied_count > 0 {
+        rules.push(SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME);
+    }
+    if diagnostics.dynamic_filter_route_discovery.route_count > 0 {
+        rules.push(DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME);
+    }
+    if diagnostics.aggregate_join_pushdown.applied_count > 0 {
+        rules.push(AGGREGATE_JOIN_PUSHDOWN_RULE_NAME);
+    }
+    if rules.is_empty() { "none".to_string() } else { rules.join(",") }
+}
+
+fn format_capability_rejection_projection(
+    projection: &nexus_query_engine::capability::CapabilityRejectionProjection,
+) -> String {
+    let facts = if projection.facts.is_empty() {
+        "none".to_string()
+    } else {
+        projection
+            .facts
+            .iter()
+            .map(|(key, value)| format!("{key}={}", stable_inline(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "category={},scope={},memory_boundary={},reason={},facts={}",
+        projection.category.as_str(),
+        projection.contract_scope.as_str(),
+        projection.memory_boundary,
+        projection.reason,
+        facts
+    )
+}
+
+struct RetainedPlanningSummary {
+    post_native_execution_path: String,
+    native_plan_fragment_count: String,
+    host_datafusion_boundary_count: String,
+    post_rule_planning_outcomes: String,
+}
+
+fn summarize_retained_planning_tsv(tsv: &str) -> RetainedPlanningSummary {
+    let Some(header) = tsv.lines().find(|line| !line.starts_with('#') && line.contains('\t')) else {
+        return RetainedPlanningSummary {
+            post_native_execution_path: "none".to_string(),
+            native_plan_fragment_count: "none".to_string(),
+            host_datafusion_boundary_count: "none".to_string(),
+            post_rule_planning_outcomes: "none".to_string(),
+        };
+    };
+    let columns = header.split('\t').collect::<Vec<_>>();
+    let index = |name: &str| columns.iter().position(|column| *column == name);
+    let path_index = index("post_native_execution_path");
+    let fragments_index = index("native_plan_fragment_count");
+    let boundaries_index = index("host_datafusion_boundary_count");
+    let outcome_index = index("outcome");
+    let reason_index = index("reason_code");
+
+    let rows = tsv
+        .lines()
+        .skip_while(|line| *line != header)
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let first_field = |idx: Option<usize>| {
+        rows.first()
+            .and_then(|fields| idx.and_then(|idx| fields.get(idx)))
+            .map(|value| (*value).to_string())
+            .unwrap_or_else(|| "none".to_string())
+    };
+    let outcomes = rows
+        .iter()
+        .filter_map(|fields| {
+            let outcome = outcome_index.and_then(|idx| fields.get(idx))?;
+            let reason = reason_index.and_then(|idx| fields.get(idx)).copied().unwrap_or("none");
+            Some(if reason == "none" { (*outcome).to_string() } else { format!("{outcome}:{reason}") })
+        })
+        .collect::<Vec<_>>();
+
+    RetainedPlanningSummary {
+        post_native_execution_path: first_field(path_index),
+        native_plan_fragment_count: first_field(fragments_index),
+        host_datafusion_boundary_count: first_field(boundaries_index),
+        post_rule_planning_outcomes: if outcomes.is_empty() { "none".to_string() } else { outcomes.join(";") },
+    }
+}
+
+fn write_current_state_tsv(out_dir: &Path, rows: &[CurrentStateRow]) -> Result<(), Box<dyn Error>> {
+    let mut out = String::new();
+    out.push_str("# tpcds_strict_bounded_phase0_current_state_schema_version=1\n");
+    out.push_str(CurrentStateRow::HEADER);
+    out.push('\n');
+    for row in rows {
+        out.push_str(&row.to_tsv_line());
+        out.push('\n');
+    }
+    fs::write(out_dir.join("current_state.tsv"), out)?;
+    Ok(())
+}
+
+fn stable_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn stable_inline(value: &str) -> String {
+    stable_tsv_field(value).replace(',', ";")
 }
 
 async fn dump_engine_plans(ctx: &SessionContext, sql: &str) -> Result<(String, String, String), Box<dyn Error>> {
@@ -303,6 +699,47 @@ fn format_native_ir(lowering: &datafusion_nexus::NativeLoweringResult) -> String
     }
     for (index, plan) in lowering.plans.iter().enumerate() {
         out.push_str(&format!("native_plan[{index}]=\n{plan}\n\n"));
+    }
+    out
+}
+
+fn format_optimized_native_ir(
+    lowering: &datafusion_nexus::NativeLoweringResult,
+    optimizer_config: &CudfOptimizerConfig,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("candidate_count={}\n", lowering.candidate_count()));
+    out.push_str(&format!("rewritten_count={}\n", lowering.rewritten_count()));
+    out.push_str(&format!("rejected_count={}\n", lowering.rejected_count()));
+    out.push('\n');
+    if lowering.plans.is_empty() {
+        out.push_str("native_ir=<none: no candidates lowered>\n");
+    }
+    let options = native_optimizer_options_for_execution(optimizer_config);
+    let statistical_mode = optimizer_config.statistical_aggregate_execution_mode();
+    for (index, plan) in lowering.plans.iter().enumerate() {
+        let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &options);
+        let analysis = optimized.plan.capability_analysis();
+        let mode_aware_envelope =
+            match nexus_query_engine::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+                &optimized.plan,
+                statistical_mode,
+            ) {
+                Ok(Some(admission)) => admission.envelope().as_str().to_string(),
+                Ok(None) => "none:not_admitted_for_mode".to_string(),
+                Err(error) => format!("error:{}:{}", error.code().as_str(), stable_inline(error.message())),
+            };
+        out.push_str(&format!(
+            "native_plan[{index}] changed={} applied_rules={}\nstrict_bounded_envelope_admission={:?}\nmode_aware_strict_bounded_envelope={}\nstatistical_aggregate_execution_mode={}\nrollup_rank_topk_after_aggregate_join_pushdown_admission={:?}\nfirst_rejection_projection={:?}\n{}\n\n",
+            optimized.changed(),
+            native_optimizer_applied_rules(&optimized.diagnostics),
+            analysis.strict_bounded_envelope_admission(),
+            mode_aware_envelope,
+            statistical_mode.as_str(),
+            analysis.rollup_rank_topk_after_aggregate_join_pushdown_admission,
+            analysis.first_rejection_projection(),
+            optimized.plan
+        ));
     }
     out
 }
@@ -420,12 +857,18 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_nexus::NativeL
     out.push_str("| physical_plan.gpu.preRule.txt | GPU session physical plan WITHOUT `CudfNativePhysicalOptimizerRule` (the input the rule sees) |\n");
     out.push_str("| physical_plan.gpu.postRule.txt | GPU session physical plan WITH the rule (NativeCudfExec wrappers visible) |\n");
     out.push_str("| planning_report.gpu.postRule.txt | actual retained rule report after execution-boundary admission and fallback policy |\n");
+    out.push_str(
+        "| planning_report.gpu.postRule.tsv | canonical native DataFusion planning row(s) for the post-rule plan |\n",
+    );
     out.push_str("| native_optimizer.gpu.postRule.txt | retained native optimizer diagnostics from the post-rule GPU physical optimizer |\n");
     out.push_str("| strict_bounded_contract.gpu.postRule.txt | strict-bounded admission evidence retained by the post-rule optimizer |\n");
     out.push_str(
         "| adaptive_pipeline.gpu.postRule.txt | adaptive admission evidence retained by the post-rule optimizer |\n",
     );
     out.push_str("| native_ir.gpu.txt | lowered `nexus_query_engine::QueryPlan` per rewritten candidate |\n");
+    out.push_str(
+        "| native_ir.gpu.optimized.txt | direct lowered native IR after native optimizer rules, with strict envelope evidence |\n",
+    );
     out.push_str(
         "| native_ir.gpu.postRule.txt | optimized native IR extracted from post-rule `NativeCudfExec` wrappers |\n",
     );
@@ -463,6 +906,7 @@ fn write_top_summary(cfg: &TriageConfig, rows: &[String]) -> Result<(), Box<dyn 
     out.push_str("# TPC-DS outlier triage\n\n");
     out.push_str(&format!("- parquet root: `{}`\n", cfg.root.display()));
     out.push_str(&format!("- output dir: `{}`\n", cfg.out_dir.display()));
+    out.push_str("- current state rows: [`current_state.tsv`](./current_state.tsv)\n");
     out.push_str("\n## Queries\n\n");
     out.push_str("| query | lowering | bundle |\n|---|---|---|\n");
     for row in rows {

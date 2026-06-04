@@ -23,11 +23,13 @@ use nexus_query_engine::{
     PipelineTaskId, PipelineTaskKind, PlanNode, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan,
     QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
     ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
-    StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, WindowFunction, WindowSpec,
-    adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history,
+    StatisticalAggregateExecutionMode, StrictBoundedContractGateId, StrictBoundedContractGateRow,
+    StrictBoundedContractOwner, WindowFunction, WindowSpec, adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission_with_memory_history,
     capability::{
-        CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope,
-        STRICT_UNRESOLVED_PREFLIGHT_GAPS, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
+        CapabilityDecision, CapabilityEnvelopeAdmission, ContractQuality, ContractStatus, ReservationRequirementScope,
+        STRICT_UNRESOLVED_PREFLIGHT_GAPS, StrictBoundedEnvelope, SubgraphInvariantKind,
+        lower_level_unresolved_preflight_gap,
     },
     compile_pipeline,
     contract_report::{StrictBoundedContractReport, StrictBoundedExecutionMode},
@@ -37,6 +39,8 @@ use nexus_query_engine::{
         compiled_bounded_query_plan_support,
     },
     execute_query_plan, optimize_query_plan, strict_bounded_pipeline_admission,
+    strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -45,11 +49,11 @@ use crate::bounded_join_admission::{
     admitted_mixed_residual_multi_join_plan, keyless_conditional_aggregate_over_join_subplan_inputs_plan,
     large_keyed_join_strategy_plan,
     plans::{
-        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, aggregate_over_join_subplan_topk_plan,
-        keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
-        resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
-        resident_grouped_aggregate_subquery_filter_plan,
-        shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan,
+        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, RootTopKJoinAggregateVariant,
+        aggregate_over_join_subplan_topk_plan, keyed_hash_join_resident_subplan_pipeline_plan,
+        keyless_conditional_join_input_subplan_plan, resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+        resident_grouped_aggregate_subquery_filter_plan, root_topk_join_aggregate_plan,
+        root_topk_join_aggregate_variant_plan, shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan,
         single_join_post_root_aggregate_sort_limit_plan,
     },
     residual_resident_grouped_aggregate_input_plan, unsupported_cross_key_join_plan,

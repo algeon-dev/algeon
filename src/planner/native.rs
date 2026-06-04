@@ -16,6 +16,7 @@ use datafusion::{
 };
 
 use super::*;
+use crate::native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics};
 
 mod adaptive;
 mod strict_bounded;
@@ -43,6 +44,9 @@ pub struct NativePlanningDiagnostics {
     pub input_plan_root: String,
     /// Stable textual shape of the input physical plan used for report context.
     pub input_plan_shape: String,
+    /// Join diagnostics captured before native replacement can remove
+    /// DataFusion join nodes from the post-native plan.
+    pub input_join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     /// Candidate rewrite outcomes from the native physical optimizer rule.
     pub report: PlanningReport,
     /// DataFusion-free native optimizer diagnostics from the lowered plan.
@@ -73,6 +77,7 @@ pub struct CudfNativePhysicalOptimizerRule {
 struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_root: Mutex<Option<String>>,
     last_input_plan_shape: Mutex<Option<String>>,
+    last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
     last_report: Mutex<Option<PlanningReport>>,
     last_native_optimizer: Mutex<nexus_query_engine::NativeOptimizerDiagnostics>,
     last_source_diagnostics: Mutex<Vec<nexus_query_engine::SourceDiagnostics>>,
@@ -95,6 +100,7 @@ impl CudfNativePhysicalOptimizerRule {
             state: Arc::new(CudfNativePhysicalOptimizerRuleState {
                 last_input_plan_root: Mutex::new(None),
                 last_input_plan_shape: Mutex::new(None),
+                last_input_join_diagnostics: Mutex::new(Vec::new()),
                 last_report: Mutex::new(None),
                 last_native_optimizer: Mutex::new(nexus_query_engine::NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
@@ -147,6 +153,12 @@ impl CudfNativePhysicalOptimizerRule {
                 .expect("native input plan shape mutex poisoned")
                 .clone()
                 .unwrap_or_default(),
+            input_join_diagnostics: self
+                .state
+                .last_input_join_diagnostics
+                .lock()
+                .expect("native input join diagnostics mutex poisoned")
+                .clone(),
             report,
             native_optimizer: self
                 .state
@@ -190,6 +202,8 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             Some(plan.name().to_string());
         *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
             Some(physical_plan_shape(plan.as_ref()));
+        *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
+            physical_join_diagnostics(plan.as_ref());
 
         let native_execution_config = self.config.native_execution_config();
         let native_optimizer_options = self.config.native_optimizer_options();
@@ -868,7 +882,7 @@ fn native_execution_boundary_is_rejected(
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
         return Ok(false);
     }
-    strict_bounded_admission_is_rejected(plan)
+    strict_bounded_admission_is_rejected(plan, execution_config)
 }
 
 fn strict_bounded_rejection_blocks_child_rewrites(diagnostics: &NativeStrictBoundedContractDiagnostics) -> bool {

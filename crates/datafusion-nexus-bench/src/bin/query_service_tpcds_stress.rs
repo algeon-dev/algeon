@@ -10,7 +10,7 @@ use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
-    prelude::{ParquetReadOptions, SessionContext},
+    prelude::SessionContext,
 };
 use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
@@ -19,8 +19,8 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
-    TPCDS_TABLES, TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
-    discover_tpcds_table_layout, tpcds_native_report_session_config, tpcds_report_session_config,
+    TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
+    tpcds_native_report_session_config, tpcds_report_session_config,
 };
 use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::{sync::Barrier, time::timeout};
@@ -748,15 +748,7 @@ fn percentile(sorted_values: &[f64], quantile: f64) -> f64 {
 }
 
 async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> DataFusionResult<()> {
-    for &table in TPCDS_TABLES {
-        let layout = discover_tpcds_table_layout(root, table).map_err(|error| plan_error(error.to_string()))?;
-        let path = layout
-            .anchor
-            .to_str()
-            .ok_or_else(|| plan_error(format!("TPC-DS table path is not valid UTF-8: {}", layout.anchor.display())))?;
-        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
-    }
-    Ok(())
+    datafusion_nexus_bench::register_tpcds_tables(ctx, root).await.map_err(|error| plan_error(error.to_string()))
 }
 
 fn select_planning_row(

@@ -22,7 +22,7 @@ use datafusion::{
         collect,
         metrics::{MetricValue, MetricsSet},
     },
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
@@ -30,7 +30,7 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, discover_tpcds_table_layout, tpcds_native_analytics_optimizer_config,
+    TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables, tpcds_native_analytics_optimizer_config,
     tpcds_native_report_session_config,
 };
 
@@ -251,15 +251,6 @@ fn tuned_cpu_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = true;
     config.options_mut().execution.parquet.pushdown_filters = false;
     config
-}
-
-async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> Result<(), Box<dyn Error>> {
-    for &table in TPCDS_TABLES {
-        let layout = discover_tpcds_table_layout(root, table)?;
-        let path = layout.anchor.to_str().ok_or_else(|| format!("non-utf8 path: {}", layout.anchor.display()))?;
-        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
-    }
-    Ok(())
 }
 
 struct IterOutcome {

@@ -24,8 +24,8 @@ use super::{
     sort::lower_sort_with_input,
     source::{
         add_source_filter_projection, lower_required_file_source_projection_exprs,
-        lower_table_format_zero_column_count_source, required_scan_projection,
-        required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        lower_table_format_zero_column_count_source, reader_predicate_proves_local_parquet_at_most_one_row,
+        required_scan_projection, required_scan_projection_requires_native_projection, required_scan_projection_schema,
         source_bindings_for_schema, source_reader_pushdown_predicate, table_format_scan_rejection,
     },
     source_scan_limit_from_limit_spec,
@@ -97,6 +97,7 @@ pub(super) fn lower_slice1_plan(
 
     let native_files =
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let native_file_paths = native_files.iter().map(|file| file.path.clone()).collect::<Vec<_>>();
     let mut source = if zero_column_count_safe && column_requirements.read_columns.is_empty() {
         NativeLocalParquetSource::zero_column_count(native_files)
     } else {
@@ -131,7 +132,17 @@ pub(super) fn lower_slice1_plan(
         )?
     {
         reader_pushdown_covers_filter = predicate.covers_filter;
-        source = source.with_reader_predicate(predicate.expr);
+        let max_rows = if reader_predicate_proves_local_parquet_at_most_one_row(
+            table_schema.as_ref(),
+            file_scan.file_schema().as_ref(),
+            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
+            &predicate.expr,
+        ) {
+            Some(1)
+        } else {
+            None
+        };
+        source = source.with_reader_predicate(predicate.expr).with_max_rows(max_rows);
     }
     let reader_pushdown = source.reader_predicate.is_some();
     let selected_row_group_stats = source.diagnostics.selected_row_group_stats.clone();

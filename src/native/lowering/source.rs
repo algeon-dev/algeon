@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -39,6 +39,7 @@ use crate::{
         validate::{collect_required_columns, is_supported_native_type, validate_physical_expr, validate_schema},
     },
     policy::FallbackReason,
+    source_cardinality::reader_predicate_proves_source_at_most_one_row,
     table_format::{
         CudfTableFormatScanExec, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
         TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
@@ -93,6 +94,7 @@ pub(super) fn lower_source_input(
 
     let native_files =
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let native_file_paths = native_files.iter().map(|file| file.path.clone()).collect::<Vec<_>>();
     let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
         let required_scan_projection =
             required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
@@ -130,7 +132,17 @@ pub(super) fn lower_source_input(
         &native_source,
     )? {
         reader_pushdown_covers_filter = predicate.covers_filter;
-        native_source = native_source.with_reader_predicate(predicate.expr);
+        let max_rows = if reader_predicate_proves_local_parquet_at_most_one_row(
+            table_schema.as_ref(),
+            file_scan.file_schema().as_ref(),
+            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
+            &predicate.expr,
+        ) {
+            Some(1)
+        } else {
+            None
+        };
+        native_source = native_source.with_reader_predicate(predicate.expr).with_max_rows(max_rows);
     }
     let reader_pushdown = native_source.reader_predicate.is_some();
     let selected_row_group_stats = native_source.diagnostics.selected_row_group_stats.clone();
@@ -232,6 +244,15 @@ pub(super) fn lower_source_input(
             required_output_fields,
         )
     }
+}
+
+pub(super) fn reader_predicate_proves_local_parquet_at_most_one_row(
+    table_schema: &Schema,
+    file_schema: &Schema,
+    source_paths: &[&Path],
+    predicate: &NativeExpr,
+) -> bool {
+    reader_predicate_proves_source_at_most_one_row(&[table_schema, file_schema], source_paths, predicate)
 }
 
 fn lower_table_format_source_input(

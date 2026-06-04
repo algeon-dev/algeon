@@ -8,7 +8,7 @@ use std::{
 use arrow::{
     array::{
         Array, BooleanArray, Date32Array, Decimal128Array, DurationNanosecondArray, Float32Array, Float64Array,
-        Int8Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray, UInt64Array,
+        Int8Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray, UInt32Array, UInt64Array,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -17,13 +17,13 @@ use cudf::DataFrame;
 use nexus_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue, LocalParquetFile,
-    LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId, MissingColumn,
-    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode,
-    WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GroupingSetsSpec, JoinKey,
+    JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId,
+    MissingColumn, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder,
+    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy,
+    StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{

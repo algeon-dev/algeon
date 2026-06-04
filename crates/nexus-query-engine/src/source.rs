@@ -621,6 +621,9 @@ pub struct LocalParquetSource {
     /// must resolve to a physical file column that is present in the read
     /// projection. Partition and missing-null columns are not reader-visible.
     pub reader_predicate: Option<Expr>,
+    /// Trusted source cardinality upper bound after source-level scan limit and
+    /// reader predicate have been applied.
+    pub max_rows: Option<usize>,
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
 }
@@ -667,6 +670,7 @@ impl LocalParquetSource {
             missing_columns,
             scan_limit: None,
             reader_predicate: None,
+            max_rows: None,
             diagnostics,
         }
     }
@@ -763,6 +767,12 @@ impl LocalParquetSource {
     pub fn with_scan_limit(mut self, scan_limit: Option<usize>) -> Self {
         self.scan_limit = scan_limit;
         self.refresh_diagnostics();
+        self
+    }
+
+    /// Sets a trusted source cardinality upper bound.
+    pub fn with_max_rows(mut self, max_rows: Option<usize>) -> Self {
+        self.max_rows = max_rows;
         self
     }
 

@@ -139,6 +139,9 @@ pub fn compiled_bounded_query_plan_support(
     if plan.sink().input() != final_plan_node {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
+    if !sink_path_post_limit_unary_nodes_are_projection(plan) {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
 
     Ok(CompiledBoundedPipelineSupport::Supported)
 }
@@ -678,6 +681,7 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
             PipelineTaskKind::Limit if !seen_limit => {
                 seen_limit = true;
             },
+            PipelineTaskKind::Unary if seen_limit => {},
             PipelineTaskKind::SourceRead
             | PipelineTaskKind::GpuResidentSource
             | PipelineTaskKind::LiteralBatchSource
@@ -917,6 +921,49 @@ fn sink_input_plan_node(pipeline: &CompiledPipeline, sink_task: PipelineTaskId) 
     let edge =
         pipeline.edges().iter().find(|edge| edge.to() == sink_task && edge.kind() == PipelineEdgeKind::SinkInput)?;
     task_index(pipeline).get(&edge.from()).and_then(|task| task.plan_node())
+}
+
+fn sink_path_post_limit_unary_nodes_are_projection(plan: &QueryPlan) -> bool {
+    let mut current = plan.sink().input();
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        let Some(node) = plan.node(current) else {
+            return false;
+        };
+        match &node.kind {
+            PlanNode::Projection(projection) => current = projection.input,
+            PlanNode::Limit(_) => return true,
+            PlanNode::Filter(filter) => return !projection_chain_reaches_limit(plan, filter.input),
+            PlanNode::Source(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Join(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_) => return true,
+        }
+    }
+}
+
+fn projection_chain_reaches_limit(plan: &QueryPlan, mut current: NodeId) -> bool {
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        let Some(node) = plan.node(current) else {
+            return false;
+        };
+        match &node.kind {
+            PlanNode::Projection(projection) => current = projection.input,
+            PlanNode::Limit(_) => return true,
+            _ => return false,
+        }
+    }
 }
 
 fn task_index(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, &PipelineTask> {

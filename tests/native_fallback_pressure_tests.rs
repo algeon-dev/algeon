@@ -286,6 +286,7 @@ async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: plan.name().to_string(),
         input_plan_shape: "SortExec(fetch)(ProjectionExec(CrossJoinExec(DataSourceExec,DataSourceExec)))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report: planning_report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),

@@ -1,7 +1,8 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
     CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport, StrictBoundedExecutionMode,
-    capability::ContractStatus, strict_bounded_pipeline_admission, strict_bounded_pipeline_rejection_projection,
+    capability::ContractStatus, strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
 };
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
@@ -110,9 +111,12 @@ pub(super) fn accepted_plan_contract_diagnostics(
         return Ok(non_join_bounded_diagnostics());
     }
 
-    let admission = strict_bounded_pipeline_admission(plan)
-        .map_err(strict_bounded_report_error)?
-        .ok_or_else(|| strict_bounded_candidate_error("strict bounded rewrite has no strict admission evidence"))?;
+    let admission = strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+    )
+    .map_err(strict_bounded_report_error)?
+    .ok_or_else(|| strict_bounded_candidate_error("strict bounded rewrite has no strict admission evidence"))?;
     let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .map_err(strict_bounded_report_error)?;
     Ok(NativeStrictBoundedContractDiagnostics {
@@ -127,8 +131,14 @@ pub(super) fn accepted_plan_contract_diagnostics(
     })
 }
 
-pub(super) fn strict_bounded_admission_is_rejected(plan: &QueryPlan) -> DataFusionResult<bool> {
-    match strict_bounded_pipeline_admission(plan) {
+pub(super) fn strict_bounded_admission_is_rejected(
+    plan: &QueryPlan,
+    execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<bool> {
+    match strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+    ) {
         Ok(Some(_)) => Ok(false),
         Ok(None) => Ok(true),
         Err(error) if error.code() == nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
@@ -145,7 +155,7 @@ pub(super) fn rejected_plan_contract_diagnostics(
         return Ok(NativeStrictBoundedContractDiagnostics::default());
     }
 
-    let Some(blocking_row) = first_blocking_contract_row(plan)? else {
+    let Some(blocking_row) = first_blocking_contract_row(plan, execution_config)? else {
         return Ok(NativeStrictBoundedContractDiagnostics::default());
     };
     Ok(NativeStrictBoundedContractDiagnostics {
@@ -159,8 +169,16 @@ pub(super) fn rejected_plan_contract_diagnostics(
     })
 }
 
-fn first_blocking_contract_row(plan: &QueryPlan) -> DataFusionResult<Option<StrictBoundedContractGateRow>> {
-    if let Some(projection) = strict_bounded_pipeline_rejection_projection(plan).map_err(strict_bounded_report_error)? {
+fn first_blocking_contract_row(
+    plan: &QueryPlan,
+    execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Option<StrictBoundedContractGateRow>> {
+    if let Some(projection) = strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+    )
+    .map_err(strict_bounded_report_error)?
+    {
         return StrictBoundedContractGateRow::from_capability_rejection_projection(
             StrictBoundedExecutionMode::UnsupportedStrictBounded,
             0,

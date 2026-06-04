@@ -1,11 +1,12 @@
 use std::{
     error::Error as StdError,
     fmt::{Display, Formatter},
+    fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use arrow::{error::ArrowError, record_batch::RecordBatch};
+use arrow::{datatypes::Schema, error::ArrowError, record_batch::RecordBatch};
 use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
     error::DataFusionError,
@@ -18,7 +19,9 @@ use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
     NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
     NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
+    register_source_unique_keys_for_path,
 };
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 mod dataset;
 mod parity;
@@ -528,11 +531,48 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
     }
 }
 
-pub(super) async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
+pub async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;
         let path = layout.anchor.to_str().ok_or_else(|| TpcdsWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
-        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
+        let schema = tpcds_table_schema(&layout)?;
+        if let Some(key) = tpcds_source_unique_key(table) {
+            register_source_unique_keys_for_path(&layout.anchor, &[key]);
+            for file in &layout.files {
+                register_source_unique_keys_for_path(file, &[key]);
+            }
+        }
+        ctx.register_parquet(table, path, ParquetReadOptions::default().schema(&schema)).await?;
     }
     Ok(())
+}
+
+fn tpcds_table_schema(layout: &TpcdsTableLayout) -> TpcdsWorkloadResult<Schema> {
+    let first_file = layout.files.first().ok_or_else(|| {
+        TpcdsWorkloadError::InvalidDataset("expected at least one Parquet file for TPC-DS table".to_string())
+    })?;
+    Ok(ParquetRecordBatchReaderBuilder::try_new(File::open(first_file)?)?.schema().as_ref().clone())
+}
+
+fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static str]> {
+    match table {
+        "call_center" => Some(&["cc_call_center_sk"]),
+        "catalog_page" => Some(&["cp_catalog_page_sk"]),
+        "customer" => Some(&["c_customer_sk"]),
+        "customer_address" => Some(&["ca_address_sk"]),
+        "customer_demographics" => Some(&["cd_demo_sk"]),
+        "date_dim" => Some(&["d_date_sk"]),
+        "household_demographics" => Some(&["hd_demo_sk"]),
+        "income_band" => Some(&["ib_income_band_sk"]),
+        "item" => Some(&["i_item_sk"]),
+        "promotion" => Some(&["p_promo_sk"]),
+        "reason" => Some(&["r_reason_sk"]),
+        "ship_mode" => Some(&["sm_ship_mode_sk"]),
+        "store" => Some(&["s_store_sk"]),
+        "time_dim" => Some(&["t_time_sk"]),
+        "warehouse" => Some(&["w_warehouse_sk"]),
+        "web_page" => Some(&["wp_web_page_sk"]),
+        "web_site" => Some(&["web_site_sk"]),
+        _ => None,
+    }
 }

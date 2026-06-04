@@ -38,7 +38,7 @@ pub use tpcds::{
     TpcdsExecutionProgressEvent, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsQuery,
     TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult,
     default_tpcds_sf1_parquet_root, describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint,
-    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
+    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, register_tpcds_tables,
     tiny_tpcds_dataset_metadata, tpcds_datafusion_execution_workload_items,
     tpcds_datafusion_execution_workload_items_filtered,
     tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,

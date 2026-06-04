@@ -45,8 +45,14 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.rewritten_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        native_plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(),
-        "q15 should lower to the executable keyed hash join resident subplan pipeline:\n{native_plan}"
+        native_plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
+    );
+    let optimized_q15 = nexus_query_engine::optimize_query_plan(native_plan.clone(), &Default::default());
+    assert!(
+        optimized_q15.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
+        optimized_q15.plan
     );
     let facts = native_plan
         .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
@@ -398,7 +404,11 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let plan = &result.plans[0];
-    assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert_q11_keyless_proof_selected_as(
+        plan,
+        "lowered q11",
+        nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate,
+    );
     assert!(
         plan.bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none()
     );
@@ -471,13 +481,10 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
-    assert!(
-        optimized
-            .plan
-            .capability_analysis()
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-        "optimized q11 should remain admitted after grouped+scalar aggregate sharing:\n{}",
-        optimized.plan
+    assert_q11_keyless_proof_selected_as(
+        &optimized.plan,
+        "optimized q11",
+        nexus_query_engine::capability::StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
     );
     let materialization = &optimized.diagnostics.shared_subplan_materialization;
     assert_eq!(materialization.applied_count, 1, "optimizer diagnostics={materialization:?}");
@@ -511,6 +518,28 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn assert_q11_keyless_proof_selected_as(
+    plan: &QueryPlan,
+    context: &str,
+    expected: nexus_query_engine::capability::StrictBoundedEnvelope,
+) {
+    let analysis = plan.capability_analysis();
+    assert_eq!(
+        analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+        nexus_query_engine::capability::CapabilityDecision::Satisfied,
+        "{context} should retain the keyless aggregate-over-join proof:\n{plan}"
+    );
+    let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
+        analysis.strict_bounded_envelope_admission()
+    else {
+        panic!(
+            "{context} should be strict-bounded executable: {:?}\n{plan}",
+            analysis.strict_bounded_envelope_admission()
+        );
+    };
+    assert_eq!(envelope, expected, "{context} should select the expected strict bounded envelope");
 }
 
 #[tokio::test]
@@ -607,6 +636,16 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
     );
 
     let plan = &result.plans[0];
+    assert!(
+        plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        "q16 should be admitted as one root full-sort grouped aggregate pipeline:\n{plan}"
+    );
+    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    assert!(
+        optimized.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
+        optimized.plan
+    );
     let PlanNode::Sort(sort) = &plan.root_node().kind else {
         panic!("q16 native root should be the final ORDER BY sort");
     };

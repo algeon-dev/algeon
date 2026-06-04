@@ -37,6 +37,69 @@ pub enum AggregateExecutionStage {
     FinalMerge,
 }
 
+/// Native aggregate state shape relevant to strict bounded admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::capability) enum AggregateStateContract {
+    /// No distinct or group-only dedup state is required.
+    Plain,
+    /// SQL setop-style dedup: grouped keys with no aggregate expressions.
+    DedupGroupOnly,
+    /// Exact count-distinct state represented as `COUNT(DISTINCT col)` or
+    /// native `NUnique(col)`.
+    ExactDistinctCount,
+}
+
+/// Aggregate state forms that need a more specific contract before admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::capability) enum UnsupportedAggregateStateContract {
+    GroupingSets,
+    FilteredDistinct,
+    UnsupportedDistinctFunction,
+}
+
+impl UnsupportedAggregateStateContract {
+    pub(in crate::capability) const fn as_str(self) -> &'static str {
+        match self {
+            Self::GroupingSets => "grouping_sets",
+            Self::FilteredDistinct => "filtered_distinct",
+            Self::UnsupportedDistinctFunction => "unsupported_distinct_function",
+        }
+    }
+}
+
+pub(in crate::capability) fn aggregate_state_contract(
+    spec: &AggregateSpec,
+) -> Result<AggregateStateContract, UnsupportedAggregateStateContract> {
+    if spec.grouping_sets.is_some() {
+        return Err(UnsupportedAggregateStateContract::GroupingSets);
+    }
+    if spec.aggr_exprs.is_empty() && !spec.group_exprs.is_empty() {
+        return Ok(AggregateStateContract::DedupGroupOnly);
+    }
+
+    let mut has_exact_distinct_count = false;
+    for expr in &spec.aggr_exprs {
+        if aggregate_expr_is_exact_distinct_count(expr) {
+            if expr.filter.is_some() {
+                return Err(UnsupportedAggregateStateContract::FilteredDistinct);
+            }
+            has_exact_distinct_count = true;
+        } else if expr.distinct {
+            return Err(UnsupportedAggregateStateContract::UnsupportedDistinctFunction);
+        }
+    }
+
+    if has_exact_distinct_count {
+        Ok(AggregateStateContract::ExactDistinctCount)
+    } else {
+        Ok(AggregateStateContract::Plain)
+    }
+}
+
+fn aggregate_expr_is_exact_distinct_count(expr: &crate::expr::AggregateExpr) -> bool {
+    expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
+}
+
 impl AggregateExecutionStage {
     /// Stable report label for this aggregate stage.
     pub const fn as_str(self) -> &'static str {
@@ -437,7 +500,7 @@ fn aggregate_filter_count(spec: &AggregateSpec) -> usize {
 }
 
 fn distinct_aggregate_count(spec: &AggregateSpec) -> usize {
-    spec.aggr_exprs.iter().filter(|expr| expr.distinct).count()
+    spec.aggr_exprs.iter().filter(|expr| aggregate_expr_is_exact_distinct_count(expr)).count()
 }
 
 fn aggregate_encoded_key_string_dtype(data_type: &DataType) -> bool {

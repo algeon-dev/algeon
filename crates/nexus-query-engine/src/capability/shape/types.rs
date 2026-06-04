@@ -38,6 +38,83 @@ pub(in crate::capability) struct HashJoinResidentGroupedAggregateInputPostJoinAg
     pub(in crate::capability) final_limit_id: NodeId,
 }
 
+/// Global limit with projection/aggregate/join work in its bounded input.
+///
+/// A projection may sit either above the limit as a deterministic post-limit
+/// reshaping step or below the limit as part of the bounded input. Distinct/dedup
+/// aggregate state under the limit is admitted only when the generic
+/// aggregate-state contract can model it.
+#[derive(Debug, Clone)]
+pub(in crate::capability) struct ProjectionGlobalLimitShape {
+    pub(in crate::capability) post_limit_projection_id: Option<NodeId>,
+    pub(in crate::capability) global_limit_id: NodeId,
+    pub(in crate::capability) join_ids: Vec<NodeId>,
+}
+
+/// Projection root over scalar fanout or SQL setop/dedup join work.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(in crate::capability) struct ProjectionScalarSetopShape {
+    pub(in crate::capability) final_projection_id: NodeId,
+    pub(in crate::capability) join_ids: Vec<NodeId>,
+    pub(in crate::capability) aggregate_ids: Vec<NodeId>,
+    pub(in crate::capability) kind: ProjectionScalarSetopKind,
+}
+
+/// The cardinality proof used by a projection scalar/setop envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::capability) enum ProjectionScalarSetopKind {
+    /// Cross joins combine only scalar aggregate outputs before the final projection.
+    ScalarFanout,
+    /// Grouped dedup aggregates and left-anti joins feed a final scalar aggregate.
+    SetopDedupScalar,
+    /// A scalar aggregate over a multi-join input is present, but child cardinality is not yet modeled.
+    ScalarJoinAggregateInput,
+    /// Keyless/cross join work is present, but its scalar output proof is not yet modeled.
+    KeylessOrCrossJoinInput,
+    /// Setop/dedup input work is present, but its final scalar proof is not yet modeled.
+    SetopDedupInput,
+}
+
+impl ProjectionScalarSetopKind {
+    pub(in crate::capability) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScalarFanout => "scalar_fanout",
+            Self::SetopDedupScalar => "setop_dedup_scalar",
+            Self::ScalarJoinAggregateInput => "scalar_join_aggregate_input",
+            Self::KeylessOrCrossJoinInput => "keyless_or_cross_join_input",
+            Self::SetopDedupInput => "setop_dedup_input",
+        }
+    }
+}
+
+/// Rollup/rank/top-k query whose fact-side source has first been reduced by a
+/// detail-level aggregate below the final grouping-set aggregate's join input.
+///
+/// The stored ids pin the pushed-down detail aggregate, the rebuilt root join,
+/// the final grouping-set aggregate, the rank input sort/window chain, the
+/// optional rank filter/projection chain, and the optional final top-k/sort
+/// boundary.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::capability) struct RollupRankTopKAfterAggregateJoinPushdownShape {
+    pub(in crate::capability) detail_pre_aggregate_id: NodeId,
+    pub(in crate::capability) root_join_id: NodeId,
+    pub(in crate::capability) final_grouping_aggregate_id: NodeId,
+    pub(in crate::capability) final_rollup_width: FinalRollupWidthClass,
+    pub(in crate::capability) rank_sort_id: NodeId,
+    pub(in crate::capability) rank_window_id: NodeId,
+    pub(in crate::capability) rank_filter_id: Option<NodeId>,
+    pub(in crate::capability) rank_output_residency_consumer_id: Option<NodeId>,
+    pub(in crate::capability) final_sort_id: Option<NodeId>,
+    pub(in crate::capability) final_limit_id: Option<NodeId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::capability) enum FinalRollupWidthClass {
+    Narrow,
+    Wide,
+}
+
 /// Top-k query whose root join combines a deep multi-join side with a grouped
 /// aggregate computed over a separate join subplan.
 ///
@@ -52,6 +129,75 @@ pub(in crate::capability) struct MultiJoinAggregateOverJoinSubplanTopKShape {
     pub(in crate::capability) post_root_projection_id: NodeId,
     pub(in crate::capability) final_sort_id: NodeId,
     pub(in crate::capability) final_limit_id: NodeId,
+}
+
+/// Root top-k query where a final projection/sort/limit consumes a keyed join
+/// tree that includes at least one grouped aggregate over a source-reduced
+/// join fragment.
+#[derive(Debug, Clone)]
+pub(in crate::capability) struct RootTopKJoinAggregateShape {
+    pub(in crate::capability) root_join_id: NodeId,
+    pub(in crate::capability) join_ids: Vec<NodeId>,
+    pub(in crate::capability) distinct_aggregate_ids: Vec<NodeId>,
+    pub(in crate::capability) keyless_or_cross_join_ids: Vec<NodeId>,
+    pub(in crate::capability) keyed_filtered_semi_join_ids: Vec<NodeId>,
+    pub(in crate::capability) null_filtered_left_join_ids: Vec<NodeId>,
+    pub(in crate::capability) window_ids: Vec<NodeId>,
+    pub(in crate::capability) window_input_sort_ids: Vec<NodeId>,
+    pub(in crate::capability) window_full_outer_join_ids: Vec<NodeId>,
+    pub(in crate::capability) keyless_outer_cross_window_join_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) sort_fetch_hash_join_input_subcontract: bool,
+    pub(in crate::capability) sort_fetch_hash_join_aggregate_subcontract: bool,
+    pub(in crate::capability) aggregate_id: NodeId,
+    pub(in crate::capability) aggregate_projection_id: NodeId,
+    pub(in crate::capability) post_root_projection_ids: Vec<NodeId>,
+    pub(in crate::capability) final_topk_projection_ids: Vec<NodeId>,
+    pub(in crate::capability) final_sort_id: NodeId,
+    pub(in crate::capability) final_limit_id: NodeId,
+}
+
+/// Root full-sort query where a host-sink `Sort` consumes a join tree with at
+/// least one grouped aggregate fragment.
+#[derive(Debug, Clone)]
+pub(in crate::capability) struct RootFullSortJoinAggregateShape {
+    pub(in crate::capability) root_join_id: NodeId,
+    pub(in crate::capability) join_ids: Vec<NodeId>,
+    pub(in crate::capability) keyless_or_cross_join_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_projection_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_aggregate_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) unsupported_shared_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_aggregate_consumer_join_ids: Vec<NodeId>,
+    pub(in crate::capability) aggregate_id: NodeId,
+    pub(in crate::capability) aggregate_projection_id: NodeId,
+    pub(in crate::capability) post_root_projection_ids: Vec<NodeId>,
+    pub(in crate::capability) final_sort_id: NodeId,
+    pub(in crate::capability) subcontract: RootFullSortJoinAggregateSubcontract,
+}
+
+/// Full-sort join/aggregate subcontract class. Phase-specific admission owns
+/// each class separately so the full-sort symptom cannot hide different
+/// cardinality proofs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::capability) enum RootFullSortJoinAggregateSubcontract {
+    KeyedHashGroupedAggregate,
+    KeylessOrCrossJoin,
+    RepeatedProjectionFanout,
+    SharedAggregateFanout,
+    UnsupportedSharedOrFanout,
+}
+
+impl RootFullSortJoinAggregateSubcontract {
+    pub(in crate::capability) const fn as_str(self) -> &'static str {
+        match self {
+            Self::KeyedHashGroupedAggregate => "keyed_hash_grouped_aggregate",
+            Self::KeylessOrCrossJoin => "keyless_or_cross_join",
+            Self::RepeatedProjectionFanout => "repeated_projection_fanout",
+            Self::SharedAggregateFanout => "shared_aggregate_fanout",
+            Self::UnsupportedSharedOrFanout => "unsupported_shared_or_fanout",
+        }
+    }
 }
 
 /// Final-sort query where a keyed hash join matches a joined grouped branch
