@@ -210,6 +210,16 @@ cudf_status_t cudf_column_create_strings(
     int32_t null_count,
     cudf_column_handle* out);
 
+/// Create a STRING type column from host string data with explicit execution options.
+cudf_status_t cudf_column_create_strings_ex(
+    const char** strings,
+    const int32_t* lengths,
+    int32_t num_strings,
+    const uint8_t* null_mask,
+    int32_t null_count,
+    const cudf_exec_options_t* options,
+    cudf_column_handle* out);
+
 /// Create a column by repeating a scalar value `size` times.
 ///
 /// Uses `cudf::make_column_from_scalar` under the hood.

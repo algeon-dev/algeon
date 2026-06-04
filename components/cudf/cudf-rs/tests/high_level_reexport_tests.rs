@@ -28,7 +28,7 @@ fn test_crate_root_reexports_dataframe() {
 
 #[test]
 fn test_doc_example_high_level_workflow() {
-    // This mirrors the planned crate-level doc example: construct a DataFrame
+    // This mirrors the crate-level doc example: construct a DataFrame
     // from Series, retrieve a Series back, and inspect metadata.
     use cudf::{DataFrame, Series};
 

@@ -33,7 +33,9 @@ fn apply_boolean_mask_impl(
 ) -> Result<Table> {
     let mut out = ptr::null_mut();
     let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input.raw_handle(), mask.raw_handle(), &mut out, options) },
+        Some(options) => unsafe {
+            cudf_sys::cudf_apply_boolean_mask_ex(input.raw_handle(), mask.raw_handle(), &mut out, options)
+        },
         None => unsafe { cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out) },
     };
     error::check_status_in_with(

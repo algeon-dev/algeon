@@ -1,4 +1,5 @@
 #include "concatenate.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/concatenate.hpp>
@@ -16,6 +17,14 @@ extern "C" {
 cudf_status_t cudf_concatenate_columns(
     const cudf_column_view_handle* columns,
     int32_t num_columns,
+    cudf_column_handle* out) {
+  return cudf_concatenate_columns_ex(columns, num_columns, nullptr, out);
+}
+
+cudf_status_t cudf_concatenate_columns_ex(
+    const cudf_column_view_handle* columns,
+    int32_t num_columns,
+    cudf_exec_options_t const* options,
     cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -35,10 +44,13 @@ cudf_status_t cudf_concatenate_columns(
       views.push_back(*cv);
     }
 
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::concatenate(views, stream, mr);
+    auto result = cudf::concatenate(views, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -48,6 +60,14 @@ cudf_status_t cudf_concatenate_columns(
 cudf_status_t cudf_concatenate_tables(
     const cudf_table_view_handle* tables,
     int32_t num_tables,
+    cudf_table_handle* out) {
+  return cudf_concatenate_tables_ex(tables, num_tables, nullptr, out);
+}
+
+cudf_status_t cudf_concatenate_tables_ex(
+    const cudf_table_view_handle* tables,
+    int32_t num_tables,
+    cudf_exec_options_t const* options,
     cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -67,10 +87,13 @@ cudf_status_t cudf_concatenate_tables(
       views.push_back(*tv);
     }
 
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::concatenate(views, stream, mr);
+    auto result = cudf::concatenate(views, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }

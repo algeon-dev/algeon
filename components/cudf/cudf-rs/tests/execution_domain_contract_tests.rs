@@ -1,7 +1,8 @@
 //! Contract tests for retained execution-domain provenance.
 //!
-//! Phase 1 keeps the domain substrate private, so these tests use hidden
-//! debug hooks instead of a public runtime API.
+//! The retained-domain substrate underpins the public `Runtime v1` surface.
+//! These tests use `__debug_` observation hooks to validate internal
+//! provenance and synchronization behavior at the domain layer.
 
 use std::{ffi::c_void, ptr};
 

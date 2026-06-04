@@ -4,10 +4,12 @@ use std::{
     ffi::CString,
     path::{Path, PathBuf},
     ptr,
+    sync::Arc,
 };
 
 use crate::{
     error::{self, Error, ErrorKind, Result},
+    runtime::Runtime,
     table::{Table, TableView},
 };
 
@@ -19,12 +21,13 @@ pub struct CsvReaderOptions {
     filepath: PathBuf,
     delimiter: u8,
     has_header: bool,
+    runtime: Option<Runtime>,
 }
 
 impl CsvReaderOptions {
     /// Create options to read from the given file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true }
+        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true, runtime: None }
     }
 
     /// Set the field delimiter character (default: `,`).
@@ -38,28 +41,50 @@ impl CsvReaderOptions {
         self.has_header = has;
         self
     }
+
+    /// Seed explicit execution provenance from the given runtime.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
 }
 
 /// Read a CSV file into a `Table`.
 pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
+    let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
+    let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
     let mut table_handle = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: filepath is a valid CString (converted above).
-        unsafe {
-            cudf_sys::cudf_io_read_csv(
-                filepath.as_ptr(),
-                options.delimiter as std::os::raw::c_char,
-                if options.has_header { 1 } else { 0 },
-                &mut table_handle,
-            )
+        match exec_options.as_ref() {
+            Some(exec_options) => unsafe {
+                cudf_sys::cudf_io_read_csv_ex(
+                    filepath.as_ptr(),
+                    options.delimiter as std::os::raw::c_char,
+                    if options.has_header { 1 } else { 0 },
+                    &mut table_handle,
+                    exec_options,
+                )
+            },
+            None => unsafe {
+                cudf_sys::cudf_io_read_csv(
+                    filepath.as_ptr(),
+                    options.delimiter as std::os::raw::c_char,
+                    if options.has_header { 1 } else { 0 },
+                    &mut table_handle,
+                )
+            },
         },
         "io::csv::read_csv",
         [("delimiter_char", (options.delimiter as char).to_string()), ("has_header", options.has_header.to_string())],
     )?;
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(table_handle) })
+    Ok(match output_domain {
+        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
+        None => unsafe { Table::from_raw(table_handle) },
+    })
 }
 
 /// Options for writing a low-level [`Table`] to a CSV file.
@@ -71,12 +96,19 @@ pub struct CsvWriterOptions {
     column_names: Option<Vec<String>>,
     delimiter: u8,
     include_header: bool,
+    runtime: Option<Runtime>,
 }
 
 impl CsvWriterOptions {
     /// Create options to write to the given file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), column_names: None, delimiter: b',', include_header: true }
+        Self {
+            filepath: path.as_ref().to_path_buf(),
+            column_names: None,
+            delimiter: b',',
+            include_header: true,
+            runtime: None,
+        }
     }
 
     /// Set column names for the output file.
@@ -96,10 +128,30 @@ impl CsvWriterOptions {
         self.include_header = include;
         self
     }
+
+    /// Route the write through the given runtime's stream.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
+
+    pub(crate) fn runtime(&self) -> Option<&Runtime> {
+        self.runtime.as_ref()
+    }
 }
 
 /// Write a table to a CSV file.
 pub fn write_csv(table: &TableView<'_>, options: &CsvWriterOptions) -> Result<()> {
+    let exec_options =
+        options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
+    write_csv_with_exec(table, options, exec_options.as_ref())
+}
+
+pub(crate) fn write_csv_with_exec(
+    table: &TableView<'_>,
+    options: &CsvWriterOptions,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::write_csv")?;
 
     if let Some(ref names) = options.column_names {
@@ -145,15 +197,28 @@ pub fn write_csv(table: &TableView<'_>, options: &CsvWriterOptions) -> Result<()
     error::check_status_in_with(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString (converted above).
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
-        unsafe {
-            cudf_sys::cudf_io_write_csv(
-                table.raw_handle(),
-                filepath.as_ptr(),
-                name_ptrs,
-                num_cols,
-                options.delimiter as std::os::raw::c_char,
-                if options.include_header { 1 } else { 0 },
-            )
+        match exec_options {
+            Some(exec_options) => unsafe {
+                cudf_sys::cudf_io_write_csv_ex(
+                    table.raw_handle(),
+                    filepath.as_ptr(),
+                    name_ptrs,
+                    num_cols,
+                    options.delimiter as std::os::raw::c_char,
+                    if options.include_header { 1 } else { 0 },
+                    exec_options,
+                )
+            },
+            None => unsafe {
+                cudf_sys::cudf_io_write_csv(
+                    table.raw_handle(),
+                    filepath.as_ptr(),
+                    name_ptrs,
+                    num_cols,
+                    options.delimiter as std::os::raw::c_char,
+                    if options.include_header { 1 } else { 0 },
+                )
+            },
         },
         "io::csv::write_csv",
         [

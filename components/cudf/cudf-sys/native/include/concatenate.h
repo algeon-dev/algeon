@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "column.h"
+#include "execution_context.h"
 #include "table.h"
 #include <stdint.h>
 
@@ -16,10 +17,24 @@ cudf_status_t cudf_concatenate_columns(
     int32_t num_columns,
     cudf_column_handle* out);
 
+/// Concatenate multiple columns into a single column with explicit execution context.
+cudf_status_t cudf_concatenate_columns_ex(
+    const cudf_column_view_handle* columns,
+    int32_t num_columns,
+    const cudf_exec_options_t* options,
+    cudf_column_handle* out);
+
 /// Concatenate multiple tables into a single table.
 cudf_status_t cudf_concatenate_tables(
     const cudf_table_view_handle* tables,
     int32_t num_tables,
+    cudf_table_handle* out);
+
+/// Concatenate multiple tables into a single table with explicit execution context.
+cudf_status_t cudf_concatenate_tables_ex(
+    const cudf_table_view_handle* tables,
+    int32_t num_tables,
+    const cudf_exec_options_t* options,
     cudf_table_handle* out);
 
 #ifdef __cplusplus

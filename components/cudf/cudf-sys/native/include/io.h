@@ -99,6 +99,12 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
 cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
                                int32_t has_header, cudf_table_handle* out);
 
+/// Read a CSV file into a table with explicit execution context.
+cudf_status_t cudf_io_read_csv_ex(const char* filepath, char delimiter,
+                                  int32_t has_header,
+                                  cudf_table_handle* out,
+                                  const cudf_exec_options_t* options);
+
 /// Write a table to a CSV file.
 /// `column_names` is an array of null-terminated strings (one per column).
 ///
@@ -110,6 +116,18 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
                                 const char** column_names,
                                 int32_t num_columns, char delimiter,
                                 int32_t include_header);
+
+/// Write a table to a CSV file with explicit execution context.
+///
+/// NOTE: libcudf's CSV writer accepts stream but not mr. The mr field in
+/// `options` is ignored for writes.
+cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
+                                   const char* filepath,
+                                   const char** column_names,
+                                   int32_t num_columns,
+                                   char delimiter,
+                                   int32_t include_header,
+                                   const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

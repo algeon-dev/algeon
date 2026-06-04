@@ -1,6 +1,7 @@
 //! Runtime integration contract tests.
 //!
-//! These tests validate the contracts defined in `docs/ri-design-spec.md`:
+//! These tests validate the current runtime/threading contract described by
+//! `docs/PROPOSAL.md` and the retained-domain public API:
 //!
 //! 1. Send+Sync static assertions for owned types.
 //! 2. Negative assertions for view types (!Send).
@@ -87,7 +88,7 @@ assert_not_impl_any!(cudf::table::TableView<'static>: Send, Sync);
 assert_not_impl_any!(cudf::series_view::SeriesView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
-// compile (verified manually and documented in ri-design-spec.md):
+// compile (verified manually and kept here as the authoritative example):
 //
 //   let col = Column::from_slice(&[1i32]).unwrap();
 //   let view = col.view().unwrap();
