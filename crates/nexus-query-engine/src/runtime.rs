@@ -11,7 +11,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use ::object_store::ObjectStoreExt;
@@ -448,6 +448,14 @@ impl ExecutionContext {
         self.source_fetch_concurrency.acquire()
     }
 
+    pub(crate) fn acquire_source_fetch_operation_with_timeout(
+        &self,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<Option<SourceFetchOperationPermit>> {
+        self.source_fetch_concurrency.acquire_with_timeout(&self.cancellation, timeout, operation)
+    }
+
     pub(crate) fn s3_object_store(&self, key: S3ObjectStoreKey) -> Result<Arc<dyn ::object_store::ObjectStore>> {
         self.source_object_stores.s3_store(key)
     }
@@ -470,7 +478,8 @@ impl ExecutionContext {
         &self,
         future_factory: F,
         on_result: impl FnOnce(ObjectStoreCustomFetchResult<T>) + Send + 'static,
-    ) where
+    ) -> tokio::task::JoinHandle<()>
+    where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
@@ -479,7 +488,7 @@ impl ExecutionContext {
             let timer = Instant::now();
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
-        });
+        })
     }
 
     /// Returns deployment-level IO capability diagnostics.

@@ -20,8 +20,9 @@ use parquet::file::{
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
+    parquet_metadata::fetch_object_store_parquet_metadata,
     plan::NodeId,
-    runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
+    runtime::{ExecutionContext, MemoryControlPolicy, S3ObjectStoreKey, SourceChunkPlanningMode},
     source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
 };
 
@@ -31,6 +32,7 @@ pub const LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
 /// Minimum bounded device budget before local-throughput planning can raise the
 /// row-group cap. Smaller budgets keep conservative source chunks.
 pub const LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+const OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Policy that controls how a local Parquet source is split into chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +239,7 @@ fn local_parquet_throughput_planning_admitted(
         return false;
     }
     source.files.iter().all(|file| {
-        file.location.is_local_path()
+        local_parquet_throughput_file_uses_supported_reader_path(file)
             && file.partition_values.is_empty()
             && matches!(
                 file.resolved_source.read_strategy,
@@ -245,6 +247,14 @@ fn local_parquet_throughput_planning_admitted(
             )
             && local_parquet_throughput_file_has_source_read_bytes(source, file)
     })
+}
+
+fn local_parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -> bool {
+    match file.resolved_source.read_strategy {
+        ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
+        ParquetReadStrategy::LocalCacheKvikio => file.path.is_file(),
+        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteKvikioExperimental => false,
+    }
 }
 
 fn local_parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
@@ -466,6 +476,17 @@ pub struct SourceChunk {
 impl SourceChunk {
     pub fn row_group_count(&self) -> usize {
         self.row_group_indexes.len()
+    }
+
+    /// Returns the represented row-group count for this chunk when known.
+    ///
+    /// `None` means the chunk is a correctness-preserving read-all chunk whose
+    /// file row-group count was unknown at planning time.
+    pub fn known_read_row_group_count(&self) -> Option<usize> {
+        if !self.reads_all_row_groups {
+            return Some(self.row_group_indexes.len());
+        }
+        self.known_source_file_row_group_count()
     }
 
     /// Returns true when this chunk explicitly selects every known row group
@@ -698,7 +719,32 @@ pub fn plan_local_parquet_source_chunks(
     policy: SourceChunkPlanningPolicy,
 ) -> Result<SourceChunkPlan> {
     let mut metadata_cache = SourceMetadataCache::default();
-    plan_local_parquet_source_chunks_with_metadata_cache(source_node_id, source, policy, &mut metadata_cache)
+    plan_local_parquet_source_chunks_with_metadata_cache_and_context(
+        source_node_id,
+        source,
+        policy,
+        &mut metadata_cache,
+        None,
+    )
+}
+
+/// Plans chunks using the execution context to opportunistically range-read
+/// object-store Parquet footers before falling back to conservative read-all
+/// chunks.
+pub fn plan_local_parquet_source_chunks_with_execution_context(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    policy: SourceChunkPlanningPolicy,
+    context: &ExecutionContext,
+) -> Result<SourceChunkPlan> {
+    let mut metadata_cache = SourceMetadataCache::default();
+    plan_local_parquet_source_chunks_with_metadata_cache_and_context(
+        source_node_id,
+        source,
+        policy,
+        &mut metadata_cache,
+        Some(SourceMetadataLoadContext { execution_context: context }),
+    )
 }
 
 /// Plans chunks for a local Parquet source using a caller-owned footer cache.
@@ -711,6 +757,22 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     policy: SourceChunkPlanningPolicy,
     metadata_cache: &mut SourceMetadataCache,
 ) -> Result<SourceChunkPlan> {
+    plan_local_parquet_source_chunks_with_metadata_cache_and_context(
+        source_node_id,
+        source,
+        policy,
+        metadata_cache,
+        None,
+    )
+}
+
+fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    policy: SourceChunkPlanningPolicy,
+    metadata_cache: &mut SourceMetadataCache,
+    metadata_load_context: Option<SourceMetadataLoadContext<'_>>,
+) -> Result<SourceChunkPlan> {
     validate_chunk_planning_source(source)?;
     validate_chunk_planning_policy(policy)?;
 
@@ -722,7 +784,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     let mut metadata_load_count = 0u64;
 
     for (file_index, file) in source.files.iter().enumerate() {
-        let metadata_load = read_parquet_metadata(source, file, metadata_cache);
+        let metadata_load = read_parquet_metadata(source, file, metadata_cache, metadata_load_context.as_ref())?;
         metadata_load_time += metadata_load.load_time;
         metadata_load_count = metadata_load_count.saturating_add(metadata_load.load_count);
         let metadata = metadata_load.metadata;
@@ -1001,25 +1063,191 @@ pub struct SourceMetadataCache {
 }
 
 impl SourceMetadataCache {
-    /// Returns the number of cached footer entries, including failed loads.
+    /// Returns the number of cached footer entries.
+    ///
+    /// Local-cache misses are not cached while the cache file is absent or
+    /// unreadable, because fill-before-read may make the footer available to a
+    /// later planning pass that reuses this cache.
     pub fn cached_footer_count(&self) -> usize {
         self.footers.len()
     }
 
-    fn footer_metadata(&mut self, file: &LocalParquetFile) -> FooterMetadataLoad {
+    fn footer_metadata(
+        &mut self,
+        file: &LocalParquetFile,
+        context: Option<&SourceMetadataLoadContext<'_>>,
+    ) -> Result<FooterMetadataLoad> {
         let key = SourceMetadataCacheKey::from_file(file);
         if let Some(metadata) = self.footers.get(&key) {
-            return FooterMetadataLoad { metadata: metadata.clone(), load_time: Duration::ZERO, load_count: 0 };
+            return Ok(FooterMetadataLoad { metadata: metadata.clone(), load_time: Duration::ZERO, load_count: 0 });
         }
 
         let timer = Instant::now();
-        let metadata = file.location.as_local_path().and_then(|path| {
-            SerializedFileReader::try_from(path).ok().map(|reader| Arc::new(reader.metadata().clone()))
-        });
+        let metadata = match load_local_parquet_footer_metadata(file) {
+            Some(metadata) => Some(metadata),
+            None => {
+                context.map(|context| load_object_store_parquet_footer_metadata(context, file)).transpose()?.flatten()
+            },
+        };
         let load_time = timer.elapsed();
-        self.footers.insert(key, metadata.clone());
-        FooterMetadataLoad { metadata, load_time, load_count: 1 }
+        if metadata.is_some() || cache_footer_metadata_miss(file) {
+            self.footers.insert(key, metadata.clone());
+        }
+        Ok(FooterMetadataLoad { metadata, load_time, load_count: 1 })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceMetadataLoadContext<'a> {
+    execution_context: &'a ExecutionContext,
+}
+
+fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<ParquetMetaData>> {
+    local_parquet_footer_metadata_path(file)
+        .and_then(|path| SerializedFileReader::try_from(path).ok().map(|reader| Arc::new(reader.metadata().clone())))
+}
+
+fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
+    if let Some(path) = file.location.as_local_path() {
+        return Some(path);
+    }
+    if file.resolved_source.read_strategy == ParquetReadStrategy::LocalCacheKvikio && file.path.is_file() {
+        return Some(file.path.as_path());
+    }
+    None
+}
+
+fn cache_footer_metadata_miss(file: &LocalParquetFile) -> bool {
+    file.resolved_source.read_strategy != ParquetReadStrategy::LocalCacheKvikio
+}
+
+fn load_object_store_parquet_footer_metadata(
+    context: &SourceMetadataLoadContext<'_>,
+    file: &LocalParquetFile,
+) -> Result<Option<Arc<ParquetMetaData>>> {
+    if !matches!(
+        file.resolved_source.read_strategy,
+        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteKvikioExperimental
+    ) {
+        return Ok(None);
+    }
+    const OPERATION: &str = "nexus_query_engine.source_metadata.object_store_footer";
+    context.execution_context.check_cancellation(OPERATION)?;
+    let fetch_location = match source_metadata_fetch_location(file) {
+        Ok(fetch_location) => fetch_location,
+        Err(_error) => return Ok(None),
+    };
+    let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
+        bucket: fetch_location.bucket.clone(),
+        region: fetch_location.region.clone(),
+        storage_profile_id: fetch_location.storage_profile_id.clone(),
+    }) {
+        Ok(store) => store,
+        Err(_error) => return Ok(None),
+    };
+    let wait_started = Instant::now();
+    let Some(operation_permit) = context
+        .execution_context
+        .acquire_source_fetch_operation_with_timeout(OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT, OPERATION)?
+    else {
+        return Ok(None);
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let key = fetch_location.key;
+    let fetch_handle = context.execution_context.spawn_object_store_custom_fetch(
+        move || fetch_object_store_parquet_metadata(store, key),
+        move |fetch_result| {
+            let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
+            let _ = sender.send(metadata);
+            drop(operation_permit);
+        },
+    );
+    loop {
+        if let Err(error) = context.execution_context.check_cancellation(OPERATION) {
+            fetch_handle.abort();
+            return Err(error);
+        }
+        let Some(remaining) = OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT.checked_sub(wait_started.elapsed()) else {
+            fetch_handle.abort();
+            return Ok(None);
+        };
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(Ok(metadata)) => return Ok(Some(metadata)),
+            Ok(Err(error)) => {
+                if error.code() == QueryErrorCode::Cancelled {
+                    return Err(error);
+                }
+                return Ok(None);
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
+        }
+    }
+}
+
+struct SourceMetadataFetchLocation {
+    bucket: String,
+    region: String,
+    key: object_store::path::Path,
+    storage_profile_id: Option<String>,
+}
+
+fn source_metadata_fetch_location(file: &LocalParquetFile) -> Result<SourceMetadataFetchLocation> {
+    let ParquetSourceLocation::ObjectStoreUri { scheme, uri } = &file.location else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_metadata.location",
+            "source metadata fetch requires an object-store URI source location",
+        )
+        .with_fact("read_capability", file.location.read_capability()));
+    };
+    if scheme != "s3" {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.source_metadata.location",
+            "object-store source metadata fetch currently supports only S3 URIs",
+        )
+        .with_fact("scheme", scheme));
+    }
+    parse_s3_metadata_source_uri(uri, file.resolved_source.storage_profile_id.clone())
+}
+
+fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -> Result<SourceMetadataFetchLocation> {
+    let rest = uri.strip_prefix("s3://").ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_metadata.s3_uri",
+            "S3 source URI must start with s3://",
+        )
+        .with_fact("reason", "missing_s3_scheme")
+    })?;
+    let (bucket, key) = rest.split_once('/').ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_metadata.s3_uri",
+            "S3 source URI must include a bucket and key",
+        )
+        .with_fact("reason", "missing_key")
+    })?;
+    if bucket.is_empty() || key.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_metadata.s3_uri",
+            "S3 source URI bucket and key must be non-empty",
+        )
+        .with_fact("reason", "empty_bucket_or_key"));
+    }
+    let region = std::env::var("AWS_REGION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+    Ok(SourceMetadataFetchLocation {
+        bucket: bucket.to_string(),
+        region,
+        key: object_store::path::Path::from(key),
+        storage_profile_id,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1142,7 +1370,8 @@ fn read_parquet_metadata(
     source: &LocalParquetSource,
     file: &LocalParquetFile,
     metadata_cache: &mut SourceMetadataCache,
-) -> SourceMetadataLoad {
+    metadata_load_context: Option<&SourceMetadataLoadContext<'_>>,
+) -> Result<SourceMetadataLoad> {
     let needs_footer_metadata = file.row_group_bytes.is_none()
         || file.projected_row_group_compressed_bytes.is_none()
         || file.projected_row_group_uncompressed_bytes.is_none()
@@ -1150,7 +1379,7 @@ fn read_parquet_metadata(
         || file.pure_filter_row_group_uncompressed_bytes.is_none()
         || file.row_group_rows.is_none();
     let footer_load = if needs_footer_metadata {
-        metadata_cache.footer_metadata(file)
+        metadata_cache.footer_metadata(file, metadata_load_context)?
     } else {
         FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 }
     };
@@ -1244,7 +1473,7 @@ fn read_parquet_metadata(
         || pure_filter_uncompressed_bytes.is_some()
         || row_group_rows.is_some()
     {
-        SourceMetadataLoad {
+        Ok(SourceMetadataLoad {
             metadata: Some(RowGroupMetadata {
                 row_group_bytes,
                 projected_compressed_bytes,
@@ -1255,9 +1484,9 @@ fn read_parquet_metadata(
             }),
             load_time: footer_load.load_time,
             load_count: footer_load.load_count,
-        }
+        })
     } else {
-        SourceMetadataLoad { metadata: None, load_time: footer_load.load_time, load_count: footer_load.load_count }
+        Ok(SourceMetadataLoad { metadata: None, load_time: footer_load.load_time, load_count: footer_load.load_count })
     }
 }
 
@@ -1836,12 +2065,16 @@ impl PendingChunk {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        fs,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use arrow::datatypes::{DataType, Field, Schema};
 
     use super::*;
-    use crate::source::{ParquetReadStrategy, ResolvedParquetSource};
+    use crate::source::{CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetSource};
 
     fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         SourceChunk {
@@ -1942,6 +2175,39 @@ mod tests {
 
         assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
         assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_accepts_local_cache_reader_path() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-query-engine-local-cache-throughput-{}-{}.parquet",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::write(&path, b"placeholder").unwrap();
+        let resolved_source = ResolvedParquetSource::local_cache_kvikio(
+            "s3://bucket/table/part-0.parquet",
+            path.display().to_string(),
+            CredentialMode::SharedProcessEnv,
+            LakehouseCacheStatus::Hit,
+        );
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_row_groups((0..2048).collect())
+            .with_row_group_bytes(vec![1024; 2048])
+            .with_projected_row_group_bytes(vec![512; 2048], vec![1024; 2048])
+            .with_pure_filter_row_group_bytes(vec![0; 2048], vec![0; 2048])
+            .with_row_group_rows(vec![1; 2048]);
+        let source = source_from_file(file);
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::LocalParquetThroughput,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+        assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

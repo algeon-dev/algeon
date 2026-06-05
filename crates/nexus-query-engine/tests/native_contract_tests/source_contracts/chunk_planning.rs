@@ -494,6 +494,68 @@ fn source_chunk_planning_expands_all_row_groups_from_parquet_metadata() {
 }
 
 #[test]
+fn source_chunk_planning_loads_warm_local_cache_footer_metadata() {
+    let dir = unique_temp_dir("nexus-query-engine-local-cache-source-chunks");
+    let path = dir.join("cache-entry.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let resolved_source = ResolvedParquetSource::local_cache_kvikio(
+        "s3://bucket/table/part-0.parquet",
+        path.display().to_string(),
+        CredentialMode::SharedProcessEnv,
+        LakehouseCacheStatus::Hit,
+    );
+    let file = LocalParquetFile::from_resolved_parquet_source(resolved_source)
+        .unwrap()
+        .with_file_size_bytes(fs::metadata(&path).unwrap().len());
+    let source = LocalParquetSource::from_files(vec![file], schema, vec!["key".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan = plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 2)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 2);
+    assert_eq!(plan.row_group_count(), 3);
+    assert!(plan.row_group_metadata_available);
+    assert_eq!(plan.metadata_unavailable_files, 0);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
+    assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
+    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
+    assert!(plan.chunks.iter().all(|chunk| !chunk.reads_all_row_groups));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn source_chunk_planning_keeps_local_cache_miss_conservative() {
+    let dir = unique_temp_dir("nexus-query-engine-local-cache-miss-source-chunks");
+    let path = dir.join("missing-cache-entry.parquet");
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let resolved_source = ResolvedParquetSource::local_cache_kvikio(
+        "s3://bucket/table/part-0.parquet",
+        path.display().to_string(),
+        CredentialMode::SharedProcessEnv,
+        LakehouseCacheStatus::FillBeforeRead,
+    );
+    let file = LocalParquetFile::from_resolved_parquet_source(resolved_source).unwrap().with_file_size_bytes(4096);
+    let source = LocalParquetSource::from_files(vec![file], schema, vec!["key".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(1024), 2)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    assert_eq!(plan.row_group_count(), 0);
+    assert!(!plan.row_group_metadata_available);
+    assert_eq!(plan.metadata_unavailable_files, 1);
+    assert!(plan.chunks[0].reads_all_row_groups);
+    assert!(plan.chunks[0].row_group_indexes.is_empty());
+    assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-small-in-list");
     let path = dir.join("input.parquet");

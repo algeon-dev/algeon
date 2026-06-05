@@ -312,6 +312,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             };
             let before = stream.dynamic_filter_source_snapshot();
             stream = stream.with_dynamic_filters_and_deferred_reader_predicates(
+                self.context,
                 &[route],
                 &self.dynamic_filters,
                 &deferred_reader_predicate_routes,

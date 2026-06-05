@@ -1,3 +1,5 @@
+use parquet::file::reader::FileReader;
+
 use super::*;
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
@@ -257,9 +259,14 @@ fn read_local_parquet_chunk_required_only(
 ) -> Result<ScheduledLocalParquetReadOutput> {
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
-        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        metrics.record_source_chunk_commit(committed_source_chunk_row_groups(
+            chunk,
+            metrics.row_groups_selected,
+            metrics,
+        ));
         return Ok(output);
     }
+    let selected_row_groups_before_read = metrics.row_groups_selected;
     let source_request = source_read_reservation_request(
         context.memory_control_policy(),
         ReservationKind::SourceRead,
@@ -298,7 +305,13 @@ fn read_local_parquet_chunk_required_only(
             }
         },
     };
-    let mut output = ScheduledLocalParquetReadOutput { chunk: chunk.clone(), frame, reservation, observed_bytes: 0 };
+    let mut output = ScheduledLocalParquetReadOutput {
+        chunk: chunk.clone(),
+        frame,
+        reservation,
+        observed_bytes: 0,
+        observed_row_group_count: None,
+    };
     output.observed_bytes = match if grow_source_to_observed {
         grow_source_reservation_to_observed(
             &output.frame,
@@ -344,8 +357,33 @@ fn read_local_parquet_chunk_required_only(
             output.observed_bytes,
         )?;
     }
-    metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+    metrics.record_source_chunk_commit(committed_source_chunk_row_groups(
+        chunk,
+        selected_row_groups_before_read,
+        metrics,
+    ));
     Ok(output)
+}
+
+fn committed_source_chunk_row_groups(
+    chunk: &SourceChunk,
+    selected_row_groups_before_read: u64,
+    metrics: &QueryMetrics,
+) -> u64 {
+    if let Some(row_groups) = chunk.known_read_row_group_count() {
+        return row_groups as u64;
+    }
+    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
+    if observed_delta > 0 {
+        return observed_delta;
+    }
+    if chunk.reads_all_row_groups && chunk.path.is_file() {
+        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+            .ok()
+            .map(|reader| reader.metadata().num_row_groups() as u64)
+            .unwrap_or(0);
+    }
+    chunk.row_group_count() as u64
 }
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_commit(
@@ -361,6 +399,7 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
     for _chunk in &batch.chunks {
         metrics.record_source_chunk_attempt();
     }
+    let selected_row_groups_before_read = metrics.row_groups_selected;
     let requested_bytes = source_chunk_batch_requested_bytes(context.memory_control_policy(), batch);
     let mut reservation = reservations.try_reserve(
         chunk_reservation_request(
@@ -425,7 +464,13 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
             return Err(error);
         },
     };
-    Ok(ScheduledLocalParquetReadOutput { chunk: first_chunk.clone(), frame, reservation, observed_bytes })
+    Ok(ScheduledLocalParquetReadOutput {
+        chunk: first_chunk.clone(),
+        frame,
+        reservation,
+        observed_bytes,
+        observed_row_group_count: source_chunk_batch_read_row_groups(batch, selected_row_groups_before_read, metrics),
+    })
 }
 
 fn generic_source_chunk_batches(
@@ -529,6 +574,9 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
     let Some(cache) = context.local_parquet_source_cache() else {
         return Ok(None);
     };
+    let Some(observed_row_group_count) = source_chunk_static_read_row_groups(chunk) else {
+        return Ok(None);
+    };
     let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
     let schema = local_parquet_execution_frame_schema(source)?;
     let lookup_timer = Instant::now();
@@ -541,6 +589,7 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
             frame: handle.into_gpu_frame(),
             reservation: reservations.borrow_accounted_source_cache(key, retained_device_bytes, metrics),
             observed_bytes: retained_device_bytes,
+            observed_row_group_count: Some(observed_row_group_count),
         }));
     }
     metrics.record_source_cache_miss(cache.retained_device_bytes()?);
@@ -565,6 +614,9 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     let Some(cache) = context.local_parquet_source_cache() else {
         return Ok(());
     };
+    if source_chunk_static_read_row_groups(chunk).is_none() {
+        return Ok(());
+    }
     let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
     let schema = local_parquet_execution_frame_schema(source)?;
     let handle = GpuResultHandle::new(context, frame.clone(), schema)?;

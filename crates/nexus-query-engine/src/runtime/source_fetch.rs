@@ -3,9 +3,12 @@
 use std::{
     fmt,
     sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
 };
 
-use super::{DeploymentIoCapability, SourceGdsEligibility, source_gds_eligibility_with_default_mounts};
+use super::{
+    DeploymentIoCapability, ExecutionCancellation, SourceGdsEligibility, source_gds_eligibility_with_default_mounts,
+};
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Fallback host-buffer budget used when physical RAM cannot be detected.
@@ -488,6 +491,35 @@ impl SourceFetchConcurrencyGate {
         }
         state.in_flight_ops = state.in_flight_ops.saturating_add(1);
         Ok(SourceFetchOperationPermit { gate: self.clone() })
+    }
+
+    pub(super) fn acquire_with_timeout(
+        &self,
+        cancellation: &ExecutionCancellation,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<Option<SourceFetchOperationPermit>> {
+        let start = Instant::now();
+        let mut state = self.lock_state(operation)?;
+        loop {
+            cancellation.check(operation)?;
+            if state.in_flight_ops < self.max_concurrent_ops() {
+                state.in_flight_ops = state.in_flight_ops.saturating_add(1);
+                return Ok(Some(SourceFetchOperationPermit { gate: self.clone() }));
+            }
+            let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
+                return Ok(None);
+            };
+            let wait = remaining.min(Duration::from_millis(100));
+            let (next_state, _wait_result) = self.inner.available.wait_timeout(state, wait).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "source fetch concurrency mutex was poisoned while waiting for a permit",
+                )
+            })?;
+            state = next_state;
+        }
     }
 
     fn release(&self) {

@@ -360,7 +360,12 @@ where
             &output.frame,
             metrics,
         );
-        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        metrics.record_source_chunk_commit(
+            output
+                .observed_row_group_count
+                .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
+                .unwrap_or_else(|| chunk.row_group_count() as u64),
+        );
         let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
         let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
             Ok(output) => output,

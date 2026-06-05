@@ -182,10 +182,11 @@ fn execute_bounded_aggregate_to_frame(
     validate_local_parquet_source(bounded.source)?;
     bounded.validate_capabilities()?;
 
-    let chunk_plan = plan_local_parquet_source_chunks(
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         bounded.source_id,
         bounded.source,
         aggregate_source_chunk_planning_policy(context, bounded),
+        context,
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -739,7 +740,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source)?;
-    let chunk_plan = plan_local_parquet_source_chunks(
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
         SourceChunkPlanningPolicy::from_memory_policy_with_mode(
@@ -747,6 +748,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
             context.memory_control_policy(),
             context.source_chunk_planning_mode(),
         ),
+        context,
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -791,7 +793,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source)?;
-    let chunk_plan = plan_local_parquet_source_chunks(
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
         SourceChunkPlanningPolicy::from_memory_policy_with_mode(
@@ -799,6 +801,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
             context.memory_control_policy(),
             context.source_chunk_planning_mode(),
         ),
+        context,
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -933,6 +936,7 @@ fn apply_bounded_generic_source_adjacent_stages(
             frame: current.frame,
             reservation: current.reservation,
             observed_bytes,
+            observed_row_group_count: None,
         });
     }
     Ok(transformed)

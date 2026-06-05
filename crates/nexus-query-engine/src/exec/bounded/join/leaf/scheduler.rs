@@ -92,7 +92,12 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
             return Err(error);
         }
         record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, &output.chunk, &output.frame, metrics);
-        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        metrics.record_source_chunk_commit(
+            output
+                .observed_row_group_count
+                .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
+                .unwrap_or_else(|| chunk.row_group_count() as u64),
+        );
         chunks.push((output.frame, output.reservation));
 
         if let Err(error) = fill_optional_join_leaf_reads(

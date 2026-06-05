@@ -121,7 +121,11 @@ async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() 
     assert_eq!(result.rewritten_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(7));
-    assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
+    assert_eq!(
+        source.files[0].row_group_rows.as_deref(),
+        None,
+        "Iceberg file-level row counts must not synthesize per-row-group metadata"
+    );
 }
 
 #[test]

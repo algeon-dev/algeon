@@ -125,6 +125,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
 
     pub(in crate::exec::bounded) fn with_dynamic_filters_and_deferred_reader_predicates(
         mut self,
+        context: &ExecutionContext,
         routes: &[&DynamicFilterRoute],
         filter_set: &DynamicFilterSet,
         deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
@@ -141,7 +142,12 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             filter_set,
             |route, _filter| merged_reader_predicate_routes.contains(&route.id),
         )?;
-        let mut chunk_plan = plan_local_parquet_source_chunks(self.node_id, &source, self.planning_policy)?;
+        let mut chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
+            self.node_id,
+            &source,
+            self.planning_policy,
+            context,
+        )?;
         annotate_join_leaf_source_chunk_batching_reasons(
             &source,
             &mut chunk_plan.chunks,

@@ -5,10 +5,11 @@ pub(super) fn read_zero_column_count_source(
     source: &LocalParquetSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let chunk_plan = plan_local_parquet_source_chunks(
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         NodeId::from_index_for_internal_use(0),
         source,
         SourceChunkPlanningPolicy::default(),
+        context,
     )?;
     let counts = chunk_plan
         .chunks
