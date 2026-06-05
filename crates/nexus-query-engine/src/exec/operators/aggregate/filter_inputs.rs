@@ -1,13 +1,15 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec) fn prepare_filtered_aggregate_frame(
     context: &ExecutionContext,
     frame: DataFrame,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     spec: &AggregateSpec,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
-) -> Result<(DataFrame, AggregateSpec, arrow::datatypes::SchemaRef)> {
+) -> Result<(DataFrame, AggregateSpec, ArrowSchemaRef)> {
     if !aggregate_spec_has_filters(spec) {
         return Ok((frame, spec.clone(), Arc::clone(input_schema)));
     }
@@ -75,9 +77,9 @@ fn filtered_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
     }
 }
 
-fn filtered_aggregate_input_type(
+pub(super) fn filtered_aggregate_input_type(
     aggregate_expr: &AggregateExpr,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
 ) -> Result<ArrowDataType> {
     if aggregate_expr.function == AggregateFunction::Count
         && !aggregate_expr.distinct
@@ -88,7 +90,7 @@ fn filtered_aggregate_input_type(
     aggregate_expr_type(&aggregate_expr.expr, input_schema)
 }
 
-fn aggregate_expr_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+fn aggregate_expr_type(expr: &Expr, input_schema: &ArrowSchemaRef) -> Result<ArrowDataType> {
     match expr {
         Expr::Column(column) => {
             input_schema.field_with_name(column.name()).map(|field| field.data_type().clone()).map_err(|error| {

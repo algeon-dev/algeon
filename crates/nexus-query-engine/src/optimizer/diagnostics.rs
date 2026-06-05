@@ -297,13 +297,20 @@ fn format_shared_subplan_materialization_candidate(
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},family_key={},aggregate_node_ids={},reuse_count={},group_exprs={},aggregate_exprs={},source_fingerprints={},exact_source_variant_count={},repeated_selected_source_bytes={},duplicate_selected_source_bytes={},applied={},rejected_reason={}",
+        "rule={},family_key={},aggregate_node_ids={},reuse_count={},group_exprs={},aggregate_exprs={},filtered_aggregate_count={},filtered_aggregate_memory_shape={},filtered_aggregate_estimation_input_rows={},filtered_aggregate_estimated_materialization_bytes={},filtered_aggregate_memory_budget_bytes={},filtered_aggregate_memory_threshold_bytes={},filtered_aggregate_memory_threshold_policy={},source_fingerprints={},exact_source_variant_count={},repeated_selected_source_bytes={},duplicate_selected_source_bytes={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.family_key,
         aggregate_node_ids,
         candidate.reuse_count,
         group_exprs,
         aggregate_exprs,
+        candidate.filtered_aggregate_count,
+        candidate.filtered_aggregate_memory_shape,
+        option_u64_text(candidate.filtered_aggregate_estimation_input_rows),
+        option_u64_text(candidate.filtered_aggregate_estimated_materialization_bytes),
+        option_u64_text(candidate.filtered_aggregate_memory_budget_bytes),
+        option_u64_text(candidate.filtered_aggregate_memory_threshold_bytes),
+        candidate.filtered_aggregate_memory_threshold_policy,
         source_fingerprints,
         candidate.exact_source_variant_count,
         option_u64_text(candidate.repeated_selected_source_bytes),

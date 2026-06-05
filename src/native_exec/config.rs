@@ -9,7 +9,8 @@ use std::sync::{Arc, OnceLock};
 use nexus_query_engine::{
     AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode,
+    TenantQueryContext,
 };
 
 use crate::error::Error;
@@ -28,6 +29,7 @@ pub struct NativeCudfExecutionConfig {
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
     service_stream_pool: Option<ServiceStreamPool>,
     service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
@@ -90,6 +92,7 @@ impl NativeCudfExecutionConfig {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -161,6 +164,7 @@ impl NativeCudfExecutionConfig {
             },
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -220,6 +224,12 @@ impl NativeCudfExecutionConfig {
     /// Set bounded source scheduling controls.
     pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
+    /// Set bounded source chunk planning mode.
+    pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
+        self.source_chunk_planning_mode = mode;
         self
     }
 
@@ -320,6 +330,7 @@ impl NativeCudfExecutionConfig {
         self.memory_control_policy = handle.memory_control_policy();
         self.boundary_policy = handle.boundary_policy();
         self.source_scheduler_policy = handle.source_scheduler_policy();
+        self.source_chunk_planning_mode = handle.source_chunk_planning_mode();
         self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
         self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
         self.query_service_handle = Some(handle);
@@ -339,6 +350,11 @@ impl NativeCudfExecutionConfig {
     /// Source scheduling policy used by bounded native source reads.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.source_scheduler_policy
+    }
+
+    /// Source chunk planning mode used by bounded native source reads.
+    pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
+        self.source_chunk_planning_mode
     }
 
     /// Strict bounded or adaptive pipeline execution mode.
@@ -380,6 +396,7 @@ impl NativeCudfExecutionConfig {
             .with_memory_control_policy(self.memory_control_policy)
             .with_boundary_policy(self.boundary_policy)
             .with_source_scheduler_policy(self.source_scheduler_policy)
+            .with_source_chunk_planning_mode(self.source_chunk_planning_mode)
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
             .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)

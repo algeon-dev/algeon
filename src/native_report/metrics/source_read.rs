@@ -57,6 +57,10 @@ pub struct NativeSourceReadRuntimeMetricRow {
     pub reader_dynamic_filter_count: usize,
     /// Stable diagnostic reason for the source chunk batching decision.
     pub source_batching_reason: String,
+    /// Source chunk planning mode requested for this source read.
+    pub source_chunk_planning_mode: String,
+    /// Stable diagnostic reason for the source chunk row-group and byte target.
+    pub source_chunk_planning_reason: String,
     /// Elapsed time spent in the source read, in nanoseconds.
     pub elapsed_ns: usize,
 }
@@ -65,7 +69,7 @@ impl NativeSourceReadRuntimeMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},elapsed_ns={}",
+            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
@@ -90,6 +94,8 @@ impl NativeSourceReadRuntimeMetricRow {
             self.reader_predicate,
             self.reader_dynamic_filter_count,
             self.source_batching_reason,
+            self.source_chunk_planning_mode,
+            self.source_chunk_planning_reason,
             self.elapsed_ns,
         )
     }
@@ -132,6 +138,8 @@ fn labels_to_source_read_runtime_row(labels: BTreeMap<&str, &str>) -> NativeSour
         reader_predicate: bool_label(&labels, "reader_predicate"),
         reader_dynamic_filter_count: usize_label(&labels, "reader_dynamic_filter_count"),
         source_batching_reason: string_label(&labels, "source_batching_reason"),
+        source_chunk_planning_mode: string_label(&labels, "source_chunk_planning_mode"),
+        source_chunk_planning_reason: string_label(&labels, "source_chunk_planning_reason"),
         elapsed_ns: usize_label(&labels, "elapsed_ns"),
     }
 }

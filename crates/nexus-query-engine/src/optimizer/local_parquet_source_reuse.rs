@@ -189,6 +189,8 @@ fn discover_source_reuse_candidates(
             .any(|variant| variant.selected_source_bytes.is_none_or(|bytes| bytes > options.max_variant_selected_bytes))
         {
             Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
+        } else if source_group_has_conflicting_file_columns(&variants) {
+            Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
         } else {
             None
         };
@@ -281,6 +283,37 @@ fn source_contract_supported(source: &LocalParquetSource) -> bool {
             .chain(source.pure_filter_column_source_refs.iter())
             .all(|source_ref| matches!(source_ref, SourceColumnRef::File(_)))
         && source.files.iter().all(file_contract_supported)
+}
+
+fn source_group_has_conflicting_file_columns(variants: &[SourceVariant]) -> bool {
+    let mut columns_by_file_index = BTreeMap::<usize, (String, Field)>::new();
+    let mut columns_by_name = BTreeMap::<String, (usize, Field)>::new();
+    for variant in variants {
+        for (column, file_index) in
+            variant.source.read_columns.iter().zip(variant.source.read_column_file_indices.iter())
+        {
+            let Ok(field) = variant.source.schema.field_with_name(column) else {
+                return true;
+            };
+            let entry = (column.clone(), field.as_ref().clone());
+            match columns_by_file_index.get(file_index) {
+                Some(existing) if existing != &entry => return true,
+                Some(_) => {},
+                None => {
+                    columns_by_file_index.insert(*file_index, entry);
+                },
+            }
+            let entry = (*file_index, field.as_ref().clone());
+            match columns_by_name.get(column) {
+                Some(existing) if existing != &entry => return true,
+                Some(_) => {},
+                None => {
+                    columns_by_name.insert(column.clone(), entry);
+                },
+            }
+        }
+    }
+    false
 }
 
 fn file_contract_supported(file: &LocalParquetFile) -> bool {

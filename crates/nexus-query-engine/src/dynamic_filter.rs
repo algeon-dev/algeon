@@ -20,6 +20,7 @@ use parquet::file::{
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr, LiteralValue},
+    optimizer::{DimensionKeyFilter, KeyRange},
     plan::{JoinSide, NodeId},
     source::{LocalParquetSource, SourceColumnRef},
 };
@@ -536,8 +537,8 @@ fn apply_dynamic_filter_to_source(
         source.refresh_diagnostics();
         return Ok(());
     }
-    if let Some((min, max)) = filter.i64_range() {
-        prune_source_row_groups_by_i64_range(source, column, min, max)?;
+    if let Some(key_filter) = dynamic_filter_row_group_key_filter(filter) {
+        prune_source_row_groups_by_key_filter(source, column, &key_filter)?;
     }
     if merge_reader_predicate
         && matches!(
@@ -551,11 +552,27 @@ fn apply_dynamic_filter_to_source(
     Ok(())
 }
 
-fn prune_source_row_groups_by_i64_range(
+/// Builds the set-aware row-group pruning filter carried by a dynamic-filter
+/// payload. Range payloads reuse their `[min,max]` bounds (one run, identical to
+/// the legacy behavior); small/large keyset payloads coalesce their materialized
+/// `values` into runs so a scattered keyset prunes the gaps a single range would
+/// retain. Returns `None` when the payload carries nothing prunable.
+fn dynamic_filter_row_group_key_filter(filter: &DynamicFilter) -> Option<DimensionKeyFilter> {
+    match filter {
+        DynamicFilter::Empty => None,
+        DynamicFilter::RangeI64 { min, max } => {
+            Some(DimensionKeyFilter::from_bounds(KeyRange { min: *min, max: *max }))
+        },
+        DynamicFilter::SmallInListI64 { values, .. } | DynamicFilter::HashSetContainsI64 { values, .. } => {
+            DimensionKeyFilter::from_keys(values)
+        },
+    }
+}
+
+fn prune_source_row_groups_by_key_filter(
     source: &mut LocalParquetSource,
     column: &str,
-    min: i64,
-    max: i64,
+    key_filter: &DimensionKeyFilter,
 ) -> Result<()> {
     let SourceColumnRef::File(column_index) = source.source_column_ref(column).ok_or_else(|| {
         QueryError::new(
@@ -572,7 +589,6 @@ fn prune_source_row_groups_by_i64_range(
     let mut saw_statistics = false;
     let mut selected_total = 0usize;
     let mut retained_total = 0usize;
-    let filter_range = I64Range { min, max };
     let mut selections = Vec::with_capacity(source.files.len());
 
     for file in &source.files {
@@ -599,7 +615,7 @@ fn prune_source_row_groups_by_i64_range(
             match row_group_i64_range(row_group, column_index) {
                 Some(row_group_range) => {
                     saw_statistics = true;
-                    if ranges_overlap(row_group_range, filter_range) {
+                    if key_filter.overlaps(KeyRange { min: row_group_range.min, max: row_group_range.max }) {
                         retained.push(row_group_index);
                     }
                 },
@@ -654,10 +670,6 @@ fn row_group_i64_range(row_group: &RowGroupMetaData, column_index: usize) -> Opt
         Statistics::Int64(stats) => Some(I64Range { min: *stats.min_opt()?, max: *stats.max_opt()? }),
         _ => None,
     }
-}
-
-fn ranges_overlap(left: I64Range, right: I64Range) -> bool {
-    left.max >= right.min && right.max >= left.min
 }
 
 fn dynamic_filter_reader_predicate(source: &LocalParquetSource, column: &str, filter: &DynamicFilter) -> Option<Expr> {

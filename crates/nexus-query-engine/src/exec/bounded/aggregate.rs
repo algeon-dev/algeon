@@ -1,4 +1,4 @@
-use arrow::{array::new_empty_array, record_batch::RecordBatchOptions};
+use arrow::{array::new_empty_array, datatypes::SchemaRef as ArrowSchemaRef, record_batch::RecordBatchOptions};
 
 use super::{compiled::ResidentFrameStreamPayload, *};
 
@@ -34,8 +34,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
     reservations: &mut ReservationTracker,
@@ -97,8 +97,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -124,8 +124,8 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
     reservations: &mut ReservationTracker,
@@ -236,8 +236,15 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     reservations.release(input_preflight, metrics);
     reservations.release(work_reservation, metrics);
 
-    let output_batch =
-        execute_datafusion_exact_host_aggregate_batch(context, Some(node_id), &spec, &batch, output_schema, metrics)?;
+    let output_batch = execute_datafusion_exact_host_aggregate_batch(
+        context,
+        Some(node_id),
+        &spec,
+        &batch,
+        output_schema,
+        metrics,
+        None,
+    )?;
     let output_upload_bytes = u64::try_from(record_batch_memory_size(&output_batch)).unwrap_or(u64::MAX);
     let output_upload_request =
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_upload_bytes, reservations.budget())
@@ -289,8 +296,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
@@ -324,7 +331,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
 fn empty_resident_frame_for_schema(
     context: &ExecutionContext,
     node_id: NodeId,
-    schema: &arrow::datatypes::SchemaRef,
+    schema: &ArrowSchemaRef,
     reservation_kind: ReservationKind,
     memory_boundary: &'static str,
     stage: &'static str,

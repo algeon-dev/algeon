@@ -81,6 +81,20 @@ pub struct SharedSubplanMaterializationCandidateDiagnostics {
     pub group_exprs: Vec<String>,
     /// Aggregate expressions used by the aggregate family.
     pub aggregate_exprs: Vec<String>,
+    /// Number of filtered aggregate expressions the shared materialization would create.
+    pub filtered_aggregate_count: usize,
+    /// Memory-shape policy used for shared filtered aggregate materialization.
+    pub filtered_aggregate_memory_shape: String,
+    /// Row-count estimate used for shared filtered aggregate materialization, if known.
+    pub filtered_aggregate_estimation_input_rows: Option<u64>,
+    /// Estimated single-pass filtered-input materialization bytes, if known.
+    pub filtered_aggregate_estimated_materialization_bytes: Option<u64>,
+    /// Runtime budget bytes consulted by aggregate execution, if known at optimization time.
+    pub filtered_aggregate_memory_budget_bytes: Option<u64>,
+    /// Runtime single-pass threshold bytes consulted by aggregate execution, if known at optimization time.
+    pub filtered_aggregate_memory_threshold_bytes: Option<u64>,
+    /// Stable threshold policy when exact runtime budget bytes are not optimizer-visible.
+    pub filtered_aggregate_memory_threshold_policy: String,
     /// Abstract local-source fingerprints used for family grouping.
     pub source_fingerprints: Vec<String>,
     /// Number of exact source variants after retaining reader-predicate text.
@@ -262,6 +276,13 @@ fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan)
                 reuse_count: 2,
                 group_exprs: grouped_aggregate.spec.group_exprs.iter().map(ToString::to_string).collect(),
                 aggregate_exprs: scalar_aggregate.spec.aggr_exprs.iter().map(aggregate_expr_signature).collect(),
+                filtered_aggregate_count: 0,
+                filtered_aggregate_memory_shape: "not_applicable".to_string(),
+                filtered_aggregate_estimation_input_rows: None,
+                filtered_aggregate_estimated_materialization_bytes: None,
+                filtered_aggregate_memory_budget_bytes: None,
+                filtered_aggregate_memory_threshold_bytes: None,
+                filtered_aggregate_memory_threshold_policy: "not_applicable".to_string(),
                 source_fingerprints: vec![scalar_rowset_signature],
                 exact_source_variant_count,
                 repeated_selected_source_bytes,
@@ -542,6 +563,24 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
         let rewrite_plan = shared_aggregate_family_rewrite_plan(plan, &family);
         let applied = rewrite_plan.is_ok();
         let rejected_reason = rewrite_plan.as_ref().err().copied();
+        let filtered_aggregate_count = shared_scalar_filtered_aggregate_count(&family);
+        let filtered_memory_estimate = estimate_shared_scalar_filtered_materialization(&family);
+        let filtered_aggregate_memory_shape = if filtered_aggregate_count > 0 {
+            if applied {
+                if filtered_memory_estimate.is_some() {
+                    "runtime_budgeted_segmented_state_available"
+                } else {
+                    "runtime_budgeted_streaming_state_available"
+                }
+            } else {
+                "streaming_filtered_state_not_applied"
+            }
+        } else {
+            "not_applicable"
+        }
+        .to_string();
+        let filtered_aggregate_memory_threshold_policy =
+            if filtered_aggregate_count > 0 { "runtime_budget/2" } else { "not_applicable" }.to_string();
         diagnostics.candidate_count += 1;
         diagnostics.candidates.push(SharedSubplanMaterializationCandidateDiagnostics {
             rule_name: SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
@@ -550,6 +589,17 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
             reuse_count: family.len(),
             group_exprs: representative.group_exprs.clone(),
             aggregate_exprs: materialization_family_aggregate_exprs(&family),
+            filtered_aggregate_count,
+            filtered_aggregate_memory_shape,
+            filtered_aggregate_estimation_input_rows: filtered_memory_estimate
+                .as_ref()
+                .map(|estimate| estimate.input_rows),
+            filtered_aggregate_estimated_materialization_bytes: filtered_memory_estimate
+                .as_ref()
+                .map(|estimate| estimate.estimated_materialization_bytes),
+            filtered_aggregate_memory_budget_bytes: None,
+            filtered_aggregate_memory_threshold_bytes: None,
+            filtered_aggregate_memory_threshold_policy,
             source_fingerprints: representative.source_fingerprints.clone(),
             exact_source_variant_count,
             repeated_selected_source_bytes,
@@ -566,19 +616,130 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
     SharedSubplanMaterializationDiscovery { diagnostics, families: rewrite_families }
 }
 
+fn shared_scalar_filtered_aggregate_count(family: &[AggregateMaterializationSignature]) -> usize {
+    let Some(representative) = family.first() else {
+        return 0;
+    };
+    if !representative.group_exprs.is_empty() {
+        return 0;
+    }
+    family.iter().map(|signature| signature.aggregate_exprs.len()).sum()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SharedScalarFilteredMaterializationEstimate {
+    input_rows: u64,
+    estimated_materialization_bytes: u64,
+}
+
+fn estimate_shared_scalar_filtered_materialization(
+    family: &[AggregateMaterializationSignature],
+) -> Option<SharedScalarFilteredMaterializationEstimate> {
+    let representative = family.first()?;
+    if !representative.group_exprs.is_empty() {
+        return None;
+    }
+    let input_rows = family.iter().filter_map(|signature| signature.source_rows).max()?;
+    let original_frame_retained_bytes = family.iter().filter_map(|signature| signature.source_bytes).max().unwrap_or(0);
+    let unique_filter_predicate_count =
+        family.iter().map(|signature| signature.exact_source_signature.as_str()).collect::<BTreeSet<_>>().len();
+    let predicate_bytes =
+        u64::try_from(unique_filter_predicate_count).ok()?.saturating_mul(input_rows).saturating_mul(2);
+    let mut value_bytes = 0u64;
+    for signature in family {
+        for aggregate_expr in &signature.aggregate_expr_specs {
+            let (width, nullable) = shared_aggregate_value_width_and_nullability(aggregate_expr, signature);
+            let validity = if nullable { shared_null_mask_bytes(input_rows) } else { 0 };
+            value_bytes = value_bytes
+                .saturating_add(input_rows.saturating_mul(width))
+                .saturating_add(validity)
+                .saturating_add(64);
+        }
+    }
+    Some(SharedScalarFilteredMaterializationEstimate {
+        input_rows,
+        estimated_materialization_bytes: original_frame_retained_bytes
+            .saturating_add(value_bytes)
+            .saturating_add(predicate_bytes),
+    })
+}
+
+fn shared_aggregate_value_width_and_nullability(
+    aggregate_expr: &AggregateExpr,
+    signature: &AggregateMaterializationSignature,
+) -> (u64, bool) {
+    match &aggregate_expr.expr {
+        Expr::Column(column) => signature
+            .source_columns
+            .values()
+            .find_map(|columns| columns.get(column.name()))
+            .map(|column| {
+                (shared_fixed_width_dtype_size(column.field.data_type()).unwrap_or(16), column.field.is_nullable())
+            })
+            .unwrap_or((16, true)),
+        Expr::Literal(value) => (shared_literal_width(value), matches!(value, crate::expr::LiteralValue::Null(_))),
+        _ => (16, true),
+    }
+}
+
+fn shared_literal_width(value: &crate::expr::LiteralValue) -> u64 {
+    match value {
+        crate::expr::LiteralValue::Boolean(_) => 1,
+        crate::expr::LiteralValue::Int8(_) | crate::expr::LiteralValue::UInt8(_) => 1,
+        crate::expr::LiteralValue::Int16(_) | crate::expr::LiteralValue::UInt16(_) => 2,
+        crate::expr::LiteralValue::Int32(_)
+        | crate::expr::LiteralValue::UInt32(_)
+        | crate::expr::LiteralValue::Float32(_)
+        | crate::expr::LiteralValue::Date32(_) => 4,
+        crate::expr::LiteralValue::Int64(_)
+        | crate::expr::LiteralValue::UInt64(_)
+        | crate::expr::LiteralValue::Float64(_)
+        | crate::expr::LiteralValue::Timestamp { .. }
+        | crate::expr::LiteralValue::Duration { .. } => 8,
+        crate::expr::LiteralValue::Decimal128 { .. } | crate::expr::LiteralValue::IntervalMonthDayNano { .. } => 16,
+        crate::expr::LiteralValue::Null(_)
+        | crate::expr::LiteralValue::Utf8(_)
+        | crate::expr::LiteralValue::LargeUtf8(_) => 16,
+    }
+}
+
+fn shared_fixed_width_dtype_size(data_type: &DataType) -> Option<u64> {
+    match data_type {
+        DataType::Boolean | DataType::Int8 | DataType::UInt8 => Some(1),
+        DataType::Int16 | DataType::UInt16 => Some(2),
+        DataType::Int32 | DataType::UInt32 | DataType::Float32 | DataType::Date32 | DataType::Time32(_) => Some(4),
+        DataType::Int64
+        | DataType::UInt64
+        | DataType::Float64
+        | DataType::Date64
+        | DataType::Time64(_)
+        | DataType::Timestamp(_, _)
+        | DataType::Duration(_) => Some(8),
+        DataType::Decimal128(_, _) => Some(16),
+        DataType::Decimal256(_, _) => Some(32),
+        _ => None,
+    }
+}
+
+fn shared_null_mask_bytes(rows: u64) -> u64 {
+    if rows == 0 { 0 } else { rows.div_ceil(8).div_ceil(64) * 64 }
+}
+
 #[derive(Debug, Clone)]
 struct AggregateMaterializationSignature {
     aggregate_node_id: NodeId,
-    aggregate_output_columns: BTreeSet<String>,
+    post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
     family_key: String,
     group_exprs: Vec<String>,
     aggregate_exprs: Vec<String>,
+    aggregate_expr_specs: Vec<AggregateExpr>,
     source_fingerprints: Vec<String>,
     source_occurrences_unique: bool,
     source_predicates: Vec<SourcePredicateSignature>,
     source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
     exact_source_signature: String,
     source_bytes: Option<u64>,
+    source_rows: Option<u64>,
 }
 
 fn aggregate_materialization_signature(
@@ -595,8 +756,11 @@ fn aggregate_materialization_signature(
     sources.sort_by(|left, right| left.abstract_fingerprint.cmp(&right.abstract_fingerprint));
 
     let scalar_filtered_family = spec.group_exprs.is_empty() && scalar_filtered_aggregate_supported(spec);
-    let source_occurrences_unique =
-        if scalar_filtered_family { scalar_source_occurrences_are_unique(plan, input)? } else { true };
+    let source_occurrences_unique = if scalar_filtered_family {
+        scalar_source_occurrences_are_unique(plan, input)?
+    } else {
+        local_parquet_source_node_occurrences_are_unique(plan, input)?
+    };
     let source_fingerprints = sources
         .iter()
         .map(|source| {
@@ -615,15 +779,15 @@ fn aggregate_materialization_signature(
         .collect::<Vec<_>>()
         .join("|");
     let source_bytes = sum_optional_u64(sources.iter().map(|source| source.selected_source_bytes));
+    let source_rows = sum_optional_u64(sources.iter().map(|source| source.selected_rows));
     let group_exprs = spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>();
     let aggregate_exprs = spec.aggr_exprs.iter().map(aggregate_expr_signature).collect::<Vec<_>>();
-    let aggregate_output_columns = plan
-        .node(aggregate_node_id)?
-        .output_schema()
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect::<BTreeSet<_>>();
+    let post_aggregate_filter_columns_by_source = post_aggregate_filterable_group_columns_by_source(
+        plan,
+        input,
+        plan.node(aggregate_node_id)?.output_schema(),
+        spec,
+    );
     let source_predicates = sources
         .iter()
         .map(|source| SourcePredicateSignature {
@@ -644,8 +808,19 @@ fn aggregate_materialization_signature(
         };
         source_columns.entry(fingerprint).or_default().extend(source.columns.clone());
     }
-    let scalar_input_shape =
-        if scalar_filtered_family { Some(scalar_materialization_input_shape(plan, input)?) } else { None };
+    let scalar_count_star_family = scalar_filtered_family
+        && spec.aggr_exprs.iter().all(|expr| {
+            expr.function == AggregateFunction::Count
+                && !expr.distinct
+                && scalar_count_star_aggregate_expr(plan, input, &expr.expr)
+        });
+    let allow_column_projection_elision =
+        scalar_count_star_family && spec.aggr_exprs.iter().any(|expr| !scalar_count_star_expr(&expr.expr));
+    let scalar_input_shape = if scalar_filtered_family {
+        Some(scalar_materialization_input_shape(plan, input, allow_column_projection_elision)?)
+    } else {
+        None
+    };
     let family_signature = if scalar_filtered_family {
         format!(
             "scalar_filtered;input_shape={};sources={}",
@@ -664,17 +839,62 @@ fn aggregate_materialization_signature(
 
     Some(AggregateMaterializationSignature {
         aggregate_node_id,
-        aggregate_output_columns,
+        post_aggregate_filter_columns_by_source,
         family_key,
         group_exprs,
         aggregate_exprs,
+        aggregate_expr_specs: spec.aggr_exprs.clone(),
         source_fingerprints,
         source_occurrences_unique,
         source_predicates,
         source_columns,
         exact_source_signature,
         source_bytes,
+        source_rows,
     })
+}
+
+fn post_aggregate_filterable_group_columns_by_source(
+    plan: &QueryPlan,
+    input: NodeId,
+    output_schema: &Arc<Schema>,
+    spec: &AggregateSpec,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut columns = BTreeMap::<String, BTreeSet<String>>::new();
+    for (expr, field) in spec.group_exprs.iter().zip(output_schema.fields().iter()) {
+        let Some(column) = simple_group_column_name(expr) else {
+            continue;
+        };
+        if field.name() != column {
+            continue;
+        }
+        let Some(lineage) = materialized_column_lineage(plan, input, column) else {
+            continue;
+        };
+        if lineage.source_column == column {
+            columns.entry(lineage.source_fingerprint).or_default().insert(column.to_string());
+        }
+    }
+    columns
+}
+
+fn simple_group_column_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Column(column) => Some(column.name()),
+        Expr::Alias { expr, alias } => {
+            let Expr::Column(column) = expr.as_ref() else {
+                return None;
+            };
+            (alias == column.name()).then_some(alias.as_str())
+        },
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MaterializedColumnLineage {
+    source_fingerprint: String,
+    source_column: String,
 }
 
 #[derive(Debug, Clone)]
@@ -685,6 +905,7 @@ struct LocalSourceMaterializationSignature {
     exact_fingerprint: String,
     predicate: Option<Expr>,
     selected_source_bytes: Option<u64>,
+    selected_rows: Option<u64>,
     columns: BTreeMap<String, SourceColumnMaterialization>,
 }
 
@@ -758,6 +979,12 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
     let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let selected_source_bytes =
         source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes());
+    let selected_rows = source
+        .diagnostics
+        .selected_row_group_stats
+        .as_ref()
+        .and_then(|stats| stats.selected_rows)
+        .or_else(|| source.max_rows.and_then(|rows| u64::try_from(rows).ok()));
     let columns = source
         .read_columns
         .iter()
@@ -779,18 +1006,24 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
         exact_fingerprint: format!("{common};predicate={predicate}"),
         predicate: source.reader_predicate.clone(),
         selected_source_bytes,
+        selected_rows,
         columns,
     }
 }
 
-fn scalar_materialization_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
-    scalar_materialization_input_shape_inner(plan, node_id, true)
+fn scalar_materialization_input_shape(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    allow_column_projection_elision: bool,
+) -> Option<String> {
+    scalar_materialization_input_shape_inner(plan, node_id, true, allow_column_projection_elision)
 }
 
 fn scalar_materialization_input_shape_inner(
     plan: &QueryPlan,
     node_id: NodeId,
     allow_count_star_projection_elision: bool,
+    allow_column_projection_elision: bool,
 ) -> Option<String> {
     let node = plan.node(node_id)?;
     match &node.kind {
@@ -801,15 +1034,39 @@ fn scalar_materialization_input_shape_inner(
             },
             _ => None,
         },
+        PlanNode::Filter(filter) if source_reader_predicate_filter_is_elidable(plan, filter) => {
+            scalar_materialization_input_shape_inner(
+                plan,
+                filter.input,
+                allow_count_star_projection_elision,
+                allow_column_projection_elision,
+            )
+        },
         PlanNode::Filter(filter) => Some(format!(
             "filter(predicate={};input={})",
             filter.predicate,
-            scalar_materialization_input_shape_inner(plan, filter.input, false)?
+            scalar_materialization_input_shape_inner(plan, filter.input, false, allow_column_projection_elision)?
         )),
+        PlanNode::Projection(projection) if identity_projection_is_elidable(projection) => {
+            scalar_materialization_input_shape_inner(
+                plan,
+                projection.input,
+                allow_count_star_projection_elision,
+                allow_column_projection_elision,
+            )
+        },
+        PlanNode::Projection(projection) if allow_column_projection_elision => {
+            scalar_materialization_input_shape_inner(
+                plan,
+                projection.input,
+                allow_count_star_projection_elision,
+                allow_column_projection_elision,
+            )
+        },
         PlanNode::Projection(projection)
             if allow_count_star_projection_elision && count_star_projection_is_elidable(projection) =>
         {
-            scalar_materialization_input_shape_inner(plan, projection.input, true)
+            scalar_materialization_input_shape_inner(plan, projection.input, true, allow_column_projection_elision)
         },
         PlanNode::Projection(projection) => {
             let outputs = projection
@@ -828,19 +1085,24 @@ fn scalar_materialization_input_shape_inner(
                 .join(",");
             Some(format!(
                 "projection(outputs=[{outputs}];input={})",
-                scalar_materialization_input_shape_inner(plan, projection.input, false)?
+                scalar_materialization_input_shape_inner(
+                    plan,
+                    projection.input,
+                    false,
+                    allow_column_projection_elision
+                )?
             ))
         },
         PlanNode::Join(join) => Some(format!(
             "join(spec={:?};input0={};input1={})",
             join.spec,
-            scalar_materialization_input_shape_inner(plan, join.inputs[0], false)?,
-            scalar_materialization_input_shape_inner(plan, join.inputs[1], false)?
+            scalar_materialization_input_shape_inner(plan, join.inputs[0], false, allow_column_projection_elision)?,
+            scalar_materialization_input_shape_inner(plan, join.inputs[1], false, allow_column_projection_elision)?
         )),
         PlanNode::Sort(sort) => Some(format!(
             "sort(spec={:?};input={})",
             sort.spec,
-            scalar_materialization_input_shape_inner(plan, sort.input, false)?
+            scalar_materialization_input_shape_inner(plan, sort.input, false, allow_column_projection_elision)?
         )),
         PlanNode::Limit(_) => None,
         PlanNode::Aggregate(_)
@@ -849,6 +1111,11 @@ fn scalar_materialization_input_shape_inner(
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => None,
     }
+}
+
+fn identity_projection_is_elidable(projection: &ProjectionNode) -> bool {
+    !projection.outputs.is_empty()
+        && projection.outputs.iter().all(|output| projection_output_preserves_column(output, output.field.name()))
 }
 
 fn count_star_projection_is_elidable(projection: &ProjectionNode) -> bool {
@@ -895,6 +1162,15 @@ fn shared_aggregate_family_rewrite_plan(
     if representative.group_exprs.is_empty() {
         return shared_scalar_filtered_aggregate_rewrite_plan(plan, family);
     }
+    if family.iter().any(|signature| !source_materialization_sources_are_unique(signature)) {
+        return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
+    }
+    // Reject disconnected candidates early so diagnostics do not claim an applied
+    // rewrite that the sink-reachable clone cannot observe.
+    let reachable = rewrite::sink_reachable_nodes(plan);
+    if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
+        return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
+    }
     let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
     for signature in family {
         for source in &signature.source_predicates {
@@ -935,7 +1211,7 @@ fn shared_aggregate_family_rewrite_plan(
                 .predicate
                 .clone()
                 .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-            if !predicate_references_only_columns(&predicate, &signature.aggregate_output_columns) {
+            if !predicate_references_only_source_filterable_columns(&predicate, signature, fingerprint) {
                 return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
             }
             if seen.insert(predicate.to_string()) {
@@ -958,7 +1234,8 @@ fn shared_aggregate_family_rewrite_plan(
                 .predicate
                 .clone()
                 .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-            if !predicate_references_only_columns(&predicate, &signature.aggregate_output_columns) {
+            if !predicate_references_only_source_filterable_columns(&predicate, signature, &source.abstract_fingerprint)
+            {
                 return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
             }
             predicates.push(predicate);
@@ -973,13 +1250,6 @@ fn shared_aggregate_family_rewrite_plan(
                     .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?,
             ),
         );
-    }
-
-    // Reject disconnected candidates early so diagnostics do not claim an applied
-    // rewrite that the sink-reachable clone cannot observe.
-    let reachable = rewrite::sink_reachable_nodes(plan);
-    if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
-        return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
     }
 
     Ok(SharedAggregateFamilyRewrite {
@@ -1006,6 +1276,9 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     if !scalar_filtered_aggregate_supported(&representative_aggregate.spec) {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
     }
+    if !scalar_filtered_aggregate_streaming_supported(&representative_aggregate.spec) {
+        return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+    }
     if family.iter().any(|signature| !source_materialization_sources_are_unique(signature)) {
         return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
     }
@@ -1019,6 +1292,9 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
             return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
         };
         if !scalar_filtered_aggregate_supported(&aggregate.spec) {
+            return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+        }
+        if !scalar_filtered_aggregate_streaming_supported(&aggregate.spec) {
             return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
         }
         for aggregate_expr in &aggregate.spec.aggr_exprs {
@@ -1375,11 +1651,11 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     let mut source = source.clone();
                     let signature = local_source_materialization_signature(&source);
                     let mut source_facts = None;
-                    if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature) {
-                        if widen_local_parquet_source(&mut source, columns) {
-                            source_facts =
-                                Some(PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput));
-                        }
+                    if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature)
+                        && widen_local_parquet_source(&mut source, columns)
+                    {
+                        source_facts =
+                            Some(PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput));
                     }
                     if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                         source.reader_predicate = Some(predicate.clone());
@@ -1411,10 +1687,10 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                         let mut source = source.clone();
                         let signature = local_source_materialization_signature(&source);
                         let mut facts = old_node.facts.clone();
-                        if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature) {
-                            if widen_local_parquet_source(&mut source, columns) {
-                                facts = PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput);
-                            }
+                        if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature)
+                            && widen_local_parquet_source(&mut source, columns)
+                        {
+                            facts = PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput);
                         }
                         if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                             source.reader_predicate = Some(predicate.clone());
@@ -1427,6 +1703,13 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 self.push_node(new_kind, facts)
             },
             PlanNode::Filter(filter) => {
+                if source_reader_predicate_filter_is_elidable(self.original, filter) {
+                    return self.clone_materialized_subtree_with_required_columns(
+                        filter.input,
+                        family,
+                        required_output_columns,
+                    );
+                }
                 let mut input_required = required_output_columns.clone();
                 collect_expr_column_names(&filter.predicate, &mut input_required);
                 let input =
@@ -1657,6 +1940,39 @@ fn source_fingerprints_are_unique(signature: &AggregateMaterializationSignature)
     signature.source_fingerprints.iter().all(|fingerprint| seen.insert(fingerprint))
 }
 
+fn local_parquet_source_node_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
+    let mut source_nodes = BTreeSet::new();
+    let mut active = BTreeSet::new();
+    local_parquet_source_node_occurrences_are_unique_inner(plan, node_id, &mut active, &mut source_nodes)
+}
+
+fn local_parquet_source_node_occurrences_are_unique_inner(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    active: &mut BTreeSet<NodeId>,
+    source_nodes: &mut BTreeSet<NodeId>,
+) -> Option<bool> {
+    if !active.insert(node_id) {
+        return Some(false);
+    }
+    let node = plan.node(node_id)?;
+    let unique = match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(_) => source_nodes.insert(node_id),
+            _ => true,
+        },
+        _ => {
+            let mut unique = true;
+            for input in node.input_ids() {
+                unique &= local_parquet_source_node_occurrences_are_unique_inner(plan, *input, active, source_nodes)?;
+            }
+            unique
+        },
+    };
+    active.remove(&node_id);
+    Some(unique)
+}
+
 fn scalar_source_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
     let mut source_nodes = BTreeSet::new();
     let mut rowsets = BTreeSet::new();
@@ -1758,6 +2074,20 @@ fn scalar_filtered_aggregate_expr_supported(expr: &AggregateExpr) -> bool {
     }
 }
 
+fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().all(|expr| {
+        !expr.distinct
+            && matches!(
+                expr.function,
+                AggregateFunction::Count
+                    | AggregateFunction::Sum
+                    | AggregateFunction::Min
+                    | AggregateFunction::Max
+                    | AggregateFunction::Avg
+            )
+    })
+}
+
 fn scalar_count_star_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(value) if !matches!(value, crate::expr::LiteralValue::Null(_)))
         || matches!(expr, Expr::Alias { expr, .. } if scalar_count_star_expr(expr))
@@ -1768,22 +2098,47 @@ fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, expr: &Expr
         return true;
     }
     match expr {
-        Expr::Column(column) => projected_non_null_literal_column(plan, input, column.name()),
+        Expr::Column(column) => projected_count_preserving_column(plan, input, column.name()),
         Expr::Alias { expr, .. } => scalar_count_star_aggregate_expr(plan, input, expr),
         _ => false,
     }
 }
 
-fn projected_non_null_literal_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
+fn projected_count_preserving_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
+    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__cudf_join_row_presence";
     let Some(node) = plan.node(node_id) else {
         return false;
     };
     match &node.kind {
-        PlanNode::Projection(projection) => projection
-            .outputs
-            .iter()
-            .find(|output| output.field.name() == column)
-            .is_some_and(|output| scalar_count_star_expr(&output.expr)),
+        PlanNode::Projection(projection) => {
+            projection.outputs.iter().find(|output| output.field.name() == column).is_some_and(|output| {
+                match &output.expr {
+                    expr if scalar_count_star_expr(expr) => true,
+                    Expr::Column(inner) => projected_count_preserving_column(plan, projection.input, inner.name()),
+                    Expr::Alias { expr, .. } => match expr.as_ref() {
+                        Expr::Column(inner) => projected_count_preserving_column(plan, projection.input, inner.name()),
+                        other => scalar_count_star_expr(other),
+                    },
+                    _ => false,
+                }
+            })
+        },
+        PlanNode::Join(_) => column == HIDDEN_JOIN_ROW_PRESENCE_COLUMN,
+        PlanNode::Filter(filter) => projected_count_preserving_column(plan, filter.input, column),
+        PlanNode::Sort(sort) => projected_count_preserving_column(plan, sort.input, column),
+        _ => false,
+    }
+}
+
+fn source_reader_predicate_filter_is_elidable(plan: &QueryPlan, filter: &FilterNode) -> bool {
+    let Some(node) = plan.node(filter.input) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => source.reader_predicate.as_ref() == Some(&filter.predicate),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -1823,6 +2178,17 @@ fn predicate_references_only_columns(predicate: &Expr, allowed_columns: &BTreeSe
     let mut columns = BTreeSet::new();
     collect_expr_columns(predicate, &mut columns);
     columns.iter().all(|column| allowed_columns.contains(column))
+}
+
+fn predicate_references_only_source_filterable_columns(
+    predicate: &Expr,
+    signature: &AggregateMaterializationSignature,
+    source_fingerprint: &str,
+) -> bool {
+    signature
+        .post_aggregate_filter_columns_by_source
+        .get(source_fingerprint)
+        .is_some_and(|allowed_columns| predicate_references_only_columns(predicate, allowed_columns))
 }
 
 fn collect_expr_columns(expr: &Expr, columns: &mut BTreeSet<String>) {
@@ -2049,6 +2415,51 @@ fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: 
     match expr {
         Expr::Column(column) => scalar_input_column_lineage_signature(plan, node_id, column.name()),
         Expr::Alias { expr, .. } => scalar_input_expr_lineage_signature(plan, node_id, expr),
+        _ => None,
+    }
+}
+
+fn materialized_column_lineage(plan: &QueryPlan, node_id: NodeId, column: &str) -> Option<MaterializedColumnLineage> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                let signature = local_source_materialization_signature(source);
+                let column = signature.columns.get(column)?;
+                Some(MaterializedColumnLineage {
+                    source_fingerprint: signature.abstract_fingerprint,
+                    source_column: column.name.clone(),
+                })
+            },
+            _ => None,
+        },
+        PlanNode::Filter(filter) => materialized_column_lineage(plan, filter.input, column),
+        PlanNode::Projection(projection) => {
+            let output = projection.outputs.iter().find(|output| output.field.name() == column)?;
+            materialized_expr_lineage(plan, projection.input, &output.expr)
+        },
+        PlanNode::Join(join) => {
+            let output = join.spec.output_projection.iter().find(|output| output.output_name == column)?;
+            let input = match output.side {
+                JoinSide::Left => join.inputs[0],
+                JoinSide::Right => join.inputs[1],
+            };
+            materialized_column_lineage(plan, input, output.column.name())
+        },
+        PlanNode::Sort(sort) => materialized_column_lineage(plan, sort.input, column),
+        PlanNode::Limit(limit) => materialized_column_lineage(plan, limit.input, column),
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn materialized_expr_lineage(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> Option<MaterializedColumnLineage> {
+    match expr {
+        Expr::Column(column) => materialized_column_lineage(plan, node_id, column.name()),
+        Expr::Alias { expr, .. } => materialized_expr_lineage(plan, node_id, expr),
         _ => None,
     }
 }

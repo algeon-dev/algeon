@@ -19,6 +19,10 @@ use nexus_query_engine::{
 };
 use parquet::file::reader::FileReader;
 
+// Keep native filters on small dimension scans. They are cheap and preserve
+// join/aggregate planning shape; large fact filters benefit from elision.
+const TABLE_FORMAT_FILTER_ELISION_MIN_SOURCE_ROWS: u64 = 10_000_000;
+
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, lower_physical_expr, lower_physical_expr_with_bindings},
@@ -269,10 +273,14 @@ fn lower_table_format_source_input(
         validate_physical_expr(filter.predicate(), &filter.input().schema())?;
     }
 
-    let requirements = table_format_column_requirements(scan_plan, scan_exec.schema(), filter, required_output_fields)?;
-    let source_output_schema = table_format_source_output_schema(&requirements, &table_format_file_schema(scan_plan));
+    let file_schema = table_format_file_schema(scan_plan);
+    let requirements =
+        table_format_column_requirements(scan_plan, &file_schema, scan_exec.schema(), filter, required_output_fields)?;
+    let source_output_schema = table_format_source_output_schema(&requirements, &file_schema);
     validate_schema(Arc::clone(&source_output_schema))?;
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
+    let native_file_paths =
+        native_files.iter().filter_map(|file| file.location.as_local_path().map(Path::to_path_buf)).collect::<Vec<_>>();
     let source_scan_limit =
         if filter.is_none() { combine_scan_limits(scan_plan.scan_limit, pushed_scan_limit) } else { None };
     let mut native_source = NativeLocalParquetSource::from_files(
@@ -289,16 +297,49 @@ fn lower_table_format_source_input(
     .with_partition_columns(requirements.partition_columns.clone())
     .with_missing_columns(requirements.missing_columns.clone())
     .with_scan_limit(source_scan_limit);
+    let mut reader_pushdown_covers_filter = false;
     if let Some(predicate) =
         table_format_reader_pushdown_predicate(filter, &source_output_schema, scan_exec.schema(), &native_source)?
     {
-        native_source = native_source.with_reader_predicate(predicate);
+        reader_pushdown_covers_filter = predicate.covers_filter;
+        let max_rows = if reader_predicate_proves_table_format_source_at_most_one_row(
+            scan_plan,
+            &file_schema,
+            &source_output_schema,
+            scan_exec.schema().as_ref(),
+            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
+            &predicate.expr,
+        ) {
+            Some(1)
+        } else {
+            None
+        };
+        native_source = native_source.with_reader_predicate(predicate.expr).with_max_rows(max_rows);
     }
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
     let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
     let scan_output = LoweredNativeInput::with_bindings(source_node, source_output_schema, scan_output_bindings);
     if let Some(filter) = filter {
+        if reader_pushdown_covers_filter {
+            if let Some(projection) = filter.projection() {
+                return add_source_filter_projection(
+                    builder,
+                    scan_output.node,
+                    &scan_output,
+                    filter.schema(),
+                    projection,
+                    required_output_fields,
+                );
+            }
+            return project_scan_output_columns(
+                builder,
+                scan_output.node,
+                scan_output.schema,
+                scan_output.bindings,
+                required_output_fields,
+            );
+        }
         let filtered_node = builder.add_filter(
             scan_output.node,
             lower_physical_expr_with_bindings(
@@ -318,7 +359,13 @@ fn lower_table_format_source_input(
                 required_output_fields,
             )
         } else {
-            Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
+            project_scan_output_columns(
+                builder,
+                filtered_node,
+                scan_output.schema,
+                scan_output.bindings,
+                required_output_fields,
+            )
         }?;
         if let Some(scan_limit) = scan_plan.scan_limit {
             let limited_node =
@@ -332,12 +379,33 @@ fn lower_table_format_source_input(
     }
 }
 
+fn reader_predicate_proves_table_format_source_at_most_one_row(
+    scan_plan: &TableFormatScanPlan,
+    file_schema: &Schema,
+    source_output_schema: &Schema,
+    frontend_schema: &Schema,
+    source_paths: &[&Path],
+    predicate: &NativeExpr,
+) -> bool {
+    reader_predicate_proves_source_at_most_one_row(
+        &[
+            scan_plan.logical_schema.as_ref(),
+            scan_plan.native_source_schema.as_ref(),
+            file_schema,
+            source_output_schema,
+            frontend_schema,
+        ],
+        source_paths,
+        predicate,
+    )
+}
+
 fn table_format_reader_pushdown_predicate(
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     source_output_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,
-) -> Result<Option<NativeExpr>, FallbackReason> {
+) -> Result<Option<SourceReaderPushdownPredicate>, FallbackReason> {
     let Some(filter) = filter else {
         return Ok(None);
     };
@@ -347,7 +415,98 @@ fn table_format_reader_pushdown_predicate(
             Ok(predicate) => predicate,
             Err(_) => return Ok(None),
         };
-    if native_source.reader_predicate_is_supported(&predicate) { Ok(Some(predicate)) } else { Ok(None) }
+    if table_format_reader_predicate_references_stats_filter_risky_type(&predicate, source_output_schema) {
+        return Ok(None);
+    }
+    if native_source.reader_predicate_is_supported(&predicate) {
+        Ok(Some(SourceReaderPushdownPredicate {
+            expr: predicate,
+            covers_filter: table_format_reader_pushdown_can_elide_native_filter(native_source),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn table_format_reader_pushdown_can_elide_native_filter(native_source: &NativeLocalParquetSource) -> bool {
+    table_format_source_known_rows(native_source)
+        .is_some_and(|rows| rows >= TABLE_FORMAT_FILTER_ELISION_MIN_SOURCE_ROWS)
+}
+
+fn table_format_source_known_rows(native_source: &NativeLocalParquetSource) -> Option<u64> {
+    native_source.files.iter().try_fold(0u64, |total, file| {
+        let rows =
+            file.row_group_rows.as_ref()?.iter().try_fold(0u64, |file_total, rows| file_total.checked_add(*rows))?;
+        total.checked_add(rows)
+    })
+}
+
+fn table_format_reader_predicate_references_stats_filter_risky_type(expr: &NativeExpr, schema: &Schema) -> bool {
+    match expr {
+        NativeExpr::Column(column) => schema
+            .field_with_name(column.name())
+            .is_ok_and(|field| table_format_reader_predicate_stats_filter_risky_type(field.data_type())),
+        NativeExpr::Literal(_) => false,
+        NativeExpr::Not(expr)
+        | NativeExpr::IsNull(expr)
+        | NativeExpr::IsNotNull(expr)
+        | NativeExpr::Lower(expr)
+        | NativeExpr::Upper(expr)
+        | NativeExpr::Abs(expr) => table_format_reader_predicate_references_stats_filter_risky_type(expr, schema),
+        NativeExpr::Cast { expr, .. }
+        | NativeExpr::TryCast { expr, .. }
+        | NativeExpr::Like { expr, .. }
+        | NativeExpr::Substring { expr, .. }
+        | NativeExpr::StringLength { expr, .. }
+        | NativeExpr::Sqrt { expr, .. }
+        | NativeExpr::Round { expr, .. }
+        | NativeExpr::Extract { expr, .. }
+        | NativeExpr::DateTrunc { expr, .. }
+        | NativeExpr::Alias { expr, .. } => {
+            table_format_reader_predicate_references_stats_filter_risky_type(expr, schema)
+        },
+        NativeExpr::Binary { left, right, .. }
+        | NativeExpr::IsDistinctFrom { left, right }
+        | NativeExpr::IsNotDistinctFrom { left, right } => {
+            table_format_reader_predicate_references_stats_filter_risky_type(left, schema)
+                || table_format_reader_predicate_references_stats_filter_risky_type(right, schema)
+        },
+        NativeExpr::InList { expr, list, .. } => {
+            table_format_reader_predicate_references_stats_filter_risky_type(expr, schema)
+                || list
+                    .iter()
+                    .any(|item| table_format_reader_predicate_references_stats_filter_risky_type(item, schema))
+        },
+        NativeExpr::Case { branches, else_expr } => {
+            branches.iter().any(|branch| {
+                table_format_reader_predicate_references_stats_filter_risky_type(&branch.when, schema)
+                    || table_format_reader_predicate_references_stats_filter_risky_type(&branch.then, schema)
+            }) || table_format_reader_predicate_references_stats_filter_risky_type(else_expr, schema)
+        },
+        NativeExpr::Concat(exprs) => {
+            exprs.iter().any(|expr| table_format_reader_predicate_references_stats_filter_risky_type(expr, schema))
+        },
+        NativeExpr::RegexpReplace { expr, .. } => {
+            table_format_reader_predicate_references_stats_filter_risky_type(expr, schema)
+        },
+    }
+}
+
+fn table_format_reader_predicate_stats_filter_risky_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Date32
+            | DataType::Date64
+            | DataType::Time32(_)
+            | DataType::Time64(_)
+            | DataType::Timestamp(_, _)
+            | DataType::Duration(_)
+            | DataType::Interval(_)
+            | DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+    )
 }
 
 fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {
@@ -423,11 +582,11 @@ fn table_format_scan_plan_rejection(plan: &TableFormatScanPlan) -> FallbackReaso
 
 fn table_format_column_requirements(
     scan_plan: &TableFormatScanPlan,
+    file_schema: &SchemaRef,
     scan_schema: SchemaRef,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     required_output_fields: &RequiredFields,
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
-    let file_schema = table_format_file_schema(scan_plan);
     let required_scan_output_indices =
         required_source_scan_output_indices(scan_schema.clone(), filter, required_output_fields)?;
     let output_columns = required_scan_output_indices
@@ -521,9 +680,9 @@ fn table_format_column_requirements(
         .map(|column| file_schema.index_of(column).map_err(|_error| FallbackReason::NativeSourceSchemaMapping))
         .collect::<Result<Vec<_>, _>>()?;
     let projected_output_column_source_refs =
-        table_format_column_source_refs(&file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
+        table_format_column_source_refs(file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
     let pure_filter_column_source_refs =
-        table_format_column_source_refs(&file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
+        table_format_column_source_refs(file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
     let scan_output_columns = ordered_required_columns;
 
     Ok(NativeParquetColumnRequirements {
@@ -638,11 +797,6 @@ fn table_format_local_parquet_file(
     if let Some(row_groups) = file.row_groups.clone() {
         native_file = native_file.with_row_groups(row_groups);
     }
-    if file.row_groups.is_none()
-        && let Some(row_count) = file.row_count
-    {
-        native_file = native_file.with_row_group_rows(vec![row_count]);
-    }
     if !requirements.partition_columns.is_empty() {
         native_file = native_file.with_partition_values(table_format_partition_values(file, requirements)?);
     }
@@ -691,7 +845,16 @@ fn table_format_scalar_value_to_native_literal(
 }
 
 fn table_format_local_path(location: &str) -> PathBuf {
-    location.strip_prefix("file://").map_or_else(|| PathBuf::from(location), PathBuf::from)
+    if let Some(path) = location.strip_prefix("file://localhost/") {
+        return PathBuf::from(format!("/{path}"));
+    }
+    if let Some(path) = location.strip_prefix("file://") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = location.strip_prefix("file:") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(location)
 }
 
 fn table_format_native_parquet_file(file: &TableFormatDataFile) -> Result<NativeLocalParquetFile, FallbackReason> {
@@ -995,4 +1158,54 @@ pub(super) fn required_scan_projection_schema(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Arc::new(Schema::new(fields)))
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_query_engine::{CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef};
+
+    use super::*;
+    use crate::table_format::{TableFormat, TableFormatReadCapability};
+
+    fn test_column_requirements() -> NativeParquetColumnRequirements {
+        NativeParquetColumnRequirements {
+            read_columns: vec!["c0".to_string()],
+            read_column_file_indices: vec![0],
+            projected_output_columns: vec!["c0".to_string()],
+            projected_output_column_source_refs: vec![NativeSourceColumnRef::File(0)],
+            pure_filter_columns: Vec::new(),
+            pure_filter_column_source_refs: Vec::new(),
+            partition_columns: Vec::new(),
+            partition_column_indices: Vec::new(),
+            missing_columns: Vec::new(),
+            scan_output_columns: vec!["c0".to_string()],
+        }
+    }
+
+    #[test]
+    fn table_format_file_row_count_does_not_create_synthetic_row_group_metadata() {
+        let mut scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg);
+        scan_plan.data_files.push(
+            TableFormatDataFile::new(
+                "file-0",
+                "s3://bucket/table/part-0.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(1024)
+            .with_row_count(123)
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
+                "s3://bucket/table/part-0.parquet",
+                "s3://bucket/table/part-0.parquet",
+                CredentialMode::SharedProcessEnv,
+            )),
+        );
+
+        let files = table_format_local_parquet_files(&scan_plan, &test_column_requirements()).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].row_groups, None);
+        assert_eq!(files[0].row_group_rows, None);
+        assert_eq!(files[0].selected_row_group_count(), 0);
+    }
 }

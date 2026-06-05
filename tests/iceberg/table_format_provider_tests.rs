@@ -22,7 +22,7 @@ use datafusion_nexus::{
     TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
     TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
     iceberg::CudfIcebergTableProvider, lower_physical_plan_to_native, resolve_table_format_parquet_source,
-    resolve_table_format_parquet_source_with_metadata,
+    resolve_table_format_parquet_source_with_metadata, schema_with_source_unique_keys,
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
@@ -168,6 +168,135 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
     assert!(source.read_columns.contains(&"value".to_string()));
     assert!(source.reader_predicate.is_some());
     assert_eq!(source.diagnostics.predicate_disposition.as_str(), "reader_pushdown");
+}
+
+#[tokio::test]
+async fn iceberg_provider_keeps_temporal_filter_out_of_reader_pushdown() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ship_date", DataType::Date32, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "ship_date",
+            Some("ship_date"),
+            DataType::Date32,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "value",
+            Some("value"),
+            DataType::Utf8,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let planner = Arc::new(RecordingPlanner::new(plan));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select value from iceberg_t where ship_date = date '2024-01-01'").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.read_columns.contains(&"ship_date".to_string()));
+    assert!(source.reader_predicate.is_none());
+    assert_eq!(source.diagnostics.predicate_disposition.as_str(), "absent");
+    assert!(
+        native_plan_filter_count(&result.plans[0]) >= 1,
+        "inexact table-format filters must remain represented as native filters"
+    );
+}
+
+#[tokio::test]
+async fn iceberg_provider_lowers_q09_style_scalar_aggregate_subqueries_as_one_native_plan() {
+    let reason_schema = Arc::new(schema_with_source_unique_keys(
+        &Schema::new(vec![Field::new("r_reason_sk", DataType::Int64, false)]),
+        &[&["r_reason_sk"]],
+    ));
+    let store_sales_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_quantity", DataType::Int64, false),
+        Field::new("ss_ext_discount_amt", DataType::Float64, true),
+        Field::new("ss_net_paid", DataType::Float64, true),
+    ]));
+    let reason_planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan_for_schema(
+        Arc::clone(&reason_schema),
+        "reason-data-0001",
+        "/tmp/iceberg/reason.parquet",
+    )));
+    let store_sales_planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan_for_schema(
+        Arc::clone(&store_sales_schema),
+        "store-sales-data-0001",
+        "/tmp/iceberg/store_sales.parquet",
+    )));
+    let reason =
+        Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&reason_schema), reason_planner));
+    let store_sales = Arc::new(CudfIcebergTableProvider::from_table_format_planner(
+        Arc::clone(&store_sales_schema),
+        store_sales_planner,
+    ));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("reason", reason).unwrap();
+    ctx.register_table("store_sales", store_sales).unwrap();
+
+    let df = ctx
+        .sql(
+            "
+            select
+              case
+                when (select count(*) from store_sales where ss_quantity between 1 and 20) > 74129
+                then (select avg(ss_ext_discount_amt) from store_sales where ss_quantity between 1 and 20)
+                else (select avg(ss_net_paid) from store_sales where ss_quantity between 1 and 20)
+              end as bucket1
+            from reason
+            where r_reason_sk = 1
+            ",
+        )
+        .await
+        .unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.plans.len(), 1);
+    assert_eq!(
+        result.plans[0].output_schema().fields().len(),
+        1,
+        "root projection must preserve the single bucket output"
+    );
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 4, "reason plus three scalar aggregate sources should lower into one native plan");
+    assert!(
+        sources.iter().any(|source| {
+            source.files[0].stable_id == "table-format:iceberg:reason-data-0001"
+                && source.projected_output_columns.is_empty()
+                && source.pure_filter_columns == vec!["r_reason_sk".to_string()]
+                && source.max_rows == Some(1)
+        }),
+        "the reason scan is only a cardinality/filter input, should prove max_rows=1, and should not leak filter columns to its parent"
+    );
 }
 
 #[test]
@@ -536,6 +665,41 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
         ))
 }
 
+fn native_admissible_scan_plan_for_schema(
+    schema: Arc<Schema>,
+    file_id: impl Into<String>,
+    file_path: impl Into<String>,
+) -> TableFormatScanPlan {
+    schema.fields().iter().enumerate().fold(
+        TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_snapshot_id("12345")
+            .with_catalog_type("local")
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(Arc::clone(&schema))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    file_id,
+                    file_path,
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::local_file_system(),
+                )
+                .with_size_bytes(4096)
+                .with_row_count(11),
+            ),
+        |plan, (index, field)| {
+            plan.with_projected_column(TableFormatColumnMapping::new(
+                Some(index as i32 + 1),
+                field.name(),
+                Some(field.name()),
+                field.data_type().clone(),
+                field.is_nullable(),
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
+            ))
+        },
+    )
+}
+
 fn native_admissible_empty_scan_plan() -> TableFormatScanPlan {
     TableFormatScanPlan::new(TableFormat::Iceberg).with_snapshot_id("12345").with_catalog_type("local").with_data_file(
         TableFormatDataFile::new(
@@ -570,6 +734,24 @@ fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_q
         .expect("native plan should contain a local parquet source")
 }
 
+fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::LocalParquetSource> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(_) => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 fn native_plan_limit_count(plan: &nexus_query_engine::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Limit(_))).count()
+}
+
+fn native_plan_filter_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+    plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Filter(_))).count()
 }

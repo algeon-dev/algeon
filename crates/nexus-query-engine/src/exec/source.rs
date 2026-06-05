@@ -737,6 +737,8 @@ fn record_source_chunk_read_runtime(
         reader_predicate: source.reader_predicate.is_some(),
         reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
         source_batching_reason: chunk.source_batching_reason.clone().unwrap_or_else(|| "not_evaluated".to_string()),
+        source_chunk_planning_mode: chunk.source_chunk_planning_mode.as_str().to_string(),
+        source_chunk_planning_reason: chunk.source_chunk_planning_reason.clone(),
         elapsed,
     });
 }
@@ -797,6 +799,8 @@ fn record_source_chunk_batch_read_runtime(
         reader_predicate: source.reader_predicate.is_some(),
         reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
         source_batching_reason: batch.source_batching_reason.clone(),
+        source_chunk_planning_mode: first_chunk.source_chunk_planning_mode.as_str().to_string(),
+        source_chunk_planning_reason: first_chunk.source_chunk_planning_reason.clone(),
         elapsed,
     });
 }

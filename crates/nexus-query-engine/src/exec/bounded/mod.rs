@@ -137,9 +137,11 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
-    let mut policy = SourceChunkPlanningPolicy::for_source_task(
+    let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode(
+        bounded.source,
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
+        context.source_chunk_planning_mode(),
     );
     if bounded.has_source_adjacent_stages() {
         policy.max_source_chunk_bytes = Some(
@@ -148,6 +150,7 @@ fn aggregate_source_chunk_planning_policy(
                 .unwrap_or(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES)
                 .min(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES),
         );
+        policy.mark_downstream_cap("source_adjacent_aggregate_downstream_cap");
     }
     if is_source_adjacent_grouped_aggregate(bounded) && source_adjacent_grouped_aggregate_has_string_key(bounded) {
         policy.max_source_chunk_bytes = Some(
@@ -158,6 +161,7 @@ fn aggregate_source_chunk_planning_policy(
         );
         policy.max_row_groups_per_chunk =
             policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS);
+        policy.mark_downstream_cap("source_adjacent_grouped_aggregate_downstream_cap");
     }
     policy
 }
@@ -738,7 +742,11 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     let chunk_plan = plan_local_parquet_source_chunks(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+        SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            source,
+            context.memory_control_policy(),
+            context.source_chunk_planning_mode(),
+        ),
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
@@ -786,7 +794,11 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     let chunk_plan = plan_local_parquet_source_chunks(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from(context.memory_control_policy()),
+        SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            source,
+            context.memory_control_policy(),
+            context.source_chunk_planning_mode(),
+        ),
     )?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);

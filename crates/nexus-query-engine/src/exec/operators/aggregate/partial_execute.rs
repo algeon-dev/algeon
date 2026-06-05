@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::{groupby::rename_groupby_key_columns, *};
 
 #[allow(clippy::too_many_arguments)]
@@ -8,8 +10,8 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     node_id: Option<NodeId>,
     frame: DataFrame,
     spec: AggregateSpec,
-    prepared_input_schema: arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    prepared_input_schema: ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     aggregate: LoweredAggregate,
     expected_output_names: Vec<String>,
     mut decision: crate::capability::AggregateStrategyCapabilityDecision,
@@ -96,8 +98,8 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     node_id: Option<NodeId>,
     frame: DataFrame,
     spec: AggregateSpec,
-    prepared_input_schema: arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    prepared_input_schema: ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     aggregate: LoweredAggregate,
     expected_output_names: Vec<String>,
     mut decision: crate::capability::AggregateStrategyCapabilityDecision,
@@ -185,8 +187,8 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     node_id: Option<NodeId>,
     mut frame: DataFrame,
     spec: AggregateSpec,
-    prepared_input_schema: arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    prepared_input_schema: ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     mut aggregate: LoweredAggregate,
     expected_output_names: Vec<String>,
     decision: crate::capability::AggregateStrategyCapabilityDecision,

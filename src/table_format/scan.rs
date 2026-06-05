@@ -569,7 +569,16 @@ fn resolve_local_cache_table_format_parquet_source(
 }
 
 fn table_format_local_path_text(location: &str) -> String {
-    location.strip_prefix("file://").unwrap_or(location).to_string()
+    if let Some(path) = location.strip_prefix("file://localhost/") {
+        return format!("/{path}");
+    }
+    if let Some(path) = location.strip_prefix("file://") {
+        return path.to_string();
+    }
+    if let Some(path) = location.strip_prefix("file:") {
+        return path.to_string();
+    }
+    location.to_string()
 }
 
 fn object_store_reader_path(uri: &str) -> String {
@@ -688,6 +697,14 @@ mod tests {
 
         assert_eq!(config.storage_endpoint.as_deref(), Some("http://rustfs.local:9000/minio"));
         assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+    }
+
+    #[test]
+    fn local_file_uri_reader_paths_are_normalized_for_local_cudf_reads() {
+        assert_eq!(table_format_local_path_text("/tmp/table.parquet"), "/tmp/table.parquet");
+        assert_eq!(table_format_local_path_text("file:/tmp/table.parquet"), "/tmp/table.parquet");
+        assert_eq!(table_format_local_path_text("file:///tmp/table.parquet"), "/tmp/table.parquet");
+        assert_eq!(table_format_local_path_text("file://localhost/tmp/table.parquet"), "/tmp/table.parquet");
     }
 }
 

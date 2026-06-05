@@ -8,7 +8,7 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source)?;
-    let planning_policy = join_source_chunk_planning_policy(context, has_source_adjacent_stages);
+    let planning_policy = join_source_chunk_planning_policy(context, source, has_source_adjacent_stages);
     let mut chunk_plan = plan_local_parquet_source_chunks(node_id, source, planning_policy)?;
     annotate_join_leaf_source_chunk_batching_reasons(
         source,
@@ -42,11 +42,14 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
 
 pub(super) fn join_source_chunk_planning_policy(
     context: &ExecutionContext,
+    source: &LocalParquetSource,
     has_source_adjacent_stages: bool,
 ) -> SourceChunkPlanningPolicy {
-    SourceChunkPlanningPolicy::for_source_task(
+    SourceChunkPlanningPolicy::for_source_task_with_mode(
+        source,
         context.memory_control_policy(),
         SourceTaskMemoryModel::join_leaf_stream(has_source_adjacent_stages),
+        context.source_chunk_planning_mode(),
     )
 }
 pub(super) fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {

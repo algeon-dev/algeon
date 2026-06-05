@@ -1,10 +1,12 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec) fn finalize_avg_output_columns(
     context: &ExecutionContext,
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<DataFrame> {
     finalize_avg_output_columns_impl(context, frame, spec, output_schema, None)
 }
@@ -13,7 +15,7 @@ pub(in crate::exec) fn finalize_avg_output_columns_with_budget(
     context: &ExecutionContext,
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
@@ -24,7 +26,7 @@ fn finalize_avg_output_columns_impl(
     context: &ExecutionContext,
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     if !aggregate_spec_has_avg(spec) {
@@ -208,10 +210,7 @@ pub(in crate::exec) fn validate_avg_state_alias_collisions(
     Ok(())
 }
 
-pub(in crate::exec) fn validate_avg_output_fields(
-    spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
-) -> Result<()> {
+pub(in crate::exec) fn validate_avg_output_fields(spec: &AggregateSpec, output_schema: &ArrowSchemaRef) -> Result<()> {
     for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg) {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
             QueryError::new(

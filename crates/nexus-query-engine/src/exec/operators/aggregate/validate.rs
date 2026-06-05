@@ -1,10 +1,16 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec) fn validate_aggregate_capability(
     node: &AggregateNode,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
+        validate_global_valid_count_state_alias_collisions(
+            &node.spec,
+            "nexus_query_engine.global_aggregate.validate_valid_count_state_alias",
+        )?;
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
     if aggregate_spec_has_floating_statistical_aggregate(&node.spec) {
@@ -64,9 +70,13 @@ fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
 
 pub(in crate::exec) fn validate_final_aggregate_capability(
     node: &AggregateNode,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
+        validate_global_valid_count_state_alias_collisions(
+            &node.spec,
+            "nexus_query_engine.global_aggregate.validate_valid_count_state_alias",
+        )?;
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
     if aggregate_spec_has_floating_statistical_aggregate(&node.spec) {
@@ -95,7 +105,7 @@ pub(in crate::exec) fn validate_final_aggregate_capability(
 
 pub(in crate::exec) fn validate_global_aggregate_capability(
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<()> {
     if aggregate_spec_has_avg(spec) {
         validate_avg_state_alias_collisions(spec, "nexus_query_engine.global_aggregate.validate_avg_state_alias")?;
@@ -157,7 +167,7 @@ fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
 
 pub(in crate::exec) fn validate_aggregate_output_names(
     aggregate: &LoweredAggregate,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     operation: &'static str,
     message: &'static str,
 ) -> Result<()> {

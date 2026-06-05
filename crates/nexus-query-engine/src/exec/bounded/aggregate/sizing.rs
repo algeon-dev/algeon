@@ -9,19 +9,18 @@
 //   - Grouped aggregate output: at most `input_rows` rows (every input
 //     row could be a unique group key). Without a libcudf-level
 //     grouped-aggregate output-row-count preflight, this is the only
-//     deterministic ceiling; design v8 risk #7 / Milestone 4.G tracks the
-//     follow-up to tighten it.
+//     deterministic ceiling.
 //
 // Caller responsibility: build the per-column descriptors from the
 // partial-state schema. Grouped partial output begins with the group
 // key columns (`exec/lowering/aggregate.rs:lower_partial_aggregate_spec`
 // places `output_key_names` first), followed by aggregate state
 // columns. For string-typed group keys the caller must supply
-// `input_max_string_length_bytes` from the input frame. See
-// `docs/design/2026-05-20-tpcds-sf100-q72-join-materialize-fix.md`
-// Milestone 4.A.2.
+// `input_max_string_length_bytes` from the input frame.
 
 use std::collections::BTreeMap;
+
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
 
@@ -69,8 +68,8 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -101,8 +100,8 @@ fn partial_aggregate_upper_bound_columns(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -135,8 +134,8 @@ fn global_partial_aggregate_upper_bound_columns(
     context: &ExecutionContext,
     node_id: NodeId,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -215,8 +214,8 @@ fn grouped_partial_aggregate_upper_bound_columns(
     context: &ExecutionContext,
     node_id: NodeId,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -381,7 +380,7 @@ fn partial_column_for_field_and_optional_input(
     node_id: NodeId,
     field: &Field,
     input_expr: Option<&Expr>,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -581,7 +580,7 @@ fn string_byte_length_stats_for_partial_sizing(
     Ok(StringByteLengthStats { max_len: max_len.unwrap_or(0).max(0) as u64, total_bytes: total_bytes.max(0) as u64 })
 }
 
-fn aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+fn aggregate_input_data_type(expr: &Expr, input_schema: &ArrowSchemaRef) -> Result<ArrowDataType> {
     let input_column = lower_column_expr(expr, "nexus_query_engine.bounded.aggregate.partial_sizing_input_type")?;
     input_schema.field_with_name(input_column.as_str()).map(|field| field.data_type().clone()).map_err(|error| {
         QueryError::new(

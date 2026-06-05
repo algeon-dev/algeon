@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};
+use arrow::{datatypes::SchemaRef as ArrowSchemaRef, record_batch::RecordBatch, util::display::array_value_to_string};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, context::TaskContext},
@@ -690,14 +690,14 @@ fn tpch_query(query_id: &str) -> DataFusionResult<&'static TpchQuery> {
         .ok_or_else(|| plan_error(format!("unknown TPC-H query id: {query_id}")))
 }
 
-fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<CpuBaseline> {
+fn measure_output(schema: &ArrowSchemaRef, batches: &[RecordBatch]) -> DataFusionResult<CpuBaseline> {
     Ok(CpuBaseline {
         output_rows: batches.iter().map(RecordBatch::num_rows).sum(),
         output_fingerprint: fingerprint_batches(schema, batches)?,
     })
 }
 
-fn fingerprint_batches(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<String> {
+fn fingerprint_batches(schema: &ArrowSchemaRef, batches: &[RecordBatch]) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("datafusion-nexus-query-service-tpch-output-v1");
     for batch in batches {

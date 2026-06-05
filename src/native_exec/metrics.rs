@@ -819,6 +819,8 @@ impl NativeCudfMetrics {
                 .with_new_label("reader_predicate", row.reader_predicate.to_string())
                 .with_new_label("reader_dynamic_filter_count", row.reader_dynamic_filter_count.to_string())
                 .with_new_label("source_batching_reason", row.source_batching_reason.clone())
+                .with_new_label("source_chunk_planning_mode", row.source_chunk_planning_mode.clone())
+                .with_new_label("source_chunk_planning_reason", row.source_chunk_planning_reason.clone())
                 .with_new_label("elapsed_ns", row.elapsed.as_nanos().min(u128::from(u64::MAX)).to_string())
                 .global_counter("native_source_read_runtime_rows")
                 .add(1);
@@ -935,6 +937,102 @@ impl NativeCudfMetrics {
                 .with_new_label("stddev_samp_execution_mode", aggregate_fact(facts, "stddev_samp_execution_mode"))
                 .with_new_label("stddev_samp_ddof", aggregate_fact(facts, "stddev_samp_ddof"))
                 .with_new_label("aggregate_filter_count", aggregate_fact(facts, "aggregate_filter_count"))
+                .with_new_label(
+                    "filtered_input_materialization_strategy",
+                    aggregate_fact(facts, "filtered_input_materialization_strategy"),
+                )
+                .with_new_label(
+                    "filtered_input_materialization_estimated_bytes",
+                    aggregate_fact(facts, "filtered_input_materialization_estimated_bytes"),
+                )
+                .with_new_label(
+                    "filtered_input_materialization_budget_bytes",
+                    aggregate_fact(facts, "filtered_input_materialization_budget_bytes"),
+                )
+                .with_new_label(
+                    "filtered_input_materialization_threshold_bytes",
+                    aggregate_fact(facts, "filtered_input_materialization_threshold_bytes"),
+                )
+                .with_new_label(
+                    "filtered_input_lower_level_unresolved_contracts",
+                    aggregate_fact(facts, "filtered_input_lower_level_unresolved_contracts"),
+                )
+                .with_new_label(
+                    "filtered_global_rows_per_chunk",
+                    aggregate_fact(facts, "filtered_global_rows_per_chunk"),
+                )
+                .with_new_label(
+                    "filtered_global_inputs_per_segment",
+                    aggregate_fact(facts, "filtered_global_inputs_per_segment"),
+                )
+                .with_new_label(
+                    "filtered_global_segment_target_temporary_bytes",
+                    aggregate_fact(facts, "filtered_global_segment_target_temporary_bytes"),
+                )
+                .with_new_label(
+                    "filtered_global_actual_chunk_count",
+                    aggregate_fact(facts, "filtered_global_actual_chunk_count"),
+                )
+                .with_new_label(
+                    "filtered_global_actual_segment_count",
+                    aggregate_fact(facts, "filtered_global_actual_segment_count"),
+                )
+                .with_new_label(
+                    "filtered_global_max_segment_rows",
+                    aggregate_fact(facts, "filtered_global_max_segment_rows"),
+                )
+                .with_new_label(
+                    "filtered_global_observed_temporary_peak_bytes",
+                    aggregate_fact(facts, "filtered_global_observed_temporary_peak_bytes"),
+                )
+                .with_new_label(
+                    "filtered_global_observed_retained_peak_bytes",
+                    aggregate_fact(facts, "filtered_global_observed_retained_peak_bytes"),
+                )
+                .with_new_label(
+                    "filtered_global_state_rows_merged",
+                    aggregate_fact(facts, "filtered_global_state_rows_merged"),
+                )
+                .with_new_label(
+                    "filtered_grouped_rows_per_chunk",
+                    aggregate_fact(facts, "filtered_grouped_rows_per_chunk"),
+                )
+                .with_new_label(
+                    "filtered_grouped_inputs_per_segment",
+                    aggregate_fact(facts, "filtered_grouped_inputs_per_segment"),
+                )
+                .with_new_label(
+                    "filtered_grouped_segment_target_temporary_bytes",
+                    aggregate_fact(facts, "filtered_grouped_segment_target_temporary_bytes"),
+                )
+                .with_new_label(
+                    "filtered_grouped_actual_chunk_count",
+                    aggregate_fact(facts, "filtered_grouped_actual_chunk_count"),
+                )
+                .with_new_label(
+                    "filtered_grouped_actual_segment_count",
+                    aggregate_fact(facts, "filtered_grouped_actual_segment_count"),
+                )
+                .with_new_label(
+                    "filtered_grouped_max_segment_rows",
+                    aggregate_fact(facts, "filtered_grouped_max_segment_rows"),
+                )
+                .with_new_label(
+                    "filtered_grouped_observed_temporary_peak_bytes",
+                    aggregate_fact(facts, "filtered_grouped_observed_temporary_peak_bytes"),
+                )
+                .with_new_label(
+                    "filtered_grouped_observed_retained_peak_bytes",
+                    aggregate_fact(facts, "filtered_grouped_observed_retained_peak_bytes"),
+                )
+                .with_new_label(
+                    "filtered_grouped_state_rows_merged",
+                    aggregate_fact(facts, "filtered_grouped_state_rows_merged"),
+                )
+                .with_new_label(
+                    "filtered_grouped_high_cardinality_admission",
+                    aggregate_fact(facts, "filtered_grouped_high_cardinality_admission"),
+                )
                 .with_new_label("distinct_aggregate_count", aggregate_fact(facts, "distinct_aggregate_count"))
                 .with_new_label("input_rows", aggregate_fact(facts, "input_rows"))
                 .with_new_label("output_group_count", aggregate_fact(facts, "output_group_count"))
@@ -1264,6 +1362,118 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+        let mut facts = BTreeMap::new();
+        facts.insert("selected_strategy", "filtered_global_segmented_state".to_string());
+        facts.insert("execution_stage", "single".to_string());
+        facts.insert("memory_mode", "bounded".to_string());
+        facts.insert("group_key_count", "0".to_string());
+        facts.insert("group_key_exprs", "none".to_string());
+        facts.insert("group_key_dtypes", "none".to_string());
+        facts.insert("aggregate_functions", "count,sum,avg".to_string());
+        facts.insert("aggregate_filter_count", "15".to_string());
+        facts.insert("filtered_input_materialization_strategy", "row_chunked_segmented_state".to_string());
+        facts.insert("filtered_input_materialization_estimated_bytes", "66000000000".to_string());
+        facts.insert("filtered_input_materialization_budget_bytes", "85899345920".to_string());
+        facts.insert("filtered_input_materialization_threshold_bytes", "42949672960".to_string());
+        facts.insert(
+            "filtered_input_lower_level_unresolved_contracts",
+            "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable"
+                .to_string(),
+        );
+        facts.insert("filtered_global_rows_per_chunk", "1024".to_string());
+        facts.insert("filtered_global_inputs_per_segment", "1".to_string());
+        facts.insert("filtered_global_segment_target_temporary_bytes", "536870912".to_string());
+        facts.insert("filtered_global_actual_chunk_count", "98".to_string());
+        facts.insert("filtered_global_actual_segment_count", "196".to_string());
+        facts.insert("filtered_global_max_segment_rows", "1024".to_string());
+        facts.insert("filtered_global_observed_temporary_peak_bytes", "16777216".to_string());
+        facts.insert("filtered_global_observed_retained_peak_bytes", "4096".to_string());
+        facts.insert("filtered_global_state_rows_merged", "98".to_string());
+
+        query_metrics.record_aggregate_strategy_decision("n5", &facts);
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.aggregate_strategy_rows.len(), 1);
+        let row = &metrics.aggregate_strategy_rows[0];
+        assert_eq!(row.selected_strategy, "filtered_global_segmented_state");
+        assert_eq!(row.aggregate_filter_count, 15);
+        assert_eq!(row.filtered_input_materialization_strategy, "row_chunked_segmented_state");
+        assert_eq!(row.filtered_input_materialization_estimated_bytes, 66_000_000_000);
+        assert_eq!(row.filtered_input_materialization_budget_bytes, 85_899_345_920);
+        assert_eq!(row.filtered_input_materialization_threshold_bytes, 42_949_672_960);
+        assert_eq!(
+            row.filtered_input_lower_level_unresolved_contracts,
+            "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable"
+        );
+        assert_eq!(row.filtered_global_rows_per_chunk, 1024);
+        assert_eq!(row.filtered_global_inputs_per_segment, 1);
+        assert_eq!(row.filtered_global_segment_target_temporary_bytes, 536_870_912);
+        assert_eq!(row.filtered_global_actual_chunk_count, 98);
+        assert_eq!(row.filtered_global_actual_segment_count, 196);
+        assert_eq!(row.filtered_global_max_segment_rows, 1024);
+        assert_eq!(row.filtered_global_observed_temporary_peak_bytes, 16_777_216);
+        assert_eq!(row.filtered_global_observed_retained_peak_bytes, 4096);
+        assert_eq!(row.filtered_global_state_rows_merged, 98);
+    }
+
+    #[test]
+    fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+        let mut facts = BTreeMap::new();
+        facts.insert("selected_strategy", "filtered_grouped_segmented_state".to_string());
+        facts.insert("execution_stage", "partial".to_string());
+        facts.insert("memory_mode", "bounded".to_string());
+        facts.insert("group_key_count", "1".to_string());
+        facts.insert("group_key_exprs", "key".to_string());
+        facts.insert("group_key_dtypes", "Int64".to_string());
+        facts.insert("aggregate_functions", "count,sum,max".to_string());
+        facts.insert("aggregate_filter_count", "90".to_string());
+        facts.insert("filtered_input_materialization_strategy", "row_chunked_grouped_segmented_state".to_string());
+        facts.insert("filtered_input_materialization_estimated_bytes", "33000000".to_string());
+        facts.insert("filtered_input_materialization_budget_bytes", "33554432".to_string());
+        facts.insert("filtered_input_materialization_threshold_bytes", "16777216".to_string());
+        facts.insert("filtered_input_lower_level_unresolved_contracts", "groupby_agg_temporary_workspace".to_string());
+        facts.insert("filtered_grouped_rows_per_chunk", "512".to_string());
+        facts.insert("filtered_grouped_inputs_per_segment", "2".to_string());
+        facts.insert("filtered_grouped_segment_target_temporary_bytes", "4194304".to_string());
+        facts.insert("filtered_grouped_actual_chunk_count", "40".to_string());
+        facts.insert("filtered_grouped_actual_segment_count", "1200".to_string());
+        facts.insert("filtered_grouped_max_segment_rows", "512".to_string());
+        facts.insert("filtered_grouped_observed_temporary_peak_bytes", "1048576".to_string());
+        facts.insert("filtered_grouped_observed_retained_peak_bytes", "524288".to_string());
+        facts.insert("filtered_grouped_state_rows_merged", "20000".to_string());
+        facts.insert("filtered_grouped_high_cardinality_admission", "chunk_local_partial_final_merge".to_string());
+
+        query_metrics.record_aggregate_strategy_decision("n9", &facts);
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.aggregate_strategy_rows.len(), 1);
+        let row = &metrics.aggregate_strategy_rows[0];
+        assert_eq!(row.selected_strategy, "filtered_grouped_segmented_state");
+        assert_eq!(row.aggregate_filter_count, 90);
+        assert_eq!(row.filtered_input_materialization_strategy, "row_chunked_grouped_segmented_state");
+        assert_eq!(row.filtered_input_lower_level_unresolved_contracts, "groupby_agg_temporary_workspace");
+        assert_eq!(row.filtered_grouped_rows_per_chunk, 512);
+        assert_eq!(row.filtered_grouped_inputs_per_segment, 2);
+        assert_eq!(row.filtered_grouped_segment_target_temporary_bytes, 4_194_304);
+        assert_eq!(row.filtered_grouped_actual_chunk_count, 40);
+        assert_eq!(row.filtered_grouped_actual_segment_count, 1200);
+        assert_eq!(row.filtered_grouped_max_segment_rows, 512);
+        assert_eq!(row.filtered_grouped_observed_temporary_peak_bytes, 1_048_576);
+        assert_eq!(row.filtered_grouped_observed_retained_peak_bytes, 524_288);
+        assert_eq!(row.filtered_grouped_state_rows_merged, 20_000);
+        assert_eq!(row.filtered_grouped_high_cardinality_admission, "chunk_local_partial_final_merge");
+    }
+
+    #[test]
     fn source_read_runtime_rows_bridge_runtime_labels() {
         let metrics_set = ExecutionPlanMetricsSet::new();
         let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
@@ -1294,6 +1504,8 @@ mod tests {
             reader_predicate: true,
             reader_dynamic_filter_count: 1,
             source_batching_reason: "batched".to_string(),
+            source_chunk_planning_mode: "local_parquet_throughput".to_string(),
+            source_chunk_planning_reason: "local_parquet_throughput_admitted".to_string(),
             elapsed: std::time::Duration::from_nanos(1234),
         });
         native_metrics.record_query_metrics(&query_metrics);
@@ -1316,6 +1528,8 @@ mod tests {
         assert!(row.reader_predicate);
         assert_eq!(row.reader_dynamic_filter_count, 1);
         assert_eq!(row.source_batching_reason, "batched");
+        assert_eq!(row.source_chunk_planning_mode, "local_parquet_throughput");
+        assert_eq!(row.source_chunk_planning_reason, "local_parquet_throughput_admitted");
         assert_eq!(row.elapsed_ns, 1234);
     }
 }

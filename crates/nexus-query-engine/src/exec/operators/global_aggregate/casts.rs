@@ -1,9 +1,11 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec) fn cast_count_output_columns(
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<DataFrame> {
     cast_count_output_columns_impl(frame, spec, output_schema, None)
 }
@@ -11,7 +13,7 @@ pub(in crate::exec) fn cast_count_output_columns(
 pub(in crate::exec) fn cast_count_output_columns_with_budget(
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
@@ -21,7 +23,7 @@ pub(in crate::exec) fn cast_count_output_columns_with_budget(
 fn cast_count_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec
@@ -88,7 +90,7 @@ fn cast_count_output_columns_impl(
 pub(in crate::exec) fn cast_reduction_output_columns(
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
 ) -> Result<DataFrame> {
     cast_reduction_output_columns_impl(frame, spec, output_schema, None)
 }
@@ -96,7 +98,7 @@ pub(in crate::exec) fn cast_reduction_output_columns(
 pub(in crate::exec) fn cast_reduction_output_columns_with_budget(
     frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
@@ -106,7 +108,7 @@ pub(in crate::exec) fn cast_reduction_output_columns_with_budget(
 fn cast_reduction_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| {

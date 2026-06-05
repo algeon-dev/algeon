@@ -236,19 +236,21 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
                 continue;
             }
 
-            let Some(key_range) = derive_dimension_key_range(dimension_source, &dimension_lineage.source_column) else {
+            let Some(key_filter) = derive_dimension_key_filter(dimension_source, &dimension_lineage.source_column)
+            else {
                 candidate.rejected_reason =
                     Some(DimensionDerivedRowGroupPruningRejectedReason::UnsupportedDimensionPredicate);
                 diagnostics.candidates.push(candidate);
                 continue;
             };
-            let Some(key_range) = key_range else {
+            let Some(key_filter) = key_filter else {
                 candidate.rejected_reason = Some(DimensionDerivedRowGroupPruningRejectedReason::EmptyDimensionKeyRange);
                 diagnostics.candidates.push(candidate);
                 continue;
             };
-            candidate.derived_min_key = Some(key_range.min);
-            candidate.derived_max_key = Some(key_range.max);
+            let key_bounds = key_filter.bounds();
+            candidate.derived_min_key = Some(key_bounds.min);
+            candidate.derived_max_key = Some(key_bounds.max);
 
             let Some(target_source) = mutable_local_parquet_source(&mut nodes, target_lineage.source_node_id) else {
                 candidate.rejected_reason =
@@ -256,7 +258,7 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
                 diagnostics.candidates.push(candidate);
                 continue;
             };
-            let Some(prune_result) = prune_target_source(target_source, &target_lineage.source_column, key_range)
+            let Some(prune_result) = prune_target_source(target_source, &target_lineage.source_column, &key_filter)
             else {
                 candidate.rejected_reason =
                     Some(DimensionDerivedRowGroupPruningRejectedReason::TargetStatisticsUnavailable);
@@ -314,6 +316,7 @@ fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan,
                 filter.input,
                 conjunct.clone(),
                 false,
+                false,
             );
         }
     }
@@ -355,16 +358,17 @@ fn push_filter_conjunct_to_reader_source(
     node_id: NodeId,
     predicate: Expr,
     crossed_aggregate: bool,
+    crossed_shared_path: bool,
 ) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
     };
+    let crossed_shared_path =
+        crossed_shared_path || parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LocalParquet(source)
-                if crossed_aggregate
-                    && parent_counts.get(node_id.index()).copied().unwrap_or_default() <= 1
-                    && seed_predicate_is_supported(source, &predicate) =>
+                if crossed_aggregate && !crossed_shared_path && seed_predicate_is_supported(source, &predicate) =>
             {
                 let Some(source) = mutable_local_parquet_source(nodes, node_id) else {
                     return false;
@@ -388,6 +392,7 @@ fn push_filter_conjunct_to_reader_source(
             filter.input,
             predicate,
             crossed_aggregate,
+            crossed_shared_path,
         ),
         PlanNode::Projection(projection) => {
             remap_projection_predicate(&predicate, projection).is_some_and(|predicate| {
@@ -398,12 +403,21 @@ fn push_filter_conjunct_to_reader_source(
                     projection.input,
                     predicate,
                     crossed_aggregate,
+                    crossed_shared_path,
                 )
             })
         },
         PlanNode::Aggregate(aggregate) => {
             remap_aggregate_group_predicate(&predicate, aggregate).is_some_and(|predicate| {
-                push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, aggregate.input, predicate, true)
+                push_filter_conjunct_to_reader_source(
+                    plan,
+                    parent_counts,
+                    nodes,
+                    aggregate.input,
+                    predicate,
+                    true,
+                    crossed_shared_path,
+                )
             })
         },
         PlanNode::Join(join) => remap_join_output_predicate(&predicate, join).is_some_and(|(side, predicate)| {
@@ -411,11 +425,25 @@ fn push_filter_conjunct_to_reader_source(
                 JoinSide::Left => join.inputs[0],
                 JoinSide::Right => join.inputs[1],
             };
-            push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, input, predicate, crossed_aggregate)
+            push_filter_conjunct_to_reader_source(
+                plan,
+                parent_counts,
+                nodes,
+                input,
+                predicate,
+                crossed_aggregate,
+                crossed_shared_path,
+            )
         }),
-        PlanNode::Sort(sort) => {
-            push_filter_conjunct_to_reader_source(plan, parent_counts, nodes, sort.input, predicate, crossed_aggregate)
-        },
+        PlanNode::Sort(sort) => push_filter_conjunct_to_reader_source(
+            plan,
+            parent_counts,
+            nodes,
+            sort.input,
+            predicate,
+            crossed_aggregate,
+            crossed_shared_path,
+        ),
         PlanNode::Limit(_)
         | PlanNode::Window(_)
         | PlanNode::Union(_)
@@ -827,22 +855,153 @@ pub struct KeyRange {
     pub max: i64,
 }
 
-/// Folds one decoded dimension batch into the running join-key range, counting
-/// only rows that satisfy `predicate`.
+/// Maximum coalesced runs a [`DimensionKeyFilter`] keeps before collapsing back
+/// to a single bounding run. Bounds the filter's memory and per-row-group overlap
+/// cost, and guarantees the derived filter is never coarser than the legacy
+/// single-`[min,max]` behavior. Shared by the in-engine pass and the out-of-engine
+/// resolver so both derive identical filters.
+pub const DIMENSION_KEY_FILTER_MAX_RUNS: usize = 4096;
+
+/// The set of dimension key values satisfying a dimension predicate, kept as a
+/// sorted list of disjoint, non-adjacent inclusive runs. A fact row group is
+/// retained only when at least one run overlaps its key statistics, so a
+/// scattered predicate (e.g. `d_moy = 11` across years, whose `[min,max]` spans
+/// the whole date-sorted fact) prunes the gaps between qualifying runs instead of
+/// collapsing to a single table-spanning range.
 ///
-/// Returns `None` if the predicate or key column cannot be evaluated against the
-/// batch (so the caller must abandon pruning), `Some(range)` otherwise. This is
-/// the per-batch primitive shared by the in-engine local pass
-/// ([`derive_dimension_key_range`]) and the out-of-engine resolver, which reads
-/// object-store dimension batches itself and folds them here to guarantee
-/// identical range semantics.
-pub fn dimension_key_range_from_batch(
-    range: Option<KeyRange>,
+/// A contiguous predicate yields a one-run filter, which is exactly the legacy
+/// `[min,max]` behavior. Exposed so an out-of-engine resolver (the
+/// DataFusion/object-store adapter) applies identical pruning semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimensionKeyFilter {
+    /// Sorted by `min`, disjoint, non-adjacent, non-empty.
+    runs: Vec<KeyRange>,
+}
+
+impl DimensionKeyFilter {
+    /// Builds a filter from ascending, unique keys, coalescing contiguous
+    /// integers into runs. Collapses to a single bounding run when the run count
+    /// would exceed [`DIMENSION_KEY_FILTER_MAX_RUNS`]. Returns `None` when the
+    /// input is empty. The caller must guarantee the input is sorted ascending
+    /// and deduplicated (a `BTreeSet` iteration order satisfies this).
+    fn from_sorted_unique_keys(sorted_unique_keys: &[i64]) -> Option<Self> {
+        let (&first, rest) = sorted_unique_keys.split_first()?;
+        let mut runs = Vec::new();
+        let mut run = KeyRange { min: first, max: first };
+        for &value in rest {
+            if value == run.max.saturating_add(1) {
+                run.max = value;
+            } else {
+                runs.push(run);
+                run = KeyRange { min: value, max: value };
+            }
+        }
+        runs.push(run);
+        if runs.len() > DIMENSION_KEY_FILTER_MAX_RUNS {
+            return Some(Self::from_bounds(KeyRange {
+                min: runs.first().expect("non-empty").min,
+                max: runs.last().expect("non-empty").max,
+            }));
+        }
+        Some(Self { runs })
+    }
+
+    /// Builds a filter from arbitrary integer keys, sorting and deduplicating
+    /// before coalescing contiguous values into runs. Collapses to a single
+    /// bounding run when the run count would exceed
+    /// [`DIMENSION_KEY_FILTER_MAX_RUNS`]. Returns `None` when `keys` is empty.
+    /// Used by callers that already hold a materialized keyset (e.g. a runtime
+    /// dynamic-filter payload).
+    pub fn from_keys(keys: &[i64]) -> Option<Self> {
+        let mut sorted = keys.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        Self::from_sorted_unique_keys(&sorted)
+    }
+
+    /// A single-run filter spanning `[min,max]` — the legacy bounding-range
+    /// behavior, retained for callers that only have a range.
+    pub fn from_bounds(bounds: KeyRange) -> Self {
+        Self { runs: vec![bounds] }
+    }
+
+    /// Inclusive `[min,max]` envelope across every run.
+    pub fn bounds(&self) -> KeyRange {
+        KeyRange {
+            min: self.runs.first().expect("filter has at least one run").min,
+            max: self.runs.last().expect("filter has at least one run").max,
+        }
+    }
+
+    /// Number of disjoint runs (1 for a contiguous/bounding filter).
+    pub fn run_count(&self) -> usize {
+        self.runs.len()
+    }
+
+    /// Whether any run overlaps `candidate` (a fact row group's key statistics).
+    pub fn overlaps(&self, candidate: KeyRange) -> bool {
+        // Runs are sorted by `min` and disjoint, hence also sorted by `max`, so
+        // `run.max < candidate.min` is monotonic over the slice. Find the first
+        // run that could reach `candidate`; if it overlaps, the row group is kept,
+        // and no later run can either (later runs start strictly higher).
+        let index = self.runs.partition_point(|run| run.max < candidate.min);
+        self.runs.get(index).is_some_and(|run| ranges_overlap(*run, candidate))
+    }
+}
+
+/// Accumulates the qualifying dimension key values across decoded dimension
+/// batches and coalesces them into a [`DimensionKeyFilter`]. Shared by the
+/// in-engine local pass ([`derive_dimension_key_filter`]) and the out-of-engine
+/// resolver, which folds object-store dimension batches through
+/// [`Self::observe_batch`] to guarantee identical filter semantics on both sides.
+#[derive(Debug, Clone, Default)]
+pub struct DimensionKeyAccumulator {
+    keys: BTreeSet<i64>,
+}
+
+impl DimensionKeyAccumulator {
+    /// Folds one decoded dimension batch into the running key set, counting only
+    /// rows that satisfy `predicate`. Returns `None` if the predicate or key
+    /// column cannot be evaluated against the batch (the caller must then abandon
+    /// pruning), matching the legacy per-batch primitive's contract.
+    pub fn observe_batch(&mut self, batch: &RecordBatch, key_column: &str, predicate: &Expr) -> Option<()> {
+        let key = batch.column(batch.schema().index_of(key_column).ok()?);
+        for row in 0..batch.num_rows() {
+            if !eval_bool(predicate, batch, row)? {
+                continue;
+            }
+            let Some(value) = array_i64_value(key.as_ref(), row)? else {
+                continue;
+            };
+            self.keys.insert(value);
+        }
+        Some(())
+    }
+
+    /// Coalesces the collected keys into a filter, or `None` when no key
+    /// qualified (an empty dimension key set).
+    pub fn finish(&self) -> Option<DimensionKeyFilter> {
+        let sorted_unique_keys = self.keys.iter().copied().collect::<Vec<_>>();
+        DimensionKeyFilter::from_sorted_unique_keys(&sorted_unique_keys)
+    }
+}
+
+/// Folds one decoded dimension batch into a fresh [`DimensionKeyAccumulator`],
+/// preserving the legacy `Option<Option<_>>` shape for callers that thread a
+/// single accumulator across batches. Returns `None` on an unevaluable
+/// predicate/key, `Some(None)` when the batch is empty of the accumulator's
+/// prior state and no key qualified, or `Some(Some(filter))` otherwise.
+///
+/// Most callers should use [`DimensionKeyAccumulator`] directly; this exists for
+/// single-batch derivations and tests.
+pub fn dimension_key_filter_from_batch(
     batch: &RecordBatch,
     key_column: &str,
     predicate: &Expr,
-) -> Option<Option<KeyRange>> {
-    update_key_range_from_batch(range, batch, key_column, predicate)
+) -> Option<Option<DimensionKeyFilter>> {
+    let mut accumulator = DimensionKeyAccumulator::default();
+    accumulator.observe_batch(batch, key_column, predicate)?;
+    Some(accumulator.finish())
 }
 
 /// Selects the fact row groups whose key statistics overlap `filter`, applying
@@ -854,7 +1013,7 @@ pub fn dimension_key_range_from_batch(
 /// order; `None` means the key statistics were unavailable for that row group.
 pub fn select_overlapping_row_groups(
     row_group_key_ranges: &[Option<KeyRange>],
-    filter: KeyRange,
+    filter: &DimensionKeyFilter,
 ) -> RowGroupOverlapSelection {
     let before = row_group_key_ranges.len();
     let mut saw_statistics = false;
@@ -863,7 +1022,7 @@ pub fn select_overlapping_row_groups(
         match range {
             Some(range) => {
                 saw_statistics = true;
-                if ranges_overlap(*range, filter) {
+                if filter.overlaps(*range) {
                     kept.push(index);
                 }
             },
@@ -887,10 +1046,10 @@ pub struct RowGroupOverlapSelection {
     pub applied: bool,
 }
 
-fn derive_dimension_key_range(source: &LocalParquetSource, key_column: &str) -> Option<Option<KeyRange>> {
+fn derive_dimension_key_filter(source: &LocalParquetSource, key_column: &str) -> Option<Option<DimensionKeyFilter>> {
     let predicate = source.reader_predicate.as_ref()?;
     let projection_indices = reader_projection_indices(source, key_column, predicate)?;
-    let mut range: Option<KeyRange> = None;
+    let mut accumulator = DimensionKeyAccumulator::default();
     for source_file in &source.files {
         let path = source_file.location.as_local_path()?;
         let file = File::open(path).ok()?;
@@ -901,10 +1060,10 @@ fn derive_dimension_key_range(source: &LocalParquetSource, key_column: &str) -> 
         let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
         for batch in reader {
             let batch = batch.ok()?;
-            range = update_key_range_from_batch(range, &batch, key_column, predicate)?;
+            accumulator.observe_batch(&batch, key_column, predicate)?;
         }
     }
-    Some(range)
+    Some(accumulator.finish())
 }
 
 fn reader_projection_indices(
@@ -980,28 +1139,6 @@ fn collect_expr_columns(expr: &Expr, columns: &mut Vec<String>) {
         },
         Expr::Literal(_) => {},
     }
-}
-
-fn update_key_range_from_batch(
-    mut range: Option<KeyRange>,
-    batch: &RecordBatch,
-    key_column: &str,
-    predicate: &Expr,
-) -> Option<Option<KeyRange>> {
-    let key = batch.column(batch.schema().index_of(key_column).ok()?);
-    for row in 0..batch.num_rows() {
-        if !eval_bool(predicate, batch, row)? {
-            continue;
-        }
-        let Some(value) = array_i64_value(key.as_ref(), row)? else {
-            continue;
-        };
-        range = Some(match range {
-            Some(existing) => KeyRange { min: existing.min.min(value), max: existing.max.max(value) },
-            None => KeyRange { min: value, max: value },
-        });
-    }
-    Some(range)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1246,7 +1383,7 @@ struct TargetPruneResult {
 fn prune_target_source(
     source: &mut LocalParquetSource,
     key_column: &str,
-    key_range: KeyRange,
+    key_filter: &DimensionKeyFilter,
 ) -> Option<TargetPruneResult> {
     let SourceColumnRef::File(key_file_index) = source.source_column_ref(key_column)? else {
         return None;
@@ -1268,7 +1405,7 @@ fn prune_target_source(
             match row_group_key_range(row_group, key_file_index) {
                 Some(row_group_range) => {
                     saw_statistics = true;
-                    if ranges_overlap(row_group_range, key_range) {
+                    if key_filter.overlaps(row_group_range) {
                         kept.push(row_group_index);
                     }
                 },
@@ -1306,7 +1443,7 @@ pub struct DimensionDerivedApplyResult {
     pub after: usize,
 }
 
-/// Applies an externally-derived dimension key range to a fact `LocalParquetSource`
+/// Applies an externally-derived dimension key filter to a fact `LocalParquetSource`
 /// using caller-supplied per-row-group key statistics, returning a patched plan.
 ///
 /// This is the object-store-free counterpart of the in-engine
@@ -1320,6 +1457,10 @@ pub struct DimensionDerivedApplyResult {
 /// physical row-group ids through that existing selection, so a pre-existing
 /// `row_groups` is narrowed, never replaced by raw positions.
 ///
+/// `filter` is the set-aware [`DimensionKeyFilter`] the resolver builds with the
+/// same [`DimensionKeyAccumulator`] the in-engine pass uses, so a row group is
+/// retained iff one of the filter's runs overlaps its key statistics.
+///
 /// The selection rule is identical to [`prune_target_source`] and conservative —
 /// row groups with unknown stats are retained, pruning never empties a
 /// selection, and the plan is only changed when pruning strictly narrows a
@@ -1330,7 +1471,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
     plan: QueryPlan,
     target_source_node_id: NodeId,
     per_file_row_group_key_ranges: &[Vec<Option<KeyRange>>],
-    filter: KeyRange,
+    filter: &DimensionKeyFilter,
 ) -> DimensionDerivedApplyResult {
     let mut nodes = plan.nodes().to_vec();
     let root = plan.root_id();

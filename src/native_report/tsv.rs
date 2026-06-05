@@ -230,6 +230,45 @@ pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) ->
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_strategy_rows_format_nonzero_filtered_grouped_evidence() {
+        let row = NativeAggregateStrategyMetricRow {
+            node_id: "n9".to_string(),
+            selected_strategy: "filtered_grouped_segmented_state".to_string(),
+            execution_stage: "single".to_string(),
+            aggregate_filter_count: 4,
+            filtered_input_materialization_strategy: "row_chunked_grouped_segmented_state".to_string(),
+            filtered_input_lower_level_unresolved_contracts:
+                "cudf_dataframe_merge_temporary_workspace_preflight_unavailable".to_string(),
+            filtered_grouped_rows_per_chunk: 2048,
+            filtered_grouped_inputs_per_segment: 2,
+            filtered_grouped_segment_target_temporary_bytes: 4 * 1024 * 1024,
+            filtered_grouped_actual_chunk_count: 7,
+            filtered_grouped_actual_segment_count: 14,
+            filtered_grouped_observed_temporary_peak_bytes: 123_456,
+            filtered_grouped_observed_retained_peak_bytes: 78_901,
+            filtered_grouped_state_rows_merged: 512,
+            filtered_grouped_high_cardinality_admission: "chunk_local_partial_final_merge".to_string(),
+            ..NativeAggregateStrategyMetricRow::default()
+        };
+
+        let formatted = format_aggregate_strategy_rows(&[row]);
+
+        assert!(formatted.contains("selected_strategy=filtered_grouped_segmented_state"));
+        assert!(formatted.contains("filtered_grouped_actual_chunk_count=7"));
+        assert!(formatted.contains("filtered_grouped_actual_segment_count=14"));
+        assert!(
+            formatted.contains(
+                "filtered_input_lower_level_unresolved_contracts=cudf_dataframe_merge_temporary_workspace_preflight_unavailable"
+            )
+        );
+    }
+}
+
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();

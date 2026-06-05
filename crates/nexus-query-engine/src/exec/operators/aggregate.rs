@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 use crate::{
     capability::{
@@ -11,6 +13,8 @@ use crate::{
 };
 
 mod filter_inputs;
+mod filtered_global;
+mod filtered_grouped;
 mod groupby;
 mod grouping_sets;
 mod host_exact;
@@ -21,6 +25,16 @@ mod tests;
 mod validate;
 
 pub(in crate::exec) use filter_inputs::prepare_filtered_aggregate_frame;
+use filtered_global::{
+    execute_segmented_filtered_global_aggregate_with_budget,
+    execute_segmented_filtered_global_partial_aggregate_with_budget, record_filtered_global_aggregate_single_pass,
+    record_filtered_global_partial_single_pass, select_filtered_global_aggregate_strategy,
+};
+use filtered_grouped::{
+    apply_filtered_grouped_materialization_facts, execute_segmented_filtered_grouped_aggregate_with_budget,
+    execute_segmented_filtered_grouped_partial_aggregate_with_budget, record_filtered_grouped_segmented_failure,
+    record_filtered_grouped_single_pass, select_filtered_grouped_aggregate_strategy,
+};
 pub(in crate::exec) use groupby::{execute_groupby_aggregate, execute_groupby_aggregate_with_budget};
 use grouping_sets::{execute_grouping_sets_aggregate, execute_grouping_sets_partial_aggregate_with_budget};
 use host_exact::{execute_datafusion_exact_host_aggregate, host_group_expr_output_name};
@@ -117,9 +131,9 @@ pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_
 pub(in crate::exec) fn execute_aggregate(
     context: &ExecutionContext,
     node: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let (frame, spec, prepared_input_schema) =
@@ -133,6 +147,7 @@ pub(in crate::exec) fn execute_aggregate(
             GpuDataFrame::new(frame),
             output_schema,
             metrics,
+            None,
         );
     }
     if spec.group_exprs.is_empty() {
@@ -198,9 +213,9 @@ pub(in crate::exec) fn execute_aggregate(
 pub(in crate::exec) fn execute_aggregate_with_budget(
     context: &ExecutionContext,
     node: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -211,16 +226,142 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     node: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let (frame, spec, prepared_input_schema) =
-        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, Some(token), metrics)?;
+    let input_rows = input.num_rows() as u64;
+    let filtered_global_strategy = if node.spec.group_exprs.is_empty() && aggregate_spec_has_filters(&node.spec) {
+        let decision = select_filtered_global_aggregate_strategy(
+            &node.spec,
+            input_schema,
+            input_rows,
+            token.request().budget_bytes() as u64,
+            AggregateExecutionStage::Single,
+        )?;
+        if decision.use_segmented {
+            let failure_decision = decision.clone();
+            return match execute_segmented_filtered_global_aggregate_with_budget(
+                context,
+                node_id,
+                &node.spec,
+                input_schema,
+                input,
+                output_schema,
+                token,
+                decision,
+                metrics,
+            ) {
+                Ok(output) => Ok(output),
+                Err(error) => {
+                    record_filtered_global_aggregate_single_pass(
+                        metrics,
+                        context,
+                        node_id,
+                        &node.spec,
+                        input_schema,
+                        input_rows,
+                        0,
+                        failure_decision,
+                    );
+                    Err(error)
+                },
+            };
+        }
+        Some(decision)
+    } else {
+        None
+    };
+    let filtered_grouped_strategy = if !node.spec.group_exprs.is_empty()
+        && node.spec.grouping_sets.is_none()
+        && aggregate_spec_has_filters(&node.spec)
+    {
+        let decision = select_filtered_grouped_aggregate_strategy(
+            &node.spec,
+            input_schema,
+            input_rows,
+            token.request().budget_bytes() as u64,
+            AggregateExecutionStage::Single,
+        )?;
+        if decision.use_segmented {
+            let failure_decision = decision.clone();
+            return match execute_segmented_filtered_grouped_aggregate_with_budget(
+                context,
+                node_id,
+                &node.spec,
+                input_schema,
+                input,
+                output_schema,
+                token,
+                decision,
+                metrics,
+            ) {
+                Ok(output) => Ok(output),
+                Err(error) => {
+                    record_filtered_grouped_segmented_failure(
+                        metrics,
+                        context,
+                        node_id,
+                        AggregateExecutionStage::Single,
+                        &node.spec,
+                        input_schema,
+                        input_rows,
+                        None,
+                        failure_decision,
+                    );
+                    Err(error)
+                },
+            };
+        }
+        Some(decision)
+    } else {
+        None
+    };
+    let filtered_global_exact_host =
+        filtered_global_strategy.is_some() && should_execute_datafusion_exact_stddev(context, &node.spec);
+    let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
+        context,
+        input.into_frame(),
+        input_schema,
+        &node.spec,
+        Some(token),
+        metrics,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Some(decision) = filtered_global_strategy {
+                record_filtered_global_aggregate_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    &node.spec,
+                    input_schema,
+                    input_rows,
+                    0,
+                    decision,
+                );
+            }
+            if let Some(decision) = filtered_grouped_strategy {
+                record_filtered_grouped_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    AggregateExecutionStage::Single,
+                    &node.spec,
+                    input_schema,
+                    input_rows,
+                    0,
+                    None,
+                    decision,
+                );
+            }
+            return Err(error);
+        },
+    };
     if should_execute_datafusion_exact_stddev(context, &spec) {
-        return execute_datafusion_exact_host_aggregate(
+        let output = match execute_datafusion_exact_host_aggregate(
             context,
             node_id,
             &spec,
@@ -228,17 +369,66 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
             GpuDataFrame::new(frame),
             output_schema,
             metrics,
-        );
+            filtered_global_strategy.as_ref().map(|decision| &decision.decision.facts),
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if filtered_global_exact_host && let Some(decision) = filtered_global_strategy {
+                    record_filtered_global_aggregate_single_pass(
+                        metrics,
+                        context,
+                        node_id,
+                        &node.spec,
+                        input_schema,
+                        input_rows,
+                        0,
+                        decision,
+                    );
+                }
+                return Err(error);
+            },
+        };
+        return Ok(output);
     }
     if spec.group_exprs.is_empty() {
-        return execute_global_aggregate_with_budget(
+        let output = match execute_global_aggregate_with_budget(
             context,
             &spec,
             GpuDataFrame::new(frame),
             output_schema,
             token,
             metrics,
-        );
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(decision) = filtered_global_strategy {
+                    record_filtered_global_aggregate_single_pass(
+                        metrics,
+                        context,
+                        node_id,
+                        &node.spec,
+                        input_schema,
+                        input_rows,
+                        0,
+                        decision,
+                    );
+                }
+                return Err(error);
+            },
+        };
+        if let Some(decision) = filtered_global_strategy {
+            record_filtered_global_aggregate_single_pass(
+                metrics,
+                context,
+                node_id,
+                &node.spec,
+                input_schema,
+                input_rows,
+                output.num_rows() as u64,
+                decision,
+            );
+        }
+        return Ok(output);
     }
     if spec.grouping_sets.is_some() {
         return execute_grouping_sets_aggregate(
@@ -254,7 +444,26 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
 
     // See `execute_aggregate` for why AVG must not lower to libcudf groupby
     // `MEAN`; the same finalize-at-output-scale contract applies here.
-    let aggregate = lower_partial_aggregate_spec(&spec)?;
+    let aggregate = match lower_partial_aggregate_spec(&spec) {
+        Ok(aggregate) => aggregate,
+        Err(error) => {
+            if let Some(decision) = filtered_grouped_strategy {
+                record_filtered_grouped_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    AggregateExecutionStage::Single,
+                    &node.spec,
+                    input_schema,
+                    input_rows,
+                    0,
+                    None,
+                    decision,
+                );
+            }
+            return Err(error);
+        },
+    };
     if aggregate_spec_has_avg(&spec) {
         validate_avg_output_fields(&spec, output_schema)?;
     }
@@ -263,8 +472,11 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     let overrides = execution_overrides(context);
     let input_rows = frame.num_rows() as u64;
     let selection_timer = Instant::now();
-    let capability_decision =
+    let mut capability_decision =
         aggregate_strategy_capability_decision(&spec, prepared_input_schema.as_ref(), AggregateExecutionStage::Single);
+    if let Some(filtered_grouped_strategy) = &filtered_grouped_strategy {
+        apply_filtered_grouped_materialization_facts(&mut capability_decision, filtered_grouped_strategy);
+    }
     let mut decision = select_partial_aggregate_strategy_decision(
         capability_decision,
         node_id,
@@ -317,7 +529,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         );
     }
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = match execute_groupby_aggregate_with_budget(
         &overrides,
         frame,
         &aggregate,
@@ -325,7 +537,24 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         metrics,
         "nexus_query_engine.aggregate.execute",
         "failed to execute bounded native cudf aggregate",
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            record_single_grouped_aggregate_strategy_decision(
+                metrics,
+                context,
+                node_id.map(|id| id.to_string()),
+                &spec,
+                &prepared_input_schema,
+                input_rows,
+                0,
+                decision.clone(),
+                selection_elapsed,
+                timer.elapsed(),
+            );
+            return Err(error);
+        },
+    };
     output = finalize_avg_output_columns_with_budget(context, output, &spec, output_schema, token, metrics)?;
     output = cast_reduction_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
@@ -367,7 +596,7 @@ fn record_single_grouped_aggregate_strategy_decision(
     context: &ExecutionContext,
     node_id: Option<String>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input_rows: u64,
     output_rows: u64,
     decision: AggregateStrategyCapabilityDecision,
@@ -397,7 +626,7 @@ pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_str
     context: &ExecutionContext,
     node_id: Option<String>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input_rows: u64,
     output_rows: u64,
     mut decision: AggregateStrategyCapabilityDecision,
@@ -445,15 +674,192 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     node: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     input_evidence: Option<PartialAggregateInputEvidence>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let (frame, spec, prepared_input_schema) =
-        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, Some(token), metrics)?;
+    let input_rows = input.num_rows() as u64;
+    if node.spec.group_exprs.is_empty() && aggregate_spec_has_filters(&node.spec) {
+        let decision = select_filtered_global_aggregate_strategy(
+            &node.spec,
+            input_schema,
+            input_rows,
+            token.request().budget_bytes() as u64,
+            AggregateExecutionStage::Partial,
+        )?;
+        if decision.use_segmented {
+            let failure_decision = decision.clone();
+            return match execute_segmented_filtered_global_partial_aggregate_with_budget(
+                context,
+                node_id,
+                &node.spec,
+                input_schema,
+                aggregate_output_schema,
+                input,
+                token,
+                input_evidence,
+                decision,
+                metrics,
+            ) {
+                Ok(output) => Ok(output),
+                Err(error) => {
+                    record_filtered_global_partial_single_pass(
+                        metrics,
+                        context,
+                        node_id,
+                        &node.spec,
+                        input_schema,
+                        0,
+                        input_evidence,
+                        failure_decision,
+                    );
+                    Err(error)
+                },
+            };
+        }
+        let output = match execute_partial_aggregate_with_budget_single_pass(
+            context,
+            node_id,
+            node,
+            input_schema,
+            aggregate_output_schema,
+            input,
+            token,
+            input_evidence,
+            None,
+            metrics,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                record_filtered_global_partial_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    &node.spec,
+                    input_schema,
+                    0,
+                    input_evidence,
+                    decision,
+                );
+                return Err(error);
+            },
+        };
+        record_filtered_global_partial_single_pass(
+            metrics,
+            context,
+            node_id,
+            &node.spec,
+            input_schema,
+            output.num_rows() as u64,
+            input_evidence,
+            decision,
+        );
+        return Ok(output);
+    }
+    let filtered_grouped_strategy = if !node.spec.group_exprs.is_empty()
+        && node.spec.grouping_sets.is_none()
+        && aggregate_spec_has_filters(&node.spec)
+    {
+        let decision = select_filtered_grouped_aggregate_strategy(
+            &node.spec,
+            input_schema,
+            input_rows,
+            token.request().budget_bytes() as u64,
+            AggregateExecutionStage::Partial,
+        )?;
+        if decision.use_segmented {
+            let failure_decision = decision.clone();
+            return match execute_segmented_filtered_grouped_partial_aggregate_with_budget(
+                context,
+                node_id,
+                &node.spec,
+                input_schema,
+                aggregate_output_schema,
+                input,
+                token,
+                input_evidence,
+                decision,
+                metrics,
+            ) {
+                Ok(output) => Ok(output),
+                Err(error) => {
+                    record_filtered_grouped_segmented_failure(
+                        metrics,
+                        context,
+                        node_id,
+                        AggregateExecutionStage::Partial,
+                        &node.spec,
+                        input_schema,
+                        input_rows,
+                        input_evidence,
+                        failure_decision,
+                    );
+                    Err(error)
+                },
+            };
+        }
+        Some(decision)
+    } else {
+        None
+    };
+    execute_partial_aggregate_with_budget_single_pass(
+        context,
+        node_id,
+        node,
+        input_schema,
+        aggregate_output_schema,
+        input,
+        token,
+        input_evidence,
+        filtered_grouped_strategy.as_ref(),
+        metrics,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_partial_aggregate_with_budget_single_pass(
+    context: &ExecutionContext,
+    node_id: Option<NodeId>,
+    node: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
+    input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    input_evidence: Option<PartialAggregateInputEvidence>,
+    filtered_grouped_strategy: Option<&filtered_grouped::FilteredGroupedAggregateStrategyDecision>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let original_input_rows = input.num_rows() as u64;
+    let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
+        context,
+        input.into_frame(),
+        input_schema,
+        &node.spec,
+        Some(token),
+        metrics,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Some(decision) = filtered_grouped_strategy.cloned() {
+                record_filtered_grouped_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    AggregateExecutionStage::Partial,
+                    &node.spec,
+                    input_schema,
+                    original_input_rows,
+                    0,
+                    input_evidence,
+                    decision,
+                );
+            }
+            return Err(error);
+        },
+    };
     if spec.group_exprs.is_empty() {
         let partial_spec = partial_global_aggregate_spec(&spec);
         let output_schema =
@@ -479,12 +885,34 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
         );
     }
 
-    let aggregate = lower_partial_aggregate_spec(&spec)?;
+    let aggregate = match lower_partial_aggregate_spec(&spec) {
+        Ok(aggregate) => aggregate,
+        Err(error) => {
+            if let Some(decision) = filtered_grouped_strategy.cloned() {
+                record_filtered_grouped_single_pass(
+                    metrics,
+                    context,
+                    node_id,
+                    AggregateExecutionStage::Partial,
+                    &node.spec,
+                    input_schema,
+                    original_input_rows,
+                    0,
+                    input_evidence,
+                    decision,
+                );
+            }
+            return Err(error);
+        },
+    };
     let expected_output_names = aggregate.output_names.clone();
     let input_rows = frame.num_rows() as u64;
     let selection_timer = Instant::now();
-    let capability_decision =
+    let mut capability_decision =
         aggregate_strategy_capability_decision(&spec, prepared_input_schema.as_ref(), AggregateExecutionStage::Partial);
+    if let Some(filtered_grouped_strategy) = filtered_grouped_strategy {
+        apply_filtered_grouped_materialization_facts(&mut capability_decision, filtered_grouped_strategy);
+    }
     let mut decision = select_partial_aggregate_strategy_decision(
         capability_decision,
         node_id,
@@ -556,7 +984,7 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     }
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = match execute_groupby_aggregate_with_budget(
         &overrides,
         frame,
         &aggregate,
@@ -564,7 +992,29 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
         metrics,
         "nexus_query_engine.aggregate.execute_partial",
         "failed to execute bounded native partial cudf aggregate",
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            record_grouped_aggregate_strategy_decision(
+                metrics,
+                node_id.map(|id| id.to_string()),
+                AggregateExecutionStage::Partial,
+                context.memory_control_policy().as_str(),
+                &spec,
+                &prepared_input_schema,
+                input_rows,
+                0,
+                decision.clone(),
+                selection_elapsed,
+                Duration::ZERO,
+                timer.elapsed(),
+                Duration::ZERO,
+                timer.elapsed(),
+                input_evidence,
+            );
+            return Err(error);
+        },
+    };
     output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(

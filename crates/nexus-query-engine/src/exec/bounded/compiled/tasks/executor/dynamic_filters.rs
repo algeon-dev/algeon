@@ -1,3 +1,5 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 impl<'a> CompiledGpuTaskExecutor<'a> {
@@ -66,7 +68,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     pub(super) fn produce_aggregate_group_key_dynamic_filters(
         &mut self,
         aggregate_node_id: NodeId,
-        aggregate_schema: &arrow::datatypes::SchemaRef,
+        aggregate_schema: &ArrowSchemaRef,
         aggregate_frame: &GpuDataFrame,
     ) -> Result<()> {
         let routes = self
@@ -94,7 +96,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn produce_dynamic_filters_from_frame(
         &mut self,
         routes: &[crate::dynamic_filter::DynamicFilterRoute],
-        producer_schema: &arrow::datatypes::SchemaRef,
+        producer_schema: &ArrowSchemaRef,
         producer_frame: &GpuDataFrame,
         missing_key_reason: &'static str,
     ) -> Result<()> {
@@ -213,7 +215,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn produce_large_local_parquet_range_dynamic_filters(
         &mut self,
         routes: &[DynamicFilterRoute],
-        producer_schema: &arrow::datatypes::SchemaRef,
+        producer_schema: &ArrowSchemaRef,
         producer_frame: &GpuDataFrame,
         missing_key_reason: &'static str,
     ) -> Result<()> {
@@ -740,7 +742,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         &self,
         consumer_node_id: NodeId,
         input_node_id: NodeId,
-    ) -> Result<arrow::datatypes::SchemaRef> {
+    ) -> Result<ArrowSchemaRef> {
         self.plan.node(input_node_id).map(|node| node.output_schema().clone()).ok_or_else(|| {
             invalid("compiled dynamic-filter consumer references a missing input")
                 .with_fact("consumer_node_id", consumer_node_id)

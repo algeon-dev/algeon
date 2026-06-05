@@ -1,3 +1,5 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 mod aggregate;
@@ -159,9 +161,9 @@ pub(super) fn execute_union(
 pub(super) fn execute_window(
     context: &ExecutionContext,
     node: &WindowNode,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if node.spec.functions.is_empty() {
@@ -227,9 +229,9 @@ pub(super) fn execute_window(
 fn execute_partition_window_aggregate(
     context: &ExecutionContext,
     node: &WindowNode,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     frame: DataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     if node.spec.partition_by.is_empty() {
@@ -306,10 +308,10 @@ fn execute_partition_window_aggregate(
 }
 
 fn window_aggregate_schema(
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     node: &WindowNode,
-) -> Result<arrow::datatypes::SchemaRef> {
+) -> Result<ArrowSchemaRef> {
     let mut fields = Vec::with_capacity(node.spec.partition_by.len() + node.spec.functions.len());
     for expr in &node.spec.partition_by {
         let name = lower_column_expr(expr, "nexus_query_engine.window.aggregate.schema_key")?;
@@ -646,7 +648,7 @@ fn execute_row_number_window(
 fn execute_lag_lead_window(
     context: &ExecutionContext,
     node: &WindowNode,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     value_expr: &Expr,
     offset: u32,

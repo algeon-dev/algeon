@@ -92,6 +92,10 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert!(
+        budgeted_events(metrics, "nexus_query_engine.global_aggregate.cast_input").is_empty(),
+        "decimal SUM should not materialize a redundant input cast when the input already has the target dtype"
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

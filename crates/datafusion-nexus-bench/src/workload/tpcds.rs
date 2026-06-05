@@ -48,6 +48,8 @@ pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpc
 /// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
 /// during config construction.
 pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
+/// Named native memory/source profile used by TPC-DS benchmark/report surfaces.
+pub const CUDF_TPCDS_NATIVE_PROFILE_ENV: &str = "CUDF_TPCDS_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
 pub const CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 /// Planning target for row groups per native Parquet source chunk.
@@ -56,6 +58,8 @@ pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NAT
 pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
 pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+/// Source chunk planning mode used by bounded native TPC-DS execution.
+pub const CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 /// Execution contract for native floating statistical aggregates.
 pub const CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
@@ -79,6 +83,59 @@ pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
 /// Top-k fetch threshold for small/selective CPU preference.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
+
+/// Conservative bounded profile: current production-safe defaults.
+pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
+/// SF100 throughput profile: TPC-H-like large local Parquet batches for GPU benchmarking.
+pub const TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
+/// Profile name used when explicit knobs do not match a named profile.
+pub const TPCDS_NATIVE_PROFILE_CUSTOM: &str = "custom";
+/// SF100 throughput profile device budget, matching the 95 GiB probe.
+pub const TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
+/// SF100 throughput profile source byte target: 32 GiB.
+pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
+/// SF100 throughput profile row-group batch target.
+pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
+
+/// Resolved bounded native TPC-DS memory/source profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpcdsNativeProfileSettings {
+    pub profile_name: &'static str,
+    pub profile_source: &'static str,
+    pub device_budget_bytes: u64,
+    pub max_source_chunk_bytes: u64,
+    pub max_row_groups_per_chunk: usize,
+    pub max_retry_attempts: usize,
+    pub min_retry_chunk_row_groups: usize,
+    pub source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+}
+
+impl TpcdsNativeProfileSettings {
+    fn from_base(base: NativeProfileBase) -> Self {
+        Self {
+            profile_name: base.name,
+            profile_source: base.source,
+            device_budget_bytes: base.device_budget_bytes,
+            max_source_chunk_bytes: base.max_source_chunk_bytes,
+            max_row_groups_per_chunk: base.max_row_groups_per_chunk,
+            max_retry_attempts: base.max_retry_attempts,
+            min_retry_chunk_row_groups: base.min_retry_chunk_row_groups,
+            source_chunk_planning_mode: base.source_chunk_planning_mode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeProfileBase {
+    name: &'static str,
+    source: &'static str,
+    device_budget_bytes: u64,
+    max_source_chunk_bytes: u64,
+    max_row_groups_per_chunk: usize,
+    max_retry_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+    source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+}
 
 /// Result type used by TPC-DS fixture and workload helpers.
 pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
@@ -198,6 +255,16 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
     )
 }
 
+/// Native optimizer config using an already-resolved TPC-DS native profile.
+pub fn tpcds_native_optimizer_config_with_profile_settings(
+    profile: &TpcdsNativeProfileSettings,
+) -> CudfOptimizerConfig {
+    tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
+        nexus_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        profile,
+    )
+}
+
 /// Native optimizer config for TPC-DS analytics/performance report surfaces.
 ///
 /// The analytics default uses GPU-native tolerant floating statistical
@@ -212,19 +279,30 @@ pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
     )
 }
 
+/// Analytics/performance optimizer config using an already-resolved TPC-DS native profile.
+pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
+    profile: &TpcdsNativeProfileSettings,
+) -> CudfOptimizerConfig {
+    tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
+        nexus_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        profile,
+    )
+}
+
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
     statistical_aggregate_execution_mode_default: nexus_query_engine::StatisticalAggregateExecutionMode,
 ) -> CudfOptimizerConfig {
-    let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV)
-        .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
-    let max_source_chunk_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)
-        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
-    let max_row_groups_per_chunk = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)
-        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
-    let max_retry_attempts = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV)
-        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
-    let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)
-        .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
+    let profile = tpcds_native_profile_settings_from_env();
+    tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
+        statistical_aggregate_execution_mode_default,
+        &profile,
+    )
+}
+
+fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
+    statistical_aggregate_execution_mode_default: nexus_query_engine::StatisticalAggregateExecutionMode,
+    profile: &TpcdsNativeProfileSettings,
+) -> CudfOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
     // Keep CPU preference disabled for now: users can submit SQL containing
@@ -236,31 +314,170 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(
             NativeCudfExecutionConfig::bounded(
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
+                profile.device_budget_bytes,
+                profile.max_source_chunk_bytes,
+                profile.max_row_groups_per_chunk,
+                profile.max_retry_attempts,
+                profile.min_retry_chunk_row_groups,
             )
-            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode),
+            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
         )
         .with_native_plan_preference_options(preference_options)
 }
 
-fn optional_env_u64(name: &'static str) -> Option<u64> {
-    std::env::var(name).ok().map(|value| {
-        value
-            .parse::<u64>()
-            .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
-    })
+/// Resolves the TPC-DS native bounded memory/source profile from env.
+///
+/// `CUDF_TPCDS_NATIVE_PROFILE` chooses a named base profile:
+/// `conservative` keeps the existing bounded defaults, while
+/// `sf100_gpu_throughput` applies the TPC-H-like SF100 local Parquet profile.
+/// The individual `CUDF_TPCDS_NATIVE_*` knobs override either base. If
+/// those final values exactly match a named profile, the resolved
+/// `profile_name` is that profile; otherwise it is `custom`.
+pub fn tpcds_native_profile_settings_from_env() -> TpcdsNativeProfileSettings {
+    tpcds_native_profile_settings_with_env(|name| std::env::var(name).ok())
 }
 
-fn optional_env_usize(name: &'static str) -> Option<usize> {
-    std::env::var(name).ok().map(|value| {
-        value
-            .parse::<usize>()
-            .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
-    })
+pub fn tpcds_native_profile_settings_with_env(
+    mut get: impl FnMut(&'static str) -> Option<String>,
+) -> TpcdsNativeProfileSettings {
+    let requested_profile = get(CUDF_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
+    let base = native_profile_base(requested_profile.as_deref());
+    let mut resolved = TpcdsNativeProfileSettings::from_base(base);
+    let device_budget_bytes = get(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV);
+    let max_source_chunk_bytes = get(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
+    let max_row_groups_per_chunk = get(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
+    let max_retry_attempts = get(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
+    let min_retry_chunk_row_groups = get(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
+    let source_chunk_planning_mode = get(CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
+    let had_override = device_budget_bytes.is_some()
+        || max_source_chunk_bytes.is_some()
+        || max_row_groups_per_chunk.is_some()
+        || max_retry_attempts.is_some()
+        || min_retry_chunk_row_groups.is_some()
+        || source_chunk_planning_mode.is_some();
+
+    if let Some(value) = device_budget_bytes {
+        resolved.device_budget_bytes = parse_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, value);
+    }
+    if let Some(value) = max_source_chunk_bytes {
+        resolved.max_source_chunk_bytes = parse_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value);
+    }
+    if let Some(value) = max_row_groups_per_chunk {
+        resolved.max_row_groups_per_chunk = parse_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value);
+    }
+    if let Some(value) = max_retry_attempts {
+        resolved.max_retry_attempts = parse_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value);
+    }
+    if let Some(value) = min_retry_chunk_row_groups {
+        resolved.min_retry_chunk_row_groups = parse_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value);
+    }
+    if let Some(value) = source_chunk_planning_mode {
+        resolved.source_chunk_planning_mode = parse_env_source_chunk_planning_mode(value);
+    }
+    validate_tpcds_native_profile_settings(&resolved);
+
+    let conservative = native_profile_base(Some(TPCDS_NATIVE_PROFILE_CONSERVATIVE));
+    let sf100 = native_profile_base(Some(TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT));
+    let requested_without_override = requested_profile.is_some() && !had_override;
+    if same_profile_values(&resolved, conservative) {
+        resolved.profile_name = TPCDS_NATIVE_PROFILE_CONSERVATIVE;
+        resolved.profile_source = if requested_without_override {
+            "env_profile"
+        } else if had_override {
+            "resolved_values"
+        } else {
+            "default"
+        };
+    } else if same_profile_values(&resolved, sf100) {
+        resolved.profile_name = TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT;
+        resolved.profile_source = if requested_without_override {
+            "env_profile"
+        } else if had_override {
+            "resolved_values"
+        } else {
+            "default"
+        };
+    } else if had_override {
+        resolved.profile_name = TPCDS_NATIVE_PROFILE_CUSTOM;
+        resolved.profile_source = "custom_overrides";
+    }
+    resolved
+}
+
+fn validate_tpcds_native_profile_settings(profile: &TpcdsNativeProfileSettings) {
+    validate_positive(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes);
+    validate_positive(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes);
+    validate_positive(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk);
+    validate_positive(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts);
+    validate_positive(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups);
+}
+
+fn validate_positive<T>(name: &'static str, value: T)
+where T: PartialEq + From<u8> {
+    assert!(value != T::from(0), "unsupported {name}=0; expected positive unsigned integer");
+}
+
+fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
+    let profile = profile.unwrap_or(TPCDS_NATIVE_PROFILE_CONSERVATIVE);
+    match profile {
+        TPCDS_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
+            name: TPCDS_NATIVE_PROFILE_CONSERVATIVE,
+            source: "default",
+            device_budget_bytes: NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
+            max_source_chunk_bytes: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
+        },
+        TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
+            name: TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
+            source: "env_profile",
+            device_budget_bytes: TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+        },
+        other => panic!(
+            "unsupported {CUDF_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
+        ),
+    }
+}
+
+fn same_profile_values(profile: &TpcdsNativeProfileSettings, base: NativeProfileBase) -> bool {
+    profile.device_budget_bytes == base.device_budget_bytes
+        && profile.max_source_chunk_bytes == base.max_source_chunk_bytes
+        && profile.max_row_groups_per_chunk == base.max_row_groups_per_chunk
+        && profile.max_retry_attempts == base.max_retry_attempts
+        && profile.min_retry_chunk_row_groups == base.min_retry_chunk_row_groups
+        && profile.source_chunk_planning_mode == base.source_chunk_planning_mode
+}
+
+fn parse_env_u64(name: &'static str, value: String) -> u64 {
+    value
+        .parse::<u64>()
+        .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+}
+
+fn parse_env_usize(name: &'static str, value: String) -> usize {
+    value
+        .parse::<usize>()
+        .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+}
+
+fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::SourceChunkPlanningMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "conservative" => nexus_query_engine::SourceChunkPlanningMode::Conservative,
+        "local_parquet_throughput" | "local_throughput" => {
+            nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput
+        },
+        other => panic!(
+            "unsupported {CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
+        ),
+    }
 }
 
 fn optional_env_statistical_aggregate_execution_mode() -> Option<nexus_query_engine::StatisticalAggregateExecutionMode>
@@ -554,7 +771,7 @@ fn tpcds_table_schema(layout: &TpcdsTableLayout) -> TpcdsWorkloadResult<Schema> 
     Ok(ParquetRecordBatchReaderBuilder::try_new(File::open(first_file)?)?.schema().as_ref().clone())
 }
 
-fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static str]> {
     match table {
         "call_center" => Some(&["cc_call_center_sk"]),
         "catalog_page" => Some(&["cp_catalog_page_sk"]),

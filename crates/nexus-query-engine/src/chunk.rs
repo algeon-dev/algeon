@@ -21,9 +21,16 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     plan::NodeId,
-    runtime::MemoryControlPolicy,
-    source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation},
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
+    source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
 };
+
+/// Row-group cap used by local-throughput source planning when the configured
+/// policy is the conservative one-row-group shape.
+pub const LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
+/// Minimum bounded device budget before local-throughput planning can raise the
+/// row-group cap. Smaller budgets keep conservative source chunks.
+pub const LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
 /// Policy that controls how a local Parquet source is split into chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +45,8 @@ pub struct SourceChunkPlanningPolicy {
     /// Callers must pass a value greater than zero; unbounded policies use
     /// `usize::MAX`.
     pub max_row_groups_per_chunk: usize,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
+    source_chunk_planning_reason: &'static str,
 }
 
 /// Slot model used to derive a per-source-task chunk target from a device budget.
@@ -116,7 +125,24 @@ impl SourceTaskMemoryModel {
 
 impl SourceChunkPlanningPolicy {
     pub const fn new(max_source_chunk_bytes: Option<u64>, max_row_groups_per_chunk: usize) -> Self {
-        Self { max_source_chunk_bytes, max_row_groups_per_chunk }
+        Self {
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "explicit_policy",
+        }
+    }
+
+    pub fn source_chunk_planning_mode(self) -> SourceChunkPlanningMode {
+        self.source_chunk_planning_mode
+    }
+
+    pub fn source_chunk_planning_reason(self) -> &'static str {
+        self.source_chunk_planning_reason
+    }
+
+    pub fn mark_downstream_cap(&mut self, reason: &'static str) {
+        self.source_chunk_planning_reason = reason;
     }
 
     /// Derives a source-task policy from the bounded memory policy and slot model.
@@ -137,7 +163,50 @@ impl SourceChunkPlanningPolicy {
         }
         let budget_target = device_budget_bytes / model.live_slot_count().max(1);
         let task_target = max_source_chunk_bytes.min(budget_target.max(1));
-        Self::new(Some(task_target), max_row_groups_per_chunk)
+        let mut policy = Self::new(Some(task_target), max_row_groups_per_chunk);
+        policy.source_chunk_planning_reason =
+            if task_target < max_source_chunk_bytes { "memory_cap" } else { "configured_policy" };
+        policy
+    }
+
+    /// Derives a source-task policy and then applies the source chunk planning
+    /// mode for a concrete source.
+    pub fn for_source_task_with_mode(
+        source: &LocalParquetSource,
+        memory_policy: MemoryControlPolicy,
+        model: SourceTaskMemoryModel,
+        mode: SourceChunkPlanningMode,
+    ) -> Self {
+        Self::for_source_task(memory_policy, model).with_source_planning_mode(source, memory_policy, mode)
+    }
+
+    /// Derives a source policy from memory policy and source planning mode.
+    pub fn from_memory_policy_with_mode(
+        source: &LocalParquetSource,
+        memory_policy: MemoryControlPolicy,
+        mode: SourceChunkPlanningMode,
+    ) -> Self {
+        Self::from(memory_policy).with_source_planning_mode(source, memory_policy, mode)
+    }
+
+    fn with_source_planning_mode(
+        mut self,
+        source: &LocalParquetSource,
+        memory_policy: MemoryControlPolicy,
+        mode: SourceChunkPlanningMode,
+    ) -> Self {
+        if mode != SourceChunkPlanningMode::LocalParquetThroughput {
+            return self;
+        }
+        self.source_chunk_planning_mode = mode;
+        if !local_parquet_throughput_planning_admitted(source, memory_policy, self) {
+            self.source_chunk_planning_reason = "local_parquet_throughput_rejected";
+            return self;
+        }
+        self.max_row_groups_per_chunk =
+            self.max_row_groups_per_chunk.max(LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+        self.source_chunk_planning_reason = "local_parquet_throughput_admitted";
+        self
     }
 
     fn effective_max_row_groups_per_chunk(self) -> usize {
@@ -145,9 +214,71 @@ impl SourceChunkPlanningPolicy {
     }
 }
 
+fn local_parquet_throughput_planning_admitted(
+    source: &LocalParquetSource,
+    memory_policy: MemoryControlPolicy,
+    policy: SourceChunkPlanningPolicy,
+) -> bool {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = memory_policy else {
+        return false;
+    };
+    if device_budget_bytes < LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES {
+        return false;
+    }
+    if policy.max_row_groups_per_chunk != 1 || policy.max_source_chunk_bytes.is_none() {
+        return false;
+    }
+    if source.files.is_empty()
+        || source.is_zero_column_count_source()
+        || source.scan_limit.is_some()
+        || source.read_columns.is_empty()
+        || !source.partition_columns.is_empty()
+    {
+        return false;
+    }
+    source.files.iter().all(|file| {
+        file.location.is_local_path()
+            && file.partition_values.is_empty()
+            && matches!(
+                file.resolved_source.read_strategy,
+                ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio
+            )
+            && local_parquet_throughput_file_has_source_read_bytes(source, file)
+    })
+}
+
+fn local_parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+    let selected_row_groups = match &file.row_groups {
+        Some(row_groups) if !row_groups.is_empty() => row_groups.clone(),
+        Some(_) => return false,
+        None => {
+            let Some(count) = file.projected_row_group_uncompressed_bytes.as_ref().map(Vec::len) else {
+                return false;
+            };
+            if count == 0 {
+                return false;
+            }
+            (0..count).collect()
+        },
+    };
+    let Some(max_row_group) = selected_row_groups.iter().copied().max() else {
+        return false;
+    };
+    let projected_covers_selection =
+        file.projected_row_group_uncompressed_bytes.as_ref().is_some_and(|bytes| max_row_group < bytes.len());
+    let pure_filter_covers_selection = source.pure_filter_columns.is_empty()
+        || file.pure_filter_row_group_uncompressed_bytes.as_ref().is_some_and(|bytes| max_row_group < bytes.len());
+    projected_covers_selection && pure_filter_covers_selection
+}
+
 impl Default for SourceChunkPlanningPolicy {
     fn default() -> Self {
-        Self { max_source_chunk_bytes: None, max_row_groups_per_chunk: usize::MAX }
+        Self {
+            max_source_chunk_bytes: None,
+            max_row_groups_per_chunk: usize::MAX,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "unbounded_policy",
+        }
     }
 }
 
@@ -156,7 +287,9 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
         match policy {
             MemoryControlPolicy::Unbounded => Self::default(),
             MemoryControlPolicy::Bounded { max_source_chunk_bytes, max_row_groups_per_chunk, .. } => {
-                Self::new(Some(max_source_chunk_bytes), max_row_groups_per_chunk)
+                let mut policy = Self::new(Some(max_source_chunk_bytes), max_row_groups_per_chunk);
+                policy.source_chunk_planning_reason = "configured_policy";
+                policy
             },
         }
     }
@@ -324,6 +457,10 @@ pub struct SourceChunk {
     /// Stable diagnostic reason for the source chunk batching decision that
     /// applies to this chunk.
     pub source_batching_reason: Option<String>,
+    /// Source chunk planning mode requested for the policy that emitted this chunk.
+    pub source_chunk_planning_mode: SourceChunkPlanningMode,
+    /// Stable diagnostic reason for the row-group and byte policy that emitted this chunk.
+    pub source_chunk_planning_reason: String,
 }
 
 impl SourceChunk {
@@ -597,7 +734,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
 
         let row_groups = planned_row_groups(file, file_index, metadata.as_ref())?;
         let Some(row_groups) = row_groups else {
-            chunks.push(single_all_row_groups_chunk(source_node_id, source, file, file_index, chunks.len()));
+            chunks.push(single_all_row_groups_chunk(source_node_id, source, file, file_index, chunks.len(), policy));
             continue;
         };
 
@@ -1228,6 +1365,7 @@ fn append_row_group_chunks(
                 file_index,
                 row_groups.len(),
                 metadata,
+                policy,
                 &mut current,
                 chunks,
             );
@@ -1244,7 +1382,17 @@ fn append_row_group_chunks(
         );
     }
 
-    push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), metadata, &mut current, chunks);
+    push_pending_chunk(
+        source_node_id,
+        source,
+        file,
+        file_index,
+        row_groups.len(),
+        metadata,
+        policy,
+        &mut current,
+        chunks,
+    );
 }
 fn push_pending_chunk(
     source_node_id: NodeId,
@@ -1253,6 +1401,7 @@ fn push_pending_chunk(
     file_index: usize,
     planned_row_group_count: usize,
     metadata: Option<&RowGroupMetadata>,
+    policy: SourceChunkPlanningPolicy,
     pending: &mut PendingChunk,
     chunks: &mut Vec<SourceChunk>,
 ) {
@@ -1312,6 +1461,8 @@ fn push_pending_chunk(
         scan_limit_rows: None,
         size_estimate_based: known_row_group_bytes.is_none(),
         source_batching_reason: None,
+        source_chunk_planning_mode: policy.source_chunk_planning_mode(),
+        source_chunk_planning_reason: policy.source_chunk_planning_reason().to_string(),
     });
     pending.clear();
 }
@@ -1426,6 +1577,7 @@ fn single_all_row_groups_chunk(
     file: &LocalParquetFile,
     file_index: usize,
     chunk_index: usize,
+    policy: SourceChunkPlanningPolicy,
 ) -> SourceChunk {
     SourceChunk {
         source_node_id,
@@ -1460,6 +1612,8 @@ fn single_all_row_groups_chunk(
         scan_limit_rows: None,
         size_estimate_based: true,
         source_batching_reason: None,
+        source_chunk_planning_mode: policy.source_chunk_planning_mode(),
+        source_chunk_planning_reason: policy.source_chunk_planning_reason().to_string(),
     }
 }
 
@@ -1682,6 +1836,10 @@ impl PendingChunk {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
     use super::*;
     use crate::source::{ParquetReadStrategy, ResolvedParquetSource};
 
@@ -1719,7 +1877,177 @@ mod tests {
             scan_limit_rows: None,
             size_estimate_based: false,
             source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
         }
+    }
+
+    fn bounded_policy(
+        device_budget_bytes: u64,
+        max_source_chunk_bytes: u64,
+        max_row_groups_per_chunk: usize,
+    ) -> MemoryControlPolicy {
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        }
+    }
+
+    fn local_source_file() -> LocalParquetFile {
+        LocalParquetFile::new("/tmp/source.parquet")
+            .with_row_groups((0..2048).collect())
+            .with_row_group_bytes(vec![1024; 2048])
+            .with_projected_row_group_bytes(vec![512; 2048], vec![1024; 2048])
+            .with_pure_filter_row_group_bytes(vec![0; 2048], vec![0; 2048])
+            .with_row_group_rows(vec![1; 2048])
+    }
+
+    fn source_from_file(file: LocalParquetFile) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        LocalParquetSource::from_files(vec![file], schema, vec!["c0".to_string()])
+    }
+
+    fn local_source() -> LocalParquetSource {
+        source_from_file(local_source_file())
+    }
+
+    fn missing_metadata_source() -> LocalParquetSource {
+        source_from_file(LocalParquetFile::new("/tmp/missing-metadata.parquet").with_row_groups((0..2048).collect()))
+    }
+
+    #[test]
+    fn conservative_source_chunk_planning_preserves_configured_row_group_cap() {
+        let source = local_source();
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::Conservative,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, 1);
+        assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_raises_row_group_cap_for_large_local_kvikio_source() {
+        let source = local_source();
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::LocalParquetThroughput,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+        assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_keeps_small_budget_conservative() {
+        let source = local_source();
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES - 1, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::LocalParquetThroughput,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, 1);
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_requires_represented_source_read_bytes() {
+        let source = missing_metadata_source();
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::LocalParquetThroughput,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, 1);
+
+        let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+        assert_eq!(plan.chunk_count(), 2048);
+        assert!(plan.chunks.iter().all(|chunk| chunk.row_group_count() == 1));
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_rejects_object_store_and_host_buffer_sources() {
+        let object_store = source_from_file(
+            LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet").expect("valid s3 object URI"),
+        );
+        let mut host_buffer_file = local_source_file();
+        host_buffer_file.resolved_source.read_strategy = ParquetReadStrategy::RemoteHostBuffer;
+        let host_buffer = source_from_file(host_buffer_file);
+        let policy = bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1);
+
+        assert_eq!(
+            SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+                &object_store,
+                policy,
+                SourceChunkPlanningMode::LocalParquetThroughput,
+            )
+            .max_row_groups_per_chunk,
+            1
+        );
+        assert_eq!(
+            SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+                &host_buffer,
+                policy,
+                SourceChunkPlanningMode::LocalParquetThroughput,
+            )
+            .max_row_groups_per_chunk,
+            1
+        );
+    }
+
+    #[test]
+    fn object_store_source_without_row_group_metadata_plans_read_all_row_groups_chunk() {
+        let source = source_from_file(
+            LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet").expect("valid s3 object URI"),
+        );
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::Conservative,
+        );
+
+        let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+
+        assert_eq!(plan.chunk_count(), 1);
+        assert!(plan.chunks[0].reads_all_row_groups);
+        assert!(plan.chunks[0].row_group_indexes.is_empty());
+        assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources() {
+        let mut partitioned_file = local_source_file();
+        partitioned_file.partition_values = vec![LiteralValue::Int64(1)];
+        let partitioned = source_from_file(partitioned_file);
+        let mut scan_limited = local_source();
+        scan_limited.scan_limit = Some(10);
+        let policy = bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1);
+
+        assert_eq!(
+            SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+                &partitioned,
+                policy,
+                SourceChunkPlanningMode::LocalParquetThroughput,
+            )
+            .max_row_groups_per_chunk,
+            1
+        );
+        assert_eq!(
+            SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+                &scan_limited,
+                policy,
+                SourceChunkPlanningMode::LocalParquetThroughput,
+            )
+            .max_row_groups_per_chunk,
+            1
+        );
     }
 
     #[test]

@@ -110,7 +110,6 @@ checksum = "36fa98bc79671c7981272d91a8753a928ff6a1cd8e4f20a44c45bd5d313840bf"
 dependencies = [
  "bigdecimal",
  "bon",
- "crc32fast",
  "digest 0.10.7",
  "log",
  "miniz_oxide",
@@ -121,7 +120,6 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "snap",
  "strum 0.27.2",
  "strum_macros 0.27.2",
  "thiserror 2.0.18",
@@ -3113,7 +3111,6 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=d32c234#d32c234f3f7a83661d0e94e0424b21e2f1ce23c7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3157,7 +3154,6 @@ dependencies = [
  "serde_with",
  "strum 0.27.2",
  "tokio",
- "tracing",
  "typed-builder 0.20.1",
  "typetag",
  "url",
@@ -3169,7 +3165,6 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-glue"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=d32c234#d32c234f3f7a83661d0e94e0424b21e2f1ce23c7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3184,7 +3179,6 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-rest"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=d32c234#d32c234f3f7a83661d0e94e0424b21e2f1ce23c7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3203,7 +3197,6 @@ dependencies = [
 [[package]]
 name = "iceberg-datafusion"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=d32c234#d32c234f3f7a83661d0e94e0424b21e2f1ce23c7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3219,7 +3212,6 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=d32c234#d32c234f3f7a83661d0e94e0424b21e2f1ce23c7"
 dependencies = [
  "anyhow",
  "async-trait",

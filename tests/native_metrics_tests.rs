@@ -5,7 +5,7 @@ use datafusion_nexus::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 use nexus_query_engine::{
     ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
     MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, QueryMetrics,
-    QueryPlanBuilder, ReservationKind, SourceChunk, SourceNode,
+    QueryPlanBuilder, ReservationKind, SourceChunk, SourceChunkPlanningMode, SourceNode,
 };
 
 #[test]
@@ -291,6 +291,8 @@ fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: None,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_reason: "test_policy".to_string(),
     };
     let mut second = first.clone();
     second.chunk_index = 1;
@@ -349,6 +351,8 @@ fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: None,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_reason: "test_policy".to_string(),
     };
     let mut same_contract_different_plan_identity = first.clone();
     same_contract_different_plan_identity.source_node_id = second_source_node_id;

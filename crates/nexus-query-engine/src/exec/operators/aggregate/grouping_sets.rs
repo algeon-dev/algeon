@@ -1,11 +1,13 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(super) fn execute_grouping_sets_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -61,8 +63,8 @@ pub(super) fn execute_grouping_sets_aggregate(
 pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
@@ -104,8 +106,8 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
 fn execute_grouping_sets_groupby(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: Option<&ExecutionBudgetToken>,
@@ -171,8 +173,8 @@ fn execute_grouping_sets_groupby(
 #[allow(clippy::too_many_arguments)]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -272,8 +274,8 @@ fn execute_prefix_rollup_grouping_sets_groupby(
 #[allow(clippy::too_many_arguments)]
 fn execute_single_grouping_set_groupby(
     context: &ExecutionContext,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -365,7 +367,7 @@ fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> L
 #[allow(clippy::too_many_arguments)]
 fn complete_grouping_set_output(
     context: &ExecutionContext,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     output: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -439,7 +441,7 @@ fn complete_grouping_set_output(
 
 fn with_grouping_id_column(
     context: &ExecutionContext,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     grouping_id_alias: &str,
     grouping_id: u64,
@@ -565,8 +567,8 @@ fn aggregate_for_prefix_rollup_level(
 #[allow(clippy::too_many_arguments)]
 fn prepare_grouping_set_frame(
     context: &ExecutionContext,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,

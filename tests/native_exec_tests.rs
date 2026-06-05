@@ -21,8 +21,8 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
-    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
-    capability::ContractQuality, compile_pipeline,
+    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, SourceChunkPlanningMode,
+    StrictBoundedExecutionMode, capability::ContractQuality, compile_pipeline,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -108,6 +108,13 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     assert_eq!(max_retry_attempts, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
     assert_eq!(min_retry_chunk_row_groups, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
+    assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
+    assert_eq!(
+        config
+            .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
+            .source_chunk_planning_mode(),
+        SourceChunkPlanningMode::LocalParquetThroughput
+    );
 }
 
 #[test]

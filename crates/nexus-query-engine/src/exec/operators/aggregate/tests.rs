@@ -1,16 +1,19 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema};
 
 use super::{
+    filtered_global::select_filtered_global_aggregate_strategy,
+    filtered_grouped::select_filtered_grouped_aggregate_strategy,
     partial_strategy::{
-        EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS, ExactGroupedKeyCardinalityProbe,
+        EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS, EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS,
+        EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS, ExactGroupedKeyCardinalityProbe,
         ExactSingleKeyCardinalityProbe, SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS,
         SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES, aggregate_structural_key, reduction_ratio_ppm,
     },
     *,
 };
-use crate::{capability::aggregate_strategy_capability_decision, metrics::QueryMetrics};
+use crate::{capability::aggregate_strategy_capability_decision, error::QueryErrorCode, metrics::QueryMetrics};
 
 fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     let schema = Schema::new(vec![
@@ -21,6 +24,42 @@ fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     ]);
     let spec = AggregateSpec::new(
         vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+    );
+    (schema, spec)
+}
+
+fn q31_key_sum_spec() -> (Schema, AggregateSpec) {
+    let schema = Schema::new(vec![
+        Field::new("county", DataType::Utf8, true),
+        Field::new("quarter", DataType::Int64, false),
+        Field::new("year", DataType::Int64, false),
+        Field::new("sales", DataType::Decimal128(17, 2), true),
+    ]);
+    let spec = AggregateSpec::new(
+        vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+    );
+    (schema, spec)
+}
+
+fn q76_key_sum_spec() -> (Schema, AggregateSpec) {
+    let schema = Schema::new(vec![
+        Field::new("channel", DataType::Utf8, false),
+        Field::new("col_name", DataType::Utf8, false),
+        Field::new("year", DataType::Int64, false),
+        Field::new("quarter", DataType::Int64, false),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("sales", DataType::Decimal128(17, 2), true),
+    ]);
+    let spec = AggregateSpec::new(
+        vec![
+            Expr::column("channel"),
+            Expr::column("col_name"),
+            Expr::column("year"),
+            Expr::column("quarter"),
+            Expr::column("category"),
+        ],
         vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
     );
     (schema, spec)
@@ -47,6 +86,65 @@ fn simple_string_sum_spec() -> (Schema, AggregateSpec) {
         vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
     );
     (schema, spec)
+}
+
+fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("quantity", DataType::Int64, true),
+        Field::new("discount", DataType::Decimal128(7, 2), true),
+        Field::new("net_paid", DataType::Decimal128(7, 2), true),
+        Field::new("bucket", DataType::Boolean, true),
+    ]));
+    let mut aggr_exprs = Vec::new();
+    for index in 0..filter_count {
+        let value = if index % 3 == 0 {
+            Expr::column("quantity")
+        } else if index % 3 == 1 {
+            Expr::column("discount")
+        } else {
+            Expr::column("net_paid")
+        };
+        let function = if index % 3 == 0 {
+            AggregateFunction::Count
+        } else if index % 3 == 1 {
+            AggregateFunction::Sum
+        } else {
+            AggregateFunction::Avg
+        };
+        aggr_exprs
+            .push(AggregateExpr::new(function, value, format!("a{index}")).with_filter(Some(Expr::column("bucket"))));
+    }
+    (schema, AggregateSpec::new(Vec::new(), aggr_exprs))
+}
+
+fn filtered_grouped_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("quantity", DataType::Int64, true),
+        Field::new("discount", DataType::Decimal128(7, 2), true),
+        Field::new("net_paid", DataType::Decimal128(7, 2), true),
+        Field::new("bucket", DataType::Boolean, true),
+    ]));
+    let mut aggr_exprs = Vec::new();
+    for index in 0..filter_count {
+        let value = if index % 3 == 0 {
+            Expr::literal(LiteralValue::Int64(1))
+        } else if index % 3 == 1 {
+            Expr::column("discount")
+        } else {
+            Expr::column("net_paid")
+        };
+        let function = if index % 3 == 0 {
+            AggregateFunction::Count
+        } else if index % 3 == 1 {
+            AggregateFunction::Sum
+        } else {
+            AggregateFunction::Avg
+        };
+        aggr_exprs
+            .push(AggregateExpr::new(function, value, format!("a{index}")).with_filter(Some(Expr::column("bucket"))));
+    }
+    (schema, AggregateSpec::new(vec![Expr::column("key")], aggr_exprs))
 }
 
 fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateStrategyCapabilityDecision {
@@ -78,6 +176,214 @@ fn partial_strategy_for_simple_string_sum(
         &QueryMetrics::default(),
     );
     (schema, spec, decision)
+}
+
+#[test]
+fn filtered_global_strategy_keeps_small_single_pass_materialization() {
+    let (schema, spec) = filtered_global_q09_like_spec(3);
+    let decision = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        1_024,
+        2 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .unwrap();
+
+    assert!(!decision.use_segmented);
+    assert_eq!(
+        decision.decision.facts.get("selected_strategy").map(String::as_str),
+        Some("filtered_global_single_pass_materialized")
+    );
+    assert_eq!(
+        decision.decision.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("single_pass_with_columns")
+    );
+}
+
+#[test]
+fn filtered_global_strategy_segments_large_unsafe_materialization() {
+    let (schema, spec) = filtered_global_q09_like_spec(15);
+    let decision = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        287_997_024,
+        80 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .unwrap();
+
+    assert!(decision.use_segmented);
+    assert_eq!(
+        decision.decision.facts.get("selected_strategy").map(String::as_str),
+        Some("filtered_global_segmented_state")
+    );
+    assert_eq!(
+        decision.decision.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("row_chunked_segmented_state")
+    );
+    assert_eq!(decision.decision.facts.get("aggregate_filter_count").map(String::as_str), Some("15"));
+    assert_eq!(decision.decision.facts.get("filtered_input_unique_predicate_count").map(String::as_str), Some("1"));
+}
+
+#[test]
+fn filtered_global_strategy_caps_row_chunks_by_budget() {
+    let (schema, spec) = filtered_global_q09_like_spec(15);
+    let decision = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        287_997_024,
+        32 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .unwrap();
+
+    assert!(decision.use_segmented);
+    let expected_target = (32 * 1024 * 1024 / 8).to_string();
+    assert_eq!(
+        decision.decision.facts.get("filtered_global_segment_target_temporary_bytes").map(String::as_str),
+        Some(expected_target.as_str())
+    );
+    let rows_per_chunk = decision
+        .decision
+        .facts
+        .get("filtered_global_rows_per_chunk")
+        .and_then(|rows| rows.parse::<u64>().ok())
+        .expect("rows per chunk fact should be present");
+    assert!(rows_per_chunk < 1_000_000, "row chunk sizing should follow the small budget");
+}
+
+#[test]
+fn filtered_global_strategy_rejects_large_distinct_state() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Int64, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let spec = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values")
+                .with_distinct(true)
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+    let error = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        300_000_000,
+        8 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .err()
+    .expect("large unsupported filtered state should be rejected");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
+    assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+    assert_eq!(
+        error.fact_value("rejected_candidate_strategies"),
+        Some(
+            "filtered_global_single_pass_materialized:filtered_input_materialization_estimate_exceeds_threshold;filtered_global_segmented_state:unsupported_stateful_filtered_merge"
+        )
+    );
+}
+
+#[test]
+fn filtered_global_strategy_rejects_large_statistical_state() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Float64, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let spec = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("value"), "stddev_value")
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+    let error = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        300_000_000,
+        8 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .err()
+    .expect("large unsupported statistical filtered state should be rejected");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
+    assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
+    assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+}
+
+#[test]
+fn filtered_grouped_strategy_rejects_large_nunique_state() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", DataType::Int64, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let spec = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "unique_values")
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+    let error = select_filtered_grouped_aggregate_strategy(
+        &spec,
+        &schema,
+        300_000_000,
+        8 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .err()
+    .expect("large unsupported filtered grouped state should be rejected");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));
+    assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
+    assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+}
+
+#[test]
+fn filtered_grouped_strategy_caps_row_chunks_by_budget() {
+    let (schema, spec) = filtered_grouped_q09_like_spec(15);
+    let decision = select_filtered_grouped_aggregate_strategy(
+        &spec,
+        &schema,
+        287_997_024,
+        32 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .unwrap();
+
+    assert!(decision.use_segmented);
+    assert_eq!(
+        decision.decision.facts.get("selected_strategy").map(String::as_str),
+        Some("filtered_grouped_segmented_state")
+    );
+    assert_eq!(
+        decision.decision.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("row_chunked_grouped_segmented_state")
+    );
+    assert_eq!(
+        decision.decision.facts.get("rejected_candidate_strategies").map(String::as_str),
+        Some("filtered_grouped_single_pass_materialized:filtered_input_materialization_estimate_exceeds_threshold")
+    );
+    let expected_target = (32 * 1024 * 1024 / 8).to_string();
+    assert_eq!(
+        decision.decision.facts.get("filtered_grouped_segment_target_temporary_bytes").map(String::as_str),
+        Some(expected_target.as_str())
+    );
+    let rows_per_chunk = decision
+        .decision
+        .facts
+        .get("filtered_grouped_rows_per_chunk")
+        .and_then(|rows| rows.parse::<u64>().ok())
+        .expect("rows per chunk fact should be present");
+    assert!(rows_per_chunk < 1_000_000, "row chunk sizing should follow the small budget");
 }
 
 fn metrics_with_prior_partial_decision(
@@ -324,6 +630,176 @@ fn large_two_key_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate(
         exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000),
         Some(vec!["quarter".to_string(), "year".to_string()])
     );
+}
+
+#[test]
+fn large_three_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate() {
+    let (schema, spec) = q31_key_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(
+        exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000),
+        Some(vec!["county".to_string(), "quarter".to_string(), "year".to_string()])
+    );
+}
+
+#[test]
+fn three_key_runtime_probe_rejects_wide_input_and_all_fixed_width_keys() {
+    let (schema, spec) = q31_key_sum_spec();
+    let wide_input_decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial),
+        None,
+        &spec,
+        &schema,
+        EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
+        None,
+        &QueryMetrics::default(),
+    );
+    assert_eq!(
+        exact_grouped_key_cardinality_probe_candidate(
+            &wide_input_decision,
+            &spec,
+            &schema,
+            EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
+        ),
+        None
+    );
+
+    let schema = Schema::new(vec![
+        Field::new("store", DataType::Int64, false),
+        Field::new("quarter", DataType::Int64, false),
+        Field::new("year", DataType::Int64, false),
+        Field::new("sales", DataType::Decimal128(17, 2), true),
+    ]);
+    let spec = AggregateSpec::new(
+        vec![Expr::column("store"), Expr::column("quarter"), Expr::column("year")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+    );
+    let all_fixed_decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial),
+        None,
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        &QueryMetrics::default(),
+    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&all_fixed_decision, &spec, &schema, 5_000_000), None);
+}
+
+#[test]
+fn five_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate() {
+    let (schema, spec) = q76_key_sum_spec();
+    let decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),
+        None,
+        &spec,
+        &schema,
+        6_900_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(
+        exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 6_900_000),
+        Some(vec![
+            "channel".to_string(),
+            "col_name".to_string(),
+            "year".to_string(),
+            "quarter".to_string(),
+            "category".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn five_key_runtime_probe_rejects_wide_input_and_wrong_string_mix() {
+    let (schema, spec) = q76_key_sum_spec();
+    let wide_input_decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),
+        None,
+        &spec,
+        &schema,
+        EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
+        None,
+        &QueryMetrics::default(),
+    );
+    assert_eq!(
+        exact_grouped_key_cardinality_probe_candidate(
+            &wide_input_decision,
+            &spec,
+            &schema,
+            EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
+        ),
+        None
+    );
+
+    let schema = Schema::new(vec![
+        Field::new("channel", DataType::Utf8, false),
+        Field::new("col_name", DataType::Utf8, false),
+        Field::new("year", DataType::Int64, false),
+        Field::new("quarter", DataType::Int64, false),
+        Field::new("category_id", DataType::Int64, false),
+        Field::new("sales", DataType::Decimal128(17, 2), true),
+    ]);
+    let spec = AggregateSpec::new(
+        vec![
+            Expr::column("channel"),
+            Expr::column("col_name"),
+            Expr::column("year"),
+            Expr::column("quarter"),
+            Expr::column("category_id"),
+        ],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+    );
+    let wrong_mix_decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),
+        None,
+        &spec,
+        &schema,
+        6_900_000,
+        None,
+        &QueryMetrics::default(),
+    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&wrong_mix_decision, &spec, &schema, 6_900_000), None);
+
+    let schema = Schema::new(vec![
+        Field::new("channel", DataType::Utf8, false),
+        Field::new("col_name", DataType::Utf8, false),
+        Field::new("year_label", DataType::Utf8, false),
+        Field::new("quarter", DataType::Int64, false),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("sales", DataType::Decimal128(17, 2), true),
+    ]);
+    let spec = AggregateSpec::new(
+        vec![
+            Expr::column("channel"),
+            Expr::column("col_name"),
+            Expr::column("year_label"),
+            Expr::column("quarter"),
+            Expr::column("category"),
+        ],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+    );
+    let string_heavy_decision = select_partial_aggregate_strategy_decision(
+        aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),
+        None,
+        &spec,
+        &schema,
+        6_900_000,
+        None,
+        &QueryMetrics::default(),
+    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&string_heavy_decision, &spec, &schema, 6_900_000), None);
 }
 
 #[test]

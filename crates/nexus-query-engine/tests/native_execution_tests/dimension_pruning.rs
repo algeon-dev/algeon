@@ -43,7 +43,12 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
     assert_eq!(candidate.derived_min_key, Some(30));
     assert_eq!(candidate.derived_max_key, Some(50));
     assert_eq!(candidate.selected_row_groups_before, Some(4));
-    assert_eq!(candidate.selected_row_groups_after, Some(2));
+    // The qualifying dimension key set is {30, 50}; its bounds are [30, 50].
+    // Set-aware pruning keeps only the fact row group whose key (30) is an actual
+    // qualifying key and prunes fact_key=40 — which falls inside the [30,50]
+    // bounding range but matches no dimension key, so it joins to nothing. A
+    // single-range filter would have wrongly retained it.
+    assert_eq!(candidate.selected_row_groups_after, Some(1));
 
     let fact_source = optimizer_result
         .plan
@@ -59,7 +64,7 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
             _ => None,
         })
         .expect("optimized plan should retain fact source");
-    assert_eq!(fact_source.files[0].row_groups.as_deref(), Some(&[2, 3][..]));
+    assert_eq!(fact_source.files[0].row_groups.as_deref(), Some(&[2][..]));
 
     fs::remove_dir_all(dir).unwrap();
 }
