@@ -312,7 +312,7 @@ pub enum NullEquality {
 /// Helper to create a bitmask from an iterator of validity flags.
 ///
 /// cudf uses LSB-first bitmask packing (bit 0 of byte 0 = element 0).
-pub fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
+pub(crate) fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
     let num_bytes = validity.len().div_ceil(8);
     let mut mask = vec![0u8; num_bytes];
     for (i, &valid) in validity.iter().enumerate() {
@@ -324,7 +324,7 @@ pub fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
 }
 
 /// Count the number of `false` entries in a validity slice.
-pub fn count_nulls(validity: &[bool]) -> i32 {
+pub(crate) fn count_nulls(validity: &[bool]) -> i32 {
     validity.iter().filter(|&&v| !v).count() as i32
 }
 

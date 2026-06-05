@@ -70,6 +70,22 @@ impl Column {
         Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
+    /// Create an empty column of the given type inside the given explicit
+    /// runtime.
+    ///
+    /// The resulting column carries the runtime's execution domain so it
+    /// can participate in explicit-domain pipelines without triggering
+    /// mixed-domain rejection. No device memory is allocated for the
+    /// column data itself.
+    pub fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
+            "column::empty_with_runtime",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(runtime.execution_domain())))
+    }
+
     /// Create a column from a host slice of fixed-width elements.
     ///
     /// # Example
@@ -253,6 +269,70 @@ impl Column {
             [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
         )?;
         Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+    }
+
+    /// Create a column by copying from a borrowed device pointer inside the
+    /// given explicit runtime.
+    ///
+    /// Uses `cudf_column_create_from_device_data_ex` which routes the copy
+    /// through the runtime's stream and memory resource. Unlike
+    /// [`from_device_ptr`](Self::from_device_ptr), **this variant does NOT
+    /// synchronize before returning**. The caller must keep `device_ptr`
+    /// valid until the runtime's stream has completed the copy — e.g. by
+    /// calling [`Runtime::synchronize`].
+    ///
+    /// Only fixed-width types are supported.
+    ///
+    /// # Safety
+    ///
+    /// - `device_ptr` must point to a valid device allocation containing at
+    ///   least `len` elements of the type identified by `type_id`.
+    /// - The pointer must remain valid until the runtime's stream has
+    ///   completed the copy.
+    pub unsafe fn from_device_ptr_with_runtime(
+        runtime: &Runtime,
+        device_ptr: *const c_void,
+        len: usize,
+        type_id: TypeId,
+    ) -> Result<Self> {
+        let operation = "column::from_device_ptr_with_runtime";
+
+        if type_id.size_in_bytes()?.is_none() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "from_device_ptr only supports fixed-width types")
+                .with_operation(operation)
+                .with_context("len", len.to_string())
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+        }
+
+        if len > 0 && device_ptr.is_null() {
+            return Err(Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
+                .with_operation(operation)
+                .with_context("len", len.to_string())
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+        }
+
+        let size = usize_to_i32_len(len, "data", operation)?;
+        let output_domain = Arc::clone(runtime.execution_domain());
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let opts_ptr = exec_options.as_ref().map_or(ptr::null(), |o| o as *const _);
+        let mut handle = ptr::null_mut();
+        // SAFETY: caller guarantees device_ptr is valid for `size` elements.
+        // The _ex variant does NOT synchronize — caller must keep device_ptr
+        // valid until the runtime's stream completes.
+        error::check_status_in_with(
+            unsafe {
+                cudf_sys::cudf_column_create_from_device_data_ex(
+                    type_id.to_raw(),
+                    device_ptr,
+                    size,
+                    opts_ptr,
+                    &mut handle,
+                )
+            },
+            operation,
+            [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
+        )?;
+        Ok(Self::from_handle_with_domain(handle, output_domain))
     }
 
     /// Create a STRING type column from a slice of string references.

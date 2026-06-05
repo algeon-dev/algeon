@@ -2817,6 +2817,57 @@ impl DataFrame {
         let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::fillna_with_series")?;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
+
+    /// Replace null values in a column using a [`Series`], copying inputs
+    /// into the target [`Runtime`]'s execution domain when necessary.
+    ///
+    /// Unlike [`fillna_with_series`](Self::fillna_with_series), this method
+    /// recovers from mixed execution domains by deep-copying the target
+    /// column and `fill_series` into the runtime's domain before executing
+    /// the replace-nulls operation.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced. If any input is in a
+    /// different domain, an additional device-to-device copy per mismatched
+    /// column occurs.
+    pub fn fillna_with_series_with_runtime(
+        &self,
+        column: &str,
+        fill_series: &Series,
+        runtime: &Runtime,
+    ) -> Result<Self> {
+        let operation = "dataframe::fillna_with_series_with_runtime";
+        if !self.columns.contains_key(column) {
+            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation(operation)
+                .with_context("column_name", column.to_string()));
+        }
+
+        let output_domain = Arc::clone(runtime.execution_domain());
+
+        // Copy all existing columns into the target domain. After this the
+        // target column is guaranteed to be in the output domain.
+        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
+
+        // Copy the fill series into the target domain.
+        let fill_copied = Self::clone_or_copy_series_into_domain(fill_series, &output_domain, operation, column)?;
+
+        // Perform replace-nulls on the target column. Scoped to drop views
+        // before mutating new_columns.
+        let replaced = {
+            let target_col = new_columns.get(column).expect("column validated above");
+            let cv = target_col.view()?;
+            let fill_cv = fill_copied.view()?;
+            let exec_options = output_domain.explicit_exec_options_raw();
+            replace::replace_nulls_column_with_exec_options(&cv, &fill_cv, exec_options.as_ref(), operation)?
+                .with_execution_domain(Arc::clone(&output_domain))
+        };
+
+        new_columns.insert(column.to_string(), Arc::new(replaced));
+
+        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
+    }
 }
 
 // ---------------------------------------------------------------------------
