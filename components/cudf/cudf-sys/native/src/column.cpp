@@ -8,6 +8,7 @@
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/detail/null_mask.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
@@ -424,6 +425,23 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle,
+                                             const void** out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    if (!view->nullable()) {
+      set_error("Column has no null mask");
+      return CUDF_ERROR_NULL;
+    }
+    *out = view->null_mask();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
                                       int32_t* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -432,6 +450,50 @@ cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->offset();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
+                                     int32_t offset,
+                                     int32_t length,
+                                     cudf_column_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  if (offset < 0) {
+    set_error("offset must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (length < 0) {
+    set_error("length must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    auto const start = static_cast<cudf::size_type>(offset);
+    auto const len   = static_cast<cudf::size_type>(length);
+    auto const end   = start + len;
+    if (start > view->size() || end > view->size()) {
+      set_error("slice range is out of bounds");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    std::vector<cudf::column_view> children{};
+    children.reserve(view->num_children());
+    for (cudf::size_type index = 0; index < view->num_children(); ++index) {
+      children.emplace_back(view->child(index));
+    }
+
+    auto const exec_stream = cudf::get_default_stream();
+    auto const null_count =
+        view->null_count() ? cudf::detail::null_count(view->null_mask(), start, end, exec_stream) : 0;
+
+    auto* slice = new cudf::column_view(
+        view->type(), len, view->head(), view->null_mask(), null_count, view->offset() + start, children);
+    *out = static_cast<cudf_column_view_handle>(slice);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

@@ -1,0 +1,12 @@
+[package]
+name = "rapids-interop"
+description = "Borrowed GPU view interop types for RAPIDS Rust crates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "rapids_interop"
+path = "src/lib.rs"

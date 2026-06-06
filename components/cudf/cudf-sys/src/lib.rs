@@ -399,7 +399,16 @@ extern "C" {
 
     pub fn cudf_column_view_data_ptr(handle: cudf_column_view_handle, out: *mut *const c_void) -> cudf_status_t;
 
+    pub fn cudf_column_view_null_mask_ptr(handle: cudf_column_view_handle, out: *mut *const c_void) -> cudf_status_t;
+
     pub fn cudf_column_view_offset(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
+
+    pub fn cudf_column_view_slice(
+        handle: cudf_column_view_handle,
+        offset: i32,
+        length: i32,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
 
     pub fn cudf_column_view_to_host(
         handle: cudf_column_view_handle,

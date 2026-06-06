@@ -1,5 +1,5 @@
 [workspace]
-members = ["cudf-sys", "cudf-rs"]
+members = ["cudf-sys", "cudf-rs", "rapids-interop"]
 resolver = "3"
 
 [workspace.package]

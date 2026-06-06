@@ -174,6 +174,13 @@ impl ExecutionDomain {
         }
     }
 
+    pub(crate) fn device_snapshot(&self) -> i32 {
+        match &self.kind {
+            DomainKind::AmbientDefault { device_snapshot } => *device_snapshot,
+            DomainKind::Explicit { device, .. } => device.ordinal_raw(),
+        }
+    }
+
     /// Synchronize this domain's stream so that the host can read device memory
     /// produced on it.
     ///

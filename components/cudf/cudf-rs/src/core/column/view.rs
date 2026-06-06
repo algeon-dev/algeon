@@ -196,6 +196,16 @@ impl<'a> ColumnView<'a> {
         Ok(out)
     }
 
+    pub(crate) fn null_mask_ptr(&self) -> Result<Option<*const c_void>> {
+        let mut out: *const c_void = std::ptr::null();
+        let status = unsafe { cudf_sys::cudf_column_view_null_mask_ptr(self.handle.as_ptr(), &mut out) };
+        if status == cudf_sys::CUDF_ERROR_NULL {
+            return Ok(None);
+        }
+        error::check_status_in(status, "column_view::null_mask_ptr")?;
+        Ok(Some(out))
+    }
+
     /// Returns the element offset of this column view into its parent buffer.
     ///
     /// Returns 0 for non-sliced columns. For sliced views, the actual data

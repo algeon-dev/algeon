@@ -18,6 +18,7 @@ typed-builder = "0.23"
 csv = "1.4"
 cudf-sys = { path = "../cudf-sys" }
 indexmap = "2"
+rapids-interop = { path = "../rapids-interop" }
 smallvec = "1.15"
 
 
