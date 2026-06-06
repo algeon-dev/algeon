@@ -21,15 +21,20 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    const char** columns,
                                    int32_t num_columns,
                                    int64_t skip_rows, int64_t num_rows,
+                                   const int32_t* row_groups,
+                                   int32_t num_row_groups,
                                    cudf_table_handle* out) {
   return cudf_io_read_parquet_ex(filepath, columns, num_columns, skip_rows,
-                                 num_rows, out, nullptr);
+                                 num_rows, row_groups, num_row_groups,
+                                 out, nullptr);
 }
 
 cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
                                        const char** columns,
                                        int32_t num_columns,
                                        int64_t skip_rows, int64_t num_rows,
+                                       const int32_t* row_groups,
+                                       int32_t num_row_groups,
                                        cudf_table_handle* out,
                                        cudf_exec_options_t const* exec_options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -45,6 +50,18 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
   }
   if (num_rows < -1) {
     set_error("num_rows must be >= -1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups < 0) {
+    set_error("num_row_groups must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups > 0 && row_groups == nullptr) {
+    set_error("row_groups is null but num_row_groups > 0");
+    return CUDF_ERROR_NULL;
+  }
+  if (num_row_groups > 0 && (skip_rows > 0 || num_rows >= 0)) {
+    set_error("row_groups cannot be combined with skip_rows or num_rows");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   if (num_columns > 0) {
@@ -73,11 +90,16 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
       builder.columns(col_names);
     }
 
-    if (skip_rows > 0) {
-      builder.skip_rows(skip_rows);
-    }
-    if (num_rows >= 0) {
-      builder.num_rows(num_rows);
+    if (num_row_groups > 0) {
+      std::vector<cudf::size_type> rg_indices(row_groups, row_groups + num_row_groups);
+      builder.row_groups({std::move(rg_indices)});
+    } else {
+      if (skip_rows > 0) {
+        builder.skip_rows(skip_rows);
+      }
+      if (num_rows >= 0) {
+        builder.num_rows(num_rows);
+      }
     }
 
     auto options = builder.build();
@@ -92,15 +114,17 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
 cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
                                     const char* filepath,
                                     const char** column_names,
-                                    int32_t num_columns) {
+                                    int32_t num_columns,
+                                    int32_t row_group_size_rows) {
   return cudf_io_write_parquet_ex(table, filepath, column_names, num_columns,
-                                  nullptr);
+                                  row_group_size_rows, nullptr);
 }
 
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
                                         const char* filepath,
                                         const char** column_names,
                                         int32_t num_columns,
+                                        int32_t row_group_size_rows,
                                         cudf_exec_options_t const* exec_options) {
   CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
@@ -138,6 +162,10 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     }
 
     auto options = builder.build();
+
+    if (row_group_size_rows > 0) {
+      options.set_row_group_size_rows(row_group_size_rows);
+    }
     // NOTE: write_parquet only accepts stream, not mr (it writes to a sink,
     // not an allocator). The mr from exec_options is ignored for writes.
     cudf::io::write_parquet(options, exec.stream);
@@ -151,11 +179,15 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
                                                   int32_t num_columns,
                                                   int64_t skip_rows,
                                                   int64_t num_rows,
+                                                  const int32_t* row_groups,
+                                                  int32_t num_row_groups,
                                                   cudf_table_handle* out_table,
                                                   char*** out_names,
                                                   int32_t* out_num_names) {
   return cudf_io_read_parquet_with_metadata_ex(filepath, columns, num_columns,
-                                               skip_rows, num_rows, out_table,
+                                               skip_rows, num_rows,
+                                               row_groups, num_row_groups,
+                                               out_table,
                                                out_names, out_num_names,
                                                nullptr);
 }
@@ -166,6 +198,8 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(
     int32_t num_columns,
     int64_t skip_rows,
     int64_t num_rows,
+    const int32_t* row_groups,
+    int32_t num_row_groups,
     cudf_table_handle* out_table,
     char*** out_names,
     int32_t* out_num_names,
@@ -187,6 +221,18 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(
   }
   if (num_rows < -1) {
     set_error("num_rows must be >= -1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups < 0) {
+    set_error("num_row_groups must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_row_groups > 0 && row_groups == nullptr) {
+    set_error("row_groups is null but num_row_groups > 0");
+    return CUDF_ERROR_NULL;
+  }
+  if (num_row_groups > 0 && (skip_rows > 0 || num_rows >= 0)) {
+    set_error("row_groups cannot be combined with skip_rows or num_rows");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   if (num_columns > 0) {
@@ -215,11 +261,16 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(
       builder.columns(col_names);
     }
 
-    if (skip_rows > 0) {
-      builder.skip_rows(skip_rows);
-    }
-    if (num_rows >= 0) {
-      builder.num_rows(num_rows);
+    if (num_row_groups > 0) {
+      std::vector<cudf::size_type> rg_indices(row_groups, row_groups + num_row_groups);
+      builder.row_groups({std::move(rg_indices)});
+    } else {
+      if (skip_rows > 0) {
+        builder.skip_rows(skip_rows);
+      }
+      if (num_rows >= 0) {
+        builder.num_rows(num_rows);
+      }
     }
 
     auto options = builder.build();

@@ -2500,10 +2500,7 @@ fn mixed_domain_search_contains_succeeds_with_haystack_provenance() {
 
 #[test]
 fn column_from_scalar_propagates_explicit_domain() {
-    let scalar = Scalar::from_value(42i32)
-        .unwrap()
-        .__debug_rebind_execution_domain_explicit(900)
-        .unwrap();
+    let scalar = Scalar::from_value(42i32).unwrap().__debug_rebind_execution_domain_explicit(900).unwrap();
     let scalar_stream = scalar.__debug_execution_domain_stream_value();
     assert_ne!(scalar_stream, 0, "explicit domain must have non-zero stream");
 

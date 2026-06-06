@@ -1,10 +1,37 @@
 //! Tests for Parquet and CSV I/O.
 
+use std::process::Command;
+
 use cudf::{
-    Column, Table,
+    Column, ErrorKind, Table,
     io::{csv, parquet},
 };
 use tempfile::TempDir;
+
+/// Write a Parquet file with the specified row group size using PyArrow.
+///
+/// Returns `true` if the file was written successfully, `false` if Python/PyArrow
+/// is not available. Panics on unexpected errors.
+fn write_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
+    let vals_str: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    let script = format!(
+        "import pyarrow as pa, pyarrow.parquet as pq; \
+         t = pa.table({{'val': pa.array([{}], type=pa.int32())}}); \
+         pq.write_table(t, '{}', row_group_size={})",
+        vals_str.join(","),
+        path.display(),
+        row_group_size,
+    );
+    let output = Command::new("python3").args(["-c", &script]).output();
+    match output {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            eprintln!("PyArrow write failed: {}", String::from_utf8_lossy(&out.stderr));
+            false
+        },
+        Err(_) => false,
+    }
+}
 
 #[test]
 fn test_parquet_roundtrip() {
@@ -190,6 +217,110 @@ fn test_parquet_read_with_metadata_single_column() {
 
     assert_eq!(result.column_names, vec!["only_col"]);
     assert_eq!(result.table.view().unwrap().num_columns().unwrap(), 1);
+}
+
+#[test]
+fn test_parquet_row_group_selection() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_rg.parquet");
+
+    // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
+    let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
+    if !write_parquet_with_row_groups(&path, &values, 3) {
+        eprintln!("Skipping: python3/pyarrow not available");
+        return;
+    }
+
+    // Read only row group 1 (rows 40, 50, 60)
+    let read_opts = parquet::ParquetReaderOptions::new(&path).row_groups(&[1]);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
+
+    assert_eq!(read_view.num_rows().unwrap(), 3);
+    let vals = read_view.column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(vals, vec![40, 50, 60]);
+}
+
+#[test]
+fn test_parquet_row_group_multiple_selection() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_rg_multi.parquet");
+
+    // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
+    let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
+    if !write_parquet_with_row_groups(&path, &values, 3) {
+        eprintln!("Skipping: python3/pyarrow not available");
+        return;
+    }
+
+    // Read row groups 0 and 2 (rows 10,20,30 and 70,80,90)
+    let read_opts = parquet::ParquetReaderOptions::new(&path).row_groups(&[0, 2]);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
+
+    assert_eq!(read_view.num_rows().unwrap(), 6);
+    let vals = read_view.column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(vals, vec![10, 20, 30, 70, 80, 90]);
+}
+
+#[test]
+fn test_parquet_row_group_empty_selection() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_rg_empty.parquet");
+
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["x"]).unwrap();
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    // Empty row_groups slice — should read all rows (libcudf treats empty as "all")
+    let read_opts = parquet::ParquetReaderOptions::new(&path).row_groups(&[]);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
+
+    assert_eq!(read_view.num_rows().unwrap(), 3);
+    let vals = read_view.column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(vals, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_parquet_row_groups_with_skip_rows_errors() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_rg_skip_err.parquet");
+
+    let col = Column::from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["x"]).unwrap();
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    // Combining row_groups with skip_rows should error (Rust-side validation)
+    let read_opts = parquet::ParquetReaderOptions::new(&path).row_groups(&[0]).skip_rows(1);
+    let result = parquet::read_parquet_with_metadata(read_opts);
+    let err = result.err().expect("expected error when combining row_groups with skip_rows");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_parquet_row_groups_with_num_rows_errors() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_rg_num_err.parquet");
+
+    let col = Column::from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["x"]).unwrap();
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    // Combining row_groups with num_rows should error (Rust-side validation)
+    let read_opts = parquet::ParquetReaderOptions::new(&path).row_groups(&[0]).num_rows(2);
+    let result = parquet::read_parquet_with_metadata(read_opts);
+    let err = result.err().expect("expected error when combining row_groups with num_rows");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]

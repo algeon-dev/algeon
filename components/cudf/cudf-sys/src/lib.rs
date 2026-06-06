@@ -837,6 +837,8 @@ extern "C" {
         num_columns: i32,
         skip_rows: i64,
         num_rows: i64,
+        row_groups: *const i32,
+        num_row_groups: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
@@ -852,6 +854,8 @@ extern "C" {
         num_columns: i32,
         skip_rows: i64,
         num_rows: i64,
+        row_groups: *const i32,
+        num_row_groups: i32,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
@@ -862,6 +866,8 @@ extern "C" {
         num_columns: i32,
         skip_rows: i64,
         num_rows: i64,
+        row_groups: *const i32,
+        num_row_groups: i32,
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
@@ -879,6 +885,8 @@ extern "C" {
         num_columns: i32,
         skip_rows: i64,
         num_rows: i64,
+        row_groups: *const i32,
+        num_row_groups: i32,
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
@@ -896,6 +904,7 @@ extern "C" {
         filepath: *const c_char,
         column_names: *const *const c_char,
         num_columns: i32,
+        row_group_size_rows: i32,
     ) -> cudf_status_t;
 
     /// Write Parquet with explicit execution context.
@@ -906,6 +915,7 @@ extern "C" {
         filepath: *const c_char,
         column_names: *const *const c_char,
         num_columns: i32,
+        row_group_size_rows: i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

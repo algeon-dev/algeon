@@ -22,6 +22,7 @@ pub struct ParquetReaderOptions {
     columns: Option<Vec<CString>>,
     skip_rows: i64,
     num_rows: i64,
+    row_groups: Option<Vec<i32>>,
     runtime: Option<Runtime>,
 }
 
@@ -33,6 +34,7 @@ impl ParquetReaderOptions {
             columns: None,
             skip_rows: 0,
             num_rows: -1, // -1 means read all
+            row_groups: None,
             runtime: None,
         }
     }
@@ -68,6 +70,15 @@ impl ParquetReaderOptions {
         self
     }
 
+    /// Read only the specified row groups (by zero-based index).
+    ///
+    /// Cannot be combined with `skip_rows` or `num_rows` — the read call
+    /// will return an error if both are set.
+    pub fn row_groups(mut self, groups: &[i32]) -> Self {
+        self.row_groups = if groups.is_empty() { None } else { Some(groups.to_vec()) };
+        self
+    }
+
     /// Seed explicit execution provenance from the given runtime.
     pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
         self.runtime = Some(runtime.clone());
@@ -90,6 +101,18 @@ pub struct ParquetTableWithMetadata {
 /// Parquet files.
 pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet_with_metadata")?;
+
+    // Validate that row_groups is not combined with skip_rows or num_rows.
+    if options.row_groups.is_some() && (options.skip_rows > 0 || options.num_rows >= 0) {
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "row_groups cannot be combined with skip_rows or num_rows",
+        )
+        .with_operation("io::parquet::read_parquet_with_metadata")
+        .with_context("skip_rows", options.skip_rows.to_string())
+        .with_context("num_rows", options.num_rows.to_string()));
+    }
+
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
@@ -103,9 +126,16 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
     let (col_ptrs, num_cols) =
         if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
 
+    // Build row_groups pointer; the Option<Vec> must outlive the FFI call.
+    let (rg_ptr, num_rg) = match options.row_groups.as_ref() {
+        Some(rg) if !rg.is_empty() => (rg.as_ptr(), rg.len() as i32),
+        _ => (ptr::null(), 0),
+    };
+
     error::check_status_in_with(
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
-        // valid pointer to num_cols CString pointers.
+        // valid pointer to num_cols CString pointers. rg_ptr is either null
+        // or a valid pointer to num_rg i32 values.
         match exec_options.as_ref() {
             Some(exec_options) => unsafe {
                 cudf_sys::cudf_io_read_parquet_with_metadata_ex(
@@ -114,6 +144,8 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
                     num_cols,
                     options.skip_rows,
                     options.num_rows,
+                    rg_ptr,
+                    num_rg,
                     &mut table_handle,
                     &mut names_ptr,
                     &mut num_names,
@@ -127,6 +159,8 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
                     num_cols,
                     options.skip_rows,
                     options.num_rows,
+                    rg_ptr,
+                    num_rg,
                     &mut table_handle,
                     &mut names_ptr,
                     &mut num_names,
@@ -209,13 +243,14 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 pub struct ParquetWriterOptions {
     filepath: PathBuf,
     column_names: Option<Vec<CString>>,
+    row_group_size_rows: i32,
     runtime: Option<Runtime>,
 }
 
 impl ParquetWriterOptions {
     /// Create options to write to the given file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), column_names: None, runtime: None }
+        Self { filepath: path.as_ref().to_path_buf(), column_names: None, row_group_size_rows: 0, runtime: None }
     }
 
     /// Set column names for the output file.
@@ -235,6 +270,14 @@ impl ParquetWriterOptions {
                 .collect::<Result<Vec<_>>>()?,
         );
         Ok(self)
+    }
+
+    /// Set the maximum number of rows per row group in the output file.
+    ///
+    /// Default (0) uses libcudf's default of 1,000,000 rows.
+    pub fn row_group_size_rows(mut self, n: i32) -> Self {
+        self.row_group_size_rows = n;
+        self
     }
 
     /// Route the write through the given runtime's stream.
@@ -302,11 +345,18 @@ pub(crate) fn write_parquet_with_exec(
                     filepath.as_ptr(),
                     name_ptrs,
                     num_cols,
+                    options.row_group_size_rows,
                     exec_options,
                 )
             },
             None => unsafe {
-                cudf_sys::cudf_io_write_parquet(table.raw_handle(), filepath.as_ptr(), name_ptrs, num_cols)
+                cudf_sys::cudf_io_write_parquet(
+                    table.raw_handle(),
+                    filepath.as_ptr(),
+                    name_ptrs,
+                    num_cols,
+                    options.row_group_size_rows,
+                )
             },
         },
         "io::parquet::write_parquet",
