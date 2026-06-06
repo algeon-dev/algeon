@@ -769,7 +769,9 @@ fn sort_with_execution_context_rejects_ambient_default_promotion() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
+    );
     assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 
@@ -878,7 +880,9 @@ fn gather_with_execution_context_rejects_ambient_default_promotion() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
+    );
     assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 
@@ -922,7 +926,9 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
+    );
     assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 

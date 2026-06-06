@@ -791,6 +791,17 @@ extern "C" {
     /// Free an owned host string returned by this shim.
     pub fn cudf_string_free(ptr: *mut c_char);
 
+    // -- Device ---------------------------------------------------------------
+
+    /// Query the CUDA device ordinal for the calling thread.
+    pub fn cudf_cuda_get_device(device: *mut i32) -> cudf_status_t;
+
+    /// Set the CUDA device ordinal for the calling thread.
+    pub fn cudf_cuda_set_device(device: i32) -> cudf_status_t;
+
+    /// Query the number of CUDA-capable devices visible to the process.
+    pub fn cudf_cuda_get_device_count(count: *mut i32) -> cudf_status_t;
+
     // -- Stream --------------------------------------------------------------
 
     /// Create an owned CUDA stream handle.

@@ -2,13 +2,17 @@
 
 use std::sync::Arc;
 
-use super::{execution_domain::ExecutionDomain, stream::CudaStream};
+use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::ExecutionDomain, stream::CudaStream};
 use crate::core::{
     error::{Error, ErrorKind, Result},
     memory::DeviceMemoryResource,
 };
 
 /// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
+///
+/// Each `Runtime` is pinned to a specific CUDA device (see
+/// [`RuntimeBuilder::with_device`]).  All resources created through this
+/// runtime live on that device.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
@@ -21,7 +25,10 @@ unsafe impl Sync for Runtime {}
 
 impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Runtime").field("retained_provenance", &self.__debug_retained_provenance_id()).finish()
+        f.debug_struct("Runtime")
+            .field("device", &self.device())
+            .field("retained_provenance", &self.__debug_retained_provenance_id())
+            .finish()
     }
 }
 
@@ -30,12 +37,18 @@ impl std::fmt::Debug for Runtime {
 pub struct RuntimeBuilder {
     stream: Option<CudaStream>,
     mr: Option<DeviceMemoryResource>,
+    device: Option<DeviceId>,
 }
 
 impl Runtime {
     /// Start building a new explicit runtime.
     pub fn builder() -> RuntimeBuilder {
         RuntimeBuilder::default()
+    }
+
+    /// The CUDA device this runtime is pinned to.
+    pub fn device(&self) -> DeviceId {
+        self.domain.device().expect("runtime always owns an explicit domain with a device")
     }
 
     /// Synchronize the runtime's default stream.
@@ -69,6 +82,15 @@ impl Runtime {
 }
 
 impl RuntimeBuilder {
+    /// Pin the runtime to a specific CUDA device.
+    ///
+    /// If not called, the runtime uses the calling thread's current device
+    /// at build time (typically device 0).
+    pub fn with_device(mut self, device: DeviceId) -> Self {
+        self.device = Some(device);
+        self
+    }
+
     /// Override the runtime's owned stream.
     pub fn with_stream(mut self, stream: CudaStream) -> Self {
         self.stream = Some(stream);
@@ -82,7 +104,19 @@ impl RuntimeBuilder {
     }
 
     /// Build a runtime with one explicit retained provenance bundle.
+    ///
+    /// If [`with_device`](Self::with_device) was called, resources are created
+    /// on that device.  Otherwise, the current thread's device is used.
     pub fn build(self) -> Result<Runtime> {
+        let device = match self.device {
+            Some(d) => d,
+            None => DeviceId::current()?,
+        };
+
+        // Temporarily switch to the target device so that the stream and
+        // memory resource are created on the correct GPU.
+        let _guard = DeviceGuard::new(device)?;
+
         let stream = match self.stream {
             Some(stream) => stream,
             None => CudaStream::new()?,
@@ -91,7 +125,7 @@ impl RuntimeBuilder {
             Some(mr) => mr,
             None => DeviceMemoryResource::cuda()?,
         };
-        let domain = ExecutionDomain::from_handles(stream, mr)?;
+        let domain = ExecutionDomain::from_handles_on_device(device, stream, mr)?;
         if domain.debug_id() == 0 {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,

@@ -236,8 +236,8 @@ fn dataframe_new_rejects_mixed_domain_columns() {
     assert_eq!(err.operation(), "dataframe::new");
 
     let context = err.context();
-    assert!(context.iter().any(|(key, value)| *key == "left_domain" && value == "explicit:100"));
-    assert!(context.iter().any(|(key, value)| *key == "right_domain" && value == "explicit:200"));
+    assert!(context.iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
+    assert!(context.iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
 }
 
 /// [INV-CT-02] Container invariant: `Table::from_columns` rejects columns with different
@@ -251,8 +251,8 @@ fn table_from_columns_rejects_mixed_domain_columns() {
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "table::from_columns");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:3"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:4"));
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:3(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:4(")));
 }
 
 #[test]
@@ -773,8 +773,8 @@ fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "dataframe::with_column");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:81"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "ambient_default"));
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:81(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("ambient_default")));
 }
 
 #[test]
@@ -876,8 +876,8 @@ fn table_view_from_column_views_rejects_mixed_domains() {
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "table_view::from_column_views");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:123"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:124"));
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:123(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:124(")));
     assert!(err.context().iter().any(|(key, value)| *key == "column_index" && value == "1"));
 }
 

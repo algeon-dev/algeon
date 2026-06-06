@@ -18,13 +18,13 @@ use std::{
     },
 };
 
-use super::stream::CudaStream;
+use super::{device::DeviceId, stream::CudaStream};
 use crate::core::{
     error::{Error, ErrorKind, Result},
     memory::DeviceMemoryResource,
 };
 
-static AMBIENT_DEFAULT_DOMAIN: OnceLock<Arc<ExecutionDomain>> = OnceLock::new();
+static AMBIENT_DOMAINS: OnceLock<Mutex<HashMap<i32, Arc<ExecutionDomain>>>> = OnceLock::new();
 static DEBUG_EXPLICIT_DOMAINS: OnceLock<Mutex<HashMap<u64, Arc<ExecutionDomain>>>> = OnceLock::new();
 static NEXT_EXPLICIT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct ExecutionDomain {
@@ -32,8 +32,8 @@ pub(crate) struct ExecutionDomain {
 }
 
 pub(crate) enum DomainKind {
-    AmbientDefault,
-    Explicit { stream: Arc<CudaStream>, mr: Arc<DeviceMemoryResource>, identity: ExecutionIdentity },
+    AmbientDefault { device_snapshot: i32 },
+    Explicit { device: DeviceId, stream: Arc<CudaStream>, mr: Arc<DeviceMemoryResource>, identity: ExecutionIdentity },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,12 +58,42 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn ambient_default() -> Arc<Self> {
-        Arc::clone(AMBIENT_DEFAULT_DOMAIN.get_or_init(|| Arc::new(Self { kind: DomainKind::AmbientDefault })))
+        #[cfg(feature = "strict-multi-gpu")]
+        panic!(
+            "cudf: ambient_default() is disabled under the `strict-multi-gpu` feature. \
+             Use Runtime::builder().with_device(...).build() to create an explicit runtime."
+        );
+
+        #[cfg(not(feature = "strict-multi-gpu"))]
+        {
+            // Query the calling thread's current device. Fall back to device 0
+            // if the CUDA runtime call fails (should never happen in practice).
+            let mut device: i32 = 0;
+            let _ = unsafe { cudf_sys::cudf_cuda_get_device(&mut device) };
+
+            let cache = AMBIENT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut map = cache.lock().expect("ambient domain cache poisoned");
+            if let Some(domain) = map.get(&device) {
+                return Arc::clone(domain);
+            }
+            let domain = Arc::new(Self { kind: DomainKind::AmbientDefault { device_snapshot: device } });
+            map.insert(device, Arc::clone(&domain));
+            domain
+        }
     }
 
-    pub(crate) fn from_handles(stream: CudaStream, mr: DeviceMemoryResource) -> Result<Arc<Self>> {
+    pub(crate) fn from_handles_on_device(
+        device: DeviceId,
+        stream: CudaStream,
+        mr: DeviceMemoryResource,
+    ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            kind: DomainKind::Explicit { stream: Arc::new(stream), mr: Arc::new(mr), identity: Self::next_identity()? },
+            kind: DomainKind::Explicit {
+                device,
+                stream: Arc::new(stream),
+                mr: Arc::new(mr),
+                identity: Self::next_identity()?,
+            },
         }))
     }
 
@@ -74,46 +104,62 @@ impl ExecutionDomain {
             return Ok(Arc::clone(domain));
         }
 
+        let device = DeviceId::current().unwrap_or(DeviceId::DEFAULT);
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
-        let domain =
-            Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } });
+        let domain = Arc::new(Self {
+            kind: DomainKind::Explicit { device, stream, mr, identity: ExecutionIdentity::new(identity)? },
+        });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
     }
 
     pub(crate) fn debug_kind(&self) -> &'static str {
         match self.kind {
-            DomainKind::AmbientDefault => "ambient_default",
+            DomainKind::AmbientDefault { .. } => "ambient_default",
             DomainKind::Explicit { .. } => "explicit",
         }
     }
 
     pub(crate) fn debug_id(&self) -> u64 {
         match self.kind {
-            DomainKind::AmbientDefault => 0,
+            DomainKind::AmbientDefault { .. } => 0,
             DomainKind::Explicit { identity, .. } => identity.get(),
         }
     }
 
     pub(crate) fn debug_label(&self) -> String {
         match self.kind {
-            DomainKind::AmbientDefault => "ambient_default".to_string(),
-            DomainKind::Explicit { identity, .. } => format!("explicit:{}", identity.get()),
+            DomainKind::AmbientDefault { device_snapshot } => {
+                format!("ambient_default(device={device_snapshot})")
+            },
+            DomainKind::Explicit { device, identity, .. } => {
+                format!("explicit:{}(device={})", identity.get(), device.ordinal())
+            },
         }
     }
 
     pub(crate) fn debug_stream_value(&self) -> usize {
         match &self.kind {
-            DomainKind::AmbientDefault => 0,
+            DomainKind::AmbientDefault { .. } => 0,
             DomainKind::Explicit { stream, .. } => stream.debug_handle_value().unwrap_or(0),
         }
     }
 
     pub(crate) fn debug_mr_value(&self) -> usize {
         match &self.kind {
-            DomainKind::AmbientDefault => 0,
+            DomainKind::AmbientDefault { .. } => 0,
             DomainKind::Explicit { mr, .. } => mr.__debug_raw_handle_value(),
+        }
+    }
+
+    /// Return the device associated with this domain, if explicitly known.
+    ///
+    /// Returns `Some(DeviceId)` for `Explicit` domains, `None` for `AmbientDefault`.
+    pub(crate) fn device(&self) -> Option<DeviceId> {
+        match &self.kind {
+            DomainKind::AmbientDefault { .. } => None,
+            DomainKind::Explicit { device, .. } => Some(*device),
         }
     }
 
@@ -143,7 +189,7 @@ impl ExecutionDomain {
     /// avoids blocking the CPU thread.
     pub(crate) fn fence_stream(&self, operation: &'static str) -> Result<()> {
         match &self.kind {
-            DomainKind::AmbientDefault => Ok(()),
+            DomainKind::AmbientDefault { .. } => Ok(()),
             DomainKind::Explicit { stream, .. } => stream
                 .synchronize()
                 .map_err(|e| e.with_operation(operation).with_context("sync_stream", self.debug_label())),
@@ -152,7 +198,7 @@ impl ExecutionDomain {
 
     pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
         match &self.kind {
-            DomainKind::AmbientDefault => None,
+            DomainKind::AmbientDefault { .. } => None,
             DomainKind::Explicit { stream, mr, .. } => Some(cudf_sys::cudf_exec_options_t {
                 struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
                 stream: stream.as_raw() as *mut c_void,
@@ -165,14 +211,14 @@ impl ExecutionDomain {
 
     pub(crate) fn explicit_stream(&self) -> Option<&CudaStream> {
         match &self.kind {
-            DomainKind::AmbientDefault => None,
+            DomainKind::AmbientDefault { .. } => None,
             DomainKind::Explicit { stream, .. } => Some(stream.as_ref()),
         }
     }
 
     pub(crate) fn explicit_memory_resource(&self) -> Option<&DeviceMemoryResource> {
         match &self.kind {
-            DomainKind::AmbientDefault => None,
+            DomainKind::AmbientDefault { .. } => None,
             DomainKind::Explicit { mr, .. } => Some(mr.as_ref()),
         }
     }
@@ -184,7 +230,7 @@ impl ExecutionDomain {
         operation: &'static str,
     ) -> Result<Arc<Self>> {
         match &input.kind {
-            DomainKind::AmbientDefault => {
+            DomainKind::AmbientDefault { .. } => {
                 if override_stream.is_some() || override_mr.is_some() {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
@@ -198,8 +244,9 @@ impl ExecutionDomain {
 
                 Ok(Arc::clone(input))
             },
-            DomainKind::Explicit { stream, mr, identity } => Ok(Arc::new(Self {
+            DomainKind::Explicit { device, stream, mr, identity } => Ok(Arc::new(Self {
                 kind: DomainKind::Explicit {
+                    device: *device,
                     stream: override_stream
                         .map(|stream| Arc::new(stream.clone()))
                         .unwrap_or_else(|| Arc::clone(stream)),
@@ -212,7 +259,10 @@ impl ExecutionDomain {
 
     pub(crate) fn same_provenance(left: &Arc<Self>, right: &Arc<Self>) -> bool {
         match (&left.kind, &right.kind) {
-            (DomainKind::AmbientDefault, DomainKind::AmbientDefault) => true,
+            (
+                DomainKind::AmbientDefault { device_snapshot: left_dev },
+                DomainKind::AmbientDefault { device_snapshot: right_dev },
+            ) => left_dev == right_dev,
             (
                 DomainKind::Explicit { stream: left_stream, mr: left_mr, .. },
                 DomainKind::Explicit { stream: right_stream, mr: right_mr, .. },

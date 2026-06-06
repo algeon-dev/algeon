@@ -359,10 +359,10 @@ fn normalize_manifest_error_kind(err: &cudf::Error, operation_kind: &'static str
     let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
 
     match err.kind() {
-        cudf::ErrorKind::InvalidOperation if has_column_name && matches!(
-            operation_kind,
-            "select" | "rename" | "sort_values" | "filter_eq" | "drop_nulls"
-        ) => {
+        cudf::ErrorKind::InvalidOperation
+            if has_column_name
+                && matches!(operation_kind, "select" | "rename" | "sort_values" | "filter_eq" | "drop_nulls") =>
+        {
             "column_not_found".into()
         },
         cudf::ErrorKind::InvalidOperation | cudf::ErrorKind::TypeError | cudf::ErrorKind::NullError => {
