@@ -445,12 +445,14 @@ async fn collect_native_with_handle(
         .build();
     let ctx = SessionContext::new_with_state(state);
     let loaded = load_glue_table(config.glue.clone()).await.map_err(DataFusionError::from)?;
-    let provider = CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-        loaded.table,
-        glue_catalog_config(&config.glue).parquet_read_strategy_config(),
-    )
-    .map_err(DataFusionError::from)?
-    .with_catalog_type("glue");
+    let source_storage_profile = glue_catalog_config(&config.glue).source_storage_profile_from_env();
+    let parquet_read_strategy_config = glue_catalog_config(&config.glue)
+        .parquet_read_strategy_config()
+        .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
+    let provider =
+        CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(loaded.table, parquet_read_strategy_config)
+            .map_err(DataFusionError::from)?
+            .with_catalog_type("glue");
     ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
     let df = ctx.sql(&config.sql).await?;
     let plan = df.create_physical_plan().await?;

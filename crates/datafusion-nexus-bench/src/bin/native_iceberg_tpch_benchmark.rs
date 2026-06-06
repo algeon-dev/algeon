@@ -25,8 +25,8 @@ use tokio::process::Command;
 
 type BenchmarkResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 3;
-const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
+const REPORT_SCHEMA_VERSION: u32 = 7;
+const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tlakehouse_cache_read_mode\tlakehouse_cache_fill_mode\tsource_fallback_reason\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tnative_source_read_runtime_rows\tlakehouse_cache_fill_event_snapshot_rows\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
 
 const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS";
 const WARMUPS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_WARMUPS";
@@ -822,6 +822,9 @@ impl IcebergTpchBenchmarkRow {
             empty_as_none(&row.diagnostics.source_decode_input),
             empty_as_none(&row.diagnostics.credential_mode),
             empty_as_none(&row.diagnostics.lakehouse_cache_status),
+            empty_as_none(&row.diagnostics.lakehouse_cache_read_mode),
+            empty_as_none(&row.diagnostics.lakehouse_cache_fill_mode),
+            empty_as_none(&row.diagnostics.source_fallback_reason),
             row.diagnostics.direct_device_read_disposition.code().to_string(),
             object_store_staging_mode_code(row.staging_summary.mode).to_string(),
             object_store_staging_status_code(row.staging_summary.status).to_string(),
@@ -832,6 +835,8 @@ impl IcebergTpchBenchmarkRow {
             optional_u128(row.native_runtime_elapsed_ms),
             optional_usize(row.native_output_rows),
             optional_usize(row.native_output_batches),
+            row.native_source_read_runtime_rows.clone(),
+            row.lakehouse_cache_fill_event_snapshot_rows.clone(),
             row.cpu_runtime_outcome.as_str().to_string(),
             optional_u128(row.cpu_runtime_elapsed_ms),
             optional_usize(row.cpu_output_rows),

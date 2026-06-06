@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use datafusion_nexus::{
     NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
-    TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
-    TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
-    resolve_table_format_parquet_source,
+    NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow, TableFormat, TableFormatDataFile,
+    TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatReadCapability, TableFormatScanPlan,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
 };
 use native_iceberg_smoke_report::{
     CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, ObjectStoreStagingMode,
@@ -300,18 +300,47 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         source_fetch_concurrency_wait_time_ns: Some(6_000_000),
         source_fetch_time_ns: Some(7_250_000),
         source_decode_time_ns: Some(8_500_000),
+        source_read_runtime_rows: vec![NativeSourceReadRuntimeMetricRow {
+            source_node_id: "source-0".to_string(),
+            read_kind: "chunk".to_string(),
+            read_strategy: "remote_direct".to_string(),
+            parquet_read_input_kind: "remote_path".to_string(),
+            remote_read_mode: "require_direct".to_string(),
+            parquet_read_backend: "kvikio_remote".to_string(),
+            remote_backend_build_status: "kvikio_remote_io_enabled".to_string(),
+            remote_read_bytes: Some(2048),
+            remote_read_range_count: Some(3),
+            device_read_support: "supported".to_string(),
+            ..Default::default()
+        }],
+        lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
+            outcome: "completed".to_string(),
+            bytes: Some(4096),
+            elapsed_ns: 9_000_000,
+            cache_path_hash: "cache123".to_string(),
+            stable_id_hash: "stable456".to_string(),
+            file_index: Some(0),
+            error_code: "none".to_string(),
+            error_kind: "none".to_string(),
+            error_status: "none".to_string(),
+            error_operation: "none".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     });
     row.finalize_count_parity_if_needed();
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row.clone()] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=6\n"));
+    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=10\n"));
     assert!(tsv.contains("\tnative_source_read_capability\t"));
     assert!(tsv.contains("\tsource_read_strategy\t"));
     assert!(tsv.contains("\tsource_decode_input\t"));
     assert!(tsv.contains("\tcredential_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_status\t"));
+    assert!(tsv.contains("\tlakehouse_cache_read_mode\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_mode\t"));
+    assert!(tsv.contains("\tsource_fallback_reason\t"));
     assert!(tsv.contains("\tdirect_device_read_disposition\t"));
     assert!(tsv.contains("\tobject_store_staging_mode\t"));
     assert!(tsv.contains("\tobject_store_staging_status\t"));
@@ -324,8 +353,13 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert!(tsv.contains("\tparity_status\t"));
     assert!(tsv.contains("\tsource_fetch_bytes\tsource_fetch_count\t"));
     assert!(tsv.contains("\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\t"));
+    assert!(tsv.contains("\tnative_source_read_runtime_rows\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_event_snapshot_rows\t"));
     assert_eq!(tsv_field(&tsv, "source_fetch_bytes"), "1024");
     assert_eq!(tsv_field(&tsv, "source_fetch_count"), "2");
+    assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("remote_read_bytes=2048"));
+    assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("outcome=completed"));
+    assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("bytes=4096"));
     assert_eq!(tsv_field(&tsv, "host_fetch_budget_wait_time_ms"), "5.000");
     assert_eq!(tsv_field(&tsv, "source_fetch_concurrency_wait_time_ms"), "6.000");
     assert_eq!(tsv_field(&tsv, "source_fetch_time_ms"), "7.250");
@@ -334,6 +368,9 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert_eq!(tsv_field(&tsv, "source_decode_input"), "filepath");
     assert_eq!(tsv_field(&tsv, "credential_mode"), "none");
     assert_eq!(tsv_field(&tsv, "lakehouse_cache_status"), "disabled");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_read_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_fill_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "source_fallback_reason"), "none");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "auto");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "not_needed");
     assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
@@ -352,7 +389,7 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
 }
 
 #[test]
-fn report_tsv_records_direct_s3_as_host_buffer_native_without_staging() {
+fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
     let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
         .with_snapshot_id("123")
         .with_catalog_type("aws_glue")
@@ -391,8 +428,8 @@ fn report_tsv_records_direct_s3_as_host_buffer_native_without_staging() {
 
     let tsv = report.to_tsv();
     assert_eq!(tsv_field(&tsv, "native_source_read_capability"), "object_store:s3");
-    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_host_buffer");
-    assert_eq!(tsv_field(&tsv, "source_decode_input"), "host_buffer");
+    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_direct");
+    assert_eq!(tsv_field(&tsv, "source_decode_input"), "filepath");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "disabled");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "direct_s3_native");
     assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
