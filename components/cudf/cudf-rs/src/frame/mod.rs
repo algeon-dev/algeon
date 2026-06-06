@@ -5,7 +5,7 @@ pub mod series;
 
 pub use dataframe::{
     ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
-    DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataFrameView, DataTypeCount, DistinctOptions,
-    DropNaOptions, InfoDetail,
+    DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions,
+    InfoDetail,
 };
-pub use series::{IntoSeries, Series, SeriesView};
+pub use series::{IntoSeries, Series};

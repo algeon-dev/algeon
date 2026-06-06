@@ -20,8 +20,8 @@ fn test_head_basic() {
 
     assert_eq!(h.num_rows(), 2);
     assert_eq!(h.num_columns(), 2);
-    assert_eq!(h.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20]);
-    assert_eq!(h.series_view("val").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0]);
+    assert_eq!(h.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20]);
+    assert_eq!(h.series("val").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0]);
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_head_clamps_to_num_rows() {
     let h = df.head(100).unwrap();
 
     assert_eq!(h.num_rows(), 5);
-    assert_eq!(h.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
+    assert_eq!(h.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
 #[test]
@@ -62,8 +62,8 @@ fn test_tail_basic() {
     let t = df.tail(2).unwrap();
 
     assert_eq!(t.num_rows(), 2);
-    assert_eq!(t.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
-    assert_eq!(t.series_view("val").unwrap().to_vec::<f64>().unwrap(), vec![4.0, 5.0]);
+    assert_eq!(t.series("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
+    assert_eq!(t.series("val").unwrap().to_vec::<f64>().unwrap(), vec![4.0, 5.0]);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn test_tail_clamps_to_num_rows() {
     let t = df.tail(100).unwrap();
 
     assert_eq!(t.num_rows(), 5);
-    assert_eq!(t.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
+    assert_eq!(t.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
 #[test]
@@ -101,8 +101,8 @@ fn test_slice_basic() {
     let s = df.slice(1, 2).unwrap();
 
     assert_eq!(s.num_rows(), 2);
-    assert_eq!(s.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
-    assert_eq!(s.series_view("val").unwrap().to_vec::<f64>().unwrap(), vec![2.0, 3.0]);
+    assert_eq!(s.series("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(s.series("val").unwrap().to_vec::<f64>().unwrap(), vec![2.0, 3.0]);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn test_slice_clamps_length() {
     let s = df.slice(3, 100).unwrap();
 
     assert_eq!(s.num_rows(), 2);
-    assert_eq!(s.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
+    assert_eq!(s.series("id").unwrap().to_vec::<i32>().unwrap(), vec![40, 50]);
 }
 
 #[test]

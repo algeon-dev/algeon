@@ -1,11 +1,12 @@
-//! P3-T: Accessor naming consistency tests (TDD)
+//! Accessor naming consistency tests
 //!
-//! Validates the target accessor naming scheme:
-//! - `DataFrame::series_view()` — replaces `column()`, returns `SeriesView`
-//! - `Series::as_column()` — replaces `column()`, returns `&Column`
-//! - `Series::into_inner()` — replaces `column_arc()`, consumes and returns `Arc<Column>`
-//! - `DataFrameView::series_view()` — returns `Err` on miss (consistent with DataFrame)
-//! - `DataFrameView::contains()` — returns `bool`
+//! Validates the accessor naming scheme:
+//! - `DataFrame::series()` — returns owned `Series`
+//! - `DataFrame::get()` — probe access, returns `Ok(None)` on miss
+//! - `DataFrame::contains()` — existence check
+//! - `DataFrame::iter_series()` — schema-ordered iteration
+//! - `Series::as_column()` — returns `&Column`
+//! - `Series::into_inner()` — consumes and returns `Arc<Column>`
 //!
 //! This file covers the current accessor naming surface and keeps the
 //! high-level/low-level accessor boundary explicit.
@@ -23,41 +24,10 @@ fn sample_df() -> DataFrame {
 }
 
 // ===========================================================================
-// 1. DataFrame::series_view() — hit
+// 1. DataFrame::series() — hit
 // ===========================================================================
 
-/// `series_view()` returns a `SeriesView` for an existing column.
-#[test]
-fn test_dataframe_series_view_hit() {
-    let df = sample_df();
-    let sv = df.series_view("id").unwrap();
-
-    assert_eq!(sv.name(), Some("id"));
-    assert_eq!(sv.len().unwrap(), 3);
-    assert_eq!(sv.data_type().unwrap().id(), TypeId::Int32);
-    assert_eq!(sv.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-// ===========================================================================
-// 2. DataFrame::series_view() — miss
-// ===========================================================================
-
-/// `series_view()` returns `Err` when the column does not exist.
-#[test]
-fn test_dataframe_series_view_miss() {
-    let df = sample_df();
-    let result = df.series_view("nonexistent");
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.to_string().contains("not found"), "error should mention 'not found': {err}");
-}
-
-// ===========================================================================
-// 3. DataFrame::series() — hit (already exists)
-// ===========================================================================
-
-/// `series()` returns an owned `Series` for an existing column.
+/// `series()` returns a `Series` for an existing column.
 #[test]
 fn test_dataframe_series_hit() {
     let df = sample_df();
@@ -66,23 +36,11 @@ fn test_dataframe_series_hit() {
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-
-    let view = s.view().unwrap();
-    assert_eq!(view.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-/// `series()` and `series_view()` refer to the same device buffer.
-#[test]
-fn test_dataframe_series_and_series_view_share_device_data() {
-    let df = sample_df();
-    let view_ptr = df.series_view("id").unwrap().device_data_ptr().unwrap();
-    let series_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
-
-    assert_eq!(view_ptr, series_ptr, "owned and borrowed accessors should share the same GPU buffer");
+    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
-// 4. DataFrame::series() — miss (already exists)
+// 2. DataFrame::series() — miss
 // ===========================================================================
 
 /// `series()` returns `Err` when the column does not exist.
@@ -97,7 +55,93 @@ fn test_dataframe_series_miss() {
 }
 
 // ===========================================================================
-// 5. Series::as_column() — explicit "drop to core"
+// 3. Two series() calls share the same device buffer
+// ===========================================================================
+
+/// Two `series()` calls return `Series` backed by the same GPU buffer.
+#[test]
+fn test_dataframe_series_share_device_data() {
+    let df = sample_df();
+    let ptr1 = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+
+    assert_eq!(ptr1, ptr2, "two series() calls should share the same GPU buffer");
+}
+
+// ===========================================================================
+// 4. DataFrame::get() — probe access
+// ===========================================================================
+
+/// `get()` returns `Ok(None)` on a missing column name.
+#[test]
+fn test_dataframe_get_miss() {
+    let df = sample_df();
+    let result = df.get("nonexistent").unwrap();
+    assert!(result.is_none());
+}
+
+/// `get()` returns `Ok(Some(Series))` for an existing column.
+#[test]
+fn test_dataframe_get_hit() {
+    let df = sample_df();
+    let s = df.get("id").unwrap().unwrap();
+    assert_eq!(s.name(), Some("id"));
+    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+// ===========================================================================
+// 5. DataFrame::contains()
+// ===========================================================================
+
+/// `contains()` returns `true` for existing columns, `false` otherwise.
+#[test]
+fn test_dataframe_contains() {
+    let df = sample_df();
+
+    assert!(df.contains("id"));
+    assert!(df.contains("score"));
+    assert!(!df.contains("nonexistent"));
+}
+
+// ===========================================================================
+// 6. DataFrame::iter_series() — schema-ordered iteration
+// ===========================================================================
+
+/// `iter_series()` yields Series in schema (insertion) order.
+#[test]
+fn test_dataframe_iter_series_preserves_schema_order() {
+    let df = sample_df(); // columns: "id", "score"
+    let names: Vec<_> = df.iter_series().map(|s| s.unwrap().name().unwrap().to_string()).collect();
+
+    assert_eq!(names, vec!["id", "score"]);
+}
+
+/// `iter_series()` assigns the DataFrame column name to each Series.
+#[test]
+fn test_dataframe_iter_series_assigns_column_names() {
+    let df = sample_df();
+    let items: Vec<_> = df.iter_series().collect::<Result<Vec<_>, _>>().unwrap();
+
+    assert_eq!(items[0].name(), Some("id"));
+    assert_eq!(items[0].to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(items[1].name(), Some("score"));
+    assert_eq!(items[1].to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+}
+
+/// `iter_series()` shares the underlying device buffer (Arc-sharing, no GPU copy).
+#[test]
+fn test_dataframe_iter_series_shares_device_buffers() {
+    let df = sample_df();
+    let items: Vec<_> = df.iter_series().collect::<Result<Vec<_>, _>>().unwrap();
+
+    let iter_ptr = items[0].as_column_view().unwrap().device_data_ptr().unwrap();
+    let direct_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+
+    assert_eq!(iter_ptr, direct_ptr, "iter_series() should share the same GPU buffer as series()");
+}
+
+// ===========================================================================
+// 7. Series::as_column() — explicit "drop to core"
 // ===========================================================================
 
 /// `as_column()` returns a `&Column` reference from a `Series`.
@@ -113,7 +157,7 @@ fn test_series_as_column() {
 }
 
 // ===========================================================================
-// 6. Series::into_inner() — consumes and returns Arc<Column>
+// 7. Series::into_inner() — consumes and returns Arc<Column>
 // ===========================================================================
 
 /// `into_inner()` consumes the `Series` and returns the underlying `Arc<Column>`.
@@ -129,49 +173,17 @@ fn test_series_into_inner() {
 }
 
 // ===========================================================================
-// 7. DataFrameView::series_view() — miss returns Err
+// 8. DataFrame::series() works for borrowing pattern
 // ===========================================================================
 
-/// `DataFrameView::series_view()` returns `Err` on a missing column name,
-/// consistent with `DataFrame::series_view()`.
+/// `DataFrame::series()` returns a `Series` for borrowing.
 #[test]
-fn test_dataframe_view_series_view_miss() {
+fn test_series_access_works() {
     let df = sample_df();
-    let view = df.view();
-    let result = view.series_view("nonexistent");
+    let s = df.series("score").unwrap();
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.to_string().contains("not found"), "error should mention 'not found': {err}");
-}
-
-// ===========================================================================
-// 8. DataFrameView::contains()
-// ===========================================================================
-
-/// `DataFrameView::contains()` returns `true` for existing columns, `false` otherwise.
-#[test]
-fn test_dataframe_view_contains() {
-    let df = sample_df();
-    let view = df.view();
-
-    assert!(view.contains("id"));
-    assert!(view.contains("score"));
-    assert!(!view.contains("nonexistent"));
-}
-
-// ===========================================================================
-// 10. DataFrame::series_view() works
-// ===========================================================================
-
-/// `DataFrame::series_view()` returns a `SeriesView` for borrowing.
-#[test]
-fn test_series_view_works() {
-    let df = sample_df();
-    let sv = df.series_view("score").unwrap();
-
-    assert_eq!(sv.name(), Some("score"));
-    assert_eq!(sv.len().unwrap(), 3);
-    assert_eq!(sv.data_type().unwrap().id(), TypeId::Float64);
-    assert_eq!(sv.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(s.name(), Some("score"));
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(s.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }

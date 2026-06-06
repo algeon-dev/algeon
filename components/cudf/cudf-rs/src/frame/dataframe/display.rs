@@ -13,10 +13,10 @@ impl std::fmt::Debug for DataFrame {
         // Build a columns summary: [(name, type)] without GPU data copy.
         let columns_info: Vec<(&str, String)> = self
             .columns
-            .keys()
-            .map(|name| {
-                let type_str = self
-                    .series_view(name)
+            .iter()
+            .map(|(name, col)| {
+                let type_str = col
+                    .view()
                     .and_then(|cv| cv.data_type())
                     .map(|dt| format!("{:?}", dt.id()))
                     .unwrap_or_else(|_| "?".to_string());
@@ -65,7 +65,12 @@ impl DisplayColumnMetadata {
 
 /// Build one display column schema summary from a named DataFrame column.
 fn build_display_column_metadata(df: &DataFrame, name: &str) -> DisplayColumnMetadata {
-    let cv = match df.series_view(name) {
+    let col = match df.columns.get(name) {
+        Some(col) => col,
+        None => return DisplayColumnMetadata::unknown(),
+    };
+
+    let cv = match col.view() {
         Ok(cv) => cv,
         Err(_) => return DisplayColumnMetadata::unknown(),
     };

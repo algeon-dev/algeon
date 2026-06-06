@@ -56,10 +56,15 @@ impl DataFrame {
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
         let names = self.column_names();
 
+        let col_map = self.columns_map();
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
             .iter()
             .map(|&name| {
-                let cv = self.series_view(name)?;
+                let col = col_map.get(name).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                        .with_operation("dataframe::to_record_batch")
+                })?;
+                let cv = col.view()?;
                 let type_id = cv.data_type()?.id();
                 let nullable = cv.nullable()?;
                 let arr = column_view_to_arrow(&cv, type_id)?;

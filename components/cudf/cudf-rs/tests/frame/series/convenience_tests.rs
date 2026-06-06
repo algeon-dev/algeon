@@ -24,7 +24,7 @@ fn test_is_null_all_valid() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn test_is_null_with_nulls() {
     let mask = s.is_null().unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn test_is_not_null_all_valid() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, true]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, true]);
 }
 
 #[test]
@@ -62,14 +62,14 @@ fn test_is_not_null_with_nulls() {
     let mask = s.is_not_null().unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
 fn test_is_null_and_is_not_null_are_complementary() {
     let s = Series::new_nullable::<i32>("x", &[1, 0, 3, 0], &[true, false, true, false]).unwrap();
-    let nulls = s.is_null().unwrap().view().unwrap().to_vec::<bool>().unwrap();
-    let valids = s.is_not_null().unwrap().view().unwrap().to_vec::<bool>().unwrap();
+    let nulls = s.is_null().unwrap().to_vec::<bool>().unwrap();
+    let valids = s.is_not_null().unwrap().to_vec::<bool>().unwrap();
 
     for (n, v) in nulls.iter().zip(valids.iter()) {
         assert_ne!(n, v, "is_null and is_not_null must be complementary");
@@ -88,7 +88,7 @@ fn test_astype_i32_to_f64() {
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(casted.len(), 3);
     assert_eq!(casted.name(), Some("x"));
-    assert_eq!(casted.view().unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
+    assert_eq!(casted.to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn test_astype_f64_to_i32_truncates() {
     let casted = s.astype(TypeId::Int32).unwrap();
 
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(casted.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(casted.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn test_astype_same_type_is_no_op_copy() {
     let casted = s.astype(TypeId::Int32).unwrap();
 
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(casted.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(casted.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -139,7 +139,7 @@ fn test_fillna_replaces_nulls_with_scalar() {
     assert_eq!(filled.len(), 3);
     assert_eq!(filled.null_count(), 0);
     assert_eq!(filled.name(), Some("x"));
-    assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn test_fillna_no_nulls_returns_same_values() {
     let filled = s.fillna(0i32).unwrap();
 
     assert_eq!(filled.null_count(), 0);
-    assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn test_fillna_all_nulls() {
     let filled = s.fillna(42i32).unwrap();
 
     assert_eq!(filled.null_count(), 0);
-    assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![42, 42, 42]);
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn test_fillna_f64() {
     let s = Series::new_nullable::<f64>("x", &[1.0, 0.0, 3.0], &[true, false, true]).unwrap();
     let filled = s.fillna(999.0f64).unwrap();
 
-    assert_eq!(filled.view().unwrap().to_vec::<f64>().unwrap(), vec![1.0, 999.0, 3.0]);
+    assert_eq!(filled.to_vec::<f64>().unwrap(), vec![1.0, 999.0, 3.0]);
 }
 
 // ===========================================================================
@@ -181,7 +181,7 @@ fn test_fillna_with_series_replaces_nulls() {
     assert_eq!(filled.len(), 3);
     assert_eq!(filled.null_count(), 0);
     assert_eq!(filled.name(), Some("x"));
-    assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 200, 30]);
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![10, 200, 30]);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn test_fillna_with_series_no_nulls() {
     let fill = Series::new::<i32>("fill", &[100, 200, 300]).unwrap();
     let filled = s.fillna_with_series(&fill).unwrap();
 
-    assert_eq!(filled.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -206,7 +206,7 @@ fn test_isin_basic() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 5);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn test_isin_no_matches() {
     let values = Series::new::<i32>("vals", &[10, 20]).unwrap();
     let mask = s.isin(&values).unwrap();
 
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn test_isin_all_match() {
     let values = Series::new::<i32>("vals", &[3, 1, 2]).unwrap();
     let mask = s.isin(&values).unwrap();
 
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, true]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, true]);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn test_isin_strings() {
     let mask = s.isin(&values).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
@@ -273,7 +273,7 @@ fn test_unique_removes_duplicates() {
     assert_eq!(uniq.name(), Some("x"));
     assert_eq!(uniq.dtype().unwrap().id(), TypeId::Int32);
 
-    let mut vals = uniq.view().unwrap().to_vec::<i32>().unwrap();
+    let mut vals = uniq.to_vec::<i32>().unwrap();
     vals.sort();
     assert_eq!(vals, vec![1, 2, 3]);
 }
@@ -283,7 +283,7 @@ fn test_unique_already_unique() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let uniq = s.unique().unwrap();
 
-    let mut vals = uniq.view().unwrap().to_vec::<i32>().unwrap();
+    let mut vals = uniq.to_vec::<i32>().unwrap();
     vals.sort();
     assert_eq!(vals, vec![1, 2, 3]);
 }
@@ -303,7 +303,7 @@ fn test_unique_strings() {
 
     assert_eq!(uniq.dtype().unwrap().id(), TypeId::String);
 
-    let mut vals = uniq.view().unwrap().to_strings().unwrap();
+    let mut vals = uniq.to_strings().unwrap();
     vals.sort();
     assert_eq!(vals, vec!["a", "b", "c"]);
 }
@@ -351,7 +351,7 @@ fn test_factorize_basic() {
     assert_eq!(uniques.name(), Some("x_uniques"));
 
     // Verify round-trip: same input values get same codes.
-    let code_vals = codes.view().unwrap().to_vec::<i32>().unwrap();
+    let code_vals = codes.to_vec::<i32>().unwrap();
     // codes[0] == codes[2] (both map to 10)
     assert_eq!(code_vals[0], code_vals[2]);
     // codes[1] == codes[4] (both map to 20)
@@ -362,7 +362,7 @@ fn test_factorize_basic() {
     assert_ne!(code_vals[0], code_vals[3]);
 
     // Uniques should contain exactly {10, 20, 30}.
-    let mut uniq_vals = uniques.view().unwrap().to_vec::<i32>().unwrap();
+    let mut uniq_vals = uniques.to_vec::<i32>().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec![10, 20, 30]);
 }
@@ -377,11 +377,11 @@ fn test_factorize_strings() {
     assert_eq!(codes.name(), Some("x_codes"));
     assert_eq!(uniques.name(), Some("x_uniques"));
 
-    let code_vals = codes.view().unwrap().to_vec::<i32>().unwrap();
+    let code_vals = codes.to_vec::<i32>().unwrap();
     // codes[0] == codes[2] (both map to "a")
     assert_eq!(code_vals[0], code_vals[2]);
 
-    let mut uniq_vals = uniques.view().unwrap().to_strings().unwrap();
+    let mut uniq_vals = uniques.to_strings().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec!["a", "b", "c"]);
 }
@@ -408,7 +408,7 @@ fn test_sort_values_ascending() {
     assert_eq!(sorted.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(sorted.len(), 3);
     assert_eq!(sorted.name(), Some("x"));
-    assert_eq!(sorted.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(sorted.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -416,7 +416,7 @@ fn test_sort_values_descending() {
     let s = Series::new::<i32>("x", &[30, 10, 20]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_descending(vec![true])).unwrap();
 
-    assert_eq!(sorted.view().unwrap().to_vec::<i32>().unwrap(), vec![30, 20, 10]);
+    assert_eq!(sorted.to_vec::<i32>().unwrap(), vec![30, 20, 10]);
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn test_sort_values_stable() {
     let s = Series::new::<i32>("x", &[3, 1, 2]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_stable(true)).unwrap();
 
-    assert_eq!(sorted.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(sorted.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -432,7 +432,7 @@ fn test_sort_values_f64() {
     let s = Series::new::<f64>("x", &[3.3, 1.1, 2.2]).unwrap();
     let sorted = s.sort_values(SortOptions::new()).unwrap();
 
-    assert_eq!(sorted.view().unwrap().to_vec::<f64>().unwrap(), vec![1.1, 2.2, 3.3]);
+    assert_eq!(sorted.to_vec::<f64>().unwrap(), vec![1.1, 2.2, 3.3]);
 }
 
 #[test]
@@ -448,7 +448,7 @@ fn test_sort_values_with_nulls() {
     let s = Series::new_nullable::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     // Default: ascending, nulls last
     let sorted = s.sort_values(SortOptions::new()).unwrap();
-    let view = sorted.view().unwrap();
+    let view = sorted.as_column_view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     // The valid values should sort ascending, with the null row moved to the end.
@@ -463,7 +463,7 @@ fn test_sort_values_with_nulls() {
 fn test_sort_values_nulls_first() {
     let s = Series::new_nullable::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_nulls_first(vec![true])).unwrap();
-    let view = sorted.view().unwrap();
+    let view = sorted.as_column_view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     assert_eq!(sorted.null_count(), 1);

@@ -21,7 +21,7 @@ fn sample_df() -> DataFrame {
 
 /// Get device data pointer for a named column in a DataFrame.
 fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.series_view(name).unwrap().device_data_ptr().unwrap()
+    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
 }
 
 // ===========================================================================
@@ -54,8 +54,8 @@ fn to_table_copy_source_still_usable() {
     let df = sample_df();
     let _table = df.to_table_copy().unwrap();
 
-    assert_eq!(df.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================

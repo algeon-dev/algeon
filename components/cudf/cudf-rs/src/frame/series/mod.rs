@@ -10,7 +10,5 @@ mod naming;
 mod ops;
 mod owned;
 mod reduction;
-mod view;
 
 pub use owned::{IntoSeries, Series};
-pub use view::SeriesView;

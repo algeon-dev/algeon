@@ -19,8 +19,8 @@ fn groupby_sum() {
     assert_eq!(result.num_rows(), 2);
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let sum_data: Vec<i64> = result.series_view("value_sum").unwrap().to_vec::<i64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let sum_data: Vec<i64> = result.series("value_sum").unwrap().to_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -37,8 +37,8 @@ fn groupby_mean() {
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let mean_data: Vec<f64> = result.series_view("value_mean").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let mean_data: Vec<f64> = result.series("value_mean").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(mean_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -55,8 +55,8 @@ fn groupby_count() {
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let count_data: Vec<i32> = result.series_view("value_count").unwrap().to_vec::<i32>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let count_data: Vec<i32> = result.series("value_count").unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(count_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -77,8 +77,8 @@ fn groupby_alias() {
 
     assert_eq!(result.column_names(), vec!["key", "total"]);
 
-    let sum_data: Vec<i64> = result.series_view("total").unwrap().to_vec::<i64>().unwrap();
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
+    let sum_data: Vec<i64> = result.series("total").unwrap().to_vec::<i64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -129,10 +129,10 @@ fn groupby_multi_column_agg_ordering() {
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);
 
-    let keys: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let a_sum: Vec<i64> = result.series_view("a_sum").unwrap().to_vec::<i64>().unwrap();
-    let b_sum: Vec<i64> = result.series_view("b_sum").unwrap().to_vec::<i64>().unwrap();
-    let a_min: Vec<i64> = result.series_view("a_min").unwrap().to_vec::<i64>().unwrap();
+    let keys: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let a_sum: Vec<i64> = result.series("a_sum").unwrap().to_vec::<i64>().unwrap();
+    let b_sum: Vec<i64> = result.series("b_sum").unwrap().to_vec::<i64>().unwrap();
+    let a_min: Vec<i64> = result.series("a_min").unwrap().to_vec::<i64>().unwrap();
 
     let mut rows: Vec<(i32, i64, i64, i64)> = keys
         .into_iter()
@@ -203,8 +203,8 @@ fn groupby_sum_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let sum_data: Vec<i64> = result.series_view("value_sum").unwrap().to_vec::<i64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let sum_data: Vec<i64> = result.series("value_sum").unwrap().to_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -221,8 +221,8 @@ fn groupby_mean_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let mean_data: Vec<f64> = result.series_view("value_mean").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let mean_data: Vec<f64> = result.series("value_mean").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(mean_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -239,8 +239,8 @@ fn groupby_count_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let count_data: Vec<i32> = result.series_view("value_count").unwrap().to_vec::<i32>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let count_data: Vec<i32> = result.series("value_count").unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(count_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -262,9 +262,9 @@ fn groupby_sum_shortcut_multi_columns() {
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum"]);
 
-    let keys: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let a_sum: Vec<i64> = result.series_view("a_sum").unwrap().to_vec::<i64>().unwrap();
-    let b_sum: Vec<i64> = result.series_view("b_sum").unwrap().to_vec::<i64>().unwrap();
+    let keys: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let a_sum: Vec<i64> = result.series("a_sum").unwrap().to_vec::<i64>().unwrap();
+    let b_sum: Vec<i64> = result.series("b_sum").unwrap().to_vec::<i64>().unwrap();
 
     let mut rows: Vec<(i32, i64, i64)> =
         keys.into_iter().zip(a_sum.into_iter().zip(b_sum)).map(|(k, (a, b))| (k, a, b)).collect();
@@ -312,8 +312,8 @@ fn groupby_median() {
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let med_data: Vec<f64> = result.series_view("value_median").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let med_data: Vec<f64> = result.series("value_median").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(med_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -330,8 +330,8 @@ fn groupby_median_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let med_data: Vec<f64> = result.series_view("value_median").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let med_data: Vec<f64> = result.series("value_median").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(med_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -354,8 +354,8 @@ fn groupby_nunique() {
 
     assert_eq!(result.column_names(), vec!["key", "value_nunique"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let nu_data: Vec<i32> = result.series_view("value_nunique").unwrap().to_vec::<i32>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let nu_data: Vec<i32> = result.series("value_nunique").unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(nu_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -372,8 +372,8 @@ fn groupby_nunique_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_nunique"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let nu_data: Vec<i32> = result.series_view("value_nunique").unwrap().to_vec::<i32>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let nu_data: Vec<i32> = result.series("value_nunique").unwrap().to_vec::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(nu_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -397,8 +397,8 @@ fn groupby_std_ddof1() {
 
     assert_eq!(result.column_names(), vec!["key", "value_std"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let std_data: Vec<f64> = result.series_view("value_std").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let std_data: Vec<f64> = result.series("value_std").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(std_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -420,8 +420,8 @@ fn groupby_std_ddof0() {
 
     let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 0 })]).unwrap();
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let std_data: Vec<f64> = result.series_view("value_std").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let std_data: Vec<f64> = result.series("value_std").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(std_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -441,8 +441,8 @@ fn groupby_std_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_std"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let std_data: Vec<f64> = result.series_view("value_std").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let std_data: Vec<f64> = result.series("value_std").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(std_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -467,8 +467,8 @@ fn groupby_variance_ddof1() {
 
     assert_eq!(result.column_names(), vec!["key", "value_var"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let var_data: Vec<f64> = result.series_view("value_var").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let var_data: Vec<f64> = result.series("value_var").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(var_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -487,8 +487,8 @@ fn groupby_variance_ddof0() {
 
     let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 0 })]).unwrap();
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let var_data: Vec<f64> = result.series_view("value_var").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let var_data: Vec<f64> = result.series("value_var").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(var_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -508,8 +508,8 @@ fn groupby_var_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_var"]);
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let var_data: Vec<f64> = result.series_view("value_var").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let var_data: Vec<f64> = result.series("value_var").unwrap().to_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(var_data).collect();
     pairs.sort_by_key(|&(k, _)| k);

@@ -18,11 +18,11 @@ fn test_with_column_adds_new_column() {
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     // Original column preserved.
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
     // New column present.
-    let b_vals: Vec<f64> = result.series_view("b").unwrap().to_vec::<f64>().unwrap();
+    let b_vals: Vec<f64> = result.series("b").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0]);
 }
 
@@ -41,11 +41,11 @@ fn test_with_column_replaces_existing_column() {
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     // "a" unchanged.
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
 
     // "b" replaced.
-    let b_vals: Vec<i32> = result.series_view("b").unwrap().to_vec::<i32>().unwrap();
+    let b_vals: Vec<i32> = result.series("b").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(b_vals, vec![99, 100]);
 }
 
@@ -67,7 +67,7 @@ fn test_with_column_preserves_schema_order_on_replace() {
 
     assert_eq!(result.column_names(), vec!["x", "y", "z"]);
 
-    let y_val: Vec<i32> = result.series_view("y").unwrap().to_vec::<i32>().unwrap();
+    let y_val: Vec<i32> = result.series("y").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(y_val, vec![42]);
 }
 
@@ -95,11 +95,11 @@ fn test_replace_nulls_fills_values() {
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     // "a" unchanged.
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
     // "b" has nulls replaced.
-    let b_vals: Vec<i32> = result.series_view("b").unwrap().to_vec::<i32>().unwrap();
+    let b_vals: Vec<i32> = result.series("b").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(b_vals, vec![10, 99, 30]);
 }
 
@@ -126,10 +126,10 @@ fn test_replace_nulls_preserves_other_columns() {
 
     assert_eq!(result.column_names(), vec!["a", "b", "c"]);
 
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
 
-    let c_vals: Vec<i64> = result.series_view("c").unwrap().to_vec::<i64>().unwrap();
+    let c_vals: Vec<i64> = result.series("c").unwrap().to_vec::<i64>().unwrap();
     assert_eq!(c_vals, vec![100, 200]);
 }
 
@@ -148,13 +148,13 @@ fn test_cast_column_changes_type() {
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     // "a" unchanged, still i32.
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
     // "b" cast to f64.
-    let b_type = result.series_view("b").unwrap().data_type().unwrap();
+    let b_type = result.series("b").unwrap().dtype().unwrap();
     assert_eq!(b_type.id(), TypeId::Float64);
-    let b_vals: Vec<f64> = result.series_view("b").unwrap().to_vec::<f64>().unwrap();
+    let b_vals: Vec<f64> = result.series("b").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0]);
 }
 
@@ -185,9 +185,9 @@ fn test_cast_column_preserves_schema_order() {
     assert_eq!(result.column_names(), vec!["x", "y", "z"]);
 
     // y is now Int64.
-    let y_type = result.series_view("y").unwrap().data_type().unwrap();
+    let y_type = result.series("y").unwrap().dtype().unwrap();
     assert_eq!(y_type.id(), TypeId::Int64);
-    let y_vals: Vec<i64> = result.series_view("y").unwrap().to_vec::<i64>().unwrap();
+    let y_vals: Vec<i64> = result.series("y").unwrap().to_vec::<i64>().unwrap();
     assert_eq!(y_vals, vec![2]);
 }
 
@@ -203,13 +203,13 @@ fn test_with_column_add_preserves_existing_string_column() {
 
     assert_eq!(result.column_names(), vec!["name", "a", "b"]);
 
-    let names = result.series_view("name").unwrap().to_strings().unwrap();
+    let names = result.series("name").unwrap().to_strings().unwrap();
     assert_eq!(names, vec!["alice", "bob", "cara"]);
 
-    let a_vals: Vec<i32> = result.series_view("a").unwrap().to_vec::<i32>().unwrap();
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
-    let b_vals: Vec<i64> = result.series_view("b").unwrap().to_vec::<i64>().unwrap();
+    let b_vals: Vec<i64> = result.series("b").unwrap().to_vec::<i64>().unwrap();
     assert_eq!(b_vals, vec![10, 20, 30]);
 }
 
@@ -227,10 +227,10 @@ fn test_replace_nulls_with_string_sibling_column() {
     let fill = Scalar::from_value(99i32).unwrap();
     let result = df.replace_nulls("b", &fill).unwrap();
 
-    let names = result.series_view("name").unwrap().to_strings().unwrap();
+    let names = result.series("name").unwrap().to_strings().unwrap();
     assert_eq!(names, vec!["x", "y", "z"]);
 
-    let b_vals: Vec<i32> = result.series_view("b").unwrap().to_vec::<i32>().unwrap();
+    let b_vals: Vec<i32> = result.series("b").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(b_vals, vec![10, 99, 30]);
 }
 
@@ -244,12 +244,12 @@ fn test_cast_column_with_string_sibling_column() {
 
     let result = df.cast_column("qty", &DataType::new(TypeId::Float64)).unwrap();
 
-    let names = result.series_view("name").unwrap().to_strings().unwrap();
+    let names = result.series("name").unwrap().to_strings().unwrap();
     assert_eq!(names, vec!["a", "b", "c"]);
 
-    let qty_type = result.series_view("qty").unwrap().data_type().unwrap();
+    let qty_type = result.series("qty").unwrap().dtype().unwrap();
     assert_eq!(qty_type.id(), TypeId::Float64);
 
-    let qty_vals: Vec<f64> = result.series_view("qty").unwrap().to_vec::<f64>().unwrap();
+    let qty_vals: Vec<f64> = result.series("qty").unwrap().to_vec::<f64>().unwrap();
     assert_eq!(qty_vals, vec![1.0, 2.0, 3.0]);
 }

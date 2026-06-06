@@ -78,7 +78,7 @@ fn df_fillna_with_series_with_runtime_overrides_mixed_domains() {
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
     assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_mr_value(), target_rt.memory_resource().__debug_raw_handle_value());
-    assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// v2 semantics: mixed-domain fillna_with_series succeeds via the default
@@ -107,7 +107,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// Both inputs already in the same runtime — no copy needed.
@@ -125,7 +125,7 @@ fn df_fillna_with_series_with_runtime_same_domain_works() {
     let result = df.fillna_with_series_with_runtime("val", &fill, &rt).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ fn series_fillna_with_series_with_runtime_overrides_mixed_domains() {
         result.as_column().__debug_execution_domain_mr_value(),
         target_rt.memory_resource().__debug_raw_handle_value()
     );
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// v2 semantics: mixed-domain Series::fillna_with_series succeeds via the
@@ -178,7 +178,7 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(result.as_column().__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ fn column_from_device_ptr_with_runtime_retains_explicit_domain() {
 
     // Allocate some device memory via a Series (easiest way to get a device ptr).
     let source = Series::new_with_runtime(&rt, "src", &[10i32, 20, 30]).unwrap();
-    let device_ptr = source.view().unwrap().device_data_ptr().unwrap();
+    let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
     let col = unsafe { Column::from_device_ptr_with_runtime(&rt, device_ptr, 3, TypeId::Int32).unwrap() };
@@ -243,7 +243,7 @@ fn column_from_device_ptr_with_runtime_uses_ex_ffi() {
 
     // Allocate source data in the runtime's domain.
     let source = Series::new_with_runtime(&rt, "src", &[1i64, 2, 3, 4]).unwrap();
-    let device_ptr = source.view().unwrap().device_data_ptr().unwrap();
+    let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
     let col = unsafe { Column::from_device_ptr_with_runtime(&rt, device_ptr, 4, TypeId::Int64).unwrap() };

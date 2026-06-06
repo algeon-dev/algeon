@@ -30,8 +30,6 @@
 //! - [`DataFrame`] — A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
 //! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
-//! - [`SeriesView`] — A named, borrowed view of a column.
-//! - [`DataFrameView`] — A named, borrowed view of all columns in a DataFrame.
 //!
 //! # High-Level Operations
 //!
@@ -106,10 +104,10 @@ pub use core::{
 pub use frame::{
     dataframe::{
         ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
-        DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataFrameView, DataTypeCount, DistinctOptions,
-        DropNaOptions, InfoDetail,
+        DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions,
+        InfoDetail,
     },
-    series::{IntoSeries, Series, SeriesView},
+    series::{IntoSeries, Series},
 };
 // — High-level operations —
 pub use ops::Expr;

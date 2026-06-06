@@ -9,10 +9,10 @@ fn test_dataframe_new_mismatched_column_lengths() {
 }
 
 #[test]
-fn test_dataframe_series_view_nonexistent_column() {
+fn test_dataframe_series_miss_returns_err() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let df = DataFrame::new(vec!["a".to_string()], vec![c1]).unwrap();
-    let result = df.series_view("nonexistent");
+    let result = df.series("nonexistent");
     assert!(result.is_err());
 }
 

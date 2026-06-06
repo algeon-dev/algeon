@@ -41,8 +41,8 @@ fn test_gather_with_series() {
     let indices = Series::new::<i32>("idx", &[0, 2, 4]).unwrap();
     let result = df.gather(&indices).unwrap();
     assert_eq!(result.num_rows(), 3);
-    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30, 50]);
-    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 3.0, 5.0]);
+    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30, 50]);
+    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 3.0, 5.0]);
 }
 
 #[test]
@@ -69,8 +69,8 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
-    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![3.0, 1.0]);
+    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![3.0, 1.0]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
@@ -85,7 +85,7 @@ fn test_filter_isin_with_series() {
     let result = df.filter_isin("id", &values).unwrap();
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["id", "score"]);
-    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![10, 30, 50]);
 }
@@ -111,7 +111,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
@@ -146,9 +146,9 @@ fn test_fillna_scalar_plain_value() {
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
-    assert_eq!(filled.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
+    assert_eq!(filled.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
     // Other columns unchanged.
-    assert_eq!(filled.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(filled.series("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
 #[test]
@@ -161,8 +161,8 @@ fn test_fillna_with_scalar_still_works() {
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
 
     assert_eq!(filled.num_rows(), 5);
-    assert_eq!(filled.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
-    assert_eq!(filled.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(filled.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
+    assert_eq!(filled.series("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
 #[test]
@@ -200,8 +200,8 @@ fn test_gather_columnview_still_works() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30, 50]);
-    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 3.0, 5.0]);
+    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30, 50]);
+    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 3.0, 5.0]);
     // Schema preserved.
     assert_eq!(result.column_names(), vec!["id", "score"]);
 }
@@ -218,7 +218,7 @@ fn test_filter_isin_columnview_still_works() {
     let result = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![10, 30, 50]);
     // Schema preserved.

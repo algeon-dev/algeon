@@ -1,7 +1,6 @@
 //! GPU table types: owned `Table` and borrowed `TableView`.
 //!
-//! **Advanced/Core.** Most users should use [`DataFrame`](crate::DataFrame) /
-//! [`DataFrameView`](crate::DataFrameView).
+//! **Advanced/Core.** Most users should use [`DataFrame`](crate::DataFrame).
 
 mod owned;
 mod view;

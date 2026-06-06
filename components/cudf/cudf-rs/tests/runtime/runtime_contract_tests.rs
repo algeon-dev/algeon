@@ -73,7 +73,7 @@ fn device_memory_resource_is_send_sync() {
 // ===========================================================================
 // Category 2: Negative assertions for view types
 //
-// ColumnView, TableView, and SeriesView contain raw NonNull<c_void> pointers
+// ColumnView and TableView contain raw NonNull<c_void> pointers
 // without `unsafe impl Send/Sync`. The compiler auto-derives !Send !Sync.
 //
 // We verify this with `static_assertions`-style negative tests. These use
@@ -87,7 +87,6 @@ fn device_memory_resource_is_send_sync() {
 
 assert_not_impl_any!(cudf::ColumnView<'static>: Send, Sync);
 assert_not_impl_any!(cudf::TableView<'static>: Send, Sync);
-assert_not_impl_any!(cudf::SeriesView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and kept here as the authoritative example):
@@ -98,7 +97,7 @@ assert_not_impl_any!(cudf::SeriesView<'static>: Send, Sync);
 //       view.len()  // ERROR: ColumnView is !Send
 //   });
 //
-// Similarly for TableView and SeriesView.
+// Similarly for TableView.
 
 // ===========================================================================
 // Category 3: DataFrame spawn_blocking round-trip
@@ -113,7 +112,7 @@ async fn dataframe_sort_survives_spawn_blocking() {
         .expect("sort_values failed");
 
     assert_eq!(result.num_rows(), 5);
-    let ids: Vec<i32> = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = result.series("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(ids, vec![1, 1, 3, 4, 5]);
 }
 
@@ -137,8 +136,7 @@ async fn arc_dataframe_shared_across_workers() {
         handles.push(tokio::task::spawn_blocking(move || {
             // Read-only: each worker creates its own views internally.
             let series = df.series("id").unwrap();
-            let view = series.view().unwrap();
-            view.to_vec::<i32>()
+            series.to_vec::<i32>()
         }));
     }
 
@@ -189,7 +187,7 @@ async fn series_sort_survives_spawn_blocking() {
         .expect("blocking task panicked")
         .expect("sort_values failed");
 
-    let vals: Vec<i64> = sorted.view().unwrap().to_vec::<i64>().unwrap();
+    let vals: Vec<i64> = sorted.to_vec::<i64>().unwrap();
     assert_eq!(vals, vec![10, 20, 30, 40, 50]);
 }
 
@@ -201,7 +199,7 @@ async fn series_arithmetic_in_spawn_blocking() {
     let result =
         tokio::task::spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
 
-    let vals: Vec<f64> = result.view().unwrap().to_vec::<f64>().unwrap();
+    let vals: Vec<f64> = result.to_vec::<f64>().unwrap();
     assert_eq!(vals, vec![11.0, 22.0, 33.0]);
 }
 
@@ -252,7 +250,7 @@ async fn parquet_round_trip_in_spawn_blocking() {
 async fn host_materialization_to_vec_in_spawn_blocking() {
     let df = sample_df();
     let ids = tokio::task::spawn_blocking(move || {
-        let col = df.series_view("id").unwrap();
+        let col = df.series("id").unwrap();
         col.to_vec::<i32>()
     })
     .await
@@ -294,7 +292,7 @@ async fn arrow_round_trip_across_spawn_blocking() {
         .expect("from_record_batch failed");
 
     assert_eq!(df2.num_rows(), 5);
-    let ids: Vec<i32> = df2.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = df2.series("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(ids, vec![3, 1, 4, 1, 5]);
 }
 
@@ -321,8 +319,8 @@ async fn chained_pipeline_in_spawn_blocking() {
         let agg_result = top.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
 
         // Materialize to host.
-        let key_data: Vec<i32> = agg_result.series_view("key").unwrap().to_vec::<i32>()?;
-        let sum_data: Vec<i64> = agg_result.series_view("value_sum").unwrap().to_vec::<i64>()?;
+        let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec::<i32>()?;
+        let sum_data: Vec<i64> = agg_result.series("value_sum").unwrap().to_vec::<i64>()?;
 
         let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
         pairs.sort_by_key(|&(k, _)| k);
@@ -373,11 +371,11 @@ async fn dataframe_filter_by_mask_in_spawn_blocking() {
         // Build a boolean mask: score > 20.0
         let score_series = df.series("score")?;
         let mask_series = score_series.gt_scalar(20.0f64)?;
-        let mask_view = mask_series.view()?;
+        let mask_view = mask_series.as_column_view()?;
         let filtered = df.filter_by_mask(&mask_view)?;
 
         // Materialize filtered ids to host.
-        let ids = filtered.series_view("id").unwrap().to_vec::<i32>()?;
+        let ids = filtered.series("id").unwrap().to_vec::<i32>()?;
         Ok(ids)
     })
     .await
@@ -413,8 +411,8 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let asc = sorted_asc.expect("asc task panicked").expect("asc sort failed");
     let desc = sorted_desc.expect("desc task panicked").expect("desc sort failed");
 
-    let asc_ids: Vec<i32> = asc.series_view("id").unwrap().to_vec::<i32>().unwrap();
-    let desc_ids: Vec<i32> = desc.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let asc_ids: Vec<i32> = asc.series("id").unwrap().to_vec::<i32>().unwrap();
+    let desc_ids: Vec<i32> = desc.series("id").unwrap().to_vec::<i32>().unwrap();
 
     assert_eq!(asc_ids, vec![1, 1, 3, 4, 5]);
     assert_eq!(desc_ids, vec![5, 4, 3, 1, 1]);
@@ -446,7 +444,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
             for _ in 0..16 {
                 let df = sample_df();
                 let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
-                let _ids: Vec<i32> = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
+                let _ids: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
             }
         }));
     }

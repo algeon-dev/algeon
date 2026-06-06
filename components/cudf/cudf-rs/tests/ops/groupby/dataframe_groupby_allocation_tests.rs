@@ -24,21 +24,24 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
         assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);
         assert_eq!(result.num_rows(), 2);
-        let _ = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.series("key").unwrap().to_vec::<i32>().unwrap();
         result
     });
 
     let low_level_allocations = allocation_count_delta(|| {
-        let key_view = df.series_view("key").unwrap();
-        let key_table = TableView::from_column_views(&[key_view.as_column_view()]).unwrap();
+        let key_series = df.series("key").unwrap();
+        let key_cv = key_series.as_column_view().unwrap();
+        let key_table = TableView::from_column_views(&[&key_cv]).unwrap();
 
-        let a_view = df.series_view("a").unwrap();
-        let b_view = df.series_view("b").unwrap();
+        let a_series = df.series("a").unwrap();
+        let b_series = df.series("b").unwrap();
+        let a_cv = a_series.as_column_view().unwrap();
+        let b_cv = b_series.as_column_view().unwrap();
         let a_aggs = [Aggregation::Sum, Aggregation::Min];
         let b_aggs = [Aggregation::Sum];
         let requests = [
-            AggregationRequest { values: a_view.as_column_view(), aggregations: &a_aggs },
-            AggregationRequest { values: b_view.as_column_view(), aggregations: &b_aggs },
+            AggregationRequest { values: &a_cv, aggregations: &a_aggs },
+            AggregationRequest { values: &b_cv, aggregations: &b_aggs },
         ];
 
         let result = groupby_aggregate(&key_table, &requests, NullPolicy::Exclude).unwrap();

@@ -83,7 +83,7 @@ use crate::{
         scalar::Scalar,
         types::{CudfType, DataType},
     },
-    frame::series::{IntoSeries, Series, SeriesView},
+    frame::series::{IntoSeries, Series},
     internal::resolve::resolve_column_names,
     ops::{
         self, copying, filter, replace,
@@ -311,7 +311,12 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the
     /// `contains` / `filter` operation fails.
     pub fn filter_isin_by_column_view(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
-        let col_view = self.series_view(column)?;
+        let col = self.columns.get(column).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation("dataframe::filter_isin_by_column_view")
+                .with_context("column_name", column.to_string())
+        })?;
+        let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
         if !ExecutionDomain::same_provenance(values.execution_domain(), &output_domain) {
             values.execution_domain().fence_stream("dataframe::filter_isin_by_column_view")?;
@@ -336,8 +341,8 @@ impl DataFrame {
     /// Validate that a `Series` is a valid boolean mask for this DataFrame.
     ///
     /// Returns the `ColumnView` if valid, or an appropriate error.
-    fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<SeriesView<'a>> {
-        let mask_view = mask.view()?;
+    fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
+        let mask_view = mask.as_column_view()?;
         self.validate_mask_view(&mask_view, "dataframe::filter")?;
         Ok(mask_view)
     }
