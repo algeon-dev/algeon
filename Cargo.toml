@@ -1,7 +1,7 @@
 [package]
 name = "datafusion-nexus"
 description = "DataFusion physical-plan adapter for native cuDF/cuGraph GPU execution."
-version = "0.1.0"
+version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 build = "build.rs"
@@ -16,6 +16,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
+version = "0.1.0"
 rust-version = "1.94"
 
 [workspace.lints.rustdoc]
@@ -26,18 +27,29 @@ bare_urls = "deny"
 workspace = true
 
 [workspace.dependencies]
-arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
+datafusion-nexus = { path = ".", default-features = false }
+nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
 cudf = { path = "../cudf-rs/cudf-rs" }
+cudf-sys = { path = "../cudf-rs/cudf-sys" }
 cugraph = { path = "../cugraph-rs/cugraph-rs" }
 cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
-parquet = { version = "58.3.0", features = ["async", "object_store"] }
-
-[patch."https://github.com/apache/iceberg-rust.git"]
+arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
+arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+aws-config = "1.8"
+aws-credential-types = "1.2"
+datafusion = "53.1"
+futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg" }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue" }
 iceberg-catalog-rest = { path = "../iceberg-rust/crates/catalog/rest" }
 iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion" }
 iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal" }
+object_store = { version = "0.13", default-features = false, features = ["aws"] }
+parquet = { version = "58.3.0", features = ["async", "object_store"] }
+serde_json = "1.0"
+tempfile = "3.27"
+tokio = { version = "1.52" }
+tonic = "0.14"
 
 [features]
 default = []
@@ -78,42 +90,42 @@ server-cugraph = ["server", "cugraph"]
 [dependencies]
 arrow = { workspace = true }
 argon2 = { version = "0.5", optional = true }
-arrow-flight = { version = "58.3", features = ["flight-sql-experimental"], optional = true }
+arrow-flight = { workspace = true, optional = true }
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
-aws-config = { version = "1.8", optional = true }
-aws-credential-types = { version = "1.2", optional = true }
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
 cudf = { workspace = true }
 # Direct (non-transitive) dep on cudf-sys so this crate's build.rs receives
 # DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"`
 # metadata. The build script uses it to bake a rpath into every binary so
 # the loader picks up the freshly built libcudf_rust.so without relying on
 # LD_LIBRARY_PATH ordering.
-cudf-sys = { path = "../cudf-rs/cudf-sys" }
+cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 # Direct (non-transitive) dep on cugraph-sys so this crate's build.rs receives
 # DEP_CUGRAPH_RUNTIME_LIB_DIRS from cugraph-sys's `links = "cugraph"` metadata.
 cugraph-sys = { workspace = true, optional = true }
-nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
+nexus-query-engine = { workspace = true }
 dashmap = { version = "6.2", optional = true }
-datafusion = "53.1"
-futures = "0.3"
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-iceberg-catalog-glue = {git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+iceberg = { workspace = true, optional = true }
+iceberg-catalog-glue = { workspace = true, optional = true }
+iceberg-catalog-rest = { workspace = true, optional = true }
+iceberg-datafusion = { workspace = true, optional = true }
+iceberg-storage-opendal = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
 parquet = { workspace = true }
 prost = { version = "0.14", optional = true }
 rand = { version = "0.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-serde_json = "1.0"
-tempfile = { version = "3.27", optional = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true, optional = true }
 toml = { version = "1.1", optional = true }
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", optional = true }
-tonic = { version = "0.14", optional = true }
+tonic = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 uuid = { version = "1.23", features = ["v4"], optional = true }
@@ -122,7 +134,7 @@ uuid = { version = "1.23", features = ["v4"], optional = true }
 datafusion-nexus-bench = { path = "crates/datafusion-nexus-bench" }
 hex = "0.4"
 sha2 = "0.11"
-tempfile = "3.27"
+tempfile = { workspace = true }
 
 [[bin]]
 name = "datafusion_nexus_server"
