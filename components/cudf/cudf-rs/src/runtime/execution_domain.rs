@@ -1,4 +1,12 @@
 //! Private retained-provenance substrate for owned GPU objects.
+//!
+//! `ExecutionDomain` remains the internal type name for now, but its semantics
+//! are intentionally narrower than the v1 "execution identity" model:
+//!
+//! - it records retained provenance for later host-visible synchronization
+//! - it supplies default stream / MR handles when no explicit operation context
+//!   is provided
+//! - it does not decide whether mixed-input operations are legal
 
 use std::{
     collections::HashMap,
@@ -34,7 +42,7 @@ pub(crate) struct ExecutionIdentity(NonZeroU64);
 impl ExecutionIdentity {
     fn new(value: u64) -> Result<Self> {
         NonZeroU64::new(value).map(Self).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "explicit execution domain identity must be non-zero")
+            Error::new(ErrorKind::InvalidOperation, "debug retained-provenance identity must be non-zero")
                 .with_operation("execution_domain::ExecutionIdentity::new")
                 .with_context("identity", value.to_string())
         })
@@ -61,14 +69,15 @@ impl ExecutionDomain {
 
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
         let cache = DEBUG_EXPLICIT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache.lock().expect("debug explicit execution-domain cache poisoned");
+        let mut cache = cache.lock().expect("debug explicit retained-provenance cache poisoned");
         if let Some(domain) = cache.get(&identity) {
             return Ok(Arc::clone(domain));
         }
 
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
-        let domain = Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } });
+        let domain =
+            Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
     }
@@ -108,7 +117,31 @@ impl ExecutionDomain {
         }
     }
 
+    /// Synchronize this domain's stream so that the host can read device memory
+    /// produced on it.
+    ///
+    /// This is a **host fence** (`cudaStreamSynchronize`): the calling CPU
+    /// thread blocks until all GPU work enqueued on the stream completes.
+    /// For `AmbientDefault` objects this is a no-op.
+    ///
+    /// Use this before copying device data to the host (e.g. `to_host()`,
+    /// `Scalar::value()`).  For cross-stream device-to-device ordering
+    /// between operations, prefer [`fence_stream`](Self::fence_stream).
     pub(crate) fn synchronize_for_host_visibility(&self, operation: &'static str) -> Result<()> {
+        self.fence_stream(operation)
+    }
+
+    /// Fence this domain's stream to establish device-side ordering.
+    ///
+    /// When a secondary input's retained provenance differs from the output
+    /// domain, the secondary stream must be fenced before the operation
+    /// reads its data on the output stream.  This method performs a
+    /// **host fence** (`cudaStreamSynchronize`).
+    ///
+    /// A future version may replace the host fence with a lighter-weight
+    /// CUDA event barrier (`cudaEventRecord` + `cudaStreamWaitEvent`) that
+    /// avoids blocking the CPU thread.
+    pub(crate) fn fence_stream(&self, operation: &'static str) -> Result<()> {
         match &self.kind {
             DomainKind::AmbientDefault => Ok(()),
             DomainKind::Explicit { stream, .. } => stream
@@ -189,11 +222,15 @@ impl ExecutionDomain {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn same_identity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
+    pub(crate) fn same_debug_identity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
         left.debug_id() == right.debug_id() && left.debug_kind() == right.debug_kind()
     }
 
-    pub(crate) fn compatible_domain(left: &Arc<Self>, right: &Arc<Self>, operation: &'static str) -> Result<Arc<Self>> {
+    pub(crate) fn require_same_provenance(
+        left: &Arc<Self>,
+        right: &Arc<Self>,
+        operation: &'static str,
+    ) -> Result<Arc<Self>> {
         if Self::same_provenance(left, right) {
             Ok(Arc::clone(left))
         } else {
@@ -201,9 +238,9 @@ impl ExecutionDomain {
                 ErrorKind::InvalidOperation,
                 "container construction requires one shared retained provenance",
             )
-                .with_operation(operation)
-                .with_context("left_domain", left.debug_label())
-                .with_context("right_domain", right.debug_label()))
+            .with_operation(operation)
+            .with_context("left_domain", left.debug_label())
+            .with_context("right_domain", right.debug_label()))
         }
     }
 }

@@ -2,6 +2,8 @@
 
 use cudf::{Column, TypeId};
 
+use crate::common::{last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation};
+
 #[test]
 fn test_factorize_i32_with_duplicates() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
@@ -241,4 +243,27 @@ fn test_dataframe_factorize_missing_column() {
 
     let result = df.factorize("nonexistent");
     assert!(result.is_err());
+}
+
+#[test]
+fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
+    let input = Column::from_slice(&[9i32, 7, 9, 8]).unwrap().__debug_rebind_execution_domain_explicit(605).unwrap();
+    let expected_stream = input.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let (codes, uniques) = input.view().unwrap().factorize().unwrap();
+
+    assert_eq!(codes.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(uniques.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(codes.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(uniques.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+
+    reset_sync_observation();
+    let codes_host = codes.view().unwrap().to_vec::<i32>().unwrap();
+    let mut uniques_host = uniques.view().unwrap().to_vec::<i32>().unwrap();
+    uniques_host.sort_unstable();
+    assert_eq!(codes_host.len(), 4);
+    assert_eq!(uniques_host, vec![7, 8, 9]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

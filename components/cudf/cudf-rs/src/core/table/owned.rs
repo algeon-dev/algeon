@@ -46,7 +46,7 @@ impl Table {
                 if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
-                        "all columns in a table must share one execution domain",
+                        "all columns in a table must share one retained provenance",
                     )
                     .with_operation("table::from_columns")
                     .with_context("left_domain", domain.debug_label())
@@ -187,8 +187,18 @@ impl Table {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_kind(&self) -> &'static str {
+        self.__debug_execution_domain_kind()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
     }
 
     #[doc(hidden)]
@@ -197,8 +207,18 @@ impl Table {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_stream_value(&self) -> usize {
+        self.__debug_execution_domain_stream_value()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_mr_value(&self) -> usize {
+        self.__debug_execution_domain_mr_value()
     }
 }
 

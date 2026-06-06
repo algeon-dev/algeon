@@ -1,4 +1,4 @@
-//! Public execution-domain owner for explicit stream and allocator control.
+//! Public owner for explicit stream / allocator defaults and retained provenance seeding.
 
 use std::sync::Arc;
 
@@ -8,20 +8,20 @@ use crate::core::{
     memory::DeviceMemoryResource,
 };
 
-/// Owns one explicit execution domain for a `cudf-rs` pipeline.
+/// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
 }
 
-// SAFETY: Runtime owns an immutable execution domain handle bundle. The
+// SAFETY: Runtime owns an immutable retained-provenance handle bundle. The
 // underlying stream and memory-resource handles are thread-safe wrappers.
 unsafe impl Send for Runtime {}
 unsafe impl Sync for Runtime {}
 
 impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Runtime").field("execution_domain", &self.__debug_execution_domain_id()).finish()
+        f.debug_struct("Runtime").field("retained_provenance", &self.__debug_retained_provenance_id()).finish()
     }
 }
 
@@ -61,6 +61,11 @@ impl Runtime {
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
+    }
 }
 
 impl RuntimeBuilder {
@@ -76,7 +81,7 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Build a runtime with one explicit execution domain.
+    /// Build a runtime with one explicit retained provenance bundle.
     pub fn build(self) -> Result<Runtime> {
         let stream = match self.stream {
             Some(stream) => stream,
@@ -90,7 +95,7 @@ impl RuntimeBuilder {
         if domain.debug_id() == 0 {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                "runtime must not use the ambient-default execution domain",
+                "runtime must not use the ambient-default retained provenance",
             )
             .with_operation("runtime::RuntimeBuilder::build"));
         }

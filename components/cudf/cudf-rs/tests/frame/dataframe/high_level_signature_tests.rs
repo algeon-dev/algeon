@@ -15,6 +15,11 @@
 
 use cudf::{Column, DataFrame, Series};
 
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
+};
+
 // ===========================================================================
 // Helpers
 // ===========================================================================
@@ -40,6 +45,35 @@ fn test_gather_with_series() {
     assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![1.0, 3.0, 5.0]);
 }
 
+#[test]
+fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
+    let df_rt = sample_runtime();
+    let indices_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap()),
+        ("score", Series::new_with_runtime(&df_rt, "score", &[1.0f64, 2.0, 3.0]).unwrap()),
+    ])
+    .unwrap();
+    let indices = Series::new_with_runtime(&indices_rt, "idx", &[2i32, 0]).unwrap();
+    let expected_exec_stream = df.__debug_execution_domain_stream_value();
+    let expected_exec_mr = df.__debug_execution_domain_mr_value();
+    let expected_sync_stream = indices.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result = df.gather(&indices).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![3.0, 1.0]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
 // ===========================================================================
 // 2. filter_isin(&str, &Series) — primary high-level API (was filter_isin_series)
 // ===========================================================================
@@ -54,6 +88,31 @@ fn test_filter_isin_with_series() {
     let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![10, 30, 50]);
+}
+
+#[test]
+fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
+    let df_rt = sample_runtime();
+    let values_rt = sample_runtime();
+    let df =
+        DataFrame::from_series([("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let values = Series::new_with_runtime(&values_rt, "vals", &[20i32, 30]).unwrap();
+    let expected_exec_stream = df.__debug_execution_domain_stream_value();
+    let expected_exec_mr = df.__debug_execution_domain_mr_value();
+    let expected_sync_stream = values.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result = df.filter_isin("id", &values).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]

@@ -1,6 +1,11 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 
-use cudf::{Column, DataFrame, ErrorKind, JoinType, MergeOptions};
+use cudf::{Column, DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, Series};
+
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,6 +121,44 @@ fn test_inner_merge_same_key() {
     assert_eq!(rows, vec![(2, 20, 200), (3, 30, 300)]);
 }
 
+#[test]
+fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
+        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let expected_exec_stream = left.__debug_execution_domain_stream_value();
+    let expected_exec_mr = left.__debug_execution_domain_mr_value();
+    let expected_sync_stream = right.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let rows: Vec<_> = i32_column(&result, "id")
+        .into_iter()
+        .zip(i32_column(&result, "score"))
+        .zip(i32_column(&result, "value"))
+        .map(|((id, score), value)| (id, score, value))
+        .collect();
+    assert_eq!(rows, vec![(2, 20, 200), (3, 30, 300)]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
 // ---------------------------------------------------------------------------
 // Left merge — different key names (left_on / right_on)
 // ---------------------------------------------------------------------------
@@ -216,6 +259,123 @@ fn test_full_merge() {
     assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 
+    let mut rows: Vec<_> = nullable_i32_column(&result, "id")
+        .into_iter()
+        .zip(nullable_i32_column(&result, "score"))
+        .zip(nullable_i32_column(&result, "value"))
+        .map(|((id, score), value)| (id, score, value))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (Some(1), Some(10), None),
+            (Some(2), Some(20), Some(200)),
+            (Some(3), Some(30), Some(300)),
+            (Some(4), None, Some(400)),
+        ]
+    );
+}
+
+#[test]
+fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance() {
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
+        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let expected_exec_stream = left.__debug_execution_domain_stream_value();
+    let expected_exec_mr = left.__debug_execution_domain_mr_value();
+    let expected_presync_stream = right.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result = left.merge(&right, MergeOptions::new().how_full().on(&["id"])).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(result.series_view("id").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series_view("score").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series_view("value").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+
+    reset_exec_observation();
+    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+
+    reset_sync_observation();
+    let mut rows: Vec<_> = nullable_i32_column(&result, "id")
+        .into_iter()
+        .zip(nullable_i32_column(&result, "score"))
+        .zip(nullable_i32_column(&result, "value"))
+        .map(|((id, score), value)| (id, score, value))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (Some(1), Some(10), None),
+            (Some(2), Some(20), Some(200)),
+            (Some(3), Some(30), Some(300)),
+            (Some(4), None, Some(400)),
+        ]
+    );
+}
+
+#[test]
+fn test_full_merge_with_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources() {
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let target_rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
+        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let expected_exec_stream = target_rt.stream().__debug_raw_handle_value();
+    let expected_exec_mr = target_rt.memory_resource().__debug_raw_handle_value();
+    let expected_presync_stream = right.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result = left.merge_with_context(&right, MergeOptions::new().how_full().on(&["id"]), &ctx).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(result.series_view("id").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series_view("score").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series_view("value").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+
+    reset_exec_observation();
+    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+
+    reset_sync_observation();
     let mut rows: Vec<_> = nullable_i32_column(&result, "id")
         .into_iter()
         .zip(nullable_i32_column(&result, "score"))

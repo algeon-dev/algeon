@@ -5,6 +5,11 @@ use cudf::{
     ops::sorting::{self, NullOrder, Order},
 };
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_sort_ascending() {
     let col = Column::from_slice(&[3i32, 1, 2]).unwrap();
@@ -137,4 +142,44 @@ fn test_is_sorted() {
     let unsorted_table = Table::from_columns(vec![unsorted_col]).unwrap();
     let uv = unsorted_table.view().unwrap();
     assert!(!sorting::is_sorted(&uv, None, None).unwrap());
+}
+
+#[test]
+fn test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
+    let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 960)]).unwrap();
+    let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 961)]).unwrap();
+    let expected_stream = values.__debug_execution_domain_stream_value();
+    let expected_mr = values.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let sorted = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
+
+    assert_eq!(sorted.__debug_execution_domain_id(), values.__debug_execution_domain_id());
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
+    let values = Table::from_columns(vec![explicit_i32_column(&[40, 10, 20, 30], 962)]).unwrap();
+    let keys = Table::from_columns(vec![explicit_i32_column(&[1, 0, 1, 1], 963)]).unwrap();
+    let expected_stream = values.__debug_execution_domain_stream_value();
+    let expected_mr = values.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let sorted = sorting::stable_sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
+
+    assert_eq!(sorted.__debug_execution_domain_id(), values.__debug_execution_domain_id());
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 40, 20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

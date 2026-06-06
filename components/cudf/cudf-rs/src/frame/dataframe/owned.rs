@@ -74,7 +74,7 @@ pub(crate) fn derive_frame_domain_from_columns(
         if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                "all columns in a dataframe must share one execution domain",
+                "all columns in a dataframe must share one retained provenance",
             )
             .with_operation(operation)
             .with_context("left_domain", domain.debug_label())
@@ -107,7 +107,7 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
         if !ExecutionDomain::same_provenance(authoritative_domain, column.execution_domain()) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                "all columns in a dataframe must share the authoritative execution domain",
+                "all columns in a dataframe must share the authoritative retained provenance",
             )
             .with_operation(operation)
             .with_context("left_domain", authoritative_domain.debug_label())
@@ -432,8 +432,18 @@ impl DataFrame {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_kind(&self) -> &'static str {
+        self.__debug_execution_domain_kind()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
     }
 
     #[doc(hidden)]
@@ -442,8 +452,18 @@ impl DataFrame {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_stream_value(&self) -> usize {
+        self.__debug_execution_domain_stream_value()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_mr_value(&self) -> usize {
+        self.__debug_execution_domain_mr_value()
     }
 
     pub(crate) fn synchronize_for_forced_output_domain(
@@ -453,10 +473,10 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<()> {
         if !ExecutionDomain::same_provenance(&self.domain, output_domain) {
-            self.domain.synchronize_for_host_visibility(operation)?;
+            self.domain.fence_stream(operation)?;
         }
         if !ExecutionDomain::same_provenance(&other.domain, output_domain) {
-            other.domain.synchronize_for_host_visibility(operation)?;
+            other.domain.fence_stream(operation)?;
         }
         Ok(())
     }
@@ -471,7 +491,7 @@ impl DataFrame {
         }
 
         self.domain
-            .synchronize_for_host_visibility(operation)
+            .fence_stream(operation)
             .map_err(|e| e.with_context("target_domain", output_domain.debug_label()))?;
 
         let mut copied = IndexMap::with_capacity(self.columns.len());
@@ -494,7 +514,7 @@ impl DataFrame {
             return Ok(Arc::clone(series.column_arc()));
         }
 
-        series.as_column().execution_domain().synchronize_for_host_visibility(operation).map_err(|e| {
+        series.as_column().execution_domain().fence_stream(operation).map_err(|e| {
             e.with_context("column_name", column_name.to_string())
                 .with_context("target_domain", output_domain.debug_label())
         })?;

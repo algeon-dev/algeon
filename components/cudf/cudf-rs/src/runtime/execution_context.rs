@@ -1,4 +1,4 @@
-//! Borrowed per-operation execution override.
+//! Borrowed per-operation execution authority override.
 
 use std::sync::Arc;
 
@@ -6,6 +6,10 @@ use super::{execution_domain::ExecutionDomain, stream::CudaStream};
 use crate::core::{error::Result, memory::DeviceMemoryResource};
 
 /// Borrowed per-operation stream and/or allocator override.
+///
+/// This type does not become retained object provenance by itself. It only
+/// overrides the resources used for one operation and then derives output
+/// retained provenance from the resolved primary input.
 #[derive(Clone, Copy, Default)]
 pub struct ExecutionContext<'a> {
     stream: Option<&'a CudaStream>,

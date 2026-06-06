@@ -31,7 +31,7 @@ bitflags::bitflags! {
         ///
         /// Reports bytes required to represent the logical payload, not the
         /// allocator-rounded device footprint. For explicit-runtime objects,
-        /// this accounting path honors retained execution provenance.
+        /// this accounting path honors retained provenance.
         const PAYLOAD_BYTES    = 0b0000_0100;
         /// Include total device-allocated bytes.
         ///
@@ -168,7 +168,7 @@ impl DataFrame {
     ///   allocation footprint, including allocator rounding and padding.
     ///
     /// Payload bytes are not allocation bytes. For explicit-runtime objects,
-    /// payload accounting honors the retained execution provenance rather than
+    /// payload accounting honors retained provenance rather than
     /// silently falling back to the default stream.
     pub fn info_with(&self, detail: InfoDetail) -> Result<DataFrameInfo> {
         let include_columns = detail.includes_columns();

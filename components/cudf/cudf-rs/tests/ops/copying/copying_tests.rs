@@ -2,6 +2,11 @@
 
 use cudf::{Column, Table, ops::copying};
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_gather_basic() {
     let col = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -115,4 +120,24 @@ fn test_gather_unchecked_basic() {
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+}
+
+#[test]
+fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
+    let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 930)]).unwrap();
+    let gather_map = explicit_i32_column(&[2, 0], 931);
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), table.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

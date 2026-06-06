@@ -5,6 +5,11 @@ use cudf::{
     ops::binary::{self, BinaryOperator},
 };
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_add_column_column() {
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -83,6 +88,74 @@ fn test_logical_and() {
     let rv = result.view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false, false]);
+}
+
+#[test]
+fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
+    let lhs = explicit_i32_column(&[1, 2, 3], 900);
+    let rhs = explicit_i32_column(&[10, 20, 30], 901);
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    let expected_mr = lhs.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = binary::binary_operation_vv(
+        &lhs.view().unwrap(),
+        &rhs.view().unwrap(),
+        BinaryOperator::Add,
+        &DataType::new(TypeId::Int32),
+    )
+    .unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
+    let lhs = explicit_i32_column(&[2, 3, 4], 902);
+    let rhs = Scalar::from_value(10i32).unwrap().__debug_rebind_execution_domain_explicit(903).unwrap();
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    let expected_mr = lhs.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result =
+        binary::binary_operation_vs(&lhs.view().unwrap(), &rhs, BinaryOperator::Mul, &DataType::new(TypeId::Int32))
+            .unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_mixed_domain_binary_operation_sv_uses_scalar_provenance() {
+    let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(904).unwrap();
+    let rhs = explicit_i32_column(&[2, 4, 5], 905);
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let result =
+        binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
+            .unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), last_exec_mr_value());
+    assert_eq!(last_exec_stream_value(), expected_stream);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 // ---------------------------------------------------------------------------

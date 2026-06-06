@@ -7,6 +7,11 @@
 
 use cudf::{Column, ErrorKind, Series, SortOptions, TypeId};
 
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
+};
+
 // ===========================================================================
 // is_null / is_not_null
 // ===========================================================================
@@ -230,6 +235,30 @@ fn test_isin_strings() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
+    let source_rt = sample_runtime();
+    let values_rt = sample_runtime();
+    let s = Series::new_with_runtime(&source_rt, "x", &[1i32, 2, 3, 4, 5]).unwrap();
+    let values = Series::new_with_runtime(&values_rt, "vals", &[2i32, 4]).unwrap();
+    let expected_exec_stream = s.as_column().__debug_execution_domain_stream_value();
+    let expected_exec_mr = s.as_column().__debug_execution_domain_mr_value();
+    let expected_sync_stream = values.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let mask = s.isin(&values).unwrap();
+
+    assert_eq!(mask.as_column().__debug_execution_domain_id(), s.as_column().__debug_execution_domain_id());
+    assert_eq!(mask.as_column().__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 // ===========================================================================

@@ -5,6 +5,11 @@ use cudf::{
     ops::groupby::{self, Aggregation, AggregationRequest, NullPolicy},
 };
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_groupby_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
@@ -199,4 +204,31 @@ fn test_groupby_multi_column_keys() {
     assert_eq!(result_kv.num_columns().unwrap(), 2);
     // 4 unique key combinations.
     assert_eq!(result_kv.num_rows().unwrap(), 4);
+}
+
+#[test]
+fn test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance() {
+    let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 970)]).unwrap();
+    let values = explicit_i32_column(&[10, 20, 30, 40], 971);
+    let values_view = values.view().unwrap();
+    let requests = [AggregationRequest { values: &values_view, aggregations: &[Aggregation::Sum] }];
+    let expected_stream = keys.__debug_execution_domain_stream_value();
+    let expected_mr = keys.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = groupby::groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
+
+    assert_eq!(result.keys.__debug_execution_domain_id(), keys.__debug_execution_domain_id());
+    assert_eq!(result.keys.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.results[0][0].__debug_execution_domain_id(), keys.__debug_execution_domain_id());
+    assert_eq!(result.results[0][0].__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    let key_host = result.keys.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let sum_host = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
+    assert_eq!(key_host, vec![1, 2]);
+    assert_eq!(sum_host, vec![30, 70]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

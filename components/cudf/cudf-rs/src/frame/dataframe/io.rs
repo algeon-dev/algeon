@@ -223,14 +223,13 @@ impl DataFrame {
         let names: Vec<&str> = self.column_names();
         let opts = options.to_table_options(&names);
         let write_domain = if let Some(runtime) = opts.runtime() {
-            ExecutionDomain::compatible_domain(
-                &self.domain,
-                runtime.execution_domain(),
-                "dataframe::write_csv_with_options",
-            )?
+            Arc::clone(runtime.execution_domain())
         } else {
             Arc::clone(&self.domain)
         };
+        if !ExecutionDomain::same_provenance(&self.domain, &write_domain) {
+            self.domain.fence_stream("dataframe::write_csv_with_options")?;
+        }
         let tv = self.build_table_view()?;
         let exec_options = write_domain.explicit_exec_options_raw();
         csv::write_csv_with_exec(tv.table(), &opts, exec_options.as_ref())?;
@@ -267,14 +266,13 @@ impl DataFrame {
         let names: Vec<&str> = self.column_names();
         let options = options.ensure_column_names(&names)?;
         let write_domain = if let Some(runtime) = options.runtime() {
-            ExecutionDomain::compatible_domain(
-                &self.domain,
-                runtime.execution_domain(),
-                "dataframe::write_parquet_with_options",
-            )?
+            Arc::clone(runtime.execution_domain())
         } else {
             Arc::clone(&self.domain)
         };
+        if !ExecutionDomain::same_provenance(&self.domain, &write_domain) {
+            self.domain.fence_stream("dataframe::write_parquet_with_options")?;
+        }
         let tv = self.build_table_view()?;
         let exec_options = write_domain.explicit_exec_options_raw();
         parquet::write_parquet_with_exec(tv.table(), &options, exec_options.as_ref())?;

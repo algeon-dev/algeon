@@ -2,6 +2,10 @@
 
 use cudf::{Column, ErrorKind, TypeId, ops::dictionary};
 
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+};
+
 #[test]
 fn test_dictionary_encode_i32() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
@@ -276,4 +280,65 @@ fn test_match_dictionaries_no_overlap() {
     let decoded_b = dictionary::decode(&matched[1].view().unwrap()).unwrap();
     assert_eq!(decoded_a.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
     assert_eq!(decoded_b.view().unwrap().to_vec::<i32>().unwrap(), vec![3, 4]);
+}
+
+#[test]
+fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_input_before_authoritative_exec() {
+    let dict = dictionary::encode(&Column::from_slice(&[3i32, 1, 3, 2]).unwrap().view().unwrap(), TypeId::Int32)
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(601)
+        .unwrap();
+    let keys = Column::from_slice(&[2i32, 3, 4]).unwrap().__debug_rebind_execution_domain_explicit(602).unwrap();
+    let expected_exec_stream = dict.__debug_execution_domain_stream_value();
+    let expected_exec_mr = dict.__debug_execution_domain_mr_value();
+    let expected_presync_stream = keys.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let updated = dictionary::set_keys(&dict.view().unwrap(), &keys.view().unwrap()).unwrap();
+
+    assert_eq!(updated.__debug_execution_domain_id(), dict.__debug_execution_domain_id());
+    assert_eq!(updated.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+
+    reset_sync_observation();
+    let mut updated_keys = dictionary::keys(&updated.view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    updated_keys.sort_unstable();
+    assert_eq!(updated_keys, vec![2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
+#[test]
+fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_inputs_before_first_input_exec() {
+    let first = dictionary::encode(&Column::from_slice(&[10i32, 20, 30]).unwrap().view().unwrap(), TypeId::Int32)
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(603)
+        .unwrap();
+    let second = dictionary::encode(&Column::from_slice(&[20i32, 30, 40]).unwrap().view().unwrap(), TypeId::Int32)
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(604)
+        .unwrap();
+    let expected_exec_stream = first.__debug_execution_domain_stream_value();
+    let expected_exec_mr = first.__debug_execution_domain_mr_value();
+    let expected_presync_stream = second.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let matched = dictionary::match_dictionaries(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+
+    assert_eq!(matched.len(), 2);
+    assert!(matched.iter().all(|column| column.__debug_execution_domain_id() == first.__debug_execution_domain_id()));
+    assert!(matched.iter().all(|column| column.__debug_execution_domain_mr_value() == expected_exec_mr));
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+
+    reset_sync_observation();
+    let mut first_keys = dictionary::keys(&matched[0].view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    let mut second_keys = dictionary::keys(&matched[1].view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    first_keys.sort_unstable();
+    second_keys.sort_unstable();
+    assert_eq!(first_keys, second_keys);
+    assert_eq!(first_keys, vec![10, 20, 30, 40]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }

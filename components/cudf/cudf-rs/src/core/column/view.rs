@@ -27,7 +27,7 @@ pub struct ColumnView<'a> {
 }
 
 impl<'a> ColumnView<'a> {
-    /// Create a `ColumnView` from a raw FFI handle plus a retained execution domain.
+    /// Create a `ColumnView` from a raw FFI handle plus retained provenance.
     ///
     /// # Safety
     /// The handle must be a valid `cudf_column_view_handle` and must remain
@@ -52,8 +52,18 @@ impl<'a> ColumnView<'a> {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_kind(&self) -> &'static str {
+        self.__debug_execution_domain_kind()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
     }
 
     #[doc(hidden)]
@@ -62,8 +72,18 @@ impl<'a> ColumnView<'a> {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_stream_value(&self) -> usize {
+        self.__debug_execution_domain_stream_value()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_mr_value(&self) -> usize {
+        self.__debug_execution_domain_mr_value()
     }
 
     fn synchronize_host_visibility(&self, operation: &'static str) -> Result<()> {
@@ -508,11 +528,21 @@ impl ColumnView<'_> {
         })?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 
-        search::contains(values, self).map_err(|e| {
-            e.with_operation("column_view::isin")
-                .with_context("input_type_id", input_type_id_str)
-                .with_context("values_type_id", values_type_id_str)
-        })
+        if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
+            values.execution_domain().fence_stream("column_view::isin").map_err(|e| {
+                e.with_context("input_type_id", input_type_id_str.clone())
+                    .with_context("values_type_id", values_type_id_str.clone())
+            })?;
+        }
+
+        let exec_options = self.domain.explicit_exec_options_raw();
+        search::contains_with_exec_options(values, self, exec_options.as_ref(), "column_view::isin")
+            .map(|column| column.with_execution_domain(Arc::clone(&self.domain)))
+            .map_err(|e| {
+                e.with_operation("column_view::isin")
+                    .with_context("input_type_id", input_type_id_str)
+                    .with_context("values_type_id", values_type_id_str)
+            })
     }
 
     /// Map values through a lookup table.

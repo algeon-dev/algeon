@@ -348,7 +348,7 @@ impl Series {
             return Ok(Arc::clone(column));
         }
 
-        column.execution_domain().synchronize_for_host_visibility(operation)?;
+        column.execution_domain().fence_stream(operation)?;
 
         column.copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new)
     }
@@ -429,11 +429,11 @@ impl Series {
     }
 
     /// Replace null values using corresponding elements from another Series,
-    /// copying inputs into the target [`Runtime`]'s execution domain when
+    /// copying inputs into the target [`Runtime`]'s retained provenance when
     /// necessary.
     ///
     /// Unlike [`fillna_with_series`](Self::fillna_with_series), this method
-    /// recovers from mixed execution domains by deep-copying both series
+    /// recovers from mixed retained provenance by deep-copying both series
     /// into the runtime's domain before executing the replace-nulls
     /// operation. Inherits the source Series' name.
     ///

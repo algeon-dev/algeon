@@ -230,6 +230,35 @@ fn dataframe_write_parquet_with_options_uses_retained_runtime_stream() {
 }
 
 #[test]
+fn dataframe_write_parquet_with_options_runtime_override_recovers_mixed_explicit_domains_into_target_runtime() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("runtime_write_override.parquet");
+    let data_rt = sample_runtime();
+    let target_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&data_rt, "id", &[4i32, 5, 6]).unwrap()),
+        ("value", Series::new_with_runtime(&data_rt, "value", &[40i32, 50, 60]).unwrap()),
+    ])
+    .unwrap();
+
+    obs_reset();
+    df.write_parquet_with_options(cudf::io::parquet::ParquetWriterOptions::new(&path).with_runtime(&target_rt))
+        .unwrap();
+
+    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
+
+    let mut sync_out: usize = 0;
+    let status = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut sync_out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read sync stream observation");
+    assert_eq!(sync_out, target_rt.stream().__debug_raw_handle_value());
+
+    let loaded = DataFrame::read_parquet(&path).unwrap();
+    assert_eq!(loaded.column_names(), vec!["id", "value"]);
+    assert_eq!(loaded.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![4, 5, 6]);
+}
+
+#[test]
 fn dataframe_write_csv_with_options_uses_retained_runtime_stream() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("runtime_write.csv");
@@ -244,6 +273,34 @@ fn dataframe_write_csv_with_options_uses_retained_runtime_stream() {
     df.write_csv_with_options(DataFrameCsvWriterOptions::new(&path)).unwrap();
 
     assert_eq!(obs_last_stream(), rt.stream().__debug_raw_handle_value());
+
+    let loaded = DataFrame::read_csv(&path).unwrap();
+    assert_eq!(loaded.column_names(), vec!["id", "value"]);
+    assert_eq!(loaded.series_view("id").unwrap().to_vec::<i64>().unwrap(), vec![4, 5, 6]);
+}
+
+#[test]
+fn dataframe_write_csv_with_options_runtime_override_recovers_mixed_explicit_domains_into_target_runtime() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("runtime_write_override.csv");
+    let data_rt = sample_runtime();
+    let target_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&data_rt, "id", &[4i32, 5, 6]).unwrap()),
+        ("value", Series::new_with_runtime(&data_rt, "value", &[40i32, 50, 60]).unwrap()),
+    ])
+    .unwrap();
+
+    obs_reset();
+    df.write_csv_with_options(DataFrameCsvWriterOptions::new(&path).with_runtime(&target_rt)).unwrap();
+
+    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
+
+    let mut sync_out: usize = 0;
+    let status = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut sync_out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read sync stream observation");
+    assert_eq!(sync_out, target_rt.stream().__debug_raw_handle_value());
 
     let loaded = DataFrame::read_csv(&path).unwrap();
     assert_eq!(loaded.column_names(), vec!["id", "value"]);

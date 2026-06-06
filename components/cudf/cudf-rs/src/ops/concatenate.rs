@@ -27,18 +27,14 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
-fn compatible_column_domain(
-    columns: &[&ColumnView<'_>],
-) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
     Ok(std::sync::Arc::clone(first.execution_domain()))
 }
 
-fn compatible_table_domain(
-    tables: &[&TableView<'_>],
-) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = tables.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
