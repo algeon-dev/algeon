@@ -112,8 +112,7 @@ fn test_is_sorted_rejects_mismatched_null_precedence_len() {
     let view = table.view().unwrap();
 
     let err = sorting::is_sorted(&view, Some(&[Order::Ascending, Order::Ascending]), Some(&[NullOrder::After]))
-        .err()
-        .expect("expected error");
+        .expect_err("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 

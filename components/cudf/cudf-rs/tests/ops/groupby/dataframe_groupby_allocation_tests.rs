@@ -18,7 +18,7 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
     let high_level_allocations = allocation_count_delta(|| {
         let result = df
-            .groupby(&["key"])
+            .groupby(["key"])
             .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
             .unwrap();
 

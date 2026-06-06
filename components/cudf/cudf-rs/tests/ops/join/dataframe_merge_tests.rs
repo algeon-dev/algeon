@@ -63,7 +63,7 @@ fn test_merge_options_defaults() {
 
 #[test]
 fn test_merge_options_builder_on() {
-    let opts = MergeOptions::new().on(&["id"]);
+    let opts = MergeOptions::new().on(["id"]);
     let on = opts.on_keys().unwrap();
     assert_eq!(on.len(), 1);
     assert_eq!(on[0], "id");
@@ -71,7 +71,7 @@ fn test_merge_options_builder_on() {
 
 #[test]
 fn test_merge_options_builder_left_right_on() {
-    let opts = MergeOptions::new().left_on(&["left_id"]).right_on(&["right_id"]);
+    let opts = MergeOptions::new().left_on(["left_id"]).right_on(["right_id"]);
     let lo = opts.left_on_keys().unwrap();
     let ro = opts.right_on_keys().unwrap();
     assert_eq!(lo.len(), 1);
@@ -104,7 +104,7 @@ fn test_inner_merge_same_key() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // Inner: matches on 2 and 3 → 2 rows.
     assert_eq!(result.num_rows(), 2);
@@ -140,7 +140,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let expected_sync_stream = right.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
-    let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
@@ -169,7 +169,7 @@ fn test_left_merge_asymmetric_keys() {
     let right = right_df_asym();
 
     let result =
-        left.merge(&right, MergeOptions::new().how_left().left_on(&["left_id"]).right_on(&["right_id"])).unwrap();
+        left.merge(&right, MergeOptions::new().how_left().left_on(["left_id"]).right_on(["right_id"])).unwrap();
 
     // Left: all 3 left rows preserved.
     assert_eq!(result.num_rows(), 3);
@@ -206,7 +206,7 @@ fn test_merge_suffix_overlapping_payload() {
     let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
     let right = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // Default suffixes: _left, _right for conflicting payloads.
     assert_eq!(result.column_names(), vec!["id", "score_left", "score_right"]);
@@ -228,7 +228,7 @@ fn test_merge_custom_suffixes() {
     let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
     let right = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(&["id"]).suffixes("_x", "_y")).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["id"]).suffixes("_x", "_y")).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "score_x", "score_y"]);
 }
@@ -238,7 +238,7 @@ fn test_merge_no_suffix_when_no_conflict() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // No conflict: "score" and "value" are distinct.
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
@@ -253,7 +253,7 @@ fn test_full_merge() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().how_full().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     // Full: keys 1,2,3,4 → 4 rows.
     assert_eq!(result.num_rows(), 4);
@@ -296,7 +296,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     let expected_presync_stream = right.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
-    let result = left.merge(&right, MergeOptions::new().how_full().on(&["id"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
@@ -304,8 +304,14 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
     assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(
+        result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(),
+        expected_exec_stream
+    );
+    assert_eq!(
+        result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(),
+        expected_exec_stream
+    );
 
     reset_exec_observation();
     let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
@@ -355,7 +361,7 @@ fn test_full_merge_with_context_succeeds_on_mixed_domains_and_reassembles_on_con
     let expected_presync_stream = right.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
-    let result = left.merge_with_context(&right, MergeOptions::new().how_full().on(&["id"]), &ctx).unwrap();
+    let result = left.merge_with_context(&right, MergeOptions::new().how_full().on(["id"]), &ctx).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_stream_value(), expected_exec_stream);
@@ -364,8 +370,14 @@ fn test_full_merge_with_context_succeeds_on_mixed_domains_and_reassembles_on_con
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
     assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(
+        result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(),
+        expected_exec_stream
+    );
+    assert_eq!(
+        result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(),
+        expected_exec_stream
+    );
 
     reset_exec_observation();
     let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
@@ -400,7 +412,7 @@ fn test_full_merge_asymmetric_keys_preserves_separate_key_columns() {
     let right = right_df_asym();
 
     let result =
-        left.merge(&right, MergeOptions::new().how_full().left_on(&["left_id"]).right_on(&["right_id"])).unwrap();
+        left.merge(&right, MergeOptions::new().how_full().left_on(["left_id"]).right_on(["right_id"])).unwrap();
 
     assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["left_id", "score", "right_id", "value"]);
@@ -434,7 +446,7 @@ fn test_merge_missing_on_key_in_left() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().on(&["nonexistent"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().on(["nonexistent"])).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
 }
@@ -444,7 +456,7 @@ fn test_merge_missing_on_key_in_right() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().on(&["score"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().on(["score"])).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -453,7 +465,7 @@ fn test_merge_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().left_on(&["id"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
 }
@@ -463,7 +475,7 @@ fn test_merge_right_on_without_left_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().right_on(&["id"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
 }
@@ -473,8 +485,7 @@ fn test_merge_left_on_right_on_length_mismatch() {
     let left = left_df_asym();
     let right = right_df_asym();
 
-    let err =
-        left.merge(&right, MergeOptions::new().left_on(&["left_id"]).right_on(&["right_id", "value"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"])).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
 }
@@ -501,7 +512,7 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
     let right =
         DataFrame::new(vec!["right_id".to_string(), "value".to_string()], vec![right_ids, right_values]).unwrap();
 
-    let err = left.merge(&right, MergeOptions::new().left_on(&["left_id"]).right_on(&["right_id"])).unwrap_err();
+    let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"])).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
@@ -524,7 +535,7 @@ fn test_merge_multi_key_inner() {
     let rp = Column::from_slice(&[1000i32, 2000, 3000]).unwrap();
     let right = DataFrame::new(vec!["a".to_string(), "b".to_string(), "rval".to_string()], vec![rk0, rk1, rp]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(&["a", "b"])).unwrap();
+    let result = left.merge(&right, MergeOptions::new().on(["a", "b"])).unwrap();
 
     // Matches: (1,10) and (2,10) → 2 rows.
     assert_eq!(result.num_rows(), 2);
@@ -559,7 +570,7 @@ fn test_merge_null_equality_unequal() {
     use cudf::NullEquality;
 
     // With Equal: null == null matches, and the joined key remains null.
-    let eq_result = left.merge(&right, MergeOptions::new().on(&["id"]).null_equality(NullEquality::Equal)).unwrap();
+    let eq_result = left.merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal)).unwrap();
     assert_eq!(eq_result.num_rows(), 3);
     let mut eq_rows: Vec<_> = nullable_i32_column(&eq_result, "id")
         .into_iter()
@@ -571,7 +582,7 @@ fn test_merge_null_equality_unequal() {
     assert_eq!(eq_rows, vec![(None, 20, 200), (Some(1), 10, 100), (Some(3), 30, 300)]);
 
     // With Unequal: null != null → only rows with id=1 and id=3 match → 2 rows.
-    let ne_result = left.merge(&right, MergeOptions::new().on(&["id"]).null_equality(NullEquality::Unequal)).unwrap();
+    let ne_result = left.merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Unequal)).unwrap();
     assert_eq!(ne_result.num_rows(), 2);
     let mut ne_rows: Vec<_> = nullable_i32_column(&ne_result, "id")
         .into_iter()

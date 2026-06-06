@@ -17,6 +17,7 @@ pub mod replace;
 pub mod search;
 pub mod sorting;
 pub mod stream_compaction;
+pub mod strings;
 pub mod unary;
 
 use std::ops::{Add, Div, Mul, Sub};
@@ -35,6 +36,7 @@ pub use replace::*;
 pub use search::*;
 pub use sorting::*;
 pub use stream_compaction::*;
+pub use strings::*;
 pub use unary::*;
 
 use crate::core::{column::Column, error::Result, scalar::Scalar};

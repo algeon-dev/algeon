@@ -13,7 +13,7 @@ fn groupby_sum() {
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 2);
@@ -33,7 +33,7 @@ fn groupby_mean() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
@@ -51,7 +51,7 @@ fn groupby_count() {
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
@@ -73,7 +73,7 @@ fn groupby_alias() {
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum).with_alias("total")]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum).with_alias("total")]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "total"]);
 
@@ -92,7 +92,7 @@ fn groupby_deterministic_naming_without_alias() {
     let df = DataFrame::new(vec!["id".into(), "price".into()], vec![keys, prices]).unwrap();
 
     let result = df
-        .groupby(&["id"])
+        .groupby(["id"])
         .agg(&[
             AggSpec::new("price", Agg::Sum),
             AggSpec::new("price", Agg::Mean),
@@ -123,7 +123,7 @@ fn groupby_multi_column_agg_ordering() {
     let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
     let result = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
         .unwrap();
 
@@ -155,7 +155,7 @@ fn groupby_missing_value_column() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[AggSpec::new("nonexistent", Agg::Sum)])
         .expect_err("expected error for nonexistent column");
 
@@ -171,7 +171,7 @@ fn groupby_missing_key_column() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
-        .groupby(&["missing_key"])
+        .groupby(["missing_key"])
         .agg(&[AggSpec::new("value", Agg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
@@ -184,7 +184,7 @@ fn groupby_empty_agg_specs() {
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(&["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
+    let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
@@ -199,7 +199,7 @@ fn groupby_sum_shortcut() {
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).sum(&["value"]).unwrap();
+    let result = df.groupby(["key"]).sum(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
 
@@ -217,7 +217,7 @@ fn groupby_mean_shortcut() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).mean(&["value"]).unwrap();
+    let result = df.groupby(["key"]).mean(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
@@ -235,7 +235,7 @@ fn groupby_count_shortcut() {
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).count(&["value"]).unwrap();
+    let result = df.groupby(["key"]).count(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
@@ -258,7 +258,7 @@ fn groupby_sum_shortcut_multi_columns() {
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
-    let result = df.groupby(&["key"]).sum(&["a", "b"]).unwrap();
+    let result = df.groupby(["key"]).sum(["a", "b"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum"]);
 
@@ -286,7 +286,7 @@ fn groupby_with_options_include_null_keys() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let options = GroupByOptions::builder().include_null_keys(true).build();
-    let result = df.groupby(&["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 2);
@@ -308,7 +308,7 @@ fn groupby_median() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Median)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Median)]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
@@ -326,7 +326,7 @@ fn groupby_median_shortcut() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).median(&["value"]).unwrap();
+    let result = df.groupby(["key"]).median(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
@@ -350,7 +350,7 @@ fn groupby_nunique() {
     let vals = Column::from_slice(&[10i32, 10, 20, 30, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::NUnique)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::NUnique)]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_nunique"]);
 
@@ -368,7 +368,7 @@ fn groupby_nunique_shortcut() {
     let vals = Column::from_slice(&[10i32, 10, 20, 30, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).nunique(&["value"]).unwrap();
+    let result = df.groupby(["key"]).nunique(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_nunique"]);
 
@@ -393,7 +393,7 @@ fn groupby_std_ddof1() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 1 })]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 1 })]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_std"]);
 
@@ -418,7 +418,7 @@ fn groupby_std_ddof0() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 0 })]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 0 })]).unwrap();
 
     let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
     let std_data: Vec<f64> = result.series("value_std").unwrap().to_vec::<f64>().unwrap();
@@ -437,7 +437,7 @@ fn groupby_std_shortcut() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     // Default ddof=1 for the shortcut.
-    let result = df.groupby(&["key"]).std(&["value"]).unwrap();
+    let result = df.groupby(["key"]).std(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_std"]);
 
@@ -463,7 +463,7 @@ fn groupby_variance_ddof1() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 1 })]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 1 })]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_var"]);
 
@@ -485,7 +485,7 @@ fn groupby_variance_ddof0() {
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 0 })]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 0 })]).unwrap();
 
     let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
     let var_data: Vec<f64> = result.series("value_var").unwrap().to_vec::<f64>().unwrap();
@@ -504,7 +504,7 @@ fn groupby_var_shortcut() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     // Default ddof=1 for the shortcut.
-    let result = df.groupby(&["key"]).var(&["value"]).unwrap();
+    let result = df.groupby(["key"]).var(["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_var"]);
 
@@ -529,7 +529,7 @@ fn groupby_all_agg_variants_naming() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[
             AggSpec::new("value", Agg::Sum),
             AggSpec::new("value", Agg::Mean),
@@ -571,7 +571,7 @@ fn groupby_new_agg_alias() {
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[
             AggSpec::new("value", Agg::Median).with_alias("mid"),
             AggSpec::new("value", Agg::Std { ddof: 1 }).with_alias("spread"),

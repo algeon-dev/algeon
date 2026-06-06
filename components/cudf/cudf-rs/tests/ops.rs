@@ -15,6 +15,8 @@ mod filter_tests;
 
 #[path = "ops/groupby/dataframe_groupby_tests.rs"]
 mod dataframe_groupby_tests;
+#[path = "ops/groupby/groupby_null_tests.rs"]
+mod groupby_null_tests;
 #[path = "ops/groupby/groupby_tests.rs"]
 mod groupby_tests;
 #[path = "ops/groupby/high_level_groupby_tests.rs"]
@@ -45,6 +47,9 @@ mod stream_compaction_tests;
 #[path = "ops/reduction/reduction_tests.rs"]
 mod reduction_tests;
 
+#[path = "ops/strings/strings_tests.rs"]
+mod strings_tests;
+
 #[path = "ops/sorting/dataframe_sort_values_tests.rs"]
 mod dataframe_sort_values_tests;
 #[path = "ops/sorting/sorting_tests.rs"]
@@ -52,5 +57,7 @@ mod sorting_tests;
 
 #[path = "ops/unary/binary_tests.rs"]
 mod binary_tests;
+#[path = "ops/unary/cast_spec_tests.rs"]
+mod cast_spec_tests;
 #[path = "ops/unary/unary_tests.rs"]
 mod unary_tests;

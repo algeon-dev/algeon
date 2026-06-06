@@ -217,13 +217,6 @@ pub struct ParquetWriterOptions {
 }
 
 impl ParquetWriterOptions {
-    pub(crate) fn ensure_column_names(mut self, names: &[&str]) -> Result<Self> {
-        if self.column_names.is_none() {
-            self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
-        }
-        Ok(self)
-    }
-
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
     }

@@ -163,6 +163,56 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
                                    int32_t include_header,
                                    const cudf_exec_options_t* options);
 
+// ---------------------------------------------------------------------------
+// JSON
+// ---------------------------------------------------------------------------
+
+/// Read a JSON file into a table.
+/// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
+cudf_status_t cudf_io_read_json(const char* filepath, int32_t lines,
+                                cudf_table_handle* out);
+
+/// Read JSON with explicit execution context.
+cudf_status_t cudf_io_read_json_ex(const char* filepath, int32_t lines,
+                                   cudf_table_handle* out,
+                                   const cudf_exec_options_t* options);
+
+/// Read a JSON file, returning the table and column names.
+/// `out_names` is populated with `out_num_names` null-terminated strings.
+/// The caller must free the names with `cudf_io_free_column_names()`.
+cudf_status_t cudf_io_read_json_with_metadata(
+    const char* filepath, int32_t lines,
+    cudf_table_handle* out_table,
+    char*** out_names, int32_t* out_num_names);
+
+/// Read JSON with metadata and explicit execution context.
+cudf_status_t cudf_io_read_json_with_metadata_ex(
+    const char* filepath, int32_t lines,
+    cudf_table_handle* out_table,
+    char*** out_names, int32_t* out_num_names,
+    const cudf_exec_options_t* options);
+
+/// Write a table to a JSON file.
+/// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
+/// `include_nulls`: 1 to output null fields, 0 to omit them.
+///
+/// Contract:
+/// - `num_columns` must be >= 0
+/// - if `num_columns > 0`, `column_names` must be non-NULL
+cudf_status_t cudf_io_write_json(cudf_table_view_handle table,
+                                 const char* filepath,
+                                 const char** column_names,
+                                 int32_t num_columns,
+                                 int32_t lines, int32_t include_nulls);
+
+/// Write JSON with explicit execution context.
+cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
+                                    const char* filepath,
+                                    const char** column_names,
+                                    int32_t num_columns,
+                                    int32_t lines, int32_t include_nulls,
+                                    const cudf_exec_options_t* options);
+
 #ifdef __cplusplus
 }
 #endif

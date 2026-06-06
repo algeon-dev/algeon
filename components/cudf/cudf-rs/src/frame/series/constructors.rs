@@ -100,12 +100,21 @@ impl Series {
     ///
     /// This reads column metadata (length, null count) via FFI at construction
     /// time and caches the values for infallible metadata access.
-    pub fn from_column_arc(column: Arc<Column>) -> Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if column metadata cannot be read via FFI. This should never
+    /// happen for a well-formed `Column` (e.g. one already stored in a
+    /// `DataFrame`).
+    pub fn from_column_arc(column: Arc<Column>) -> Self {
         let (cached_len, cached_null_count) = {
-            let cv = column.view()?;
-            (cv.len()?, cv.null_count()? as usize)
+            let cv = column.view().expect("Column must have a valid view");
+            (
+                cv.len().expect("Column view must report length"),
+                cv.null_count().expect("Column view must report null count") as usize,
+            )
         };
-        Ok(Self { name: None, column, cached_len, cached_null_count })
+        Self { name: None, column, cached_len, cached_null_count }
     }
 
     /// Create an all-null `Series` of the given type and length.
@@ -128,7 +137,7 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: one device allocation of `size` elements.
-    pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: i32) -> Result<Self> {
+    pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
         let column = Column::from_scalar(scalar, size)?;
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
@@ -154,12 +163,7 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: one device allocation.
-    pub fn nulls_with_runtime(
-        runtime: &Runtime,
-        name: impl Into<String>,
-        type_id: TypeId,
-        len: usize,
-    ) -> Result<Self> {
+    pub fn nulls_with_runtime(runtime: &Runtime, name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Self> {
         let column = Column::nulls_with_runtime(runtime, type_id, len)?;
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
@@ -177,7 +181,7 @@ impl Series {
         runtime: &Runtime,
         name: impl Into<String>,
         scalar: &Scalar,
-        size: i32,
+        size: usize,
     ) -> Result<Self> {
         let column = Column::from_scalar_with_runtime(runtime, scalar, size)?;
         let mut s = Self::from_column_with_cache(column)?;

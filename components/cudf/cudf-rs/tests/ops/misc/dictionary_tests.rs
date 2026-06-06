@@ -64,7 +64,7 @@ fn test_dictionary_decode_roundtrip() {
 
 #[test]
 fn test_dictionary_encode_f64() {
-    let data = vec![3.14f64, 2.71, 3.14, 1.41, 2.71];
+    let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
     let col = Column::from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
@@ -78,9 +78,9 @@ fn test_dictionary_encode_f64() {
     // Verify all 3 expected values are present in keys.
     let mut sorted_keys = keys.clone();
     sorted_keys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    assert!((sorted_keys[0] - 1.41).abs() < 1e-9);
-    assert!((sorted_keys[1] - 2.71).abs() < 1e-9);
-    assert!((sorted_keys[2] - 3.14).abs() < 1e-9);
+    assert!((sorted_keys[0] - 1.5).abs() < 1e-9);
+    assert!((sorted_keys[1] - 2.75).abs() < 1e-9);
+    assert!((sorted_keys[2] - 3.25).abs() < 1e-9);
 
     // Verify the mapping: data[i] == keys[indices[i]]
     let indices_view = dictionary::indices(&dict_view).unwrap();

@@ -1,8 +1,6 @@
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
-use cudf::{
-    Column, DataFrame, DistinctOptions, ErrorKind, Series, SortOptions, ops::stream_compaction::DuplicateKeepOption,
-};
+use cudf::{Column, DataFrame, DistinctOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -168,7 +166,7 @@ fn test_filter_isin_by_column_view_succeeds_with_mixed_domains_and_syncs_seconda
 #[test]
 fn test_sort_single_column_ascending() {
     let df = sample_df();
-    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
@@ -177,7 +175,7 @@ fn test_sort_single_column_ascending() {
 #[test]
 fn test_sort_single_column_descending() {
     let df = sample_df();
-    let sorted = df.sort_values(&["score"], SortOptions::new().with_descending(vec![true])).unwrap();
+    let sorted = df.sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
@@ -189,7 +187,7 @@ fn test_sort_by_subset_of_columns() {
     let scores = Column::from_slice(&[20.0f64, 10.0, 40.0, 30.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
-    let sorted = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
+    let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
     assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
@@ -198,7 +196,7 @@ fn test_sort_by_subset_of_columns() {
 #[test]
 fn test_sort_nonexistent_column_returns_error() {
     let df = sample_df();
-    let result = df.sort_values(&["nonexistent"], SortOptions::new());
+    let result = df.sort_values(["nonexistent"], SortOptions::new());
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -208,7 +206,7 @@ fn test_sort_nonexistent_column_returns_error() {
 fn test_sort_mismatched_descending_count() {
     let df = sample_df();
     // 2 column names but only 1 descending flag → error
-    let result = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false]));
+    let result = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false]));
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -217,7 +215,7 @@ fn test_sort_mismatched_descending_count() {
 #[test]
 fn test_sort_preserves_schema() {
     let df = sample_df();
-    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
     assert_eq!(sorted.column_index("id"), Some(0));
     assert_eq!(sorted.column_index("score"), Some(1));
@@ -290,16 +288,16 @@ fn test_drop_duplicates_nonexistent_column() {
 }
 
 // ---------------------------------------------------------------------------
-// drop_nulls
+// dropna
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_drop_nulls_basic() {
+fn test_dropna_basic() {
     let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
-    let cleaned = df.drop_nulls(&["id"], 1).unwrap();
+    let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 3);
     assert_eq!(cleaned.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
@@ -307,38 +305,23 @@ fn test_drop_nulls_basic() {
 }
 
 #[test]
-fn test_drop_nulls_preserves_schema() {
+fn test_dropna_preserves_schema_simple() {
     let ids = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
-    let cleaned = df.drop_nulls(&["id"], 1).unwrap();
+    let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).build()).unwrap();
     assert_eq!(cleaned.column_names(), vec!["id", "val"]);
 }
 
 #[test]
-fn test_drop_nulls_nonexistent_column() {
-    let c = Column::from_slice(&[1i32]).unwrap();
-    let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
-
-    let result = df.drop_nulls(&["missing"], 1);
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
-}
-
-// ---------------------------------------------------------------------------
-// drop_nulls_any
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
+fn test_dropna_any_equivalent_to_thresh() {
     let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
-    let subset = &["id"];
-    let expected = df.drop_nulls(subset, subset.len() as i32).unwrap();
-    let actual = df.drop_nulls_any(subset).unwrap();
+    let expected = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
+    let actual = df.dropna(DropNaOptions::builder().subset(&["id"]).build()).unwrap();
 
     assert_eq!(actual.num_rows(), expected.num_rows());
     assert_eq!(
@@ -352,19 +335,19 @@ fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
 }
 
 #[test]
-fn test_drop_nulls_any_mixed_null_patterns() {
+fn test_dropna_any_mixed_null_patterns() {
     // Two subset columns with nulls in different positions.
     let a = Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
     let b = Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
     let c = Column::from_slice(&[100.0f64, 200.0, 300.0, 400.0]).unwrap();
     let df = DataFrame::new(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![a, b, c]).unwrap();
 
-    // drop_nulls_any on ["a", "b"]: drop rows where ANY of a or b is null.
+    // dropna on ["a", "b"]: drop rows where ANY of a or b is null.
     // Row 0: a=1, b=10 → kept
     // Row 1: a=null → dropped
     // Row 2: b=null → dropped
     // Row 3: a=4, b=40 → kept
-    let cleaned = df.drop_nulls_any(&["a", "b"]).unwrap();
+    let cleaned = df.dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 2);
     assert_eq!(cleaned.series("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
@@ -373,51 +356,51 @@ fn test_drop_nulls_any_mixed_null_patterns() {
 }
 
 #[test]
-fn test_drop_nulls_any_empty_subset_returns_unchanged() {
+fn test_dropna_default_all_columns() {
     let ids = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
     let df = DataFrame::new(vec!["id".to_string()], vec![ids]).unwrap();
 
-    // Empty subset → no columns to check for nulls → all rows kept.
-    let result = df.drop_nulls_any(&[]).unwrap();
-    assert_eq!(result.num_rows(), 3);
+    // Default options: subset=all columns, how=any
+    let result = df.dropna(DropNaOptions::default()).unwrap();
+    assert_eq!(result.num_rows(), 2);
 }
 
 #[test]
-fn test_drop_nulls_any_no_nulls() {
+fn test_dropna_no_nulls() {
     let c = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
 
-    let result = df.drop_nulls_any(&["x"]).unwrap();
+    let result = df.dropna(DropNaOptions::builder().subset(&["x"]).build()).unwrap();
     assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
-fn test_drop_nulls_any_all_null() {
+fn test_dropna_all_null() {
     let c = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
 
-    let result = df.drop_nulls_any(&["x"]).unwrap();
+    let result = df.dropna(DropNaOptions::builder().subset(&["x"]).build()).unwrap();
     assert_eq!(result.num_rows(), 0);
 }
 
 #[test]
-fn test_drop_nulls_any_preserves_schema() {
+fn test_dropna_preserves_schema() {
     let a = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let b = Column::from_slice(&[10.0f64, 20.0]).unwrap();
     let df = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![a, b]).unwrap();
 
-    let cleaned = df.drop_nulls_any(&["a"]).unwrap();
+    let cleaned = df.dropna(DropNaOptions::builder().subset(&["a"]).build()).unwrap();
     assert_eq!(cleaned.column_names(), vec!["a", "b"]);
     assert_eq!(cleaned.column_index("a"), Some(0));
     assert_eq!(cleaned.column_index("b"), Some(1));
 }
 
 #[test]
-fn test_drop_nulls_any_nonexistent_column() {
+fn test_dropna_nonexistent_column_returns_error() {
     let c = Column::from_slice(&[1i32]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
 
-    let result = df.drop_nulls_any(&["missing"]);
+    let result = df.dropna(DropNaOptions::builder().subset(&["missing"]).build());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
 }

@@ -1,7 +1,7 @@
 //! Tests for DataFrame I/O integration.
 
 use cudf::{
-    Column, DataFrame, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, Series, io::parquet::ParquetReaderOptions,
+    Column, DataFrame, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, DataframeParquetReaderOptions, Series,
 };
 use tempfile::TempDir;
 
@@ -47,7 +47,7 @@ fn test_read_parquet_with_options() {
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read with column selection and row limit.
-    let opts = ParquetReaderOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).build();
+    let opts = DataframeParquetReaderOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).build();
     let df = DataFrame::read_parquet_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 1);

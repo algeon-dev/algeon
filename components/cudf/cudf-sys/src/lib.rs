@@ -961,6 +961,48 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    // -- JSON I/O ------------------------------------------------------------
+
+    pub fn cudf_io_read_json(filepath: *const c_char, lines: i32, out: *mut cudf_table_handle) -> cudf_status_t;
+    pub fn cudf_io_read_json_ex(
+        filepath: *const c_char,
+        lines: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    pub fn cudf_io_read_json_with_metadata(
+        filepath: *const c_char,
+        lines: i32,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+    ) -> cudf_status_t;
+    pub fn cudf_io_read_json_with_metadata_ex(
+        filepath: *const c_char,
+        lines: i32,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    pub fn cudf_io_write_json(
+        table: cudf_table_view_handle,
+        filepath: *const c_char,
+        column_names: *const *const c_char,
+        num_columns: i32,
+        lines: i32,
+        include_nulls: i32,
+    ) -> cudf_status_t;
+    pub fn cudf_io_write_json_ex(
+        table: cudf_table_view_handle,
+        filepath: *const c_char,
+        column_names: *const *const c_char,
+        num_columns: i32,
+        lines: i32,
+        include_nulls: i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- Sorting -------------------------------------------------------------
 
     pub fn cudf_sort(
@@ -1569,6 +1611,18 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_replace_nulls_policy(
+        input: cudf_column_view_handle,
+        policy: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+    pub fn cudf_replace_nulls_policy_ex(
+        input: cudf_column_view_handle,
+        policy: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- Search --------------------------------------------------------------
 
     pub fn cudf_contains(
@@ -1657,6 +1711,114 @@ extern "C" {
 
     /// Reset the observation state so the next `_ex` call's context is visible.
     pub fn cudf_test_exec_reset_observation();
+
+    // -- String operations ---------------------------------------------------
+
+    /// Convert string column to lowercase.
+    pub fn cudf_strings_to_lower(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
+
+    /// Convert string column to lowercase with explicit execution context.
+    pub fn cudf_strings_to_lower_ex(
+        input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Convert string column to uppercase.
+    pub fn cudf_strings_to_upper(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
+
+    /// Convert string column to uppercase with explicit execution context.
+    pub fn cudf_strings_to_upper_ex(
+        input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Element-wise literal substring containment test. Returns BOOL8 column.
+    pub fn cudf_strings_contains(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Element-wise literal substring containment with explicit execution context.
+    pub fn cudf_strings_contains_ex(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Element-wise starts-with test against a scalar string. Returns BOOL8 column.
+    pub fn cudf_strings_starts_with(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Element-wise starts-with with explicit execution context.
+    pub fn cudf_strings_starts_with_ex(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Element-wise ends-with test against a scalar string. Returns BOOL8 column.
+    pub fn cudf_strings_ends_with(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Element-wise ends-with with explicit execution context.
+    pub fn cudf_strings_ends_with_ex(
+        input: cudf_column_view_handle,
+        target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Strip characters from one or both sides of each string.
+    /// `side`: 0=LEFT, 1=RIGHT, 2=BOTH.
+    pub fn cudf_strings_strip(
+        input: cudf_column_view_handle,
+        side: i32,
+        to_strip: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Strip with explicit execution context.
+    pub fn cudf_strings_strip_ex(
+        input: cudf_column_view_handle,
+        side: i32,
+        to_strip: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Character count (not byte count) per string. Returns INT32 column.
+    pub fn cudf_strings_count_characters(input: cudf_column_view_handle, out: *mut cudf_column_handle)
+    -> cudf_status_t;
+
+    /// Character count with explicit execution context.
+    pub fn cudf_strings_count_characters_ex(
+        input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Byte count per string. Returns INT32 column.
+    pub fn cudf_strings_count_bytes(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
+
+    /// Byte count with explicit execution context.
+    pub fn cudf_strings_count_bytes_ex(
+        input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    // -- Test helpers --------------------------------------------------------
 
     /// Force the next `cudf_table_release_columns` handle-array allocation to
     /// fail for regression testing.

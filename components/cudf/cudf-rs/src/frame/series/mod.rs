@@ -10,5 +10,6 @@ mod naming;
 mod ops;
 mod owned;
 mod reduction;
+mod strings;
 
 pub use owned::{IntoSeries, Series};

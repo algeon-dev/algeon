@@ -3,7 +3,7 @@
 //! Executes manifest operations through `cudf-rs` and normalizes results
 //! into the shared result schema for comparison with Python cuDF output.
 
-use cudf::{DataFrame, InfoDetail, SortOptions, TypeId};
+use cudf::{DataFrame, DropNaOptions, InfoDetail, SortOptions, TypeId};
 
 use super::{
     manifest::{Operation, canonical_dtype},
@@ -63,11 +63,14 @@ pub fn execute_operation(df: &DataFrame, op: &Operation) -> Result<NormalizedRes
         }),
         Operation::FilterEq { column, value, value_dtype } => execute_filter_eq(df, column, value, value_dtype),
         Operation::DropNulls { subset } => execute_transform("drop_nulls", || {
-            let col_names: Vec<&str> = match subset {
-                Some(names) => names.iter().map(|s| s.as_str()).collect(),
-                None => df.column_names(),
+            let opts = match subset {
+                Some(names) => {
+                    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                    DropNaOptions::builder().subset(&refs).build()
+                }
+                None => DropNaOptions::default(),
             };
-            df.drop_nulls_any(&col_names)
+            df.dropna(opts)
         }),
         Operation::Head { n } => execute_transform("head", || df.head(*n)),
         Operation::Tail { n } => execute_transform("tail", || df.tail(*n)),
@@ -286,13 +289,13 @@ fn materialize_column_values(series: &cudf::Series, type_id: TypeId) -> Result<V
     let validity = cv.validity()?;
 
     match type_id {
-        TypeId::Int32 => materialize_numeric::<i32>(&cv, &validity, |v| serde_json::Value::from(v)),
-        TypeId::Int64 => materialize_numeric::<i64>(&cv, &validity, |v| serde_json::Value::from(v)),
-        TypeId::UInt32 => materialize_numeric::<u32>(&cv, &validity, |v| serde_json::Value::from(v)),
-        TypeId::UInt64 => materialize_numeric::<u64>(&cv, &validity, |v| serde_json::Value::from(v)),
+        TypeId::Int32 => materialize_numeric::<i32>(&cv, &validity, serde_json::Value::from),
+        TypeId::Int64 => materialize_numeric::<i64>(&cv, &validity, serde_json::Value::from),
+        TypeId::UInt32 => materialize_numeric::<u32>(&cv, &validity, serde_json::Value::from),
+        TypeId::UInt64 => materialize_numeric::<u64>(&cv, &validity, serde_json::Value::from),
         TypeId::Float32 => materialize_numeric::<f32>(&cv, &validity, |v| serde_json::Value::from(v as f64)),
-        TypeId::Float64 => materialize_numeric::<f64>(&cv, &validity, |v| serde_json::Value::from(v)),
-        TypeId::Bool8 => materialize_numeric::<bool>(&cv, &validity, |v| serde_json::Value::from(v)),
+        TypeId::Float64 => materialize_numeric::<f64>(&cv, &validity, serde_json::Value::from),
+        TypeId::Bool8 => materialize_numeric::<bool>(&cv, &validity, serde_json::Value::from),
         TypeId::String => {
             let strings = cv.to_optional_strings()?;
             Ok(strings
@@ -320,7 +323,7 @@ fn materialize_numeric<T: cudf::CudfType>(
             .zip(valid.iter())
             .map(|(val, &is_valid)| if is_valid { to_json(val) } else { serde_json::Value::Null })
             .collect(),
-        None => data.into_iter().map(|val| to_json(val)).collect(),
+        None => data.into_iter().map(to_json).collect(),
     })
 }
 

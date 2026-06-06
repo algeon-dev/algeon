@@ -98,14 +98,15 @@ pub use core::{
     error::{Error, ErrorKind, ErrorStatus, Result},
     scalar::Scalar,
     table::{Table, TableView},
-    types::{CudfType, DataType, NullEquality, NullPolicy, TypeId},
+    types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };
 
 pub use frame::{
     dataframe::{
         ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
-        DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions,
-        InfoDetail,
+        DataFrameInfo, DataFrameJoinResult, DataFrameJsonReaderOptions, DataFrameJsonWriterOptions,
+        DataFrameMemoryAccounting, DataframeParquetReaderOptions, DataFrameParquetWriterOptions, DataTypeCount,
+        DistinctOptions, DropNaOptions, InfoDetail, MeltOptions,
     },
     series::{IntoSeries, Series},
 };
@@ -114,7 +115,10 @@ pub use ops::Expr;
 pub use ops::{
     groupby::{Agg, AggSpec, GroupBy, GroupByOptions},
     join::{JoinType, MergeOptions},
+    replace::FillPolicy,
     sorting::SortOptions,
+    stream_compaction::DuplicateKeepOption,
+    strings::StripSide,
 };
 #[doc(hidden)]
 pub use runtime::__DebugExecutionContext;

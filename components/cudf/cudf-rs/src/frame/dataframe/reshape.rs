@@ -70,6 +70,49 @@ impl DistinctOptions {
     }
 }
 
+/// Options for [`DataFrame::melt`] (unpivot: wide → long format).
+///
+/// Transforms a "wide" DataFrame into "long" format by taking one or more
+/// columns and turning them into rows. Mirrors the `melt()` API from cuDF
+/// Python / pandas.
+///
+/// # Defaults
+///
+/// - `id_vars` = empty (no identifier columns)
+/// - `value_vars` = empty (defaults to all columns not in `id_vars`)
+/// - `var_name` = `"variable"`
+/// - `value_name` = `"value"`
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct MeltOptions {
+    /// Columns to use as identifier variables (kept as-is, tiled K times).
+    #[builder(default, setter(transform = |columns: &[&str]| columns.iter().map(|s| s.to_string()).collect()))]
+    id_vars: Vec<String>,
+    /// Columns to unpivot into the `value` column. Empty means all columns
+    /// not in `id_vars`.
+    #[builder(default, setter(transform = |columns: &[&str]| columns.iter().map(|s| s.to_string()).collect()))]
+    value_vars: Vec<String>,
+    /// Name for the column that stores the original column names.
+    #[builder(default = "variable".to_string(), setter(transform = |name: &str| name.to_string()))]
+    var_name: String,
+    /// Name for the column that stores the unpivoted values.
+    #[builder(default = "value".to_string(), setter(transform = |name: &str| name.to_string()))]
+    value_name: String,
+}
+
+impl Default for MeltOptions {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+impl MeltOptions {
+    /// Create default options: no id_vars, all columns as value_vars,
+    /// var_name = "variable", value_name = "value".
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -527,7 +570,7 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if any name in `subset` is not in the schema.
-    pub fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
+    pub(crate) fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
@@ -536,32 +579,6 @@ impl DataFrame {
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
-    /// Drop rows where **any** of the specified `subset` columns contain nulls.
-    ///
-    /// Equivalent to `self.drop_nulls(subset, subset.len() as i32)` — every
-    /// column in `subset` must be non-null for a row to be kept.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: always produces a new table with nulls removed via FFI.
-    /// GPU allocation dominates runtime cost, so a consuming variant would
-    /// provide negligible benefit.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `subset` is not in the schema.
-    pub fn drop_nulls_any(&self, subset: &[&str]) -> Result<Self> {
-        let subset_count = subset.len();
-        let keep_threshold = i32::try_from(subset_count).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
-                .with_operation("dataframe::drop_nulls_any")
-                .with_context("subset_count", subset_count.to_string())
-        })?;
-
-        self.drop_nulls(subset, keep_threshold).map_err(|e| {
-            e.with_operation("dataframe::drop_nulls_any").with_context("subset_count", subset_count.to_string())
-        })
-    }
     /// Concatenate two DataFrames row-wise.
     ///
     /// Both DataFrames must have the same column names in the same order
@@ -921,7 +938,7 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
-    pub fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
+    pub(crate) fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
                 .with_operation("dataframe::replace_nulls")
@@ -949,7 +966,8 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema, or if the cast
     /// is unsupported.
-    pub fn cast_column(&self, column: &str, target_type: &DataType) -> Result<Self> {
+    pub fn cast_column(&self, column: &str, target_type: impl Into<DataType>) -> Result<Self> {
+        let target_type = target_type.into();
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
                 .with_operation("dataframe::cast_column")
@@ -957,7 +975,7 @@ impl DataFrame {
         })?;
 
         let cv = col.view()?;
-        let new_col = unary::cast(&cv, target_type)?.with_execution_domain(Arc::clone(col.execution_domain()));
+        let new_col = unary::cast(&cv, &target_type)?.with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -1252,5 +1270,90 @@ impl DataFrame {
                 .insert(name.clone(), Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(&domain))));
         }
         Ok(Self { columns: new_columns, row_count: 0, domain })
+    }
+
+    /// Unpivot a DataFrame from wide format to long format.
+    ///
+    /// Takes a set of id columns (kept as-is) and a set of value columns
+    /// (turned into rows). Produces a DataFrame with columns:
+    /// `[...id_vars, var_name, value_name]`.
+    ///
+    /// Equivalent to cuDF Python's `DataFrame.melt()` / `cudf.melt()`.
+    ///
+    /// # Algorithm (pure Rust, no C++ kernel)
+    ///
+    /// 1. Tile each id_var column K times (K = number of value_vars)
+    /// 2. Build a `variable` string column by repeating value_var names
+    /// 3. Concatenate all value_var columns into a single `value` column
+    ///
+    /// # Cost
+    /// GPU-allocating: creates K copies of each id column and concatenates
+    /// the value columns.
+    pub fn melt(&self, opts: MeltOptions) -> Result<Self> {
+        let id_vars = &opts.id_vars;
+        let value_vars: Vec<String> = if opts.value_vars.is_empty() {
+            let id_set: std::collections::HashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
+            self.columns.keys().filter(|name| !id_set.contains(name.as_str())).cloned().collect()
+        } else {
+            opts.value_vars.clone()
+        };
+
+        // Validate: id_vars must exist
+        for name in id_vars {
+            if !self.columns.contains_key(name) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("id_var column '{name}' not found"))
+                    .with_operation("dataframe::melt"));
+            }
+        }
+        // Validate: value_vars must exist
+        for name in &value_vars {
+            if !self.columns.contains_key(name) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("value_var column '{name}' not found"))
+                    .with_operation("dataframe::melt"));
+            }
+        }
+
+        let n = self.row_count;
+        let k = value_vars.len();
+
+        let mut result_columns: Vec<(&str, Series)> = Vec::new();
+
+        // Step 1: Tile id columns K times
+        for id_name in id_vars {
+            let id_series = self.series(id_name)?;
+            if k <= 1 {
+                result_columns.push((id_name, id_series));
+            } else {
+                let copies: Vec<&Series> = (0..k).map(|_| &id_series).collect();
+                let tiled = Series::concat(&copies)?;
+                result_columns.push((id_name, tiled));
+            }
+        }
+
+        // Step 2: Build the "variable" string column
+        // Each value_var name is repeated N times, in order
+        let var_strings: Vec<&str> = value_vars.iter().flat_map(|name| std::iter::repeat_n(name.as_str(), n)).collect();
+        let var_series = Series::from_strings(&opts.var_name, &var_strings)?;
+        result_columns.push((&opts.var_name, var_series));
+
+        // Step 3: Concatenate value columns into a single "value" column
+        if value_vars.is_empty() {
+            // No value vars → empty value column. Use Int32 as default type.
+            let empty_series = Series::new::<i32>(&opts.value_name, &[])?;
+            result_columns.push((&opts.value_name, empty_series));
+        } else {
+            let value_series_list: Vec<Series> = value_vars
+                .iter()
+                .map(|name| {
+                    let s = self.series(name)?;
+                    Ok(s.rename(&opts.value_name))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let refs: Vec<&Series> = value_series_list.iter().collect();
+            let concat_values = Series::concat(&refs)?;
+            result_columns.push((&opts.value_name, concat_values));
+        }
+
+        DataFrame::from_series(result_columns)
     }
 }

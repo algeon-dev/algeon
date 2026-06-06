@@ -72,7 +72,7 @@ fn test_clone_preserves_schema() {
 #[test]
 fn test_select_shares_selected_columns() {
     let df = sample_df();
-    let selected = df.select(&["id", "flag"]).unwrap();
+    let selected = df.select(["id", "flag"]).unwrap();
 
     // Selected columns should point to the same GPU memory.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "id"));
@@ -82,7 +82,7 @@ fn test_select_shares_selected_columns() {
 #[test]
 fn test_select_original_still_usable() {
     let df = sample_df();
-    let selected = df.select(&["score"]).unwrap();
+    let selected = df.select(["score"]).unwrap();
 
     // Original DataFrame still has all columns and correct data.
     assert_eq!(df.num_columns(), 3);
@@ -98,7 +98,7 @@ fn test_select_original_still_usable() {
 #[test]
 fn test_select_reorder_shares_columns() {
     let df = sample_df();
-    let reordered = df.select(&["flag", "id"]).unwrap();
+    let reordered = df.select(["flag", "id"]).unwrap();
 
     // Even after reordering, the GPU memory is shared.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&reordered, "id"));
@@ -228,7 +228,7 @@ fn test_many_clones_readable_after_original_dropped() {
 fn test_clone_then_select_shares_columns() {
     let df = sample_df();
     let copied = df.clone();
-    let selected = copied.select(&["id"]).unwrap();
+    let selected = copied.select(["id"]).unwrap();
 
     // All three DataFrames share the "id" column.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&copied, "id"));
@@ -239,7 +239,7 @@ fn test_clone_then_select_shares_columns() {
 fn test_rename_then_select_shares_columns() {
     let df = sample_df();
     let renamed = df.rename_column("id", "identifier").unwrap();
-    let selected = renamed.select(&["identifier", "flag"]).unwrap();
+    let selected = renamed.select(["identifier", "flag"]).unwrap();
 
     // The "identifier" column in selected is the same as "id" in original.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "identifier"));
@@ -277,7 +277,7 @@ fn test_chained_renames_share_all_data() {
 #[test]
 fn test_select_subset_then_with_column_shares_retained() {
     let df = sample_df();
-    let selected = df.select(&["id", "score"]).unwrap();
+    let selected = df.select(["id", "score"]).unwrap();
     let new_flag = Column::from_slice(&[false, true, false]).unwrap();
     let result = selected.with_column("new_flag", new_flag).unwrap();
 

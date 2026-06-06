@@ -39,6 +39,21 @@ cudf_status_t cudf_replace_nulls_column_ex(cudf_column_view_handle input,
                                            cudf_column_handle* out,
                                            const cudf_exec_options_t* options);
 
+/// Replace null values using a fill policy (forward or backward fill).
+/// `policy`: 0 = PRECEDING (forward fill), 1 = FOLLOWING (backward fill).
+cudf_status_t cudf_replace_nulls_policy(cudf_column_view_handle input,
+                                        int32_t policy,
+                                        cudf_column_handle* out);
+
+/// Replace null values using a fill policy with an explicit execution context.
+/// `policy`: 0 = PRECEDING (forward fill), 1 = FOLLOWING (backward fill).
+/// Null `options` preserve cuDF defaults.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_replace_nulls_policy_ex(cudf_column_view_handle input,
+                                           int32_t policy,
+                                           cudf_column_handle* out,
+                                           const cudf_exec_options_t* options);
+
 #ifdef __cplusplus
 }
 #endif

@@ -49,7 +49,7 @@ fn test_into_columns_empty_table() {
 fn test_into_columns_preserves_column_order() {
     let c1 = Column::from_slice(&[100i32]).unwrap();
     let c2 = Column::from_slice(&[200i64]).unwrap();
-    let c3 = Column::from_slice(&[3.14f32]).unwrap();
+    let c3 = Column::from_slice(&[3.25f32]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
 
     let columns = table.into_columns().unwrap();

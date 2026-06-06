@@ -17,7 +17,7 @@ fn subset_key_sort_values_allocates_no_more_than_low_level_borrowed_sort_by_key(
     let df = sample_df();
 
     let high_level_allocations = allocation_count_delta(|| {
-        let result = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
+        let result = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
         assert_eq!(result.column_names(), vec!["id", "score", "tag"]);
         assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);

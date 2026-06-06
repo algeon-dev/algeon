@@ -6,7 +6,7 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{Column, DataFrame, DistinctOptions, Series, ops::stream_compaction::DuplicateKeepOption};
+use cudf::{Column, DataFrame, DistinctOptions, DuplicateKeepOption, Series};
 
 // ---------------------------------------------------------------------------
 // TempTableView — exercised via filter, sort, distinct, drop_nulls
@@ -37,7 +37,7 @@ fn sort_preserves_schema_names_and_lengths() {
     let vals_col = Series::new::<i64>("b", &[30, 10, 20]).unwrap();
     let df = DataFrame::from_columns([("a", names_col), ("b", vals_col)]).unwrap();
 
-    let sorted = df.sort_values(&["a"], cudf::SortOptions::new()).unwrap();
+    let sorted = df.sort_values(["a"], cudf::SortOptions::new()).unwrap();
 
     assert_eq!(sorted.num_columns(), 2);
     assert_eq!(sorted.num_rows(), 3);
@@ -75,7 +75,7 @@ fn sort_with_missing_column_returns_error() {
     let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_columns([("a", a)]).unwrap();
 
-    let err = df.sort_values(&["nonexistent"], cudf::SortOptions::new()).unwrap_err();
+    let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     let msg = err.to_string();
     assert!(msg.contains("nonexistent"), "error should name the missing column: {}", msg);
@@ -96,7 +96,7 @@ fn join_reassembly_preserves_schema_names() {
     let right_val = Series::new::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
     let right = DataFrame::from_columns([("key", right_key), ("rval", right_val)]).unwrap();
 
-    let opts = cudf::MergeOptions::new().on(&["key"]).how_inner();
+    let opts = cudf::MergeOptions::new().on(["key"]).how_inner();
     let joined = left.merge(&right, opts).unwrap();
 
     // Inner join on [2,3] → 2 rows.

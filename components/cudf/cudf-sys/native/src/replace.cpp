@@ -77,4 +77,37 @@ cudf_status_t cudf_replace_nulls_column_ex(
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_replace_nulls_policy(cudf_column_view_handle input,
+                                        int32_t policy,
+                                        cudf_column_handle* out) {
+  return cudf_replace_nulls_policy_ex(input, policy, out, nullptr);
+}
+
+cudf_status_t cudf_replace_nulls_policy_ex(
+    cudf_column_view_handle input,
+    int32_t policy,
+    cudf_column_handle* out,
+    cudf_exec_options_t const* options) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(input);
+    auto const rp = (policy == 0) ? cudf::replace_policy::PRECEDING
+                                  : cudf::replace_policy::FOLLOWING;
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+
+    auto result = cudf::replace_nulls(*view, rp, exec.stream, exec.mr);
+    *out = static_cast<cudf_column_handle>(result.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 }  // extern "C"
