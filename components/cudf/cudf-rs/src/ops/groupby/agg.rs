@@ -4,10 +4,13 @@ use std::{os::raw::c_void, ptr};
 
 use smallvec::SmallVec;
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Error, ErrorKind, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Error, ErrorKind, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 // GroupBy callers usually touch a handful of value columns and aggregations per
@@ -185,6 +188,35 @@ fn groupby_aggregate_impl(
     Ok(GroupByResult { keys: keys_table, results })
 }
 
+fn compatible_groupby_domain(
+    keys: &TableView<'_>,
+    requests: &[AggregationRequest<'_>],
+    operation: &'static str,
+) -> Result<std::sync::Arc<ExecutionDomain>> {
+    let mut output_domain = std::sync::Arc::clone(keys.execution_domain());
+    for request in requests {
+        output_domain =
+            ExecutionDomain::compatible_domain(&output_domain, request.values.execution_domain(), operation)?;
+    }
+    Ok(output_domain)
+}
+
+fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::Arc<ExecutionDomain>) -> GroupByResult {
+    GroupByResult {
+        keys: result.keys.with_execution_domain(std::sync::Arc::clone(&output_domain)),
+        results: result
+            .results
+            .into_iter()
+            .map(|columns| {
+                columns
+                    .into_iter()
+                    .map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain)))
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
 /// Create a C-side aggregation handle from an `Aggregation` enum.
 ///
 /// # Safety
@@ -260,7 +292,10 @@ pub fn groupby_aggregate(
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
 ) -> Result<GroupByResult> {
-    groupby_aggregate_impl(keys, requests, null_policy, None, "groupby::groupby_aggregate")
+    let output_domain = compatible_groupby_domain(keys, requests, "groupby::groupby_aggregate")?;
+    let exec_options = output_domain.explicit_exec_options_raw();
+    groupby_aggregate_impl(keys, requests, null_policy, exec_options.as_ref(), "groupby::groupby_aggregate")
+        .map(|result| bind_groupby_result_domain(result, output_domain))
 }
 
 pub(crate) fn groupby_aggregate_with_exec_options(

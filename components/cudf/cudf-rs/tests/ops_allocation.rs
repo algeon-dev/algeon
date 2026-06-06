@@ -1,3 +1,5 @@
+#[path = "common/allocation.rs"]
+mod allocation;
 #[path = "common/mod.rs"]
 mod common;
 

@@ -31,6 +31,10 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    cudf_table_handle* out);
 
 /// Read Parquet with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
                                        const char** columns,
                                        int32_t num_columns,
@@ -58,6 +62,10 @@ cudf_status_t cudf_io_read_parquet_with_metadata(
     int32_t* out_num_names);
 
 /// Read Parquet with metadata and explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_with_metadata_ex(
     const char* filepath,
     const char** columns,
@@ -100,6 +108,10 @@ cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
                                int32_t has_header, cudf_table_handle* out);
 
 /// Read a CSV file into a table with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_csv_ex(const char* filepath, char delimiter,
                                   int32_t has_header,
                                   cudf_table_handle* out,

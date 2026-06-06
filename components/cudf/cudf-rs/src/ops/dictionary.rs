@@ -23,11 +23,161 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
-    types::TypeId,
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+        types::TypeId,
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
+
+fn encode_impl(
+    input: &ColumnView<'_>,
+    indices_type: TypeId,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    error::check_status_in_with(
+        match exec_options {
+            Some(options) => unsafe {
+                cudf_sys::cudf_dictionary_encode_ex(input.raw_handle(), indices_type.to_raw(), &mut out, options)
+            },
+            None => unsafe { cudf_sys::cudf_dictionary_encode(input.raw_handle(), indices_type.to_raw(), &mut out) },
+        },
+        operation,
+        [
+            ("indices_type_id", format!("{:?}", indices_type).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    Ok(unsafe { Column::from_raw(out) })
+}
+
+fn decode_impl(
+    dict_column: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    error::check_status_in_with(
+        match exec_options {
+            Some(options) => unsafe {
+                cudf_sys::cudf_dictionary_decode_ex(dict_column.raw_handle(), &mut out, options)
+            },
+            None => unsafe { cudf_sys::cudf_dictionary_decode(dict_column.raw_handle(), &mut out) },
+        },
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+    Ok(unsafe { Column::from_raw(out) })
+}
+
+fn set_keys_impl(
+    dict_column: &ColumnView<'_>,
+    keys: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    error::check_status_in_with(
+        match exec_options {
+            Some(options) => unsafe {
+                cudf_sys::cudf_dictionary_set_keys_ex(dict_column.raw_handle(), keys.raw_handle(), &mut out, options)
+            },
+            None => unsafe {
+                cudf_sys::cudf_dictionary_set_keys(dict_column.raw_handle(), keys.raw_handle(), &mut out)
+            },
+        },
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+    Ok(unsafe { Column::from_raw(out) })
+}
+
+fn compatible_column_domain(
+    columns: &[&ColumnView<'_>],
+    operation: &'static str,
+) -> Result<std::sync::Arc<ExecutionDomain>> {
+    let mut iter = columns.iter();
+    let Some(first) = iter.next() else {
+        return Ok(ExecutionDomain::ambient_default());
+    };
+
+    let mut output_domain = std::sync::Arc::clone(first.execution_domain());
+    for column in iter {
+        output_domain = ExecutionDomain::compatible_domain(&output_domain, column.execution_domain(), operation)?;
+    }
+    Ok(output_domain)
+}
+
+fn match_dictionaries_impl(
+    dict_columns: &[&ColumnView<'_>],
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Vec<Column>> {
+    let n = dict_columns.len();
+    let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
+    let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
+    let mut out_count: i32 = 0;
+
+    error::check_status_in_with(
+        match exec_options {
+            Some(options) => unsafe {
+                cudf_sys::cudf_dictionary_match_dictionaries_ex(
+                    handles.as_ptr(),
+                    n as i32,
+                    &mut out_columns,
+                    &mut out_count,
+                    options,
+                )
+            },
+            None => unsafe {
+                cudf_sys::cudf_dictionary_match_dictionaries(
+                    handles.as_ptr(),
+                    n as i32,
+                    &mut out_columns,
+                    &mut out_count,
+                )
+            },
+        },
+        operation,
+        [("num_columns", n.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+
+    if out_count != n as i32 {
+        if !out_columns.is_null() {
+            let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count.max(0) as usize) };
+            for &handle in returned {
+                if !handle.is_null() {
+                    unsafe { cudf_sys::cudf_column_destroy(handle) };
+                }
+            }
+            unsafe { cudf_sys::cudf_free_column_array(out_columns) };
+        }
+        return Err(error::Error::new(
+            error::ErrorKind::InvalidOperation,
+            "ffi returned unexpected dictionary match result count",
+        )
+        .with_operation(operation)
+        .with_context("expected_count", n.to_string())
+        .with_context("actual_count", out_count.to_string()));
+    }
+    if out_count > 0 && out_columns.is_null() {
+        return Err(error::Error::new(
+            error::ErrorKind::InvalidOperation,
+            "ffi returned null dictionary match result array with positive count",
+        )
+        .with_operation(operation)
+        .with_context("num_columns", n.to_string()));
+    }
+
+    let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
+    let columns = returned.iter().copied().map(|handle| unsafe { Column::from_raw(handle) }).collect();
+    unsafe { cudf_sys::cudf_free_column_array(out_columns) };
+    Ok(columns)
+}
 
 /// Encode a column into a dictionary column.
 ///
@@ -42,15 +192,10 @@ use crate::core::{
 /// Keys:   `[111, 213, 429]`
 /// Indices: `[2, 0, 1, 0, 1, 2, 1]`
 pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_dictionary_encode(input.raw_handle(), indices_type.to_raw(), &mut out) },
-        "dictionary::encode",
-        [("indices_type_id", format!("{:?}", indices_type).to_lowercase())],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    encode_impl(input, indices_type, exec_options.as_ref(), "dictionary::encode")
+        .map(|column| column.with_execution_domain(output_domain))
 }
 
 /// Decode a dictionary column back to a regular column.
@@ -58,14 +203,10 @@ pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
 /// The input must be a `DICTIONARY32` column. The result has the same type as
 /// the dictionary keys.
 pub fn decode(dict_column: &ColumnView<'_>) -> Result<Column> {
-    let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: dict_column handle is valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_dictionary_decode(dict_column.raw_handle(), &mut out) },
-        "dictionary::decode",
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    decode_impl(dict_column, exec_options.as_ref(), "dictionary::decode")
+        .map(|column| column.with_execution_domain(output_domain))
 }
 
 /// Get the keys column view from a dictionary column.
@@ -81,7 +222,7 @@ pub fn keys<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    Ok(unsafe { ColumnView::from_raw(out) })
+    Ok(unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) })
 }
 
 /// Get the indices column view from a dictionary column.
@@ -97,7 +238,7 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    Ok(unsafe { ColumnView::from_raw(out) })
+    Ok(unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) })
 }
 
 /// Replace the keys of a dictionary column.
@@ -110,14 +251,14 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 /// This is useful for aligning two dictionary columns to the same key set
 /// so their indices are directly comparable.
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
-    let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: dict_column and keys handles are valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_dictionary_set_keys(dict_column.raw_handle(), keys.raw_handle(), &mut out) },
+    let output_domain = ExecutionDomain::compatible_domain(
+        dict_column.execution_domain(),
+        keys.execution_domain(),
         "dictionary::set_keys",
     )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    let exec_options = output_domain.explicit_exec_options_raw();
+    set_keys_impl(dict_column, keys, exec_options.as_ref(), "dictionary::set_keys")
+        .map(|column| column.with_execution_domain(output_domain))
 }
 
 /// Align multiple dictionary columns to a shared, deduplicated key set.
@@ -161,56 +302,9 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         .with_operation("dictionary::match_dictionaries"));
     }
 
-    let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
-    let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
-    let mut out_count: i32 = 0;
-
-    error::check_status_in_with(
-        // SAFETY: All column view handles are valid (NonNull maintained by ColumnView).
-        // handles slice is valid for n elements.
-        unsafe {
-            cudf_sys::cudf_dictionary_match_dictionaries(handles.as_ptr(), n as i32, &mut out_columns, &mut out_count)
-        },
-        "dictionary::match_dictionaries",
-        [("num_columns", n.to_string())],
-    )?;
-
-    if out_count != n as i32 {
-        if !out_columns.is_null() {
-            // SAFETY: out_columns and out_count were returned by the FFI call.
-            let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count.max(0) as usize) };
-            for &handle in returned {
-                if !handle.is_null() {
-                    // SAFETY: Each non-null handle is a valid column from the FFI call.
-                    unsafe { cudf_sys::cudf_column_destroy(handle) };
-                }
-            }
-            // SAFETY: out_columns was allocated by the C shim.
-            unsafe { cudf_sys::cudf_free_column_array(out_columns) };
-        }
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
-            "ffi returned unexpected dictionary match result count",
-        )
-        .with_operation("dictionary::match_dictionaries")
-        .with_context("expected_count", n.to_string())
-        .with_context("actual_count", out_count.to_string()));
-    }
-    if out_count > 0 && out_columns.is_null() {
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
-            "ffi returned null dictionary match result array with positive count",
-        )
-        .with_operation("dictionary::match_dictionaries")
-        .with_context("num_columns", n.to_string()));
-    }
-
-    // SAFETY: out_columns and out_count were set by a successful FFI call.
-    let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
-    // SAFETY: Each handle in returned was allocated by the FFI call, transferring ownership.
-    let columns = returned.iter().copied().map(|handle| unsafe { Column::from_raw(handle) }).collect();
-    // SAFETY: out_columns was allocated by the C shim. Column handles were already
-    // taken ownership of above, so we only free the array container.
-    unsafe { cudf_sys::cudf_free_column_array(out_columns) };
-    Ok(columns)
+    let output_domain = compatible_column_domain(dict_columns, "dictionary::match_dictionaries")?;
+    let exec_options = output_domain.explicit_exec_options_raw();
+    match_dictionaries_impl(dict_columns, exec_options.as_ref(), "dictionary::match_dictionaries").map(|columns| {
+        columns.into_iter().map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain))).collect()
+    })
 }

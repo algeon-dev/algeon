@@ -84,6 +84,11 @@ cudf_status_t cudf_groupby_aggregate(
     int32_t* out_total_columns);
 
 /// Groupby aggregate with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned keys table
+/// and every returned result column.
 cudf_status_t cudf_groupby_aggregate_ex(
     cudf_table_view_handle keys,
     const cudf_column_view_handle* values,

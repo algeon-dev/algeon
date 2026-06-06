@@ -2,25 +2,30 @@ use std::{
     marker::PhantomData,
     os::raw::c_void,
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use smallvec::SmallVec;
 
 use super::TABLE_HANDLE_INLINE_CAPACITY;
-use crate::core::{
-    column::ColumnView,
-    error::{self, Error, ErrorKind, Result},
+use crate::{
+    core::{
+        column::ColumnView,
+        error::{self, Error, ErrorKind, Result},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// A non-owning, immutable view of a GPU table.
 pub struct TableView<'a> {
     handle: NonNull<c_void>,
+    domain: Arc<ExecutionDomain>,
     _lifetime: PhantomData<&'a ()>,
 }
 
 impl<'a> TableView<'a> {
-    pub(crate) fn from_raw_handle(handle: *mut c_void) -> Self {
-        Self { handle: NonNull::new(handle).expect("null handle on success"), _lifetime: PhantomData }
+    pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self { handle: NonNull::new(handle).expect("null handle on success"), domain, _lifetime: PhantomData }
     }
 
     /// Returns the number of columns.
@@ -59,7 +64,7 @@ impl<'a> TableView<'a> {
             "table_view::column",
         )?;
         // SAFETY: col_handle was returned by a successful FFI call.
-        Ok(unsafe { ColumnView::from_raw(col_handle) })
+        Ok(unsafe { ColumnView::from_raw_with_domain(col_handle, Arc::clone(&self.domain)) })
     }
 
     /// Build a projected table view by selecting a subset of columns.
@@ -110,7 +115,7 @@ impl<'a> TableView<'a> {
             "table_view::select_columns",
         )?;
 
-        Ok(Self::from_raw_handle(out))
+        Ok(Self::from_raw_handle(out, Arc::clone(&self.domain)))
     }
 
     /// Construct a `TableView` from a slice of `ColumnView`s.
@@ -118,6 +123,25 @@ impl<'a> TableView<'a> {
     /// This is useful when you have individually-owned columns and need to
     /// present them as a table to libcudf operations.
     pub fn from_column_views(views: &[&ColumnView<'a>]) -> Result<Self> {
+        let domain = if let Some(first) = views.first() {
+            let domain = Arc::clone(first.execution_domain());
+            for (index, view) in views.iter().enumerate().skip(1) {
+                if !ExecutionDomain::same_identity(&domain, view.execution_domain()) {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "all column views in a table view must share one execution domain",
+                    )
+                    .with_operation("table_view::from_column_views")
+                    .with_context("left_domain", domain.debug_label())
+                    .with_context("right_domain", view.execution_domain().debug_label())
+                    .with_context("column_index", index.to_string()));
+                }
+            }
+            domain
+        } else {
+            ExecutionDomain::ambient_default()
+        };
+
         let num_columns = i32::try_from(views.len()).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "number of column views exceeds i32::MAX")
                 .with_operation("table_view::from_column_views")
@@ -134,12 +158,36 @@ impl<'a> TableView<'a> {
             "table_view::from_column_views",
         )?;
 
-        Ok(Self::from_raw_handle(out))
+        Ok(Self::from_raw_handle(out, domain))
     }
 
     /// Returns the raw FFI handle. For internal I/O use.
     pub(crate) fn raw_handle(&self) -> *mut c_void {
         self.handle.as_ptr()
+    }
+
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+        self.domain.debug_mr_value()
     }
 }
 

@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "search.h"
 #include "shim_common.h"
 
@@ -12,6 +13,13 @@ extern "C" {
 cudf_status_t cudf_contains(cudf_column_view_handle haystack,
                             cudf_column_view_handle needles,
                             cudf_column_handle* out) {
+  return cudf_contains_ex(haystack, needles, out, nullptr);
+}
+
+cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
+                               cudf_column_view_handle needles,
+                               cudf_column_handle* out,
+                               cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(haystack, "haystack is null");
@@ -19,10 +27,15 @@ cudf_status_t cudf_contains(cudf_column_view_handle haystack,
   CUDF_RUST_TRY {
     auto* haystack_view = static_cast<cudf::column_view*>(haystack);
     auto* needles_view = static_cast<cudf::column_view*>(needles);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
-    auto result = cudf::contains(*haystack_view, *needles_view, stream, mr);
+    auto result = cudf::contains(*haystack_view, *needles_view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }

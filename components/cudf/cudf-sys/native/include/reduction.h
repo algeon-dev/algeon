@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "column.h"
+#include "execution_context.h"
 #include "scalar.h"
 #include "types.h"
 #include <stdint.h>
@@ -67,6 +68,14 @@ cudf_status_t cudf_reduce(cudf_column_view_handle input,
                           cudf_data_type_handle output_type,
                           cudf_scalar_handle* out);
 
+/// Reduce a column to a single scalar value with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned scalar.
+cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
+                             cudf_reduce_aggregation_handle agg,
+                             cudf_data_type_handle output_type,
+                             cudf_scalar_handle* out,
+                             const cudf_exec_options_t* options);
+
 /// Compute a prefix scan (cumulative operation) on a column.
 cudf_status_t cudf_scan(cudf_column_view_handle input,
                         cudf_scan_aggregation_handle agg,
@@ -74,10 +83,26 @@ cudf_status_t cudf_scan(cudf_column_view_handle input,
                         int32_t null_policy,
                         cudf_column_handle* out);
 
+/// Compute a prefix scan on a column with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
+                           cudf_scan_aggregation_handle agg,
+                           cudf_scan_type_t scan_type,
+                           int32_t null_policy,
+                           cudf_column_handle* out,
+                           const cudf_exec_options_t* options);
+
 /// Compute the min and max of a column simultaneously.
 cudf_status_t cudf_minmax(cudf_column_view_handle input,
                           cudf_scalar_handle* out_min,
                           cudf_scalar_handle* out_max);
+
+/// Compute the min and max of a column with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned scalars.
+cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
+                             cudf_scalar_handle* out_min,
+                             cudf_scalar_handle* out_max,
+                             const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

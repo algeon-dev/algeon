@@ -19,10 +19,13 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::ColumnView,
-    error::{self, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        column::ColumnView,
+        error::{self, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 fn apply_boolean_mask_impl(
@@ -52,7 +55,14 @@ fn apply_boolean_mask_impl(
 /// or null are dropped. The mask must be a `BOOL8` column with the same
 /// number of rows as the input table.
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
-    apply_boolean_mask_impl(input, mask, None, "filter::apply_boolean_mask")
+    let output_domain = ExecutionDomain::compatible_domain(
+        input.execution_domain(),
+        mask.execution_domain(),
+        "filter::apply_boolean_mask",
+    )?;
+    let exec_options = output_domain.explicit_exec_options_raw();
+    apply_boolean_mask_impl(input, mask, exec_options.as_ref(), "filter::apply_boolean_mask")
+        .map(|table| table.with_execution_domain(output_domain))
 }
 
 pub(crate) fn apply_boolean_mask_with_exec_options(

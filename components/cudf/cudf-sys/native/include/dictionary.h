@@ -3,6 +3,7 @@
 
 #include "column.h"
 #include "error.h"
+#include "execution_context.h"
 #include "types.h"
 
 #include <stdint.h>
@@ -26,6 +27,16 @@ cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
                                      cudf_type_id_t indices_type_id,
                                      cudf_column_handle* out);
 
+/// Encode a column into a dictionary column with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
+                                        cudf_type_id_t indices_type_id,
+                                        cudf_column_handle* out,
+                                        const cudf_exec_options_t* options);
+
 /// Decode a dictionary column back to a regular column.
 ///
 /// The input must be a DICTIONARY32 column. The result is a regular column
@@ -34,6 +45,15 @@ cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
 /// The caller must free the result with `cudf_column_destroy`.
 cudf_status_t cudf_dictionary_decode(cudf_column_view_handle dict_column,
                                      cudf_column_handle* out);
+
+/// Decode a dictionary column with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
+                                        cudf_column_handle* out,
+                                        const cudf_exec_options_t* options);
 
 /// Get the keys column view from a dictionary column.
 ///
@@ -60,6 +80,16 @@ cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
                                        cudf_column_view_handle keys,
                                        cudf_column_handle* out);
 
+/// Replace the keys of a dictionary column with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
+                                          cudf_column_view_handle keys,
+                                          cudf_column_handle* out,
+                                          const cudf_exec_options_t* options);
+
 /// Align multiple dictionary columns to a shared key set.
 ///
 /// The keys from all input dictionary columns are concatenated, deduplicated,
@@ -83,6 +113,19 @@ cudf_status_t cudf_dictionary_match_dictionaries(
     int32_t num_columns,
     cudf_column_handle** out_columns,
     int32_t* out_count);
+
+/// Align multiple dictionary columns to a shared key set with explicit
+/// execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive all returned columns.
+cudf_status_t cudf_dictionary_match_dictionaries_ex(
+    const cudf_column_view_handle* dict_columns,
+    int32_t num_columns,
+    cudf_column_handle** out_columns,
+    int32_t* out_count,
+    const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

@@ -190,6 +190,9 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
         dtype, static_cast<cudf::size_type>(size), std::move(dev_data),
         std::move(dev_null_mask), static_cast<cudf::size_type>(null_count));
 
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
+
     *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
   }
@@ -643,6 +646,9 @@ cudf_status_t cudf_column_create_strings_ex(
         static_cast<cudf::size_type>(null_count),
         std::move(dev_null_mask));
 
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
+
     *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
   }
@@ -656,10 +662,29 @@ cudf_status_t cudf_column_view_strings_to_host(
     char* chars_buf,
     size_t chars_buf_size,
     int32_t* total_chars_bytes) {
+  return cudf_column_view_strings_to_host_ex(handle, offsets_buf, offsets_buf_size,
+                                             chars_buf, chars_buf_size,
+                                             total_chars_bytes, nullptr);
+}
+
+cudf_status_t cudf_column_view_strings_to_host_ex(
+    cudf_column_view_handle handle,
+    int32_t* offsets_buf,
+    size_t offsets_buf_size,
+    char* chars_buf,
+    size_t chars_buf_size,
+    int32_t* total_chars_bytes,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(total_chars_bytes, "total_chars_bytes is null");
   *total_chars_bytes = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::column_view*>(handle);
     if (view->type().id() != cudf::type_id::STRING) {
       set_error("column is not STRING type");
@@ -667,9 +692,13 @@ cudf_status_t cudf_column_view_strings_to_host(
     }
 
     auto n = view->size();
-    auto stream = cudf::get_default_stream();
-
     if (n == 0) {
+      CUDF_RUST_NULL_CHECK(offsets_buf, "offsets_buf is null");
+      if (offsets_buf_size < sizeof(int32_t)) {
+        set_error("offsets buffer too small");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      offsets_buf[0] = 0;
       *total_chars_bytes = 0;
       return CUDF_SUCCESS;
     }
@@ -690,10 +719,11 @@ cudf_status_t cudf_column_view_strings_to_host(
     // Account for view offset in the offsets child
     auto offsets_data = offsets_view.data<int32_t>();
     CUDF_CUDA_TRY(cudaMemcpyAsync(offsets_buf, offsets_data,
-                                  needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value()));
+                                  needed_offsets_bytes, cudaMemcpyDeviceToHost,
+                                  exec.stream.value()));
     // We need the copied offsets on host before we can size the chars copy.
-    stream.synchronize();
-    cudf_record_synchronized_stream(stream);
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
 
     // Compute total chars bytes from offsets
     int32_t char_begin = offsets_buf[0];
@@ -711,16 +741,17 @@ cudf_status_t cudf_column_view_strings_to_host(
         // In cudf 25.x the chars are embedded in the offsets column's parent
         // We need to get chars from the strings_column_view
         cudf::strings_column_view scv(*view);
-        auto chars_ptr = scv.chars_begin(stream);
+        auto chars_ptr = scv.chars_begin(exec.stream);
 
         // chars_begin does NOT account for view offset, but the offsets
         // already tell us where chars start (offsets_buf[0] = char_begin).
         CUDF_CUDA_TRY(cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
                                       static_cast<size_t>(total),
-                                      cudaMemcpyDeviceToHost, stream.value()));
+                                      cudaMemcpyDeviceToHost,
+                                      exec.stream.value()));
         // This API promises the caller's chars buffer is populated on return.
-        stream.synchronize();
-        cudf_record_synchronized_stream(stream);
+        exec.stream.synchronize();
+        cudf_record_synchronized_stream(exec.stream);
       }
       // If chars_buf is null, we just return total_chars_bytes without copying.
     }

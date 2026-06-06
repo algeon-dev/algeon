@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "dictionary.h"
 #include "shim_common.h"
 
@@ -17,15 +18,27 @@ extern "C" {
 cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
                                      cudf_type_id_t indices_type_id,
                                      cudf_column_handle* out) {
+  return cudf_dictionary_encode_ex(input, indices_type_id, out, nullptr);
+}
+
+cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
+                                        cudf_type_id_t indices_type_id,
+                                        cudf_column_handle* out,
+                                        cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto indices_type = cudf::data_type(to_cudf_type_id(indices_type_id));
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto result = cudf::dictionary::encode(*view, indices_type, stream, mr);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+    auto result = cudf::dictionary::encode(*view, indices_type, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -34,15 +47,26 @@ cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
 
 cudf_status_t cudf_dictionary_decode(cudf_column_view_handle dict_column,
                                      cudf_column_handle* out) {
+  return cudf_dictionary_decode_ex(dict_column, out, nullptr);
+}
+
+cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
+                                        cudf_column_handle* out,
+                                        cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto result = cudf::dictionary::decode(dict_view, stream, mr);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+    auto result = cudf::dictionary::decode(dict_view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -82,6 +106,13 @@ cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
 cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
                                        cudf_column_view_handle keys,
                                        cudf_column_handle* out) {
+  return cudf_dictionary_set_keys_ex(dict_column, keys, out, nullptr);
+}
+
+cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
+                                          cudf_column_view_handle keys,
+                                          cudf_column_handle* out,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
@@ -90,9 +121,14 @@ cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
     auto* keys_view = static_cast<cudf::column_view*>(keys);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto result = cudf::dictionary::set_keys(dict_view, *keys_view, stream, mr);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+    auto result = cudf::dictionary::set_keys(dict_view, *keys_view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -104,6 +140,16 @@ cudf_status_t cudf_dictionary_match_dictionaries(
     int32_t num_columns,
     cudf_column_handle** out_columns,
     int32_t* out_count) {
+  return cudf_dictionary_match_dictionaries_ex(dict_columns, num_columns,
+                                               out_columns, out_count, nullptr);
+}
+
+cudf_status_t cudf_dictionary_match_dictionaries_ex(
+    const cudf_column_view_handle* dict_columns,
+    int32_t num_columns,
+    cudf_column_handle** out_columns,
+    int32_t* out_count,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out_columns, "out_columns is null");
   *out_columns = nullptr;
   CUDF_RUST_NULL_CHECK(out_count, "out_count is null");
@@ -121,9 +167,14 @@ cudf_status_t cudf_dictionary_match_dictionaries(
       auto* view = static_cast<cudf::column_view*>(dict_columns[i]);
       dict_views.emplace_back(*view);
     }
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto results = cudf::dictionary::match_dictionaries(dict_views, stream, mr);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+    auto results = cudf::dictionary::match_dictionaries(dict_views, exec.stream, exec.mr);
 
     auto* columns = new (std::nothrow) cudf_column_handle[num_columns];
     if (columns == nullptr) {

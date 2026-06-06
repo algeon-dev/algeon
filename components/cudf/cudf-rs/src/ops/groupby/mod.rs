@@ -1,7 +1,7 @@
 //! GPU-accelerated groupby aggregation.
 //!
 //! Most users should use [`DataFrame::groupby`](crate::DataFrame::groupby)
-//! and the high-level [`GroupBy`] facade. Low-level aggregation execution
+//! and the high-level [`GroupBy`] API. Low-level aggregation execution
 //! remains available through [`groupby_aggregate`].
 
 mod agg;

@@ -33,6 +33,95 @@ pub enum NanEquality {
     Unequal = 1,
 }
 
+fn drop_nulls_impl(
+    input: &TableView<'_>,
+    keys: &[i32],
+    keep_threshold: i32,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    let num_keys = i32::try_from(keys.len()).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
+            .with_operation(operation)
+            .with_context("num_keys", keys.len().to_string())
+    })?;
+
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_drop_nulls_ex(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out, options)
+        },
+        None => unsafe {
+            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out)
+        },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("num_keys", num_keys.to_string()),
+            ("keep_threshold", keep_threshold.to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    Ok(unsafe { Table::from_raw(out) })
+}
+
+fn distinct_impl(
+    input: &TableView<'_>,
+    keys: &[i32],
+    keep: DuplicateKeepOption,
+    null_equality: NullEquality,
+    nan_equality: NanEquality,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    let num_keys = i32::try_from(keys.len()).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
+            .with_operation(operation)
+            .with_context("num_keys", keys.len().to_string())
+    })?;
+
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_distinct_ex(
+                input.raw_handle(),
+                keys.as_ptr(),
+                num_keys,
+                keep as i32,
+                null_equality as i32,
+                nan_equality as i32,
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_distinct(
+                input.raw_handle(),
+                keys.as_ptr(),
+                num_keys,
+                keep as i32,
+                null_equality as i32,
+                nan_equality as i32,
+                &mut out,
+            )
+        },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("num_keys", num_keys.to_string()),
+            ("keep", format!("{:?}", keep).to_lowercase()),
+            ("null_equality", format!("{:?}", null_equality).to_lowercase()),
+            ("nan_equality", format!("{:?}", nan_equality).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    Ok(unsafe { Table::from_raw(out) })
+}
+
 /// Drop rows from a table where key columns contain nulls.
 ///
 /// Rows are kept only if at least `keep_threshold` of the specified `keys`
@@ -51,21 +140,10 @@ pub enum NanEquality {
 /// // Rows with null in column 0 are removed.
 /// ```
 pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> Result<Table> {
-    let num_keys = i32::try_from(keys.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
-            .with_operation("stream_compaction::drop_nulls")
-            .with_context("num_keys", keys.len().to_string())
-    })?;
-
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: input handle is valid (NonNull). keys slice is valid for num_keys elements.
-        unsafe { cudf_sys::cudf_drop_nulls(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out) },
-        "stream_compaction::drop_nulls",
-        [("num_keys", num_keys.to_string()), ("keep_threshold", keep_threshold.to_string())],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    drop_nulls_impl(input, keys, keep_threshold, exec_options.as_ref(), "stream_compaction::drop_nulls")
+        .map(|table| table.with_execution_domain(output_domain))
 }
 
 /// Create a new table with distinct rows based on key columns.
@@ -102,34 +180,8 @@ pub fn distinct(
     null_equality: NullEquality,
     nan_equality: NanEquality,
 ) -> Result<Table> {
-    let num_keys = i32::try_from(keys.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
-            .with_operation("stream_compaction::distinct")
-            .with_context("num_keys", keys.len().to_string())
-    })?;
-
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: input handle is valid (NonNull). keys slice is valid for num_keys elements.
-        unsafe {
-            cudf_sys::cudf_distinct(
-                input.raw_handle(),
-                keys.as_ptr(),
-                num_keys,
-                keep as i32,
-                null_equality as i32,
-                nan_equality as i32,
-                &mut out,
-            )
-        },
-        "stream_compaction::distinct",
-        [
-            ("num_keys", num_keys.to_string()),
-            ("keep", format!("{:?}", keep).to_lowercase()),
-            ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("nan_equality", format!("{:?}", nan_equality).to_lowercase()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    distinct_impl(input, keys, keep, null_equality, nan_equality, exec_options.as_ref(), "stream_compaction::distinct")
+        .map(|table| table.with_execution_domain(output_domain))
 }

@@ -26,6 +26,9 @@ cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
 /// `data` points to host memory of `size` elements of type `type_id`.
 /// `null_mask` is optional (pass NULL for no nulls); if provided it must
 /// contain ceil(size/8) bytes of validity bitmask (LSB order).
+///
+/// This helper synchronizes cuDF's default stream before return on success so
+/// the borrowed host buffers are no longer in use.
 cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          const void* data, int32_t size,
                                          const uint8_t* null_mask,
@@ -33,6 +36,10 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          cudf_column_handle* out);
 
 /// Create a numeric column from host data with explicit execution options.
+///
+/// The selected stream is synchronized before return on success so the
+/// borrowed host buffers are no longer in use.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
                                             const void* data, int32_t size,
                                             const uint8_t* null_mask,
@@ -231,6 +238,8 @@ cudf_status_t cudf_column_create_from_device_data_ex(
 /// packed bitmask (LSB order) indicating which rows are valid.
 ///
 /// For num_strings == 0, an empty STRING column is returned.
+/// On success, this helper synchronizes cuDF's default stream before return so
+/// the borrowed host buffers are no longer in use.
 cudf_status_t cudf_column_create_strings(
     const char** strings,
     const int32_t* lengths,
@@ -240,6 +249,10 @@ cudf_status_t cudf_column_create_strings(
     cudf_column_handle* out);
 
 /// Create a STRING type column from host string data with explicit execution options.
+///
+/// The selected stream is synchronized before return on success so the
+/// borrowed host buffers are no longer in use.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_column_create_strings_ex(
     const char** strings,
     const int32_t* lengths,
@@ -258,6 +271,10 @@ cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
                                       cudf_column_handle* out);
 
 /// Create a column by repeating a scalar value `size` times with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
                                          int32_t size,
                                          cudf_column_handle* out,
@@ -268,6 +285,10 @@ cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
 /// For a STRING column with `n` rows, this copies:
 ///   - `offsets_buf`: n+1 int32 values (byte offsets into chars).
 ///   - `chars_buf`: the concatenated character bytes.
+///
+/// Empty STRING columns still require `offsets_buf`; they write exactly one
+/// zero offset (`offsets_buf[0] = 0`) and report `*total_chars_bytes = 0`.
+/// In that case `chars_buf` is ignored because there are no chars to copy.
 ///
 /// `offsets_buf_size` must be >= (n+1)*sizeof(int32_t).
 /// `chars_buf_size` must be >= total chars bytes (= offsets[n] - offsets[0]).
@@ -282,6 +303,24 @@ cudf_status_t cudf_column_view_strings_to_host(
     char* chars_buf,
     size_t chars_buf_size,
     int32_t* total_chars_bytes);
+
+/// Copy string column data to host buffers with explicit execution options.
+///
+/// Empty STRING columns still require `offsets_buf`; they write exactly one
+/// zero offset (`offsets_buf[0] = 0`) and report `*total_chars_bytes = 0`.
+/// In that case `chars_buf` is ignored because there are no chars to copy.
+///
+/// The selected stream is synchronized before return whenever offsets or chars
+/// are materialized into the caller's host buffers. `options->mr` is ignored
+/// because this helper does not allocate output device storage.
+cudf_status_t cudf_column_view_strings_to_host_ex(
+    cudf_column_view_handle handle,
+    int32_t* offsets_buf,
+    size_t offsets_buf_size,
+    char* chars_buf,
+    size_t chars_buf_size,
+    int32_t* total_chars_bytes,
+    const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

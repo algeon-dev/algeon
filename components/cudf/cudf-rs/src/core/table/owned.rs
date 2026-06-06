@@ -110,7 +110,7 @@ impl Table {
             unsafe { cudf_sys::cudf_table_view(self.handle.as_ptr(), &mut view_handle) },
             "table::view",
         )?;
-        Ok(TableView::from_raw_handle(view_handle))
+        Ok(TableView::from_raw_handle(view_handle, Arc::clone(&self.domain)))
     }
 
     /// Construct a `Table` from a raw FFI handle, taking ownership.

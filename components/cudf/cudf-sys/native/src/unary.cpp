@@ -1,4 +1,5 @@
 #include "unary.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/unary.hpp>
@@ -27,6 +28,13 @@ extern "C" {
 cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
                                    cudf_unary_operator_t op,
                                    cudf_column_handle* out) {
+  return cudf_unary_operation_ex(input, op, out, nullptr);
+}
+
+cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
+                                      cudf_unary_operator_t op,
+                                      cudf_column_handle* out,
+                                      cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -36,11 +44,15 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
     return status;
   }
   CUDF_RUST_TRY {
-    auto* view = static_cast<cudf::column_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::unary_operation(*view, cudf_op, stream, mr);
+    auto* view = static_cast<cudf::column_view*>(input);
+
+    auto result = cudf::unary_operation(*view, cudf_op, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -49,15 +61,25 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_null(cudf_column_view_handle input,
                            cudf_column_handle* out) {
+  return cudf_is_null_ex(input, out, nullptr);
+}
+
+cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
+                              cudf_column_handle* out,
+                              cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
-    auto* view = static_cast<cudf::column_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::is_null(*view, stream, mr);
+    auto* view = static_cast<cudf::column_view*>(input);
+
+    auto result = cudf::is_null(*view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -66,15 +88,25 @@ cudf_status_t cudf_is_null(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_valid(cudf_column_view_handle input,
                             cudf_column_handle* out) {
+  return cudf_is_valid_ex(input, out, nullptr);
+}
+
+cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
+                               cudf_column_handle* out,
+                               cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
-    auto* view = static_cast<cudf::column_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::is_valid(*view, stream, mr);
+    auto* view = static_cast<cudf::column_view*>(input);
+
+    auto result = cudf::is_valid(*view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -84,17 +116,28 @@ cudf_status_t cudf_is_valid(cudf_column_view_handle input,
 cudf_status_t cudf_cast(cudf_column_view_handle input,
                         cudf_data_type_handle output_type,
                         cudf_column_handle* out) {
+  return cudf_cast_ex(input, output_type, out, nullptr);
+}
+
+cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
+                           cudf_data_type_handle output_type,
+                           cudf_column_handle* out,
+                           cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::column_view*>(input);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
-    auto result = cudf::cast(*view, *dtype, stream, mr);
+    auto result = cudf::cast(*view, *dtype, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -120,15 +163,25 @@ cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
 
 cudf_status_t cudf_is_nan(cudf_column_view_handle input,
                           cudf_column_handle* out) {
+  return cudf_is_nan_ex(input, out, nullptr);
+}
+
+cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
+                             cudf_column_handle* out,
+                             cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
-    auto* view = static_cast<cudf::column_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::is_nan(*view, stream, mr);
+    auto* view = static_cast<cudf::column_view*>(input);
+
+    auto result = cudf::is_nan(*view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -137,15 +190,25 @@ cudf_status_t cudf_is_nan(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_not_nan(cudf_column_view_handle input,
                               cudf_column_handle* out) {
+  return cudf_is_not_nan_ex(input, out, nullptr);
+}
+
+cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
+                                 cudf_column_handle* out,
+                                 cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
-    auto* view = static_cast<cudf::column_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::is_not_nan(*view, stream, mr);
+    auto* view = static_cast<cudf::column_view*>(input);
+
+    auto result = cudf::is_not_nan(*view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }

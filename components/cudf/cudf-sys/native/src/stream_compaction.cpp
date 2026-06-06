@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "stream_compaction.h"
 #include "shim_common.h"
 
@@ -17,6 +18,15 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
                               int num_keys,
                               int keep_threshold,
                               cudf_table_handle* out) {
+  return cudf_drop_nulls_ex(input, keys, num_keys, keep_threshold, out, nullptr);
+}
+
+cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
+                                 const int* keys,
+                                 int num_keys,
+                                 int keep_threshold,
+                                 cudf_table_handle* out,
+                                 cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -33,15 +43,20 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
   }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
     std::vector<cudf::size_type> key_vec;
     if (num_keys > 0) { key_vec.assign(keys, keys + num_keys); }
 
     auto result = cudf::drop_nulls(*view, key_vec,
                                    static_cast<cudf::size_type>(keep_threshold),
-                                   stream, mr);
+                                   exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -55,6 +70,18 @@ cudf_status_t cudf_distinct(cudf_table_view_handle input,
                             cudf_stream_compaction_null_equality_t null_equality,
                             cudf_stream_compaction_nan_equality_t nan_equality,
                             cudf_table_handle* out) {
+  return cudf_distinct_ex(input, keys, num_keys, keep, null_equality,
+                          nan_equality, out, nullptr);
+}
+
+cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
+                               const int* keys,
+                               int num_keys,
+                               cudf_duplicate_keep_option_t keep,
+                               cudf_stream_compaction_null_equality_t null_equality,
+                               cudf_stream_compaction_nan_equality_t nan_equality,
+                               cudf_table_handle* out,
+                               cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -112,14 +139,19 @@ cudf_status_t cudf_distinct(cudf_table_view_handle input,
 
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
     std::vector<cudf::size_type> key_vec;
     if (num_keys > 0) { key_vec.assign(keys, keys + num_keys); }
 
     auto result = cudf::distinct(*view, key_vec, keep_opt, nulls_eq, nans_eq,
-                                 stream, mr);
+                                 exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }
