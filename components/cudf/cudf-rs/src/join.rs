@@ -46,6 +46,7 @@ pub struct JoinResult {
     pub right: Table,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn join_impl(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
@@ -377,6 +378,7 @@ pub fn full_join(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn join_with_exec_options(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,

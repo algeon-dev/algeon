@@ -158,6 +158,13 @@ cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
                                                  uint8_t* host_buf,
                                                  size_t buf_size);
 
+/// Copy null mask to host buffer with explicit execution options.
+cudf_status_t cudf_column_view_null_mask_to_host_ex(
+    cudf_column_view_handle handle,
+    uint8_t* host_buf,
+    size_t buf_size,
+    const cudf_exec_options_t* options);
+
 /// Create a column by copying data from an existing device (GPU) pointer.
 ///
 /// `device_data` must point to GPU memory with `size` elements of `type_id`.
@@ -227,6 +234,12 @@ cudf_status_t cudf_column_create_strings_ex(
 cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
                                       int32_t size,
                                       cudf_column_handle* out);
+
+/// Create a column by repeating a scalar value `size` times with explicit execution options.
+cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
+                                         int32_t size,
+                                         cudf_column_handle* out,
+                                         const cudf_exec_options_t* options);
 
 /// Copy string column data to host buffers.
 ///

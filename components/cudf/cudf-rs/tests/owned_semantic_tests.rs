@@ -27,8 +27,8 @@ fn rename_owned_matches_rename() {
     let df1 = sample_df();
     let df2 = sample_df();
 
-    let ref_result = df1.rename("a", "alpha").unwrap();
-    let owned_result = df2.rename_owned("a", "alpha").unwrap();
+    let ref_result = df1.rename_column("a", "alpha").unwrap();
+    let owned_result = df2.rename_column_owned("a", "alpha").unwrap();
 
     assert_eq!(ref_result.column_names(), owned_result.column_names());
     assert_eq!(ref_result.num_rows(), owned_result.num_rows());
@@ -45,14 +45,14 @@ fn rename_owned_matches_rename() {
 #[test]
 fn rename_owned_error_on_missing_column() {
     let df = sample_df();
-    let err = df.rename_owned("nonexistent", "x").unwrap_err();
+    let err = df.rename_column_owned("nonexistent", "x").unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn rename_owned_error_on_duplicate_target() {
     let df = sample_df();
-    let err = df.rename_owned("a", "b").unwrap_err();
+    let err = df.rename_column_owned("a", "b").unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -153,7 +153,7 @@ fn chain_rename_select_with_column_owned() {
     let extra = Column::from_slice(&[5i32, 6, 7, 8]).unwrap();
 
     let result = df
-        .rename_owned("a", "alpha")
+        .rename_column_owned("a", "alpha")
         .unwrap()
         .with_column_owned("d", extra)
         .unwrap()

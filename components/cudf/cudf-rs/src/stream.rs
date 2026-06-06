@@ -34,8 +34,8 @@ struct CudaStreamHandle {
 // from any thread. The handle is an opaque pointer to a CUDA runtime object
 // that supports concurrent access. Sync is safe because synchronize() and
 // is_ready() are read-only queries on stream state.
-unsafe impl Send for CudaStream {}
-unsafe impl Sync for CudaStream {}
+unsafe impl Send for CudaStreamHandle {}
+unsafe impl Sync for CudaStreamHandle {}
 
 impl CudaStream {
     /// Create a new CUDA stream.

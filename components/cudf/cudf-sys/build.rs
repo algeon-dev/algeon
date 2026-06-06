@@ -1,6 +1,22 @@
 mod build_support;
 
-use std::{env, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
+/// Recursively emit `cargo:rerun-if-changed` for every file under `dir`.
+fn rerun_if_changed_recursive(dir: &Path) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display())) {
+        let entry = entry.unwrap_or_else(|e| panic!("failed to read entry in {}: {e}", dir.display()));
+        let path = entry.path();
+        if path.is_dir() {
+            rerun_if_changed_recursive(&path);
+        } else {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
 
 fn main() {
     let native_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("native");
@@ -19,7 +35,9 @@ fn main() {
     }
 
     // Re-run if native sources or build inputs change.
-    println!("cargo:rerun-if-changed=native/");
+    rerun_if_changed_recursive(&native_dir.join("src"));
+    rerun_if_changed_recursive(&native_dir.join("include"));
+    println!("cargo:rerun-if-changed={}", native_dir.join("CMakeLists.txt").display());
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
     println!("cargo:rerun-if-env-changed=CUDF_CPP_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");

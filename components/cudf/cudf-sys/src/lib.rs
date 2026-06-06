@@ -389,6 +389,15 @@ extern "C" {
         buf_size: usize,
     ) -> cudf_status_t;
 
+    /// Materialize a column null mask into a host buffer with explicit
+    /// execution options.
+    pub fn cudf_column_view_null_mask_to_host_ex(
+        handle: cudf_column_view_handle,
+        host_buf: *mut u8,
+        buf_size: usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     /// Create a column by copying from a borrowed device pointer.
     ///
     /// This legacy helper synchronizes cuDF's default stream before return so
@@ -419,6 +428,15 @@ extern "C" {
         scalar: cudf_scalar_handle,
         size: i32,
         out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Create a column by repeating a scalar value with explicit execution
+    /// options.
+    pub fn cudf_column_from_scalar_ex(
+        scalar: cudf_scalar_handle,
+        size: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     pub fn cudf_column_create_strings(

@@ -2,6 +2,7 @@
 #define CUDF_RUST_SHIM_COMMON_H
 
 #include "error.h"
+#include <cudf/types.hpp>
 #include <cstdint>
 #include <string>
 
@@ -53,6 +54,11 @@ inline cudf_status_t validate_c_string_array(char const* const* values,
     }
   }
   return CUDF_SUCCESS;
+}
+
+// Convert C enum to C++ cudf::type_id.
+inline cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
+  return static_cast<cudf::type_id>(id);
 }
 
 #endif  // CUDF_RUST_SHIM_COMMON_H

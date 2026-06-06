@@ -13,10 +13,6 @@
 #include <memory>
 #include <string>
 
-static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
-  return static_cast<cudf::type_id>(id);
-}
-
 // Helper: construct a numeric scalar of the given type from a host value pointer.
 template <typename T>
 static std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
