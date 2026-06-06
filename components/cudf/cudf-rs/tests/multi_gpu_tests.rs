@@ -7,7 +7,10 @@
 mod common;
 
 use cudf::{
-    DataFrame, DeviceId, Runtime, Series, SortOptions, core::memory::DeviceMemoryResource, runtime::CudaStream,
+    DataFrame, DeviceId, ExecutionContext, MeltOptions, Runtime, Scalar, Series, SortOptions, TypeId,
+    core::memory::DeviceMemoryResource,
+    ops::expr::{col, lit},
+    runtime::CudaStream,
 };
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
@@ -234,6 +237,82 @@ fn runtime_device_flows_through_sort() {
         "sort_values should execute on device {}, observed device {observed}",
         device1.ordinal()
     );
+}
+
+#[test]
+fn runtime_device_flows_through_manual_mask_filter_paths() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let ids = Series::new_with_runtime::<i32>(&rt1, "id", &[3, 1, 4]).unwrap();
+    let scores = Series::new_with_runtime::<f64>(&rt1, "score", &[30.0, 10.0, 40.0]).unwrap();
+    let mask = Series::new_with_runtime::<bool>(&rt1, "mask", &[true, false, true]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+
+    common::reset_exec_observation();
+    let filtered = df.filter(&mask).unwrap();
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "filter should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
+    let filtered_ids: Vec<i32> = filtered.series("id").unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(filtered_ids, vec![3, 4]);
+
+    let ctx = ExecutionContext::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
+    common::reset_exec_observation();
+    let filtered_with_ctx = df.filter_with_context(&mask, &ctx).unwrap();
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "filter_with_context should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
+    let filtered_ctx_ids: Vec<i32> = filtered_with_ctx.series("id").unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(filtered_ctx_ids, vec![3, 4]);
+
+    let ambient_after = DeviceId::current().unwrap();
+    assert_eq!(ambient_after, device0, "filter paths should not leak runtime device state to the calling thread");
+}
+
+#[test]
+fn runtime_gt_scalar_mask_filter_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let ids = Series::new_with_runtime::<i32>(&rt1, "id", &[3, 1, 4]).unwrap();
+    let scores = Series::new_with_runtime::<f64>(&rt1, "score", &[30.0, 10.0, 40.0]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+
+    common::reset_exec_observation();
+    let mask = df.series("score").unwrap().gt_scalar(20.0f64).unwrap();
+    let observed = common::last_exec_device();
+    assert_eq!(
+        observed,
+        device1.ordinal() as i32,
+        "gt_scalar should execute on device {}, observed device {observed}",
+        device1.ordinal()
+    );
+
+    let plain = df.filter(&mask);
+    assert!(plain.is_ok(), "filter() with gt_scalar-derived mask should succeed: {plain:?}");
+
+    let ctx = ExecutionContext::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
+    let with_ctx = df.filter_with_context(&mask, &ctx);
+    assert!(with_ctx.is_ok(), "filter_with_context() with gt_scalar-derived mask should succeed: {with_ctx:?}");
 }
 
 #[test]
@@ -473,4 +552,179 @@ fn same_provenance_differs_by_device() {
     // Attempting to build a DataFrame from columns on different devices should fail.
     let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
+}
+
+// ---------------------------------------------------------------------------
+// Additional ambient-seeding regression probes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn runtime_expr_literal_with_columns_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let x = Series::new_with_runtime::<i32>(&rt1, "x", &[10, 20, 30]).unwrap();
+    let y = Series::new_with_runtime::<i32>(&rt1, "y", &[1, 2, 3]).unwrap();
+    let df = DataFrame::from_columns([("x", x), ("y", y)]).unwrap();
+
+    common::reset_exec_observation();
+    let result = match df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]) {
+        Ok(result) => result,
+        Err(err) => panic!("with_columns() with Expr::lit(...) should succeed on a runtime-pinned dataframe: {err:?}"),
+    };
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "expression evaluation should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
+    assert_eq!(result.series("x1").unwrap().to_vec::<i32>().unwrap(), vec![11, 21, 31]);
+    assert_eq!(result.series("y10").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn runtime_head_tail_slice_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let ids = Series::new_with_runtime::<i32>(&rt1, "id", &[10, 20, 30, 40]).unwrap();
+    let scores = Series::new_with_runtime::<i32>(&rt1, "score", &[1, 2, 3, 4]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+
+    common::reset_exec_observation();
+    let head = match df.head(2) {
+        Ok(result) => result,
+        Err(err) => {
+            panic!("head() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+        },
+    };
+    assert_eq!(head.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20]);
+
+    common::reset_exec_observation();
+    let tail = match df.tail(2) {
+        Ok(result) => result,
+        Err(err) => {
+            panic!("tail() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+        },
+    };
+    assert_eq!(tail.series("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 40]);
+
+    common::reset_exec_observation();
+    let slice = match df.slice(1, 2) {
+        Ok(result) => result,
+        Err(err) => {
+            panic!("slice() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+        },
+    };
+    assert_eq!(slice.series("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+}
+
+#[test]
+fn runtime_melt_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let a = Series::from_strings_with_runtime(&rt1, "A", &["a", "b", "c"]).unwrap();
+    let b = Series::new_with_runtime::<i32>(&rt1, "B", &[1, 3, 5]).unwrap();
+    let c = Series::new_with_runtime::<i32>(&rt1, "C", &[2, 4, 6]).unwrap();
+    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+
+    let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
+    common::reset_exec_observation();
+    let result = match df.melt(opts) {
+        Ok(result) => result,
+        Err(err) => {
+            panic!("melt() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+        },
+    };
+    assert_eq!(result.series("A").unwrap().to_strings().unwrap(), vec!["a", "b", "c", "a", "b", "c"]);
+    assert_eq!(result.series("variable").unwrap().to_strings().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
+    assert_eq!(result.series("value").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
+}
+
+#[test]
+fn runtime_column_map_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let input = Series::new_with_runtime::<i32>(&rt1, "input", &[1, 2, 3, 1]).unwrap();
+    let keys = Series::new_with_runtime::<i32>(&rt1, "keys", &[1, 2, 3]).unwrap();
+    let values = Series::new_with_runtime::<i32>(&rt1, "values", &[100, 200, 300]).unwrap();
+
+    common::reset_exec_observation();
+    let result =
+        match input.as_column_view().unwrap().map(&keys.as_column_view().unwrap(), &values.as_column_view().unwrap()) {
+            Ok(result) => result,
+            Err(err) => panic!("ColumnView::map() should succeed when all logical inputs are runtime-pinned: {err:?}"),
+        };
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
+}
+
+#[test]
+fn nulls_with_runtime_executes_on_target_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    common::reset_exec_observation();
+    let series = Series::nulls_with_runtime(&rt1, "x", TypeId::Int32, 3).unwrap();
+
+    assert_eq!(series.null_count(), 3);
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "nulls_with_runtime() should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
+}
+
+#[test]
+fn from_scalar_with_runtime_executes_on_target_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let scalar = Scalar::from_value(7i32).unwrap();
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+
+    common::reset_exec_observation();
+    let series = Series::from_scalar_with_runtime(&rt1, "x", &scalar, 4).unwrap();
+
+    assert_eq!(series.to_vec::<i32>().unwrap(), vec![7, 7, 7, 7]);
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "from_scalar_with_runtime() should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
 }

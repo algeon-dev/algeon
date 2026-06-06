@@ -1,4 +1,4 @@
-//! Tests for DataFrame-level JSON I/O facade.
+//! Tests for DataFrame-level JSON I/O methods.
 //!
 //! All tests require a GPU.
 

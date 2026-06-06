@@ -7,21 +7,31 @@
 //! - [`crate::TableView`]
 //! - [`crate::Series`]
 //! - [`crate::DataFrame`]
+//!
+//! # Contract Summary
+//!
+//! - v1 is a borrowed GPU-view ABI.
+//! - Borrowing does not transfer ownership.
+//! - Borrowing avoids host copies on the input path and is zero-copy where
+//!   possible because it describes existing device buffers.
+//! - Consumer algorithms may still allocate or copy for outputs; this module
+//!   does not promise zero-copy output.
+//! - v1 supports only fixed-width types.
+//! - `String`, `List`, `Struct`, and other nested or child-bearing layouts are
+//!   unsupported in borrowed interop v1.
+//! - [`crate::Series`] and [`crate::DataFrame`] are convenience adapters, not
+//!   the ABI itself.
+//! - Explicit execution provenance is required for producer projection.
+//! - Ambient/default-only objects are rejected at the interop boundary.
+//! - Execution binding semantics are part of the contract and are preserved in
+//!   the returned borrowed descriptors.
 
 use std::sync::Arc;
 
 pub use rapids_interop::{
-    BorrowedColumnView as SharedBorrowedColumnView, BorrowedTableView as SharedBorrowedTableView,
-    CudaStreamHandle as SharedCudaStreamHandle, DataType as SharedDataType,
-    DeviceMemoryResourceHandle as SharedDeviceMemoryResourceHandle, ExecutionBinding as SharedExecutionBinding,
-    InteropError as SharedInteropError, InteropErrorKind as SharedInteropErrorKind, NullMask as SharedNullMask,
-    NullMaskKind as SharedNullMaskKind, TryBorrowColumnView as SharedTryBorrowColumnView,
-    TryBorrowTableView as SharedTryBorrowTableView, TypeId as SharedTypeId,
-};
-use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, CudaStreamHandle, DataType as InteropDataType, DeviceMemoryResourceHandle,
-    ExecutionBinding, InteropError, InteropErrorKind, NullMask, TryBorrowColumnView, TryBorrowTableView,
-    TypeId as InteropTypeId,
+    BorrowedColumnView, BorrowedTableView, CudaStreamHandle, DataType as InteropDataType,
+    DeviceMemoryResourceHandle, ExecutionBinding, InteropError, InteropErrorKind, NullMask, NullMaskKind,
+    TryBorrowColumnView, TryBorrowTableView, TypeId as InteropTypeId,
 };
 
 use crate::{
@@ -84,21 +94,33 @@ fn map_cudf_error(kind: InteropErrorKind, operation: &'static str, error: crate:
     interop
 }
 
-fn execution_binding<'a>(domain: &Arc<ExecutionDomain>) -> Result<ExecutionBinding<'a>, InteropError> {
+fn execution_binding<'a>(
+    operation: &'static str,
+    domain: &Arc<ExecutionDomain>,
+) -> Result<ExecutionBinding<'a>, InteropError> {
     match domain.explicit_exec_options_raw() {
-        None => Ok(ExecutionBinding::AmbientDefault { device_snapshot: domain.device_snapshot() }),
-        Some(options) => Ok(ExecutionBinding::Explicit {
-            device: options.device,
-            cuda_stream: CudaStreamHandle::from_raw(
-                domain.explicit_stream().expect("explicit domain missing stream").interop_raw_handle(),
-            )?,
-            mr: DeviceMemoryResourceHandle::from_raw(
-                domain
-                    .explicit_memory_resource()
-                    .expect("explicit domain missing memory resource")
-                    .interop_raw_handle(),
-            )?,
-        }),
+        None => Err(InteropError::new(
+            InteropErrorKind::AmbientInteropUnsupported,
+            "borrowed interop requires explicit execution provenance; ambient/default-only objects are not valid producers",
+        )
+        .with_context("operation", operation)
+        .with_context("policy", "ambient_interop_unsupported")
+        .with_context("device_snapshot", domain.device_snapshot().to_string())),
+        Some(options) => {
+            let stream = domain.explicit_stream().expect("explicit domain missing stream");
+            let mr = domain.explicit_memory_resource().expect("explicit domain missing memory resource");
+            let stream_ptr = stream.interop_raw_handle().map_err(|error| {
+                map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
+            })?;
+            let mr_ptr = mr.interop_raw_handle().map_err(|error| {
+                map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
+            })?;
+            Ok(ExecutionBinding::explicit(
+                options.device,
+                CudaStreamHandle::from_raw(stream_ptr)?,
+                DeviceMemoryResourceHandle::from_raw(mr_ptr)?,
+            ))
+        },
     }
 }
 
@@ -162,8 +184,15 @@ fn null_mask_for_view<'a>(
     NullMask::present(ptr, bit_len, null_count).map_err(|error| error.with_context("operation", operation))
 }
 
-fn borrow_from_column_view<'a>(
-    view: &'a ColumnView<'_>,
+/// Extract all fields from a `ColumnView` and produce a `BorrowedColumnView`.
+///
+/// The execution binding is provided externally so that callers can choose
+/// whether to derive it from the view itself or from the owning column/table.
+/// The returned view's lifetime is tied to `'a` (the execution binding and the
+/// device memory it describes), not to the `ColumnView` borrow.
+fn borrow_from_view_with_execution<'a>(
+    view: &ColumnView<'_>,
+    execution: ExecutionBinding<'a>,
     operation: &'static str,
 ) -> Result<BorrowedColumnView<'a>, InteropError> {
     let data_type =
@@ -189,10 +218,17 @@ fn borrow_from_column_view<'a>(
     })?;
     let null_mask_ptr =
         view.null_mask_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let execution = execution_binding(view.execution_domain())?;
     let null_mask = null_mask_for_view(operation, nullable, null_mask_ptr, offset, len, null_count)?;
 
     borrow_from_materialized_view(operation, data_type, num_children, len, offset, data_ptr, null_mask, execution)
+}
+
+fn borrow_from_column_view<'a>(
+    view: &'a ColumnView<'_>,
+    operation: &'static str,
+) -> Result<BorrowedColumnView<'a>, InteropError> {
+    let execution = execution_binding(operation, view.execution_domain())?;
+    borrow_from_view_with_execution(view, execution, operation)
 }
 
 fn borrow_from_owned_column<'a>(
@@ -200,38 +236,17 @@ fn borrow_from_owned_column<'a>(
     operation: &'static str,
 ) -> Result<BorrowedColumnView<'a>, InteropError> {
     let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let data_type =
-        view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let num_children =
-        view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let offset = usize::try_from(
-        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let data_ptr =
-        view.device_data_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
-    let null_mask_ptr =
-        view.null_mask_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let execution = execution_binding(column.execution_domain())?;
-    let null_mask = null_mask_for_view(operation, nullable, null_mask_ptr, offset, len, null_count)?;
-
-    borrow_from_materialized_view(operation, data_type, num_children, len, offset, data_ptr, null_mask, execution)
+    let execution = execution_binding(operation, column.execution_domain())?;
+    borrow_from_view_with_execution(&view, execution, operation)
 }
 
 impl<'view> ColumnView<'view> {
     /// Project this low-level borrowed column view into the shared RAPIDS
     /// borrowed interop ABI.
+    ///
+    /// This is a borrowed-only projection: it does not transfer ownership and
+    /// avoids host copies on the input path. Borrowed interop v1 accepts only
+    /// fixed-width column types and preserves the column's execution binding.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         <Self as TryBorrowColumnView>::try_borrow_column_view(self)
     }
@@ -246,6 +261,10 @@ impl TryBorrowColumnView for ColumnView<'_> {
 impl TableView<'_> {
     /// Project this low-level borrowed table view into the shared RAPIDS
     /// borrowed interop ABI.
+    ///
+    /// This is a borrowed-only projection: it does not transfer ownership and
+    /// avoids host copies on the input path. Borrowed interop v1 accepts only
+    /// fixed-width columns and preserves the table execution binding.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         <Self as TryBorrowTableView>::try_borrow_table_view(self)
     }
@@ -253,105 +272,42 @@ impl TableView<'_> {
 
 impl TryBorrowTableView for TableView<'_> {
     fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>, InteropError> {
-        let num_rows = usize::try_from(self.num_rows().map_err(|error| {
-            map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-        })?)
+        let operation = "interop::TableView::try_borrow_table_view";
+        let num_rows = usize::try_from(
+            self.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
+        )
         .map_err(|_| {
             InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-                .with_context("operation", "interop::TableView::try_borrow_table_view")
+                .with_context("operation", operation)
         })?;
-        let num_columns = usize::try_from(self.num_columns().map_err(|error| {
-            map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-        })?)
+        let num_columns = usize::try_from(
+            self.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
+        )
         .map_err(|_| {
             InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-                .with_context("operation", "interop::TableView::try_borrow_table_view")
+                .with_context("operation", operation)
         })?;
-        let execution = execution_binding(self.execution_domain())?;
+        let execution = execution_binding(operation, self.execution_domain())?;
         let mut columns = Vec::with_capacity(num_columns);
         for index in 0..num_columns {
             let view = self.column(index as i32).map_err(|error| {
-                map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
+                map_cudf_error(InteropErrorKind::InvalidView, operation, error)
             })?;
-            let borrowed = borrow_from_materialized_view(
-                "interop::TableView::try_borrow_table_view",
-                view.data_type().map_err(|error| {
-                    map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-                })?,
-                view.num_children().map_err(|error| {
-                    map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-                })?,
-                view.len().map_err(|error| {
-                    map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-                })?,
-                usize::try_from(view.offset().map_err(|error| {
-                    map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-                })?)
-                .map_err(|_| {
-                    InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-                        .with_context("operation", "interop::TableView::try_borrow_table_view")
-                })?,
-                view.device_data_ptr().map_err(|error| {
-                    map_cudf_error(InteropErrorKind::InvalidView, "interop::TableView::try_borrow_table_view", error)
-                })?,
-                null_mask_for_view(
-                    "interop::TableView::try_borrow_table_view",
-                    view.nullable().map_err(|error| {
-                        map_cudf_error(
-                            InteropErrorKind::InvalidView,
-                            "interop::TableView::try_borrow_table_view",
-                            error,
-                        )
-                    })?,
-                    view.null_mask_ptr().map_err(|error| {
-                        map_cudf_error(
-                            InteropErrorKind::InvalidView,
-                            "interop::TableView::try_borrow_table_view",
-                            error,
-                        )
-                    })?,
-                    usize::try_from(view.offset().map_err(|error| {
-                        map_cudf_error(
-                            InteropErrorKind::InvalidView,
-                            "interop::TableView::try_borrow_table_view",
-                            error,
-                        )
-                    })?)
-                    .map_err(|_| {
-                        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-                            .with_context("operation", "interop::TableView::try_borrow_table_view")
-                    })?,
-                    view.len().map_err(|error| {
-                        map_cudf_error(
-                            InteropErrorKind::InvalidView,
-                            "interop::TableView::try_borrow_table_view",
-                            error,
-                        )
-                    })?,
-                    usize::try_from(view.null_count().map_err(|error| {
-                        map_cudf_error(
-                            InteropErrorKind::InvalidView,
-                            "interop::TableView::try_borrow_table_view",
-                            error,
-                        )
-                    })?)
-                    .map_err(|_| {
-                        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0")
-                            .with_context("operation", "interop::TableView::try_borrow_table_view")
-                    })?,
-                )?,
-                execution,
-            )?;
+            let borrowed = borrow_from_view_with_execution(&view, execution, operation)?;
             columns.push(borrowed);
         }
         BorrowedTableView::try_new(num_rows, columns, execution)
-            .map_err(|error| error.with_context("operation", "interop::TableView::try_borrow_table_view"))
+            .map_err(|error| error.with_context("operation", operation))
     }
 }
 
 impl Series {
     /// Convenience producer that lends this high-level `Series` as a shared
     /// borrowed interop column view without host copies on the input path.
+    ///
+    /// `Series` is a convenience adapter, not the ABI itself. The returned
+    /// descriptor remains borrowed-only, does not transfer ownership, and is
+    /// limited to borrowed interop v1's fixed-width type support.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         <Self as TryBorrowColumnView>::try_borrow_column_view(self)
     }
@@ -366,6 +322,10 @@ impl TryBorrowColumnView for Series {
 impl DataFrame {
     /// Convenience producer that lends this high-level `DataFrame` as a shared
     /// borrowed interop table view without host copies on the input path.
+    ///
+    /// `DataFrame` is a convenience adapter, not the ABI itself. The returned
+    /// descriptor remains borrowed-only, does not transfer ownership, and does
+    /// not promise zero-copy output for downstream consumer algorithms.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         <Self as TryBorrowTableView>::try_borrow_table_view(self)
     }
@@ -373,7 +333,7 @@ impl DataFrame {
 
 impl TryBorrowTableView for DataFrame {
     fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>, InteropError> {
-        let execution = execution_binding(self.execution_domain())?;
+        let execution = execution_binding("interop::DataFrame::try_borrow_table_view", self.execution_domain())?;
         let columns = self
             .columns_map()
             .values()

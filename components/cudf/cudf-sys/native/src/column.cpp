@@ -489,7 +489,7 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
 
     auto const exec_stream = cudf::get_default_stream();
     auto const null_count =
-        view->null_count() ? cudf::detail::null_count(view->null_mask(), start, end, exec_stream) : 0;
+        view->nullable() ? cudf::detail::null_count(view->null_mask(), start, end, exec_stream) : 0;
 
     auto* slice = new cudf::column_view(
         view->type(), len, view->head(), view->null_mask(), null_count, view->offset() + start, children);

@@ -1,6 +1,6 @@
 //! Specification tests: null propagation in Series arithmetic and comparisons.
 //!
-//! These tests lock down cuDF/libcudf null semantics at the Series facade level:
+//! These tests lock down cuDF/libcudf null semantics at the Series API level:
 //! - Null + value = null (null propagates through arithmetic)
 //! - Null > value = null (null propagates through comparisons)
 //! - Scalar ops on nullable series preserve null positions

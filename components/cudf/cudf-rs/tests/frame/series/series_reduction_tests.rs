@@ -1,4 +1,4 @@
-//! Integration tests for `Series` reduction, scan, and unary facade methods.
+//! Integration tests for `Series` reduction, scan, and unary methods.
 //!
 //! All tests require a GPU.
 

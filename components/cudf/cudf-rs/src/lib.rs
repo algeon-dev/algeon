@@ -51,7 +51,13 @@
 //! - [`TableView`] — A non-owning borrow of a table.
 //! - [`Scalar`] — A single value on the GPU.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
+//! - [`interop`] — the preferred external borrowed GPU-view interop boundary.
 //! - For lower-level CUDA stream management, see the [`runtime`] module.
+//!
+//! If you need to hand device-backed cudf data to another Rust GPU library,
+//! prefer the borrowed descriptors in [`interop`] over [`core::column::DeviceSlice`].
+//! `DeviceSlice` is only a raw pointer + length helper and does not carry
+//! null-mask, offset-base, or execution-provenance semantics.
 //!
 //! # Stream Synchronization Strategy
 //!

@@ -1,10 +1,13 @@
-use cudf::{Column, DataFrame, DeviceId, Runtime, Series, Table};
-use rapids_interop::{ExecutionBinding, NullMaskKind, TypeId};
+use cudf::{Column, DataFrame, Runtime, Series, Table};
+use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId};
 
 #[test]
-fn column_view_borrow_preserves_fixed_width_metadata_and_absent_mask() {
-    let column = Column::from_slice(&[1i32, 2, 3]).unwrap();
+fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
     let view = column.view().unwrap();
+    let expected_stream = column.__debug_execution_domain_stream_value();
+    let expected_mr = column.__debug_execution_domain_mr_value();
 
     let borrowed = view.try_borrow_column_view().unwrap();
 
@@ -14,17 +17,16 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_absent_mask() {
     assert_eq!(borrowed.data_ptr(), view.device_data_ptr().unwrap());
     assert!(matches!(borrowed.null_mask().kind(), NullMaskKind::Absent));
 
-    match borrowed.execution() {
-        ExecutionBinding::AmbientDefault { device_snapshot } => {
-            assert_eq!(device_snapshot, DeviceId::current().unwrap().ordinal() as i32)
-        },
-        ExecutionBinding::Explicit { .. } => panic!("expected ambient execution binding"),
-    }
+    let execution = borrowed.execution();
+    assert_eq!(execution.device(), runtime.device().ordinal() as i32);
+    assert_eq!(execution.cuda_stream().as_raw() as usize, expected_stream);
+    assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 
 #[test]
 fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
-    let column = Column::from_slice_nullable(&[10i32, 20, 30], &[false, true, true]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_nullable_with_runtime(&runtime, &[10i32, 20, 30], &[false, true, true]).unwrap();
     let view = column.slice_view(1, 2).unwrap();
     let borrowed = view.try_borrow_column_view().unwrap();
 
@@ -40,7 +42,8 @@ fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
 
 #[test]
 fn sliced_column_view_preserves_offset_semantics() {
-    let column = Column::from_slice(&[11i32, 22, 33, 44]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[11i32, 22, 33, 44]).unwrap();
     let base = column.view().unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
 
@@ -67,20 +70,17 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     assert_eq!(borrowed.num_rows(), 3);
     assert_eq!(borrowed.num_columns(), 2);
 
-    match borrowed.execution() {
-        ExecutionBinding::Explicit { device, cuda_stream, mr } => {
-            assert_eq!(device, runtime.device().ordinal() as i32);
-            assert_eq!(cuda_stream.as_raw() as usize, expected_stream);
-            assert_eq!(mr.as_raw() as usize, expected_mr);
-        },
-        ExecutionBinding::AmbientDefault { .. } => panic!("expected explicit execution binding"),
-    }
+    let execution = borrowed.execution();
+    assert_eq!(execution.device(), runtime.device().ordinal() as i32);
+    assert_eq!(execution.cuda_stream().as_raw() as usize, expected_stream);
+    assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 
 #[test]
 fn series_and_dataframe_convenience_producers_match_underlying_low_level_views() {
-    let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
-    let vals = Series::new("value", &[10i64, 20, 30]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids.clone()), ("value", vals.clone())]).unwrap();
 
     let series_borrowed = ids.try_borrow_column_view().unwrap();
@@ -93,9 +93,55 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
 }
 
 #[test]
-fn unsupported_string_columns_fail_clearly() {
-    let column = Column::from_strings(&["alice", "bob"]).unwrap();
+fn ambient_column_view_borrow_is_rejected() {
+    let column = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
 
-    assert_eq!(err.kind(), rapids_interop::InteropErrorKind::UnsupportedType);
+    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+    assert!(err.context().iter().any(|(key, value)| *key == "operation"
+        && value == "interop::ColumnView::try_borrow_column_view"));
+}
+
+#[test]
+fn ambient_dataframe_borrow_is_rejected() {
+    let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
+    let vals = Series::new("value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+
+    let err = frame.try_borrow_table_view().unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+    assert!(err.context().iter().any(|(key, value)| *key == "operation"
+        && value == "interop::DataFrame::try_borrow_table_view"));
+}
+
+#[test]
+fn unsupported_string_columns_fail_clearly() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_strings_with_runtime(&runtime, &["alice", "bob"]).unwrap();
+    let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
+}
+
+#[test]
+fn nested_list_columns_are_rejected_before_interop_projection() {
+    let err = match Column::empty(cudf::TypeId::List) {
+        Ok(_) => panic!("expected nested list column construction to fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert!(err.to_string().contains("nested types"));
+}
+
+#[test]
+fn nested_struct_series_are_rejected_before_interop_projection() {
+    let err = match Series::empty("nested", cudf::TypeId::Struct) {
+        Ok(_) => panic!("expected nested struct series construction to fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert!(err.to_string().contains("nested types"));
 }

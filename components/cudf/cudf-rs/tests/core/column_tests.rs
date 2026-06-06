@@ -447,27 +447,24 @@ fn test_from_device_ptr_various_types() {
     let data_i8 = vec![1i8, -1, 127];
     let col = Column::from_slice(&data_i8).unwrap();
     let v = col.view().unwrap();
-    let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap()
-    };
+    let new_col =
+        unsafe { Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap() };
     assert_eq!(new_col.view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
     // u32
     let data_u32 = vec![0u32, 42, u32::MAX];
     let col = Column::from_slice(&data_u32).unwrap();
     let v = col.view().unwrap();
-    let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap()
-    };
+    let new_col =
+        unsafe { Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap() };
     assert_eq!(new_col.view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
     // f32
     let data_f32 = vec![1.0f32, -0.5, 3.125];
     let col = Column::from_slice(&data_f32).unwrap();
     let v = col.view().unwrap();
-    let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Float32).unwrap()
-    };
+    let new_col =
+        unsafe { Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Float32).unwrap() };
     let result = new_col.view().unwrap().to_vec::<f32>().unwrap();
     assert_eq!(result, data_f32);
 }

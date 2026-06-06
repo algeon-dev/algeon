@@ -31,14 +31,30 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
     let Some(first) = columns.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
-    Ok(std::sync::Arc::clone(first.execution_domain()))
+    let output_domain = std::sync::Arc::clone(first.execution_domain());
+    // Fence any input from a different execution domain so its GPU work
+    // completes before the concatenation kernel reads its data.
+    for col in &columns[1..] {
+        if !ExecutionDomain::same_provenance(col.execution_domain(), &output_domain) {
+            col.execution_domain().fence_stream("concatenate::concatenate_columns")?;
+        }
+    }
+    Ok(output_domain)
 }
 
 fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = tables.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
-    Ok(std::sync::Arc::clone(first.execution_domain()))
+    let output_domain = std::sync::Arc::clone(first.execution_domain());
+    // Fence any input from a different execution domain so its GPU work
+    // completes before the concatenation kernel reads its data.
+    for tbl in &tables[1..] {
+        if !ExecutionDomain::same_provenance(tbl.execution_domain(), &output_domain) {
+            tbl.execution_domain().fence_stream("concatenate::concatenate_tables")?;
+        }
+    }
+    Ok(output_domain)
 }
 
 /// Concatenate multiple columns into a single column.

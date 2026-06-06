@@ -51,25 +51,25 @@ macro_rules! impl_column_scalar_ops {
             impl Add<$rust_type> for &Column {
                 type Output = Result<Column>;
                 fn add(self, rhs: $rust_type) -> Self::Output {
-                    self.add_scalar(&Scalar::from_value(rhs)?)
+                    self.add_scalar(&Scalar::from_value_in_domain(rhs, self.execution_domain())?)
                 }
             }
             impl Sub<$rust_type> for &Column {
                 type Output = Result<Column>;
                 fn sub(self, rhs: $rust_type) -> Self::Output {
-                    self.sub_scalar(&Scalar::from_value(rhs)?)
+                    self.sub_scalar(&Scalar::from_value_in_domain(rhs, self.execution_domain())?)
                 }
             }
             impl Mul<$rust_type> for &Column {
                 type Output = Result<Column>;
                 fn mul(self, rhs: $rust_type) -> Self::Output {
-                    self.mul_scalar(&Scalar::from_value(rhs)?)
+                    self.mul_scalar(&Scalar::from_value_in_domain(rhs, self.execution_domain())?)
                 }
             }
             impl Div<$rust_type> for &Column {
                 type Output = Result<Column>;
                 fn div(self, rhs: $rust_type) -> Self::Output {
-                    self.div_scalar(&Scalar::from_value(rhs)?)
+                    self.div_scalar(&Scalar::from_value_in_domain(rhs, self.execution_domain())?)
                 }
             }
         )+

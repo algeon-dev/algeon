@@ -1,4 +1,4 @@
-//! Series facade methods for reduction, scan, and unary operations.
+//! `Series` convenience methods for reduction, scan, and unary operations.
 
 use super::owned::Series;
 use crate::{

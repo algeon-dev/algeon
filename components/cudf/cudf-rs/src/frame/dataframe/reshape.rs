@@ -907,7 +907,9 @@ impl DataFrame {
     /// Returns an error if any expression lacks an output name, or if
     /// evaluation of any expression fails.
     pub fn with_columns<I>(&self, exprs: I) -> Result<Self>
-    where I: IntoIterator<Item = ops::expr::Expr> {
+    where
+        I: IntoIterator<Item = ops::expr::Expr>,
+    {
         let exprs: Vec<ops::expr::Expr> = exprs.into_iter().collect();
 
         // Validate all names up-front before doing any GPU work.
@@ -1060,7 +1062,7 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn fillna<T: CudfType>(&self, column: &str, value: T) -> Result<Self> {
-        let scalar = Scalar::from_value(value)?;
+        let scalar = Scalar::from_value_in_domain(value, self.execution_domain())?;
         self.fillna_with_scalar(column, &scalar)
     }
 
@@ -1231,12 +1233,22 @@ impl DataFrame {
             return self.empty_with_same_schema();
         }
 
-        let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
+        let end = start + len; // callers guarantee no overflow
+        let start_i32: i32 = start.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "gather_range: start exceeds i32::MAX")
+                .with_operation("dataframe::gather_range")
+        })?;
+        let end_i32: i32 = end.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "gather_range: start + len exceeds i32::MAX")
+                .with_operation("dataframe::gather_range")
+        })?;
+        let indices: Vec<i32> = (start_i32..end_i32).collect();
         let map = Column::from_slice_in_domain(&indices, &self.domain)?;
         let tv = self.build_table_view()?;
         let exec_options = self.domain.explicit_exec_options_raw();
         // SAFETY: indices are constructed from `start..start+len` which the
-        // callers have already validated against row_count.
+        // callers have already validated against row_count, and the i32
+        // conversion above ensures no truncation.
         let result_table = unsafe {
             copying::gather_unchecked_with_exec_options(
                 tv.table(),

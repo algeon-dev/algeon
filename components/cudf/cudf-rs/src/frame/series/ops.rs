@@ -150,16 +150,16 @@ impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, f32, f64, i32, i64);
 /// 4. Overrides the result column's execution domain to match the `Series`.
 /// 5. Wraps the result as a `Series` inheriting the input name.
 fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: BinaryOperator) -> Result<Series> {
-    let scalar = Scalar::from_value(lhs)?;
+    let scalar = Scalar::from_value_in_domain(lhs, series.column.execution_domain())?;
     let col_view = series.column.view()?;
 
     // Infer output type: scalar type on the left, column type on the right.
     let out_type = binary::infer_binary_output_type(scalar.data_type()?.id(), col_view.data_type()?.id(), op)?;
 
     // Dispatch through the low-level sv primitive (preserves operand order).
-    // binary_operation_sv uses the scalar's ambient domain for execution,
-    // so we override the result domain to match the Series (same pattern as
-    // Column::binary_op_scalar).
+    // The temporary scalar is created in the Series' execution domain so
+    // multi-GPU pipelines do not accidentally allocate it on the ambient
+    // device.
     let result_col = binary::binary_operation_sv(&scalar, &col_view, op, &out_type)
         .map(|c| c.with_execution_domain(Arc::clone(series.column.execution_domain())))?;
 

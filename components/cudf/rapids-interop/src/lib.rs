@@ -1,7 +1,38 @@
+//! Borrowed GPU-view interop ABI for RAPIDS Rust crates.
+//!
+//! This crate defines the v1 shared Rust-native contract for lending
+//! GPU-resident column and table views across crate boundaries.
+//!
+//! # Contract Summary
+//!
+//! - v1 is a borrowed GPU-view ABI.
+//! - Borrowing does not transfer ownership.
+//! - Borrowing avoids host copies on the input path and is zero-copy where
+//!   possible because it describes existing device buffers.
+//! - Consumer algorithms may still allocate or copy for outputs; v1 does not
+//!   guarantee zero-copy output.
+//! - v1 supports only fixed-width types.
+//! - `String`, `List`, `Struct`, and other nested or child-bearing layouts are
+//!   unsupported in v1.
+//! - Execution binding semantics are part of the contract and must be honored
+//!   by consumers before they read borrowed GPU data.
+//! - `cudf-rs` producer adapters require explicit execution provenance and
+//!   reject ambient/default-only objects at the interop boundary.
+//! - User-facing types such as `cudf::Series` and `cudf::DataFrame` may
+//!   provide convenience adapters, but they are not the ABI itself.
+//!
+//! [`BorrowedColumnView`] and [`BorrowedTableView`] are low-level fact records
+//! about producer-owned device memory. Consumers must not treat them as
+//! ownership-bearing handles or cache them beyond the lifetime of the producer
+//! borrow that created them.
+
 use core::{ffi::c_void, fmt, marker::PhantomData, ptr::NonNull};
 
 pub type Result<T> = core::result::Result<T, InteropError>;
 
+/// Logical type identifiers shared by the borrowed interop ABI.
+///
+/// Borrowed interop v1 validates only the fixed-width subset of these values.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeId {
@@ -66,6 +97,7 @@ impl TypeId {
     }
 }
 
+/// A logical data type for borrowed interop descriptors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DataType {
     id: TypeId,
@@ -90,15 +122,20 @@ impl DataType {
     }
 }
 
+/// High-level reasons why a borrowed interop projection or validation failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteropErrorKind {
     UnsupportedType,
     UnsupportedLayout,
+    ExecutionBindingUnavailable,
+    AmbientInteropUnsupported,
     ExecutionBindingMismatch,
     NullMaskUnsupported,
     InvalidView,
 }
 
+/// Semantic error returned by borrowed interop validation and producer
+/// adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteropError {
     kind: InteropErrorKind,
@@ -133,6 +170,7 @@ impl fmt::Display for InteropError {
 
 impl std::error::Error for InteropError {}
 
+/// Borrowed opaque handle to a CUDA stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CudaStreamHandle<'a> {
     raw: NonNull<c_void>,
@@ -140,6 +178,7 @@ pub struct CudaStreamHandle<'a> {
 }
 
 impl<'a> CudaStreamHandle<'a> {
+    /// Construct a borrowed stream handle from a raw non-null pointer.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| {
             InteropError::new(InteropErrorKind::InvalidView, "CUDA stream handle must be non-null")
@@ -153,6 +192,7 @@ impl<'a> CudaStreamHandle<'a> {
     }
 }
 
+/// Borrowed opaque handle to a device memory resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceMemoryResourceHandle<'a> {
     raw: NonNull<c_void>,
@@ -160,6 +200,8 @@ pub struct DeviceMemoryResourceHandle<'a> {
 }
 
 impl<'a> DeviceMemoryResourceHandle<'a> {
+    /// Construct a borrowed memory-resource handle from a raw non-null
+    /// pointer.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| {
             InteropError::new(InteropErrorKind::InvalidView, "device memory resource handle must be non-null")
@@ -173,18 +215,45 @@ impl<'a> DeviceMemoryResourceHandle<'a> {
     }
 }
 
+/// Execution metadata that a consumer must honor before reading borrowed GPU
+/// data.
+///
+/// Producers are tied to a specific device, CUDA stream, and memory resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionBinding<'a> {
-    AmbientDefault { device_snapshot: i32 },
-    Explicit { device: i32, cuda_stream: CudaStreamHandle<'a>, mr: DeviceMemoryResourceHandle<'a> },
+pub struct ExecutionBinding<'a> {
+    device: i32,
+    cuda_stream: CudaStreamHandle<'a>,
+    mr: DeviceMemoryResourceHandle<'a>,
 }
 
+impl<'a> ExecutionBinding<'a> {
+    /// Construct explicit producer execution metadata.
+    pub fn explicit(device: i32, cuda_stream: CudaStreamHandle<'a>, mr: DeviceMemoryResourceHandle<'a>) -> Self {
+        Self { device, cuda_stream, mr }
+    }
+
+    pub fn device(&self) -> i32 {
+        self.device
+    }
+
+    pub fn cuda_stream(&self) -> CudaStreamHandle<'a> {
+        self.cuda_stream
+    }
+
+    pub fn memory_resource(&self) -> DeviceMemoryResourceHandle<'a> {
+        self.mr
+    }
+}
+
+/// Distinguishes between the absence of a null mask and the presence of a null
+/// mask whose null count may still be zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NullMaskKind {
     Absent,
     Present { ptr: NonNull<c_void>, bit_len: usize, null_count: usize },
 }
 
+/// Lifetime-bound borrowed null-mask descriptor for a column view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NullMask<'a> {
     kind: NullMaskKind,
@@ -192,10 +261,14 @@ pub struct NullMask<'a> {
 }
 
 impl<'a> NullMask<'a> {
+    /// Construct the canonical "no null mask is present" descriptor.
     pub fn absent() -> Self {
         Self { kind: NullMaskKind::Absent, _lifetime: PhantomData }
     }
 
+    /// Construct the canonical "a null mask is present" descriptor.
+    ///
+    /// `null_count == 0` remains a valid present-mask state.
     pub fn present(ptr: *const c_void, bit_len: usize, null_count: usize) -> Result<Self> {
         let ptr = NonNull::new(ptr as *mut c_void).ok_or_else(|| {
             InteropError::new(InteropErrorKind::InvalidView, "present null mask must use a non-null pointer")
@@ -209,6 +282,11 @@ impl<'a> NullMask<'a> {
     }
 }
 
+/// Borrowed descriptor for a single GPU column view.
+///
+/// This is a low-level fact record about producer-owned memory. It does not
+/// transfer ownership, does not allocate output, and must not outlive the
+/// producer borrow that created it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BorrowedColumnView<'a> {
     data_type: DataType,
@@ -221,6 +299,12 @@ pub struct BorrowedColumnView<'a> {
 }
 
 impl<'a> BorrowedColumnView<'a> {
+    /// Validate and construct a borrowed column descriptor.
+    ///
+    /// Borrowed interop v1 accepts only fixed-width types and rejects invalid
+    /// physical view states such as null data pointers for non-empty views,
+    /// overflowing active ranges, misaligned active addresses, and undersized
+    /// null masks.
     pub fn try_new(
         data_type: DataType,
         len: usize,
@@ -316,6 +400,10 @@ impl<'a> BorrowedColumnView<'a> {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn offset(&self) -> usize {
         self.offset
     }
@@ -332,11 +420,16 @@ impl<'a> BorrowedColumnView<'a> {
         self.execution
     }
 
-    pub fn element_size_bytes(&self) -> Option<usize> {
-        self.type_id().fixed_width_size_bytes()
+    pub fn element_size_bytes(&self) -> usize {
+        self.type_id().fixed_width_size_bytes().expect("BorrowedColumnView always holds a fixed-width type")
     }
 }
 
+/// Borrowed descriptor for a GPU table view.
+///
+/// The table owns its descriptor collection so consumers do not need to keep
+/// parallel temporary vectors alive just to preserve column descriptor
+/// lifetimes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowedTableView<'a> {
     num_rows: usize,
@@ -345,6 +438,8 @@ pub struct BorrowedTableView<'a> {
 }
 
 impl<'a> BorrowedTableView<'a> {
+    /// Validate and construct a borrowed table descriptor whose columns all
+    /// share the same row count and execution binding.
     pub fn try_new(
         num_rows: usize,
         columns: Vec<BorrowedColumnView<'a>>,
@@ -389,10 +484,18 @@ impl<'a> BorrowedTableView<'a> {
     }
 }
 
+/// Fallible producer adapter for a borrowed column descriptor.
+///
+/// The returned descriptor lifetime is intentionally tied to the specific
+/// borrow of `self`.
 pub trait TryBorrowColumnView {
     fn try_borrow_column_view<'a>(&'a self) -> Result<BorrowedColumnView<'a>>;
 }
 
+/// Fallible producer adapter for a borrowed table descriptor.
+///
+/// The returned descriptor lifetime is intentionally tied to the specific
+/// borrow of `self`.
 pub trait TryBorrowTableView {
     fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>>;
 }

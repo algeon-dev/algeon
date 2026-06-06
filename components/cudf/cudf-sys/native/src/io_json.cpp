@@ -8,6 +8,7 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,20 +84,26 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(
     auto const& schema = result.metadata.schema_info;
     auto const n = static_cast<int32_t>(schema.size());
     if (n > 0) {
-      char** names = static_cast<char**>(std::malloc(sizeof(char*) * n));
+      char** names = new (std::nothrow) char*[n];
       if (!names) {
         set_error("failed to allocate column name array");
         return CUDF_ERROR_OUT_OF_MEMORY;
       }
       for (int32_t i = 0; i < n; ++i) {
-        names[i] = strdup(schema[i].name.c_str());
+        names[i] = nullptr;
+      }
+      for (int32_t i = 0; i < n; ++i) {
+        auto const& name = schema[i].name;
+        auto const size = name.size() + 1;
+        names[i] = new (std::nothrow) char[size];
         if (!names[i]) {
           // Clean up on allocation failure.
-          for (int32_t j = 0; j < i; ++j) std::free(names[j]);
-          std::free(names);
+          for (int32_t j = 0; j < i; ++j) delete[] names[j];
+          delete[] names;
           set_error("failed to allocate column name string");
           return CUDF_ERROR_OUT_OF_MEMORY;
         }
+        std::memcpy(names[i], name.c_str(), size);
       }
       *out_names = names;
       *out_num_names = n;

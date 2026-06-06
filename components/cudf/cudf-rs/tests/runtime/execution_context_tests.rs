@@ -20,8 +20,8 @@ use std::{ffi::c_void, ptr};
 
 use cudf::{DeviceId, core::memory::DeviceMemoryResource, runtime::CudaStream};
 use cudf_sys::{
-    cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_mr_raw,
-    cudf_test_exec_last_device, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
+    cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,
+    cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
     cudf_test_exec_reset_observation, cudf_test_stream_handle_value,
 };
 
@@ -1145,11 +1145,7 @@ fn exec_options_struct_size_too_small_returns_error() {
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(
-            col,
-            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
-            &mut out,
-        )
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
     assert_eq!(
@@ -1173,11 +1169,7 @@ fn exec_options_unknown_flags_returns_error() {
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(
-            col,
-            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
-            &mut out,
-        )
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
     assert_eq!(
@@ -1201,11 +1193,7 @@ fn exec_options_nonzero_reserved_returns_error() {
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(
-            col,
-            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
-            &mut out,
-        )
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
     assert_eq!(
@@ -1232,18 +1220,10 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     obs_reset();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(
-            col,
-            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
-            &mut out,
-        )
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
-    assert_eq!(
-        status,
-        cudf_sys::CUDF_ERROR_CUDA,
-        "invalid explicit device should return CUDF_ERROR_CUDA"
-    );
+    assert_eq!(status, cudf_sys::CUDF_ERROR_CUDA, "invalid explicit device should return CUDF_ERROR_CUDA");
     assert!(out.is_null(), "output handle should remain null on device-selection error");
     assert_eq!(obs_last_device(), -1, "failed device selection should not record execution observation");
     assert_eq!(DeviceId::current().unwrap(), before, "failed device selection should not change the ambient device");
@@ -1261,11 +1241,7 @@ fn exec_options_valid_defaults_succeeds() {
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(
-            col,
-            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
-            &mut out,
-        )
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
     };
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "valid defaults should succeed");
