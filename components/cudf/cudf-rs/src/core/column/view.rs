@@ -255,6 +255,49 @@ impl<'a> ColumnView<'a> {
         Ok(buf)
     }
 
+    /// Copy column data to a host `Vec<u8>`, one byte per element.
+    ///
+    /// Requires the column to be a 1-byte fixed-width type (Bool8, Int8, Uint8).
+    /// Unlike `to_vec::<bool>()`, this never constructs a `bool` from raw device
+    /// memory, avoiding UB when null slots contain non-canonical byte values.
+    pub(crate) fn to_raw_bytes(&self) -> Result<Vec<u8>> {
+        let dt = self.data_type()?;
+        let is_one_byte = matches!(dt.id(), TypeId::Bool8 | TypeId::Int8 | TypeId::UInt8);
+        if !is_one_byte {
+            return Err(Error::new(ErrorKind::TypeError, "to_raw_bytes requires a 1-byte type")
+                .with_operation("column_view::to_raw_bytes")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
+        }
+
+        let size = self.len()?;
+        let mut buf = vec![0u8; size];
+
+        self.synchronize_host_visibility("column_view::to_raw_bytes")?;
+
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host_ex(
+                        self.handle.as_ptr(),
+                        buf.as_mut_ptr() as *mut c_void,
+                        size,
+                        &exec_options,
+                    )
+                },
+                "column_view::to_raw_bytes",
+            )?;
+        } else {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, size)
+                },
+                "column_view::to_raw_bytes",
+            )?;
+        }
+
+        Ok(buf)
+    }
+
     /// Copy the null mask to a host `Vec<bool>`.
     ///
     /// Returns `None` if the column has no null mask (all elements valid).

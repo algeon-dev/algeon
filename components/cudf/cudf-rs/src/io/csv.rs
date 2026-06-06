@@ -7,6 +7,8 @@ use std::{
     sync::Arc,
 };
 
+use typed_builder::TypedBuilder;
+
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
@@ -19,36 +21,16 @@ use crate::{
 ///
 /// This type controls parsing only. It does not carry schema names because
 /// the low-level CSV reader returns an unnamed [`Table`].
+#[derive(TypedBuilder)]
 pub struct CsvReaderOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
+    #[builder(default = b',')]
     delimiter: u8,
+    #[builder(default = true)]
     has_header: bool,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
-}
-
-impl CsvReaderOptions {
-    /// Create options to read from the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true, runtime: None }
-    }
-
-    /// Set the field delimiter character (default: `,`).
-    pub fn delimiter(mut self, d: u8) -> Self {
-        self.delimiter = d;
-        self
-    }
-
-    /// Set whether the file has a header row (default: `true`).
-    pub fn has_header(mut self, has: bool) -> Self {
-        self.has_header = has;
-        self
-    }
-
-    /// Seed explicit execution provenance from the given runtime.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
 }
 
 /// Read a CSV file into a `Table`.
@@ -93,50 +75,21 @@ pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
 ///
 /// Column names here control only the emitted CSV header row. They do not
 /// rename the input table because [`Table`] itself is unnamed.
+#[derive(TypedBuilder)]
 pub struct CsvWriterOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
     column_names: Option<Vec<String>>,
+    #[builder(default = b',')]
     delimiter: u8,
+    #[builder(default = true)]
     include_header: bool,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
 
 impl CsvWriterOptions {
-    /// Create options to write to the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            filepath: path.as_ref().to_path_buf(),
-            column_names: None,
-            delimiter: b',',
-            include_header: true,
-            runtime: None,
-        }
-    }
-
-    /// Set column names for the output file.
-    pub fn column_names(mut self, names: &[&str]) -> Self {
-        self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
-        self
-    }
-
-    /// Set the field delimiter character (default: `,`).
-    pub fn delimiter(mut self, d: u8) -> Self {
-        self.delimiter = d;
-        self
-    }
-
-    /// Set whether to include a header row (default: `true`).
-    pub fn include_header(mut self, include: bool) -> Self {
-        self.include_header = include;
-        self
-    }
-
-    /// Route the write through the given runtime's stream.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
-
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
     }

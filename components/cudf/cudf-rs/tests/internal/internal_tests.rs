@@ -56,9 +56,8 @@ fn reassembly_after_distinct_preserves_schema() {
     let b = Series::new::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
     let df = DataFrame::from_columns([("x", a), ("y", b)]).unwrap();
 
-    let distinct = df
-        .drop_duplicates(DistinctOptions::new().subset(&["x", "y"]).keep(DuplicateKeepOption::KeepFirst))
-        .unwrap();
+    let distinct =
+        df.drop_duplicates(DistinctOptions::new().subset(&["x", "y"]).keep(DuplicateKeepOption::KeepFirst)).unwrap();
 
     assert_eq!(distinct.num_columns(), 2, "schema columns preserved");
     assert_eq!(distinct.num_rows(), 3, "distinct row count");
