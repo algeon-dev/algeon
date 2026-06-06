@@ -56,7 +56,7 @@ impl DisplayAs for CudfTableFormatScanExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CudfTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, source_read_strategy={}, source_decode_input={}, credential_mode={}, lakehouse_cache_status={}, direct_device_read_disposition={}",
+                "CudfTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, source_read_strategy={}, source_decode_input={}, credential_mode={}, lakehouse_cache_status={}, lakehouse_cache_read_mode={}, lakehouse_cache_fill_mode={}, source_fallback_reason={}, direct_device_read_disposition={}",
                 diagnostics.table_format,
                 diagnostics.snapshot_id.as_deref().unwrap_or_default(),
                 diagnostics.catalog_type.as_deref().unwrap_or_default(),
@@ -68,6 +68,9 @@ impl DisplayAs for CudfTableFormatScanExec {
                 diagnostics.source_decode_input,
                 diagnostics.credential_mode,
                 diagnostics.lakehouse_cache_status,
+                diagnostics.lakehouse_cache_read_mode,
+                diagnostics.lakehouse_cache_fill_mode,
+                diagnostics.source_fallback_reason,
                 diagnostics.direct_device_read_disposition.code(),
             ),
             DisplayFormatType::TreeRender => {
@@ -82,6 +85,9 @@ impl DisplayAs for CudfTableFormatScanExec {
                 writeln!(f, "source_decode_input={}", diagnostics.source_decode_input)?;
                 writeln!(f, "credential_mode={}", diagnostics.credential_mode)?;
                 writeln!(f, "lakehouse_cache_status={}", diagnostics.lakehouse_cache_status)?;
+                writeln!(f, "lakehouse_cache_read_mode={}", diagnostics.lakehouse_cache_read_mode)?;
+                writeln!(f, "lakehouse_cache_fill_mode={}", diagnostics.lakehouse_cache_fill_mode)?;
+                writeln!(f, "source_fallback_reason={}", diagnostics.source_fallback_reason)?;
                 writeln!(f, "direct_device_read_disposition={}", diagnostics.direct_device_read_disposition.code())
             },
         }

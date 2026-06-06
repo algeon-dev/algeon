@@ -535,6 +535,18 @@ impl GlueIcebergCatalogConfig {
         if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
             config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
         }
+        if !self.region.trim().is_empty()
+            || self.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
+            || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            || self.s3_path_style_access.is_some()
+        {
+            config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+        }
+        if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            && self.s3_path_style_access == Some(false)
+        {
+            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
+        }
         config
     }
 
@@ -684,10 +696,13 @@ impl GlueIcebergCatalogBackend {
     /// session token can come from `AWS_SESSION_TOKEN` or `AWS_SECURITY_TOKEN`.
     pub async fn from_config(
         config: GlueIcebergCatalogConfig,
-        get: impl FnMut(&str) -> Option<String>,
+        mut get: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self> {
-        let props = glue_catalog_props(&config, get);
-        let parquet_read_strategy_config = config.parquet_read_strategy_config();
+        let props = glue_catalog_props(&config, |name| get(name));
+        let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
+        let parquet_read_strategy_config = config
+            .parquet_read_strategy_config()
+            .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
         Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
     }
 
@@ -695,11 +710,14 @@ impl GlueIcebergCatalogBackend {
     /// table-format Parquet read-strategy config.
     pub async fn from_config_with_parquet_read_strategy_config(
         config: GlueIcebergCatalogConfig,
-        get: impl FnMut(&str) -> Option<String>,
+        mut get: impl FnMut(&str) -> Option<String>,
         parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
     ) -> Result<Self> {
-        let props = glue_catalog_props(&config, get);
-        let parquet_read_strategy_config = config.parquet_read_strategy_config_from(parquet_read_strategy_config);
+        let props = glue_catalog_props(&config, |name| get(name));
+        let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
+        let parquet_read_strategy_config = config
+            .parquet_read_strategy_config_from(parquet_read_strategy_config)
+            .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
         Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
     }
 
@@ -892,6 +910,17 @@ impl RestIcebergCatalogConfig {
         if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
             config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
         }
+        if self.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
+            || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            || self.s3_path_style_access.is_some()
+        {
+            config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+        }
+        if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            && self.s3_path_style_access == Some(false)
+        {
+            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
+        }
         config
     }
 
@@ -1051,10 +1080,13 @@ impl RestIcebergCatalogBackend {
     /// resolving static S3 credentials through `get`.
     pub async fn from_config(
         config: RestIcebergCatalogConfig,
-        get: impl FnMut(&str) -> Option<String>,
+        mut get: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self> {
-        let props = rest_catalog_props(&config, get);
-        let parquet_read_strategy_config = config.parquet_read_strategy_config();
+        let props = rest_catalog_props(&config, |name| get(name));
+        let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
+        let parquet_read_strategy_config = config
+            .parquet_read_strategy_config()
+            .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
         Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
     }
 
@@ -1062,11 +1094,14 @@ impl RestIcebergCatalogBackend {
     /// table-format Parquet read-strategy config.
     pub async fn from_config_with_parquet_read_strategy_config(
         config: RestIcebergCatalogConfig,
-        get: impl FnMut(&str) -> Option<String>,
+        mut get: impl FnMut(&str) -> Option<String>,
         parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
     ) -> Result<Self> {
-        let props = rest_catalog_props(&config, get);
-        let parquet_read_strategy_config = config.parquet_read_strategy_config_from(parquet_read_strategy_config);
+        let props = rest_catalog_props(&config, |name| get(name));
+        let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
+        let parquet_read_strategy_config = config
+            .parquet_read_strategy_config_from(parquet_read_strategy_config)
+            .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
         Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
     }
 
@@ -1349,6 +1384,20 @@ mod rest_tests {
     }
 
     #[test]
+    fn rest_parquet_strategy_marks_region_override_as_scoped() {
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse")
+            .with_s3_region("us-west-2");
+
+        let strategy = config.parquet_read_strategy_config();
+        let profile = config.source_storage_profile_with_env(|_| None);
+
+        assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::FutureTenantScoped);
+        assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
+        assert!(profile.requires_scoped_remote_direct_profile());
+    }
+
+    #[test]
     fn glue_source_storage_profile_uses_glue_region_and_aws_static_credentials() {
         let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-west-2");
         let env = |name: &str| match name {
@@ -1362,6 +1411,7 @@ mod rest_tests {
         let profile = config.source_storage_profile_with_env(env);
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::FutureTenantScoped);
         assert_eq!(profile.id(), DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         match &profile.s3_profile().credential {

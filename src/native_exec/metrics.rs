@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, Time,
 };
-use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, QueryMetrics};
+use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, QueryMetrics};
 
 /// Stable public DataFusion metric-name contract exposed by native cuDF execution plans.
 ///
@@ -48,6 +48,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "native_task_runtime_rows",
     "native_dynamic_filter_runtime_rows",
     "native_source_read_runtime_rows",
+    "native_lakehouse_cache_fill_event_snapshot_rows",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
@@ -273,6 +274,7 @@ impl NativeCudfMetrics {
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_dynamic_filter_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_source_read_runtime_rows", partition);
+        let _ = summary_counter(metrics, "native_lakehouse_cache_fill_event_snapshot_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
@@ -615,6 +617,32 @@ impl NativeCudfMetrics {
         self.materialization_time.add_duration(metrics.materialization_time);
     }
 
+    pub(crate) fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
+        for event in events {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("outcome", event.outcome.to_string())
+                .with_new_label("bytes", event.bytes.map_or_else(|| "none".to_string(), |value| value.to_string()))
+                .with_new_label("elapsed_ns", event.elapsed.as_nanos().min(u128::from(u64::MAX)).to_string())
+                .with_new_label("cache_path_hash", event.cache_path_hash.clone())
+                .with_new_label("stable_id_hash", event.stable_id_hash.clone())
+                .with_new_label(
+                    "file_index",
+                    event.file_index.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "chunk_index",
+                    event.chunk_index.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("error_code", event.error_code.clone().unwrap_or_else(|| "none".to_string()))
+                .with_new_label("error_kind", event.error_kind.clone().unwrap_or_else(|| "none".to_string()))
+                .with_new_label("error_status", event.error_status.clone().unwrap_or_else(|| "none".to_string()))
+                .with_new_label("error_operation", event.error_operation.clone().unwrap_or_else(|| "none".to_string()))
+                .global_counter("native_lakehouse_cache_fill_event_snapshot_rows")
+                .add(1);
+        }
+    }
+
     fn record_graph_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.graph_algorithm_runtime_rows {
             MetricBuilder::new(&self.metrics_set)
@@ -789,6 +817,33 @@ impl NativeCudfMetrics {
                 .with_new_label("source_node_id", row.source_node_id.clone())
                 .with_new_label("read_kind", row.read_kind.clone())
                 .with_new_label("read_strategy", row.read_strategy.clone())
+                .with_new_label("host_buffer_fetch_mode", row.host_buffer_fetch_mode.clone())
+                .with_new_label("host_buffer_payload_bytes", row.host_buffer_payload_bytes.to_string())
+                .with_new_label("host_buffer_requested_range_count", row.host_buffer_requested_range_count.to_string())
+                .with_new_label("host_buffer_requested_range_bytes", row.host_buffer_requested_range_bytes.to_string())
+                .with_new_label("host_buffer_original_file_bytes", row.host_buffer_original_file_bytes.to_string())
+                .with_new_label(
+                    "host_buffer_mini_parquet_footer_bytes",
+                    row.host_buffer_mini_parquet_footer_bytes.to_string(),
+                )
+                .with_new_label("parquet_read_input_kind", row.parquet_read_evidence.input_kind.clone())
+                .with_new_label("remote_read_mode", row.parquet_read_evidence.remote_read_mode.clone())
+                .with_new_label("parquet_read_backend", row.parquet_read_evidence.backend.clone())
+                .with_new_label("parquet_read_fallback_reason", row.parquet_read_evidence.fallback_reason.clone())
+                .with_new_label("remote_backend_build_status", row.parquet_read_evidence.backend_build_status.clone())
+                .with_new_label(
+                    "remote_read_bytes",
+                    row.parquet_read_evidence
+                        .remote_bytes
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "remote_read_range_count",
+                    row.parquet_read_evidence
+                        .remote_range_count
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("device_read_support", row.parquet_read_evidence.device_read_support.clone())
                 .with_new_label("batch_index", row.batch_index.to_string())
                 .with_new_label("chunk_count", row.chunk_count.to_string())
                 .with_new_label("first_chunk_index", row.first_chunk_index.to_string())
@@ -1318,7 +1373,9 @@ fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partitio
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::SourceReadRuntimeMetrics;
+    use nexus_query_engine::{
+        LakehouseCacheFillEventSnapshot, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
+    };
 
     use super::*;
     use crate::native_report::NativeDataFusionExecutionMetrics;
@@ -1483,6 +1540,22 @@ mod tests {
             source_node_id: "n7".to_string(),
             read_kind: "chunk_batch".to_string(),
             read_strategy: "local_cache_kvikio".to_string(),
+            host_buffer_fetch_mode: "none".to_string(),
+            host_buffer_payload_bytes: 0,
+            host_buffer_requested_range_count: 0,
+            host_buffer_requested_range_bytes: 0,
+            host_buffer_original_file_bytes: 0,
+            host_buffer_mini_parquet_footer_bytes: 0,
+            parquet_read_evidence: SourceReadParquetEvidenceMetrics {
+                input_kind: "remote_path".to_string(),
+                remote_read_mode: "prefer_direct".to_string(),
+                backend: "libcudf_path_reader_unverified".to_string(),
+                fallback_reason: "not_reported_by_libcudf".to_string(),
+                backend_build_status: "unknown".to_string(),
+                remote_bytes: Some(4096),
+                remote_range_count: Some(3),
+                device_read_support: "not_reported_by_libcudf".to_string(),
+            },
             batch_index: 2,
             chunk_count: 3,
             first_chunk_index: 4,
@@ -1516,6 +1589,7 @@ mod tests {
         assert_eq!(row.source_node_id, "n7");
         assert_eq!(row.read_kind, "chunk_batch");
         assert_eq!(row.read_strategy, "local_cache_kvikio");
+        assert_eq!(row.host_buffer_fetch_mode, "none");
         assert_eq!(row.batch_index, 2);
         assert_eq!(row.chunk_count, 3);
         assert_eq!(row.first_file_index, 10);
@@ -1524,6 +1598,14 @@ mod tests {
         assert_eq!(row.read_columns_total, 6);
         assert_eq!(row.known_projected_uncompressed_bytes, 800);
         assert_eq!(row.known_pure_filter_uncompressed_bytes, 200);
+        assert_eq!(row.parquet_read_input_kind, "remote_path");
+        assert_eq!(row.remote_read_mode, "prefer_direct");
+        assert_eq!(row.parquet_read_backend, "libcudf_path_reader_unverified");
+        assert_eq!(row.parquet_read_fallback_reason, "not_reported_by_libcudf");
+        assert_eq!(row.remote_backend_build_status, "unknown");
+        assert_eq!(row.remote_read_bytes, Some(4096));
+        assert_eq!(row.remote_read_range_count, Some(3));
+        assert_eq!(row.device_read_support, "not_reported_by_libcudf");
         assert_eq!(row.output_rows, 42);
         assert!(row.reader_predicate);
         assert_eq!(row.reader_dynamic_filter_count, 1);
@@ -1531,5 +1613,37 @@ mod tests {
         assert_eq!(row.source_chunk_planning_mode, "local_parquet_throughput");
         assert_eq!(row.source_chunk_planning_reason, "local_parquet_throughput_admitted");
         assert_eq!(row.elapsed_ns, 1234);
+    }
+
+    #[test]
+    fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        native_metrics.record_lakehouse_cache_fill_events(&[LakehouseCacheFillEventSnapshot {
+            outcome: "failed",
+            bytes: None,
+            elapsed: std::time::Duration::from_nanos(4321),
+            cache_path_hash: "cacheabcd".to_string(),
+            stable_id_hash: "stableabcd".to_string(),
+            file_index: Some(3),
+            chunk_index: Some(5),
+            error_code: Some("cudf_dependency_failure".to_string()),
+            error_kind: Some("dependency".to_string()),
+            error_status: Some("retryable".to_string()),
+            error_operation: Some("nexus_query_engine.lakehouse_cache.background_fill.fetch".to_string()),
+        }]);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.lakehouse_cache_fill_event_snapshot_rows.len(), 1);
+        let row = &metrics.lakehouse_cache_fill_event_snapshot_rows[0];
+        assert_eq!(row.outcome, "failed");
+        assert_eq!(row.bytes, None);
+        assert_eq!(row.elapsed_ns, 4321);
+        assert_eq!(row.cache_path_hash, "cacheabcd");
+        assert_eq!(row.stable_id_hash, "stableabcd");
+        assert_eq!(row.file_index, Some(3));
+        assert_eq!(row.chunk_index, Some(5));
+        assert_eq!(row.error_code, "cudf_dependency_failure");
+        assert_eq!(row.error_operation, "nexus_query_engine.lakehouse_cache.background_fill.fetch");
     }
 }

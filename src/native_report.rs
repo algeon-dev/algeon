@@ -72,7 +72,8 @@ pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
     NativeDynamicFilterPostDecodeReductionStage, NativeDynamicFilterRuntimeMetricRow,
     NativeDynamicFilterWorkAvoidanceStatus, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
-    NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow,
+    NativeTaskRuntimeMetricRow,
 };
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{

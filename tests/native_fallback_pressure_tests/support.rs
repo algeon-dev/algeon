@@ -461,6 +461,21 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("join_gather_map_bytes", "2048")
         .global_counter("native_join_strategy_rows")
         .add(1);
+    MetricBuilder::new(&metrics)
+        .with_type(MetricType::SUMMARY)
+        .with_new_label("outcome", "completed")
+        .with_new_label("bytes", "4096")
+        .with_new_label("elapsed_ns", "9000000")
+        .with_new_label("cache_path_hash", "cache123")
+        .with_new_label("stable_id_hash", "stable456")
+        .with_new_label("file_index", "0")
+        .with_new_label("chunk_index", "2")
+        .with_new_label("error_code", "none")
+        .with_new_label("error_kind", "none")
+        .with_new_label("error_status", "none")
+        .with_new_label("error_operation", "none")
+        .global_counter("native_lakehouse_cache_fill_event_snapshot_rows")
+        .add(1);
     metrics.clone_inner()
 }
 

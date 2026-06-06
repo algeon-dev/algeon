@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use datafusion::physical_plan::metrics::MetricsSet;
 
-use super::labels::{bool_label, labels_by_name, string_label, usize_label};
+use super::labels::{bool_label, labels_by_name, optional_usize, optional_usize_label, string_label, usize_label};
 
 const NATIVE_SOURCE_READ_RUNTIME_ROWS_METRIC_NAME: &str = "native_source_read_runtime_rows";
 
@@ -15,6 +15,34 @@ pub struct NativeSourceReadRuntimeMetricRow {
     pub read_kind: String,
     /// Parquet read strategy used by the chunk or batch.
     pub read_strategy: String,
+    /// Host-buffer object-store fetch mode, or `none` for path-based reads.
+    pub host_buffer_fetch_mode: String,
+    /// Host-buffer payload bytes supplied to libcudf, when applicable.
+    pub host_buffer_payload_bytes: usize,
+    /// Object-store range request count for ranged host-buffer reads.
+    pub host_buffer_requested_range_count: usize,
+    /// Object-store range bytes requested for ranged host-buffer reads.
+    pub host_buffer_requested_range_bytes: usize,
+    /// Original object bytes represented by a ranged host-buffer read.
+    pub host_buffer_original_file_bytes: usize,
+    /// Mini-Parquet footer bytes produced by a ranged host-buffer read.
+    pub host_buffer_mini_parquet_footer_bytes: usize,
+    /// Input kind passed to the Parquet reader.
+    pub parquet_read_input_kind: String,
+    /// Requested remote read mode, or `none` for non-remote reads.
+    pub remote_read_mode: String,
+    /// Parquet reader backend evidence.
+    pub parquet_read_backend: String,
+    /// Lower-layer fallback reason, if reported.
+    pub parquet_read_fallback_reason: String,
+    /// Build-time remote backend status reported by cudf-rs/libcudf.
+    pub remote_backend_build_status: String,
+    /// Remote bytes read, when reported by the lower layer.
+    pub remote_read_bytes: Option<usize>,
+    /// Remote range count, when reported by the lower layer.
+    pub remote_read_range_count: Option<usize>,
+    /// Direct device-read support evidence reported by the lower layer.
+    pub device_read_support: String,
     /// Batch index within the source stream, or chunk index for singleton reads.
     pub batch_index: usize,
     /// Number of source chunks represented by this read.
@@ -69,10 +97,16 @@ impl NativeSourceReadRuntimeMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={}",
+            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
+            self.host_buffer_fetch_mode,
+            self.host_buffer_payload_bytes,
+            self.host_buffer_requested_range_count,
+            self.host_buffer_requested_range_bytes,
+            self.host_buffer_original_file_bytes,
+            self.host_buffer_mini_parquet_footer_bytes,
             self.batch_index,
             self.chunk_count,
             self.first_chunk_index,
@@ -97,6 +131,14 @@ impl NativeSourceReadRuntimeMetricRow {
             self.source_chunk_planning_mode,
             self.source_chunk_planning_reason,
             self.elapsed_ns,
+            self.parquet_read_input_kind,
+            self.remote_read_mode,
+            self.parquet_read_backend,
+            self.parquet_read_fallback_reason,
+            self.remote_backend_build_status,
+            optional_usize(self.remote_read_bytes),
+            optional_usize(self.remote_read_range_count),
+            self.device_read_support,
         )
     }
 }
@@ -117,6 +159,20 @@ fn labels_to_source_read_runtime_row(labels: BTreeMap<&str, &str>) -> NativeSour
         source_node_id: string_label(&labels, "source_node_id"),
         read_kind: string_label(&labels, "read_kind"),
         read_strategy: string_label(&labels, "read_strategy"),
+        host_buffer_fetch_mode: string_label(&labels, "host_buffer_fetch_mode"),
+        host_buffer_payload_bytes: usize_label(&labels, "host_buffer_payload_bytes"),
+        host_buffer_requested_range_count: usize_label(&labels, "host_buffer_requested_range_count"),
+        host_buffer_requested_range_bytes: usize_label(&labels, "host_buffer_requested_range_bytes"),
+        host_buffer_original_file_bytes: usize_label(&labels, "host_buffer_original_file_bytes"),
+        host_buffer_mini_parquet_footer_bytes: usize_label(&labels, "host_buffer_mini_parquet_footer_bytes"),
+        parquet_read_input_kind: optional_string_label_or_none(&labels, "parquet_read_input_kind"),
+        remote_read_mode: optional_string_label_or_none(&labels, "remote_read_mode"),
+        parquet_read_backend: optional_string_label_or_none(&labels, "parquet_read_backend"),
+        parquet_read_fallback_reason: optional_string_label_or_none(&labels, "parquet_read_fallback_reason"),
+        remote_backend_build_status: optional_string_label_or_none(&labels, "remote_backend_build_status"),
+        remote_read_bytes: optional_usize_label(&labels, "remote_read_bytes"),
+        remote_read_range_count: optional_usize_label(&labels, "remote_read_range_count"),
+        device_read_support: optional_string_label_or_none(&labels, "device_read_support"),
         batch_index: usize_label(&labels, "batch_index"),
         chunk_count: usize_label(&labels, "chunk_count"),
         first_chunk_index: usize_label(&labels, "first_chunk_index"),
@@ -142,4 +198,8 @@ fn labels_to_source_read_runtime_row(labels: BTreeMap<&str, &str>) -> NativeSour
         source_chunk_planning_reason: string_label(&labels, "source_chunk_planning_reason"),
         elapsed_ns: usize_label(&labels, "elapsed_ns"),
     }
+}
+
+fn optional_string_label_or_none(labels: &BTreeMap<&str, &str>, name: &str) -> String {
+    labels.get(name).copied().unwrap_or("none").to_string()
 }

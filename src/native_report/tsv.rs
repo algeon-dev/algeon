@@ -78,12 +78,15 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
         let total_rows = diagnostics.total_rows.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
         let _ = write!(
             output,
-            "format={},source_read_strategy={},source_decode_input={},credential_mode={},lakehouse_cache_status={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
+            "format={},source_read_strategy={},source_decode_input={},credential_mode={},lakehouse_cache_status={},lakehouse_cache_read_mode={},lakehouse_cache_fill_mode={},source_fallback_reason={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
             diagnostics.format,
             diagnostics.source_read_strategy,
             diagnostics.source_decode_input,
             diagnostics.credential_mode,
             diagnostics.lakehouse_cache_status,
+            diagnostics.lakehouse_cache_read_mode,
+            diagnostics.lakehouse_cache_fill_mode,
+            diagnostics.source_fallback_reason,
             diagnostics.direct_device_read,
             diagnostics.file_count,
             diagnostics.ranged_file_count,
@@ -180,6 +183,18 @@ pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) 
 }
 
 pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+pub(super) fn format_lakehouse_cache_fill_event_snapshot_rows(
+    rows: &[NativeLakehouseCacheFillEventMetricRow],
+) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }

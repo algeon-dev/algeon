@@ -1,10 +1,15 @@
 //! Opt-in Flight SQL server for `datafusion-nexus`.
 
+#[cfg(feature = "iceberg")]
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use nexus_query_engine::MemoryControlPolicy;
 use tonic::transport::Server;
+
+#[cfg(feature = "iceberg")]
+use crate::table_format::scan::credential_free_endpoint_identity;
 
 mod admission;
 pub mod auth;
@@ -47,8 +52,9 @@ pub use session::{apply_session_profile, build_session_config, build_session_con
 
 #[cfg(feature = "iceberg")]
 pub use crate::{
-    CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
-    CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+    CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_DIRECT_ENV, CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
+    CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
 };
 
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
@@ -343,8 +349,8 @@ struct IcebergBackendSnapshot<'a> {
     glue_region: &'a str,
     glue_catalog_id: &'a str,
     aws_profile: &'a str,
-    rest_uri: &'a str,
-    rest_s3_endpoint: &'a str,
+    rest_uri: Cow<'a, str>,
+    rest_s3_endpoint: Cow<'a, str>,
 }
 
 #[cfg(feature = "iceberg")]
@@ -357,8 +363,8 @@ fn iceberg_backend_snapshot(backend: &config::IcebergCatalogBackendConfig) -> Ic
             glue_region: &glue.region,
             glue_catalog_id: option_display(glue.catalog_id.as_deref()),
             aws_profile: option_display(glue.profile.as_deref()),
-            rest_uri: "none",
-            rest_s3_endpoint: "none",
+            rest_uri: Cow::Borrowed("none"),
+            rest_s3_endpoint: Cow::Borrowed("none"),
         },
         config::IcebergCatalogBackendConfig::Rest(rest) => IcebergBackendSnapshot {
             catalog_type: "rest",
@@ -367,8 +373,13 @@ fn iceberg_backend_snapshot(backend: &config::IcebergCatalogBackendConfig) -> Ic
             glue_region: "none",
             glue_catalog_id: "none",
             aws_profile: "none",
-            rest_uri: &rest.uri,
-            rest_s3_endpoint: option_display(rest.s3_endpoint.as_deref()),
+            rest_uri: Cow::Owned(credential_free_endpoint_identity(&rest.uri)),
+            rest_s3_endpoint: rest
+                .s3_endpoint
+                .as_deref()
+                .map(credential_free_endpoint_identity)
+                .map(Cow::Owned)
+                .unwrap_or(Cow::Borrowed("none")),
         },
     }
 }
@@ -551,5 +562,26 @@ mod tests {
             !is_testing_profile_active(&config),
             "native + iceberg must stay silent — that is the recommended production setup",
         );
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
+        let backend = config::IcebergCatalogBackendConfig::Rest(
+            crate::iceberg::catalog::RestIcebergCatalogConfig::new(
+                "lake",
+                "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
+                "s3://lakehouse/warehouse",
+            )
+            .with_s3_endpoint("http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag"),
+        );
+
+        let snapshot = iceberg_backend_snapshot(&backend);
+
+        assert_eq!(snapshot.rest_uri, "https://rest.local:8181/catalog");
+        assert_eq!(snapshot.rest_s3_endpoint, "http://rustfs.local:9000/path");
+        assert!(!snapshot.rest_uri.contains("secret"));
+        assert!(!snapshot.rest_s3_endpoint.contains("secret"));
+        assert!(!snapshot.rest_s3_endpoint.contains("sig="));
     }
 }
