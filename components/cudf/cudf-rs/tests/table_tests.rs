@@ -44,6 +44,21 @@ fn test_table_copy() {
 }
 
 #[test]
+fn test_table_from_columns_into_columns_preserves_input_order() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let c3 = Column::from_slice(&[100i32, 200, 300]).unwrap();
+
+    let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
+    let columns = table.into_columns().unwrap();
+
+    assert_eq!(columns.len(), 3);
+    assert_eq!(columns[0].view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(columns[1].view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(columns[2].view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
+}
+
+#[test]
 fn test_empty_table() {
     let table = Table::from_columns(vec![]).unwrap();
     let view = table.view().unwrap();

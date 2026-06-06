@@ -198,8 +198,8 @@ impl Expr {
             Expr::BinaryOp { lhs, op, rhs } => {
                 let left = lhs.eval(df)?;
                 let right = rhs.eval(df)?;
-                let lv = left.column_view()?;
-                let rv = right.column_view()?;
+                let lv = left.as_column_view()?;
+                let rv = right.as_column_view()?;
                 let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), *op)?;
                 let col = binary::binary_operation_vv(&lv, &rv, *op, &out_type)?;
                 Series::from_column(col)
@@ -207,7 +207,7 @@ impl Expr {
 
             Expr::UnaryOp { op, input } => {
                 let series = input.eval(df)?;
-                let cv = series.column_view()?;
+                let cv = series.as_column_view()?;
                 let col = unary::unary_operation(&cv, *op)?;
                 Series::from_column(col)
             },

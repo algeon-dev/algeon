@@ -94,8 +94,9 @@ pub mod unary;
 // — Core types (advanced — most users should prefer DataFrame/Series) —
 pub use column::{Column, ColumnView};
 pub use dataframe::{
-    DataFrame, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, DataFrameJoinResult, DistinctOptions,
-    DropNaOptions,
+    ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
+    DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions,
+    InfoDetail,
 };
 pub use dataframe_view::DataFrameView;
 // — Types and error —

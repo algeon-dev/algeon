@@ -3,6 +3,9 @@
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
+#include <cudf/column/column_view.hpp>
+#include <cudf/null_mask.hpp>
+#include <cudf/strings/strings_column_view.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
@@ -24,6 +27,43 @@ bool should_fail_table_release_columns_handle_array_alloc() {
   if (!g_fail_next_table_release_columns_handle_array_alloc) { return false; }
   g_fail_next_table_release_columns_handle_array_alloc = false;
   return true;
+}
+
+bool column_parent_stores_direct_element_buffer(cudf::type_id id) {
+  switch (id) {
+    case cudf::type_id::EMPTY:
+    case cudf::type_id::STRING:
+    case cudf::type_id::LIST:
+    case cudf::type_id::STRUCT:
+    case cudf::type_id::DICTIONARY32:
+      return false;
+    default:
+      return true;
+  }
+}
+
+std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
+                                                rmm::cuda_stream_view stream) {
+  std::size_t total = 0;
+
+  if (column.type().id() == cudf::type_id::STRING) {
+    cudf::strings_column_view const strings{column};
+    total += static_cast<std::size_t>(strings.chars_size(stream));
+  } else if (column_parent_stores_direct_element_buffer(column.type().id())) {
+    total += static_cast<std::size_t>(column.size()) *
+             static_cast<std::size_t>(cudf::size_of(column.type()));
+  }
+
+  if (column.nullable()) {
+    total += static_cast<std::size_t>(cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))) *
+             sizeof(cudf::bitmask_type);
+  }
+
+  for (cudf::size_type child_index = 0; child_index < column.num_children(); ++child_index) {
+    total += cudf_column_view_payload_size_bytes(column.child(child_index), stream);
+  }
+
+  return total;
 }
 
 cudf_status_t validate_table_create_columns(cudf_column_handle* columns,
@@ -123,6 +163,48 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
     auto* tbl = static_cast<cudf::table*>(src);
     auto copy = std::make_unique<cudf::table>(tbl->view(), exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(copy.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_table_payload_size(cudf_table_handle handle,
+                                      size_t* out) {
+  return cudf_table_payload_size_ex(handle, nullptr, out);
+}
+
+cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
+                                         cudf_exec_options_t const* options,
+                                         size_t* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* table = static_cast<cudf::table*>(handle);
+    std::size_t total = 0;
+    for (auto const& column : table->view()) {
+      total += cudf_column_view_payload_size_bytes(column, exec.stream);
+    }
+    *out = total;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle,
+                                               size_t* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* table = static_cast<cudf::table*>(handle);
+    *out = table->alloc_size();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

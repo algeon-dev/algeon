@@ -10,11 +10,17 @@ use std::{
     sync::Arc,
 };
 
+use smallvec::SmallVec;
+
 use crate::{
     column::{Column, ColumnView},
     error::{self, Error, ErrorKind, Result},
     execution_domain::ExecutionDomain,
 };
+
+// Most tables/view projections in high-level APIs stay in the single-digit
+// column range; wider schemas spill to heap-backed storage automatically.
+const TABLE_HANDLE_INLINE_CAPACITY: usize = 8;
 
 /// An owned GPU table backed by a `cudf::table`.
 ///
@@ -65,7 +71,8 @@ impl Table {
                 .with_operation("table::from_columns")
                 .with_context("num_columns", columns.len().to_string())
         })?;
-        let mut handles: Vec<*mut c_void> = columns.into_iter().map(|c| c.into_raw()).collect();
+        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> =
+            columns.into_iter().map(|c| c.into_raw()).collect();
 
         let mut table_handle = ptr::null_mut();
         // SAFETY: handles contains valid column pointers from into_raw(). num_columns matches.
@@ -321,7 +328,8 @@ impl<'a> TableView<'a> {
                 .with_context("num_columns", views.len().to_string())
         })?;
 
-        let mut handles: Vec<*mut c_void> = views.iter().map(|v| v.raw_handle()).collect();
+        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> =
+            views.iter().map(|v| v.raw_handle()).collect();
 
         let mut out = ptr::null_mut();
         // SAFETY: handles are valid column view pointers from raw_handle(). num_columns matches.

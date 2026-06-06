@@ -1,6 +1,6 @@
 //! Integration tests for zero-copy metadata ops (cuDF-style signatures).
 //!
-//! Tests: drop, rename_columns, with_column, assign, and Arc sharing verification.
+//! Tests: without_columns, rename_columns, with_column, assign, and Arc sharing verification.
 //!
 //! All tests require a GPU.
 
@@ -23,13 +23,13 @@ fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
 }
 
 // ===========================================================================
-// drop: removes correct columns, preserves others
+// without_columns: removes correct columns, preserves others
 // ===========================================================================
 
 #[test]
-fn test_drop_removes_single_column() {
+fn test_without_columns_removes_single_column() {
     let df = sample_df();
-    let result = df.drop(["score"]).unwrap();
+    let result = df.without_columns(["score"]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), &["id", "flag"]);
@@ -37,30 +37,30 @@ fn test_drop_removes_single_column() {
 }
 
 #[test]
-fn test_drop_removes_multiple_columns() {
+fn test_without_columns_removes_multiple_columns() {
     let df = sample_df();
-    let result = df.drop(["id", "flag"]).unwrap();
+    let result = df.without_columns(["id", "flag"]).unwrap();
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.column_names(), &["score"]);
 }
 
 #[test]
-fn test_drop_preserves_arc_sharing_for_retained_columns() {
+fn test_without_columns_preserves_arc_sharing_for_retained_columns() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
     let flag_ptr = device_ptr(&df, "flag");
 
-    let result = df.drop(["score"]).unwrap();
+    let result = df.without_columns(["score"]).unwrap();
 
     assert_eq!(id_ptr, device_ptr(&result, "id"));
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
 #[test]
-fn test_drop_nonexistent_column_returns_error() {
+fn test_without_columns_nonexistent_column_returns_error() {
     let df = sample_df();
-    let result = df.drop(["nonexistent"]);
+    let result = df.without_columns(["nonexistent"]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -69,21 +69,30 @@ fn test_drop_nonexistent_column_returns_error() {
 }
 
 #[test]
-fn test_drop_all_columns_preserves_row_count() {
+fn test_without_columns_all_columns_preserves_row_count() {
     let df = sample_df();
-    let result = df.drop(["id", "score", "flag"]).unwrap();
+    let result = df.without_columns(["id", "score", "flag"]).unwrap();
 
     assert_eq!(result.num_columns(), 0);
     assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
-fn test_drop_preserves_column_order() {
+fn test_without_columns_preserves_column_order() {
     let df = sample_df();
-    let result = df.drop(["score"]).unwrap();
+    let result = df.without_columns(["score"]).unwrap();
 
     // "id" should still come before "flag"
     assert_eq!(result.column_names(), &["id", "flag"]);
+}
+
+#[test]
+fn test_without_columns_original_dataframe_still_reads_excluded_column() {
+    let df = sample_df();
+    let result = df.without_columns(["score"]).unwrap();
+
+    assert_eq!(result.column_names(), &["id", "flag"]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -354,7 +363,7 @@ fn test_assign_duplicate_names_last_wins() {
 
 #[test]
 fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
-    let df = sample_df().drop(["id", "score", "flag"]).unwrap();
+    let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let replacement = Series::new::<i32>("replacement", &[7, 8, 9]).unwrap();
 
     let result = df.assign([("replacement", replacement)]).unwrap();
@@ -366,7 +375,7 @@ fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
 
 #[test]
 fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
-    let df = sample_df().drop(["id", "score", "flag"]).unwrap();
+    let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let wrong = Series::new::<i32>("replacement", &[7, 8]).unwrap();
 
     let result = df.assign([("replacement", wrong)]);
@@ -392,11 +401,11 @@ fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
 // ===========================================================================
 
 #[test]
-fn test_drop_then_assign_preserves_sharing() {
+fn test_without_columns_then_assign_preserves_sharing() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
 
-    let dropped = df.drop(["score", "flag"]).unwrap();
+    let dropped = df.without_columns(["score", "flag"]).unwrap();
     let extra = Series::new::<f64>("extra", &[1.0, 2.0, 3.0]).unwrap();
     let result = dropped.assign([("extra", extra)]).unwrap();
 
@@ -404,12 +413,12 @@ fn test_drop_then_assign_preserves_sharing() {
 }
 
 #[test]
-fn test_rename_columns_then_drop_preserves_sharing() {
+fn test_rename_columns_then_without_columns_preserves_sharing() {
     let df = sample_df();
     let score_ptr = device_ptr(&df, "score");
 
     let renamed = df.rename_columns([("id", "identifier")]).unwrap();
-    let result = renamed.drop(["flag"]).unwrap();
+    let result = renamed.without_columns(["flag"]).unwrap();
 
     assert_eq!(score_ptr, device_ptr(&result, "score"));
 }
@@ -451,22 +460,22 @@ fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
 }
 
 #[test]
-fn test_with_column_owned_on_zero_column_frame_rejects_row_count_mismatch() {
-    let df = sample_df().drop(["id", "score", "flag"]).unwrap();
+fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() {
+    let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let values = Series::new::<i32>("values", &[11, 22]).unwrap();
 
-    let result = df.with_column_owned("values", values);
+    let result = df.with_column("values", values);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
-fn test_with_column_owned_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
+fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     let df = DataFrame::new(vec![], vec![]).unwrap();
     let values = Series::new::<i32>("values", &[11, 22]).unwrap();
 
-    let result = df.with_column_owned("values", values).unwrap();
+    let result = df.with_column("values", values).unwrap();
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 2);

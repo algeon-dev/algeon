@@ -2,7 +2,7 @@
 
 mod common;
 use common::sample_df;
-use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind, series::Series};
+use cudf::{column::Column, error::ErrorKind, series::Series};
 
 // ---------------------------------------------------------------------------
 // filter(&Series) — happy path

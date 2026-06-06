@@ -6,12 +6,26 @@
 
 use std::{os::raw::c_void, ptr, sync::Arc};
 
+use smallvec::SmallVec;
+
 use crate::{
     column::{Column, ColumnView},
     error::{self, Error, ErrorKind, Result},
     execution_context::ExecutionContext,
     table::{Table, TableView},
 };
+
+// GroupBy callers usually touch a handful of value columns and aggregations per
+// request; larger plans spill to heap-backed storage automatically.
+const GROUPBY_VALUE_HANDLE_INLINE_CAPACITY: usize = 8;
+const GROUPBY_AGG_COUNT_INLINE_CAPACITY: usize = 8;
+const GROUPBY_AGG_HANDLE_INLINE_CAPACITY: usize = 16;
+const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
+const GROUPBY_REQUEST_META_INLINE_CAPACITY: usize = 8;
+const GROUPBY_RESULT_NAME_INLINE_CAPACITY: usize = 8;
+const GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY: usize = 8;
+const GROUPBY_AGG_SLICE_INLINE_CAPACITY: usize = 8;
+const GROUPBY_REQUEST_INLINE_CAPACITY: usize = 8;
 
 /// Aggregation type for groupby operations.
 #[derive(Debug, Clone)]
@@ -69,11 +83,12 @@ fn groupby_aggregate_impl(
     })?;
 
     // Collect values column view handles.
-    let value_handles: Vec<*mut c_void> = requests.iter().map(|r| r.values.raw_handle()).collect();
+    let value_handles: SmallVec<[*mut c_void; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
+        requests.iter().map(|r| r.values.raw_handle()).collect();
 
     // Collect agg_counts and create aggregation handles.
-    let mut agg_counts: Vec<i32> = Vec::with_capacity(requests.len());
-    let mut all_agg_handles: Vec<*mut c_void> = Vec::new();
+    let mut agg_counts: SmallVec<[i32; GROUPBY_AGG_COUNT_INLINE_CAPACITY]> = SmallVec::with_capacity(requests.len());
+    let mut all_agg_handles: SmallVec<[*mut c_void; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> = SmallVec::new();
 
     for req in requests {
         if req.aggregations.is_empty() {
@@ -477,8 +492,10 @@ impl<'a> GroupBy<'a> {
         let columns = self.df.columns_map();
 
         // Resolve key column names to indices.
-        let key_refs: Vec<&str> = self.keys.iter().map(|s| s.as_str()).collect();
+        let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            self.keys.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        drop(key_refs);
 
         // Validate all value column names exist.
         for spec in specs {
@@ -496,13 +513,14 @@ impl<'a> GroupBy<'a> {
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
 
         // Group specs by value column (preserving request order).
-        let mut value_views: Vec<ColumnView<'_>> = Vec::new();
-        let mut request_meta: Vec<(usize, Vec<Aggregation>)> = Vec::new();
-        let mut result_names: Vec<String> = Vec::new();
+        let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
+        let mut request_meta: SmallVec<[(usize, Vec<Aggregation>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            SmallVec::new();
+        let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
 
         let mut col_name_to_view_idx: IndexMap<String, usize> = IndexMap::new();
         let mut view_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
-        let mut output_order: Vec<(usize, usize)> = Vec::new();
+        let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
 
         for spec in specs {
             let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
@@ -534,9 +552,10 @@ impl<'a> GroupBy<'a> {
             result_names.push(spec.output_name());
         }
 
-        let agg_slices: Vec<Vec<Aggregation>> = request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
+        let agg_slices: SmallVec<[Vec<Aggregation>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
+            request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
 
-        let requests: Vec<AggregationRequest<'_>> = request_meta
+        let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
             .iter()
             .enumerate()
             .map(|(i, (view_idx, _))| AggregationRequest {

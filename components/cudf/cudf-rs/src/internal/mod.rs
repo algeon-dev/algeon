@@ -3,7 +3,7 @@
 //! Not part of the public API. Most submodules are `pub(crate)`.
 //! [`temp_table`] is public because
 //! [`TempTableView`](temp_table::TempTableView) is returned by
-//! [`DataFrame::as_table_view`](crate::DataFrame::as_table_view).
+//! [`DataFrame::temp_table_view`](crate::DataFrame::temp_table_view).
 //!
 //! # Submodules
 //!

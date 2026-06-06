@@ -259,14 +259,14 @@ impl Series {
         Ok(SeriesView::new(self.name.as_deref(), cv))
     }
 
-    /// Creates a borrowed `ColumnView` for passing to low-level operations
-    /// that require an unnamed view.
+    /// Returns a borrowed bare `ColumnView` for low-level operations.
     ///
     /// # Advanced
     ///
-    /// Prefer [`view()`](Self::view) for most uses; this method is only needed
-    /// when you need a bare `ColumnView` without the name wrapper.
-    pub fn column_view(&self) -> Result<ColumnView<'_>> {
+    /// Prefer [`view()`](Self::view) for most uses. Use this method only when
+    /// an API specifically requires a bare `ColumnView` without the
+    /// `SeriesView` name wrapper.
+    pub fn as_column_view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
     }
 

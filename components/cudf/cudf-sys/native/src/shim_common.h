@@ -2,6 +2,7 @@
 #define CUDF_RUST_SHIM_COMMON_H
 
 #include "error.h"
+#include "types.h"
 #include <cudf/types.hpp>
 #include <cstdint>
 #include <string>

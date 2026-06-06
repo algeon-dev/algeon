@@ -1,8 +1,9 @@
 //! A named-column wrapper around GPU columns for ergonomic DataFrame operations.
 //!
 //! [`DataFrame`] stores columns individually as `Arc<Column>`, enabling
-//! zero-copy operations like rename, select, and clone that share GPU memory
-//! via reference counting instead of deep-copying all column data.
+//! schema-only operations like rename, select, without_columns, and clone to
+//! share GPU memory via reference counting instead of deep-copying column
+//! data.
 //!
 //! # Example
 //!
@@ -20,11 +21,13 @@
 //! ```
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use indexmap::IndexMap;
+use smallvec::SmallVec;
 
 use crate::{
     column::{Column, ColumnView},
@@ -56,8 +59,8 @@ use crate::{
 /// **new** `DataFrame` rather than modifying in place.
 ///
 /// Columns are stored as `Arc<Column>`, so operations that don't change
-/// column data (rename, select, clone, with_column for unchanged columns)
-/// share GPU memory via reference counting.
+/// column data (rename, select, without_columns, clone, with_column for
+/// unchanged columns) share GPU memory via reference counting.
 ///
 /// Cloning a `DataFrame` is cheap: it clones the `IndexMap` and bumps
 /// `Arc` reference counts — no GPU data is copied.
@@ -72,18 +75,6 @@ use crate::{
 /// [`head`](Self::head), [`tail`](Self::tail), and [`slice`](Self::slice).
 /// Use those APIs to select row subsets, then inspect the resulting columns
 /// explicitly when you need host-visible values.
-///
-/// # Consuming variants
-///
-/// Schema-only operations have `_owned` variants that take `self` by value:
-/// [`rename_column_owned`](Self::rename_column_owned), [`select_owned`](Self::select_owned),
-/// [`with_column_owned`](Self::with_column_owned). These avoid the O(N)
-/// `Arc::clone` overhead for N columns by moving ownership directly.
-/// Prefer them when the source DataFrame is no longer needed.
-///
-/// GPU-allocating operations (head, tail, filter, sort, etc.) do **not**
-/// have `_owned` variants because FFI always allocates new device memory,
-/// making the `Arc::clone` cost negligible relative to the GPU allocation.
 #[derive(Clone)]
 pub struct DataFrame {
     columns: IndexMap<String, Arc<Column>>,
@@ -218,6 +209,10 @@ pub struct DataFrameCsvWriterOptions {
     include_header: bool,
     runtime: Option<Runtime>,
 }
+
+// Most DataFrame sorts use a small key set (1-4 columns); larger sorts spill
+// to heap-backed storage automatically.
+const SORT_KEY_INLINE_CAPACITY: usize = 4;
 
 impl DataFrameCsvWriterOptions {
     /// Create options to write a `DataFrame` to a CSV file.
@@ -413,6 +408,143 @@ impl Default for DistinctOptions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+bitflags::bitflags! {
+    /// Controls how much metadata [`DataFrame::info_with`] computes.
+    ///
+    /// Flags compose via `|`. `NULL_COUNTS` implies `COLUMNS` via its bit
+    /// pattern, making "null counts without columns" unrepresentable.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cudf::InfoDetail;
+    ///
+    /// // Columns with null counts, no memory accounting.
+    /// let detail = InfoDetail::NULL_COUNTS;
+    /// assert!(detail.contains(InfoDetail::COLUMNS));
+    ///
+    /// // Both memory views, no per-column breakdown.
+    /// let detail = InfoDetail::MEMORY;
+    /// ```
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct InfoDetail: u8 {
+        /// Include one metadata entry per schema column.
+        const COLUMNS          = 0b0000_0001;
+        /// Include per-column null and non-null counts (implies `COLUMNS`).
+        const NULL_COUNTS      = 0b0000_0011;
+        /// Include payload bytes.
+        ///
+        /// Reports bytes required to represent the logical payload, not the
+        /// allocator-rounded device footprint. For explicit-runtime objects,
+        /// this accounting path honors retained execution provenance.
+        const PAYLOAD_BYTES    = 0b0000_0100;
+        /// Include total device-allocated bytes.
+        ///
+        /// Reports the actual owned device allocation footprint, including
+        /// allocator rounding and padding.
+        const DEVICE_ALLOCATED = 0b0000_1000;
+        /// Both `PAYLOAD_BYTES` and `DEVICE_ALLOCATED`.
+        const MEMORY           = 0b0000_1100;
+        /// All detail: `NULL_COUNTS` | `MEMORY`.
+        const ALL              = 0b0000_1111;
+    }
+}
+
+impl InfoDetail {
+    fn includes_columns(self) -> bool {
+        self.contains(Self::COLUMNS)
+    }
+
+    fn includes_null_counts(self) -> bool {
+        self.contains(Self::NULL_COUNTS)
+    }
+
+    fn includes_payload(self) -> bool {
+        self.contains(Self::PAYLOAD_BYTES)
+    }
+
+    fn includes_device_allocated(self) -> bool {
+        self.contains(Self::DEVICE_ALLOCATED)
+    }
+}
+
+/// Programmatic metadata snapshot of a [`DataFrame`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFrameInfo {
+    /// Logical row count.
+    pub row_count: usize,
+    /// Schema column count.
+    pub column_count: usize,
+    /// Counts of columns by exact data type.
+    pub dtypes: Vec<DataTypeCount>,
+    /// Optional per-column metadata in schema order.
+    pub columns: Option<Vec<DataFrameColumnInfo>>,
+    /// Optional top-level memory accounting totals.
+    pub memory_accounting: Option<DataFrameMemoryAccounting>,
+}
+
+/// Count of columns with one exact [`DataType`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTypeCount {
+    /// The exact data type.
+    pub data_type: DataType,
+    /// Number of columns with that type.
+    pub column_count: usize,
+}
+
+/// Programmatic metadata for one DataFrame column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFrameColumnInfo {
+    /// Zero-based schema position.
+    pub position: usize,
+    /// Column name.
+    pub name: String,
+    /// Exact data type.
+    pub data_type: DataType,
+    /// Whether the column has an allocated null mask.
+    pub nullable: bool,
+    /// Null count when requested.
+    pub null_count: Option<usize>,
+    /// Non-null count when requested.
+    pub non_null_count: Option<usize>,
+    /// Optional per-column memory accounting.
+    pub memory_accounting: Option<ColumnMemoryAccounting>,
+}
+
+/// Top-level DataFrame memory accounting totals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFrameMemoryAccounting {
+    /// Payload bytes across all columns.
+    ///
+    /// This is the sum of payload-sized buffers required to represent the
+    /// data, including nested child payloads and payload-sized null masks.
+    pub payload_bytes: Option<usize>,
+    /// Total device-allocated bytes across all columns.
+    ///
+    /// This is the actual device allocation footprint owned by the DataFrame's
+    /// columns and may exceed `payload_bytes`.
+    pub device_allocated_bytes: Option<usize>,
+}
+
+/// Per-column memory accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnMemoryAccounting {
+    /// Payload bytes used by the column.
+    ///
+    /// This excludes allocator padding and reports only the bytes required to
+    /// represent the column payload.
+    pub payload_bytes: Option<usize>,
+    /// Total device-allocated bytes for the column.
+    ///
+    /// This is the column's actual owned device allocation footprint and may
+    /// exceed `payload_bytes`.
+    pub device_allocated_bytes: Option<usize>,
+}
+
+fn data_type_sort_key(dtype: DataType) -> (i32, i32) {
+    (dtype.id() as i32, dtype.scale())
 }
 
 impl DistinctOptions {
@@ -633,7 +765,7 @@ impl DataFrame {
     /// Create a `DataFrame` from a fixed-size array of `(name, Series)` pairs.
     ///
     /// This is the ergonomic constructor for building DataFrames from Series.
-    /// Each Series' `Arc<Column>` is shared (zero GPU copy).
+    /// Each Series' `Arc<Column>` is shared without copying GPU data.
     ///
     /// The pair name becomes the DataFrame schema name. The input `Series`
     /// value is treated as the data source; its own `Series::name()` does not
@@ -650,7 +782,7 @@ impl DataFrame {
 
     /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
     ///
-    /// Each Series' `Arc<Column>` is shared (zero GPU copy).
+    /// Each Series' `Arc<Column>` is shared without copying GPU data.
     ///
     /// # Errors
     ///
@@ -755,6 +887,131 @@ impl DataFrame {
         self.columns.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Return a cheap programmatic metadata snapshot of this DataFrame.
+    ///
+    /// This is a convenience wrapper over [`info_with`](Self::info_with)
+    /// with no detail flags. The default snapshot includes only row count,
+    /// column count, and dtype counts.
+    ///
+    /// `info()` is metadata-only. It does not materialize column values to host
+    /// memory and it does not include memory accounting unless requested via
+    /// [`InfoDetail`] flags.
+    pub fn info(&self) -> Result<DataFrameInfo> {
+        self.info_with(InfoDetail::empty())
+    }
+
+    /// Return a programmatic metadata snapshot of this DataFrame.
+    ///
+    /// This method reports schema and optional memory-accounting metadata
+    /// without materializing column values to host memory.
+    ///
+    /// The memory-accounting views have different semantics:
+    ///
+    /// - [`InfoDetail::PAYLOAD_BYTES`] reports bytes required to represent
+    ///   the column payload, including nested child payloads and payload-sized
+    ///   null-mask bytes.
+    /// - [`InfoDetail::DEVICE_ALLOCATED`] reports actual owned device
+    ///   allocation footprint, including allocator rounding and padding.
+    ///
+    /// Payload bytes are not allocation bytes. For explicit-runtime objects,
+    /// payload accounting honors the retained execution provenance rather than
+    /// silently falling back to the default stream.
+    pub fn info_with(&self, detail: InfoDetail) -> Result<DataFrameInfo> {
+        let include_columns = detail.includes_columns();
+        let include_null_counts = detail.includes_null_counts();
+        let include_payload_bytes = detail.includes_payload();
+        let include_device_allocated_bytes = detail.includes_device_allocated();
+
+        let mut dtype_counts = HashMap::<DataType, usize>::with_capacity(self.columns.len());
+        let mut columns_info = include_columns.then(|| Vec::<DataFrameColumnInfo>::with_capacity(self.columns.len()));
+        let mut total_payload_bytes = 0usize;
+        let mut total_device_allocated_bytes = 0usize;
+
+        for (position, (name, column)) in self.columns.iter().enumerate() {
+            let view = column.view().map_err(|e| {
+                e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+            })?;
+            let data_type = view.data_type().map_err(|e| {
+                e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+            })?;
+            *dtype_counts.entry(data_type).or_insert(0) += 1;
+
+            let nullable = if include_columns {
+                Some(view.nullable().map_err(|e| {
+                    e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+                })?)
+            } else {
+                None
+            };
+
+            let null_count = if include_columns && include_null_counts {
+                Some(view.null_count().map_err(|e| {
+                    e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+                })? as usize)
+            } else {
+                None
+            };
+            let non_null_count = null_count.map(|count| self.row_count.saturating_sub(count));
+
+            let payload_bytes = if include_payload_bytes {
+                let bytes = column.payload_size_bytes().map_err(|e| {
+                    e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+                })?;
+                total_payload_bytes += bytes;
+                Some(bytes)
+            } else {
+                None
+            };
+
+            let device_allocated_bytes = if include_device_allocated_bytes {
+                let bytes = column.device_allocated_size_bytes().map_err(|e| {
+                    e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
+                })?;
+                total_device_allocated_bytes += bytes;
+                Some(bytes)
+            } else {
+                None
+            };
+
+            if let Some(columns_info) = columns_info.as_mut() {
+                columns_info.push(DataFrameColumnInfo {
+                    position,
+                    name: name.clone(),
+                    data_type,
+                    nullable: nullable.expect("nullable populated when columns are requested"),
+                    null_count,
+                    non_null_count,
+                    memory_accounting: if payload_bytes.is_some() || device_allocated_bytes.is_some() {
+                        Some(ColumnMemoryAccounting { payload_bytes, device_allocated_bytes })
+                    } else {
+                        None
+                    },
+                });
+            }
+        }
+
+        let mut dtypes: Vec<DataTypeCount> = dtype_counts
+            .into_iter()
+            .map(|(data_type, column_count)| DataTypeCount { data_type, column_count })
+            .collect();
+        dtypes.sort_by_key(|entry| data_type_sort_key(entry.data_type));
+
+        Ok(DataFrameInfo {
+            row_count: self.row_count,
+            column_count: self.columns.len(),
+            dtypes,
+            columns: columns_info,
+            memory_accounting: if include_payload_bytes || include_device_allocated_bytes {
+                Some(DataFrameMemoryAccounting {
+                    payload_bytes: include_payload_bytes.then_some(total_payload_bytes),
+                    device_allocated_bytes: include_device_allocated_bytes.then_some(total_device_allocated_bytes),
+                })
+            } else {
+                None
+            },
+        })
+    }
+
     /// Borrow a named [`SeriesView`] by name — the explicit borrow accessor.
     ///
     /// The returned view carries the column name and implements
@@ -786,8 +1043,8 @@ impl DataFrame {
     /// Return a named [`Series`] for the given column — the canonical user-facing accessor.
     ///
     /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
-    /// zero-copy metadata operation. The series name is set to the DataFrame
-    /// column name.
+    /// metadata-only operation that does not copy GPU data. The series name is
+    /// set to the DataFrame column name.
     ///
     /// Use this method for all high-level column access. For a borrowed
     /// [`SeriesView`] without an `Arc` bump, use
@@ -795,8 +1052,9 @@ impl DataFrame {
     ///
     /// # Cost
     ///
-    /// Zero-copy (Arc-share, metadata-only): returns a new `Series` sharing the underlying
-    /// `Column` via `Arc`. No GPU allocation or copy.
+    /// Metadata-only, no GPU data copy: returns a new `Series` sharing the
+    /// underlying `Column` via `Arc`. This bumps the `Arc` refcount but does
+    /// not allocate or copy GPU column data.
     ///
     /// # Errors
     ///
@@ -899,18 +1157,18 @@ impl DataFrame {
         Ok((table, names))
     }
 
-    /// Create a borrowed [`TableView`] over this DataFrame's columns.
+    /// Create a temporary borrowed table-view bundle over this DataFrame.
     ///
-    /// The returned [`TempTableView`](crate::TempTableView) bundles the
-    /// intermediate column views with the table view so lifetimes are
-    /// managed automatically. Call [`.table()`](crate::TempTableView::table)
-    /// to get a `&TableView` for passing to libcudf operations.
+    /// The returned `TempTableView` keeps the intermediate `ColumnView`s alive
+    /// alongside the final `TableView`, so the borrowed table view remains
+    /// valid. Call `.table()` on the returned bundle when passing a
+    /// `&TableView` to low-level libcudf-style APIs.
     ///
     /// # Cost
     ///
-    /// Zero-copy: creates a borrowed view over existing column device memory.
-    /// Only lightweight FFI view handles are allocated (no GPU data movement).
-    pub fn as_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
+    /// Zero-copy with respect to GPU column data: this reuses the existing
+    /// device memory and creates only lightweight FFI view handles.
+    pub fn temp_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
         self.build_table_view()
     }
 
@@ -1187,7 +1445,7 @@ impl DataFrame {
     pub fn gather_with_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        let cv = indices.column_view()?;
+        let cv = indices.as_column_view()?;
         self.gather_by_column_view_impl(
             &cv,
             output_domain.explicit_exec_options_raw(),
@@ -1375,7 +1633,7 @@ impl DataFrame {
     /// Returns an error if `indices` is not `Int32`.
     pub fn gather(&self, indices: &Series) -> Result<Self> {
         ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
-        let cv = indices.column_view()?;
+        let cv = indices.as_column_view()?;
         self.gather_by_column_view(&cv)
     }
 
@@ -1452,7 +1710,7 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the
     /// `contains` / `filter` operation fails.
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
-        let cv = values.column_view()?;
+        let cv = values.as_column_view()?;
         self.filter_isin_by_column_view(column, &cv)
     }
 
@@ -1563,8 +1821,8 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let by: Vec<String> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
-        let by_refs: Vec<&str> = by.iter().map(|s| s.as_str()).collect();
+        let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
         let (orders, null_orders) = options.resolve(by_refs.len())?;
 
@@ -2059,83 +2317,16 @@ impl DataFrame {
 
     /// Return a new DataFrame with one column renamed.
     ///
-    /// This borrowed variant clones the `Arc` references (no GPU copy).
+    /// This is a schema-only operation. The returned DataFrame rebuilds the
+    /// column map and clones the `Arc<Column>` handles without copying GPU
+    /// column data.
     ///
     /// # Errors
     ///
     /// Returns an error if `old` is not in the schema, or if `new` already
     /// exists in the schema.
     pub fn rename_column(&self, old: &str, new: &str) -> Result<Self> {
-        if !self.columns.contains_key(old) {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
-                .with_operation("dataframe::rename_column")
-                .with_context("column_name", old.to_string()));
-        }
-
-        if old != new && self.columns.contains_key(new) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("cannot rename '{}' to '{}': target name already exists", old, new),
-            )
-            .with_operation("dataframe::rename_column")
-            .with_context("old_name", old.to_string())
-            .with_context("new_name", new.to_string()));
-        }
-
-        let mut new_columns = IndexMap::with_capacity(self.columns.len());
-        for (name, col) in &self.columns {
-            if name == old {
-                new_columns.insert(new.to_string(), Arc::clone(col));
-            } else {
-                new_columns.insert(name.clone(), Arc::clone(col));
-            }
-        }
-
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
-    }
-
-    /// Consuming variant of [`rename_column`](Self::rename_column).
-    ///
-    /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
-    /// DataFrame is no longer needed. This is a pure schema rewrite with
-    /// **no GPU data copy**.
-    ///
-    /// # Cost
-    ///
-    /// Zero-copy: only the column name in the schema changes. Consuming
-    /// `self` avoids the `Arc` refcount bump for unchanged columns.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `old` is not in the schema, or if `new` already
-    /// exists in the schema.
-    pub fn rename_column_owned(self, old: &str, new: &str) -> Result<Self> {
-        if !self.columns.contains_key(old) {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
-                .with_operation("dataframe::rename_column_owned")
-                .with_context("column_name", old.to_string()));
-        }
-
-        if old != new && self.columns.contains_key(new) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("cannot rename '{}' to '{}': target name already exists", old, new),
-            )
-            .with_operation("dataframe::rename_column_owned")
-            .with_context("old_name", old.to_string())
-            .with_context("new_name", new.to_string()));
-        }
-
-        let mut new_columns = IndexMap::with_capacity(self.columns.len());
-        for (name, col) in self.columns {
-            if name == old {
-                new_columns.insert(new.to_string(), col);
-            } else {
-                new_columns.insert(name, col);
-            }
-        }
-
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain: self.domain })
+        self.rename_columns([(old, new)]).map_err(|e| e.with_operation("dataframe::rename_column"))
     }
 
     /// Return a new DataFrame with multiple columns renamed at once.
@@ -2144,8 +2335,9 @@ impl DataFrame {
     /// applied atomically: swapping two column names (e.g. `[("a","b"),("b","a")]`)
     /// is supported.
     ///
-    /// This is a zero-copy metadata operation — all columns are shared via
-    /// `Arc::clone`.
+    /// This is a schema-only operation. The returned DataFrame rebuilds the
+    /// column map and clones the `Arc<Column>` handles without copying GPU
+    /// column data.
     ///
     /// # Errors
     ///
@@ -2201,10 +2393,10 @@ impl DataFrame {
 
     /// Return a new DataFrame containing only the specified columns.
     ///
-    /// The columns appear in the order given in `columns`. Each selected
-    /// column is shared via `Arc::clone` (zero GPU copy). The logical row
-    /// count is preserved even if `columns` is empty and the result has zero
-    /// columns.
+    /// This is a schema-only operation. The columns appear in the order given
+    /// in `columns`. Each selected column is shared via `Arc::clone` without
+    /// copying GPU data. The logical row count is preserved even if `columns`
+    /// is empty and the result has zero columns.
     ///
     /// # Errors
     ///
@@ -2241,59 +2433,21 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
-    /// Consuming variant of [`select`](Self::select).
+    /// Returns a new `DataFrame` value that excludes the specified columns.
     ///
-    /// Moves columns out of the `IndexMap` instead of cloning the `Arc`,
-    /// avoiding the O(N) `Arc::clone` overhead for N selected columns.
-    /// Prefer this when the source DataFrame is no longer needed.
+    /// This is a schema-only operation. The returned `DataFrame` reuses the
+    /// retained columns via `Arc` sharing; it does not deep-copy GPU column
+    /// data.
     ///
-    /// # Cost
-    ///
-    /// Zero-copy: moves `Arc<Column>` ownership without GPU data copy.
-    /// Consuming `self` avoids the refcount bump entirely for selected
-    /// columns and drops unselected columns immediately. The logical row
-    /// count is preserved even if `columns` is empty and the result has zero
-    /// columns.
-    pub fn select_owned<I, S>(mut self, columns: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
-
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for name in &columns {
-            if !seen.insert(name.as_str()) {
-                return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
-                    .with_operation("dataframe::select_owned")
-                    .with_context("duplicate_column", name.clone())
-                    .with_context("selected_column_count", columns.len().to_string()));
-            }
-        }
-
-        let mut new_columns = IndexMap::with_capacity(columns.len());
-        for name in &columns {
-            let col = self.columns.swap_remove(name.as_str()).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation("dataframe::select_owned")
-                    .with_context("column_name", name.clone())
-            })?;
-            new_columns.insert(name.clone(), col);
-        }
-
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain: self.domain })
-    }
-
-    /// Return a new DataFrame with the specified columns removed.
-    ///
-    /// Columns not in `columns` are preserved in their original order via
-    /// `Arc::clone` (zero GPU copy). Dropping columns is schema-only: the
-    /// logical row count is preserved even if all columns are removed.
+    /// The original `DataFrame` is unchanged. Columns excluded from the
+    /// returned value are not destroyed immediately; their GPU resources are
+    /// released only when the last owning reference is dropped. The logical
+    /// row count is preserved even if all columns are removed.
     ///
     /// # Errors
     ///
     /// Returns an error if any name in `columns` is not in the schema.
-    pub fn drop<I>(&self, columns: I) -> Result<Self>
+    pub fn without_columns<I>(&self, columns: I) -> Result<Self>
     where
         I: IntoIterator,
         I::Item: AsRef<str>,
@@ -2303,7 +2457,7 @@ impl DataFrame {
         for name in &to_drop {
             if !self.columns.contains_key(name.as_str()) {
                 return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation("dataframe::drop")
+                    .with_operation("dataframe::without_columns")
                     .with_context("column_name", name.clone()));
             }
         }
@@ -2318,25 +2472,14 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
-    /// Return a new DataFrame with the specified columns removed.
-    ///
-    /// Alias for [`drop`](Self::drop) kept for compatibility.
-    pub fn drop_columns<I>(&self, columns: I) -> Result<Self>
-    where
-        I: IntoIterator,
-        I::Item: AsRef<str>,
-    {
-        self.drop(columns)
-    }
-
     // -- Column-level convenience --------------------------------------------
 
     /// Return a new DataFrame with the given column added or replaced.
     ///
     /// Accepts anything convertible to [`Series`] — both `Column` and
     /// `Series` work transparently. When a `Series` is passed, its
-    /// `Arc<Column>` is shared directly (zero GPU copy for the inserted
-    /// column as well as all unchanged columns).
+    /// `Arc<Column>` is shared directly without copying GPU data for the
+    /// inserted column or any unchanged columns.
     ///
     /// If `name` already exists in the schema, the column at that position
     /// is replaced. If `name` is new, the column is appended.
@@ -2424,57 +2567,12 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
-    /// Consuming variant of [`with_column`](Self::with_column).
-    ///
-    /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
-    /// DataFrame is no longer needed.
-    ///
-    /// Accepts anything convertible to [`Series`] — both `Column` and
-    /// `Series` work transparently.
-    ///
-    /// # Cost
-    ///
-    /// Zero-copy for unchanged columns: moves `Arc<Column>` ownership
-    /// without GPU data copy. Consuming `self` avoids the refcount bump
-    /// for columns that are not being replaced.
-    pub fn with_column_owned(mut self, name: &str, col: impl crate::series::IntoSeries) -> Result<Self> {
-        let series: Series = col.into_series()?;
-        if self.columns.is_empty() {
-            ExecutionDomain::compatible_domain(
-                &self.domain,
-                series.as_column().execution_domain(),
-                "dataframe::with_column_owned",
-            )?;
-        }
-        let col_rows = series.len();
-        let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
-
-        if let Some(self_rows) = expected_rows {
-            if col_rows != self_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
-                )
-                .with_operation("dataframe::with_column_owned")
-                .with_context("column_name", name.to_string())
-                .with_context("column_rows", col_rows.to_string())
-                .with_context("dataframe_rows", self_rows.to_string()));
-            }
-        }
-
-        let row_count = expected_rows.unwrap_or(col_rows);
-        self.columns.insert(name.to_string(), Arc::clone(series.column_arc()));
-
-        let domain = derive_frame_domain_from_columns(&self.columns, "dataframe::with_column_owned")?;
-        Ok(Self { columns: self.columns, row_count, domain })
-    }
-
     /// Return a new DataFrame with multiple columns added or replaced from
     /// `(name, Series)` pairs.
     ///
     /// For each pair, if `name` already exists the column is replaced;
     /// otherwise it is appended. All unchanged columns are shared via
-    /// `Arc::clone` (zero GPU copy).
+    /// `Arc::clone` without copying GPU data.
     ///
     /// # Duplicate name handling
     ///
@@ -2541,9 +2639,9 @@ impl DataFrame {
     /// Return a new DataFrame with multiple columns added or replaced,
     /// copying inputs into the target runtime when needed.
     ///
-    /// Existing columns are preserved zero-copy when they already belong to
-    /// `runtime`; otherwise they are deep-copied into that runtime before the
-    /// final frame is assembled.
+    /// Existing columns are preserved without copying GPU data when they
+    /// already belong to `runtime`; otherwise they are deep-copied into that
+    /// runtime before the final frame is assembled.
     pub fn assign_with_runtime<I, S>(&self, pairs: I, runtime: &Runtime) -> Result<Self>
     where
         I: IntoIterator<Item = (S, Series)>,
@@ -2742,7 +2840,8 @@ impl DataFrame {
     /// Equivalent to cuDF Python's `DataFrame.fillna({column: value})`.
     ///
     /// Returns a new DataFrame with the named column's nulls replaced.
-    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    /// All other columns are preserved unchanged by sharing their existing
+    /// `Arc<Column>` handles.
     ///
     /// # Cost
     /// GPU-allocating: a new column is produced for the filled column.
@@ -2761,7 +2860,8 @@ impl DataFrame {
     /// with a plain Rust value for the cuDF-style API.
     ///
     /// Returns a new DataFrame with the named column's nulls replaced.
-    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    /// All other columns are preserved unchanged by sharing their existing
+    /// `Arc<Column>` handles.
     ///
     /// # Cost
     /// GPU-allocating: a new column is produced for the filled column.
@@ -2780,7 +2880,8 @@ impl DataFrame {
     /// matching lengths.
     ///
     /// Returns a new DataFrame with the named column's nulls replaced.
-    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    /// All other columns are preserved unchanged by sharing their existing
+    /// `Arc<Column>` handles.
     ///
     /// # Cost
     /// GPU-allocating: a new column is produced for the filled column.
@@ -2802,7 +2903,7 @@ impl DataFrame {
             "dataframe::fillna_with_series",
         )?;
         let cv = col.view()?;
-        let fill_cv = fill_series.column_view()?;
+        let fill_cv = fill_series.as_column_view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let new_col = replace::replace_nulls_column_with_exec_options(
             &cv,

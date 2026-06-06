@@ -22,6 +22,47 @@
 #include <limits>
 #include <memory>
 
+namespace {
+
+bool column_parent_stores_direct_element_buffer(cudf::type_id id) {
+  switch (id) {
+    case cudf::type_id::EMPTY:
+    case cudf::type_id::STRING:
+    case cudf::type_id::LIST:
+    case cudf::type_id::STRUCT:
+    case cudf::type_id::DICTIONARY32:
+      return false;
+    default:
+      return true;
+  }
+}
+
+std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
+                                                rmm::cuda_stream_view stream) {
+  std::size_t total = 0;
+
+  if (column.type().id() == cudf::type_id::STRING) {
+    cudf::strings_column_view const strings{column};
+    total += static_cast<std::size_t>(strings.chars_size(stream));
+  } else if (column_parent_stores_direct_element_buffer(column.type().id())) {
+    total += static_cast<std::size_t>(column.size()) *
+             static_cast<std::size_t>(cudf::size_of(column.type()));
+  }
+
+  if (column.nullable()) {
+    total += static_cast<std::size_t>(cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))) *
+             sizeof(cudf::bitmask_type);
+  }
+
+  for (cudf::size_type child_index = 0; child_index < column.num_children(); ++child_index) {
+    total += cudf_column_view_payload_size_bytes(column.child(child_index), stream);
+  }
+
+  return total;
+}
+
+}  // namespace
+
 static cudf_status_t create_column_from_device_data_impl(
     cudf_type_id_t type_id,
     const void* device_data,
@@ -202,6 +243,44 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
 
     auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(copy.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_payload_size(cudf_column_handle handle,
+                                       size_t* out) {
+  return cudf_column_payload_size_ex(handle, nullptr, out);
+}
+
+cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
+                                          cudf_exec_options_t const* options,
+                                          size_t* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* col = static_cast<cudf::column*>(handle);
+    *out = cudf_column_view_payload_size_bytes(col->view(), exec.stream);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle,
+                                                size_t* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* col = static_cast<cudf::column*>(handle);
+    *out = col->alloc_size();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

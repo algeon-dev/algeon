@@ -24,10 +24,18 @@ int cudf_rust_c_header_smoke(void)
     &cudf_column_copy_ex;
   cudf_status_t (*f14)(cudf_column_view_handle, const cudf_exec_options_t*, cudf_column_handle*) =
     &cudf_column_copy_from_view_ex;
+  cudf_status_t (*f14b)(cudf_column_handle, size_t*) = &cudf_column_payload_size;
+  cudf_status_t (*f14c)(cudf_column_handle, const cudf_exec_options_t*, size_t*) =
+    &cudf_column_payload_size_ex;
+  cudf_status_t (*f14d)(cudf_column_handle, size_t*) = &cudf_column_device_allocated_size;
   cudf_status_t (*f15)(cudf_type_id_t, const void*, int32_t, const uint8_t*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
     &cudf_column_create_numeric_ex;
   cudf_status_t (*f16)(cudf_table_handle, const cudf_exec_options_t*, cudf_table_handle*) =
     &cudf_table_copy_ex;
+  cudf_status_t (*f16b)(cudf_table_handle, size_t*) = &cudf_table_payload_size;
+  cudf_status_t (*f16c)(cudf_table_handle, const cudf_exec_options_t*, size_t*) =
+    &cudf_table_payload_size_ex;
+  cudf_status_t (*f16d)(cudf_table_handle, size_t*) = &cudf_table_device_allocated_size;
   cudf_status_t (*f17)(cudf_column_view_handle, void*, size_t, const cudf_exec_options_t*) =
     &cudf_column_view_to_host_ex;
   cudf_status_t (*f18)(cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
@@ -67,8 +75,14 @@ int cudf_rust_c_header_smoke(void)
   (void)f12;
   (void)f13;
   (void)f14;
+  (void)f14b;
+  (void)f14c;
+  (void)f14d;
   (void)f15;
   (void)f16;
+  (void)f16b;
+  (void)f16c;
+  (void)f16d;
   (void)f17;
   (void)f18;
   (void)f19;

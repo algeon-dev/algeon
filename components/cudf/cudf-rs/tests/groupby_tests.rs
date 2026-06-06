@@ -72,6 +72,43 @@ fn test_groupby_multiple_aggregations() {
 }
 
 #[test]
+fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
+    let keys_col = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let left_vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let right_vals = Column::from_slice(&[3i64, 4, 1, 2]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.view().unwrap();
+
+    let left_view = left_vals.view().unwrap();
+    let right_view = right_vals.view().unwrap();
+    let requests = [
+        AggregationRequest { values: &left_view, aggregations: &[Aggregation::Sum, Aggregation::Min] },
+        AggregationRequest { values: &right_view, aggregations: &[Aggregation::Max] },
+    ];
+
+    let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
+
+    assert_eq!(result.results.len(), 2);
+    assert_eq!(result.results[0].len(), 2);
+    assert_eq!(result.results[1].len(), 1);
+
+    let keys: Vec<i32> = result.keys.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let left_sum: Vec<i64> = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
+    let left_min: Vec<i64> = result.results[0][1].view().unwrap().to_vec::<i64>().unwrap();
+    let right_max: Vec<i64> = result.results[1][0].view().unwrap().to_vec::<i64>().unwrap();
+
+    let mut rows: Vec<(i32, i64, i64, i64)> = keys
+        .into_iter()
+        .zip(left_sum.into_iter().zip(left_min.into_iter().zip(right_max)))
+        .map(|(key, (sum, (min, max)))| (key, sum, min, max))
+        .collect();
+    rows.sort_by_key(|&(key, _, _, _)| key);
+
+    assert_eq!(rows, vec![(1, 40, 10, 3), (2, 60, 20, 4)]);
+}
+
+#[test]
 fn test_groupby_count() {
     let keys_col = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals_col = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
