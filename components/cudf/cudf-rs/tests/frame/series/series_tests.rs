@@ -480,7 +480,7 @@ fn test_add_operator_with_borrowed_operands() {
     let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
 
-    let result = &a + &b;
+    let result = (&a + &b).unwrap();
 
     assert_eq!(result.name(), None);
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
@@ -491,7 +491,7 @@ fn test_add_operator_with_owned_and_borrowed_operands() {
     let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
 
-    let result = a + &b;
+    let result = (a + &b).unwrap();
 
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
 }

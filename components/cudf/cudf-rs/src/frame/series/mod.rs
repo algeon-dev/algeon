@@ -7,6 +7,7 @@
 
 mod constructors;
 mod naming;
+mod ops;
 mod owned;
 mod view;
 
