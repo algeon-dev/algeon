@@ -52,66 +52,43 @@
 //! - [`TableView`] — A non-owning borrow of a table.
 //! - [`Scalar`] — A single value on the GPU.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
-//! - For lower-level CUDA stream management, see the [`stream`] module.
+//! - For lower-level CUDA stream management, see the [`runtime`] module.
 
-#[cfg(feature = "arrow")]
-pub mod arrow;
-pub mod binary;
-pub mod column;
-pub mod concatenate;
-pub mod copying;
-pub mod dataframe;
-pub mod dataframe_view;
-pub mod dictionary;
-pub mod error;
-pub mod execution_context;
-pub(crate) mod execution_domain;
-pub mod expr;
-pub mod filter;
-pub mod groupby;
-pub mod hashing;
+pub mod core;
+pub mod frame;
+pub mod interop;
 // Internal helpers — not part of the public API.
 pub(crate) mod internal;
 pub mod io;
-pub mod join;
-pub mod memory;
 pub mod ops;
-pub mod reduction;
-pub mod replace;
 pub mod runtime;
-pub mod scalar;
-pub mod search;
-pub mod series;
-pub mod series_view;
-pub mod sorting;
-pub mod stream;
-pub mod stream_compaction;
-pub mod table;
-pub mod types;
-pub mod unary;
 
 // — Primary entry points —
 // — Core types (advanced — most users should prefer DataFrame/Series) —
-pub use column::{Column, ColumnView};
-pub use dataframe::{
-    ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
-    DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions,
-    InfoDetail,
-};
-pub use dataframe_view::DataFrameView;
 // — Types and error —
-pub use error::{Error, ErrorKind, ErrorStatus, Result};
-#[doc(hidden)]
-pub use execution_context::__DebugExecutionContext;
-pub use execution_context::ExecutionContext;
+pub use core::{
+    column::{Column, ColumnView},
+    error::{Error, ErrorKind, ErrorStatus, Result},
+    scalar::Scalar,
+    table::{Table, TableView},
+    types::{CudfType, DataType, NullEquality, NullPolicy, TypeId},
+};
+
+pub use frame::{
+    dataframe::{
+        ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
+        DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataFrameView, DataTypeCount, DistinctOptions,
+        DropNaOptions, InfoDetail,
+    },
+    series::{IntoSeries, Series, SeriesView},
+};
 // — High-level operations —
-pub use expr::Expr;
-pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};
-pub use join::{JoinType, MergeOptions};
-pub use runtime::{Runtime, RuntimeBuilder};
-pub use scalar::Scalar;
-pub use series::{IntoSeries, Series};
-pub use series_view::SeriesView;
-pub use sorting::SortOptions;
-pub use table::{Table, TableView};
-pub use types::{CudfType, DataType, NullEquality, NullPolicy, TypeId};
+pub use ops::Expr;
+pub use ops::{
+    groupby::{Agg, AggSpec, GroupBy, GroupByOptions},
+    join::{JoinType, MergeOptions},
+    sorting::SortOptions,
+};
+#[doc(hidden)]
+pub use runtime::__DebugExecutionContext;
+pub use runtime::{ExecutionContext, Runtime, RuntimeBuilder};

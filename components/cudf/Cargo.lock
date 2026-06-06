@@ -390,9 +390,12 @@ dependencies = [
  "ahash",
  "anyhow",
  "arrow",
+ "bitflags",
  "csv",
  "cudf-sys",
  "indexmap",
+ "serde",
+ "serde_json",
  "smallvec",
  "static_assertions",
  "tempfile",
@@ -517,6 +520,8 @@ checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -772,6 +777,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

@@ -9,9 +9,11 @@ use std::{
 };
 
 use crate::{
-    error::{self, Error, ErrorKind, Result},
+    core::{
+        error::{self, Error, ErrorKind, Result},
+        table::{Table, TableView},
+    },
     runtime::Runtime,
-    table::{Table, TableView},
 };
 
 /// Options for reading a Parquet file.
@@ -162,8 +164,8 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
     let operation = "io::parquet::read_parquet_with_metadata";
 
     if num_names < 0 {
-        return Err(crate::error::Error::new(
-            crate::error::ErrorKind::InvalidOperation,
+        return Err(crate::core::error::Error::new(
+            crate::core::error::ErrorKind::InvalidOperation,
             "ffi returned negative column name count",
         )
         .with_operation(operation)
@@ -171,8 +173,8 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
     }
 
     if num_names > 0 && names_ptr.is_null() {
-        return Err(crate::error::Error::new(
-            crate::error::ErrorKind::InvalidOperation,
+        return Err(crate::core::error::Error::new(
+            crate::core::error::ErrorKind::InvalidOperation,
             "ffi returned null column name array with positive count",
         )
         .with_operation(operation)
@@ -185,8 +187,8 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
         // SAFETY: names_ptr is valid for num_names elements (checked above).
         let name_ptr = *names_ptr.add(i as usize);
         if name_ptr.is_null() {
-            return Err(crate::error::Error::new(
-                crate::error::ErrorKind::InvalidOperation,
+            return Err(crate::core::error::Error::new(
+                crate::core::error::ErrorKind::InvalidOperation,
                 "ffi returned null column name entry",
             )
             .with_operation(operation)
@@ -315,7 +317,7 @@ pub(crate) fn write_parquet_with_exec(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ErrorKind;
+    use crate::core::error::ErrorKind;
 
     #[test]
     fn test_collect_column_names_rejects_negative_count() {

@@ -2,8 +2,9 @@
 
 use std::{ffi::CString, path::Path};
 
-use crate::error::{Error, ErrorKind, Result};
+use crate::core::error::{Error, ErrorKind, Result};
 
+pub mod arrow;
 pub mod csv;
 pub mod parquet;
 

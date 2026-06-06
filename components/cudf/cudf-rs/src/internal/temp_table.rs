@@ -5,7 +5,7 @@
 //! where callers would otherwise need to keep both values alive separately —
 //! callers can hold a single `TempTableView` instead of juggling two values.
 
-use crate::{column::ColumnView, error::Result, table::TableView};
+use crate::core::{column::ColumnView, error::Result, table::TableView};
 
 /// A temporary bundle of column views plus a table view.
 ///

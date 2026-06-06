@@ -8,9 +8,11 @@ use std::{
 };
 
 use crate::{
-    error::{self, Error, ErrorKind, Result},
+    core::{
+        error::{self, Error, ErrorKind, Result},
+        table::{Table, TableView},
+    },
     runtime::Runtime,
-    table::{Table, TableView},
 };
 
 /// Options for reading a CSV file into a low-level [`Table`].
@@ -176,8 +178,8 @@ pub(crate) fn write_csv_with_exec(
                 .iter()
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
-                        crate::error::Error::new(
-                            crate::error::ErrorKind::InvalidOperation,
+                        crate::core::error::Error::new(
+                            crate::core::error::ErrorKind::InvalidOperation,
                             "column name contains interior null byte",
                         )
                         .with_operation("io::csv::write_csv")

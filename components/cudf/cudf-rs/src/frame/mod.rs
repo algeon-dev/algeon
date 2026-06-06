@@ -1,0 +1,11 @@
+//! High-level DataFrame and Series entry points.
+
+pub mod dataframe;
+pub mod series;
+
+pub use dataframe::{
+    ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
+    DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataFrameView, DataTypeCount, DistinctOptions,
+    DropNaOptions, InfoDetail,
+};
+pub use series::{IntoSeries, Series, SeriesView};

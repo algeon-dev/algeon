@@ -1,0 +1,28 @@
+use std::sync::Arc;
+
+use super::owned::Series;
+use crate::core::{column::Column, error::Result};
+
+impl Series {
+    /// Returns the name of this series, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Returns a new `Series` with the given name, sharing the same GPU data.
+    pub fn rename(&self, name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            column: Arc::clone(&self.column),
+            cached_len: self.cached_len,
+            cached_null_count: self.cached_null_count,
+        }
+    }
+
+    /// Wrap a result `Column` as a `Series`, inheriting `self`'s name.
+    pub(super) fn with_inherited_name(&self, col: Column) -> Result<Self> {
+        let mut s = Self::from_column_with_cache(col)?;
+        s.name = self.name.clone();
+        Ok(s)
+    }
+}
