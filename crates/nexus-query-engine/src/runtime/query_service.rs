@@ -15,7 +15,8 @@ use super::{
     ExecutionContext, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy,
     ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
     SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
-    default_host_fetch_budget_bytes, default_source_fetch_runtime, validate_service_stream_pool_device,
+    default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime, default_source_fetch_runtime,
+    validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -264,8 +265,11 @@ struct QueryServiceResources {
     service_stream_pool: ServiceStreamPool,
     host_fetch_budget: HostFetchBudget,
     source_fetch_concurrency: SourceFetchConcurrencyGate,
+    lakehouse_cache_fill_budget: HostFetchBudget,
+    lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate,
     gds_concurrency: GdsConcurrencyGate,
     source_fetch_runtime: Arc<tokio::runtime::Runtime>,
+    lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     deployment_io_capability: DeploymentIoCapability,
 }
@@ -313,8 +317,15 @@ impl QueryService {
             source_fetch_concurrency: SourceFetchConcurrencyGate::new(
                 config.source_fetch.host_fetch_max_concurrent_ops,
             )?,
+            lakehouse_cache_fill_budget: HostFetchBudget::new(
+                config.source_fetch.lakehouse_cache_fill_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
+            )?,
+            lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate::new(
+                config.source_fetch.lakehouse_cache_fill_max_concurrent_ops,
+            )?,
             gds_concurrency: GdsConcurrencyGate::new(config.source_fetch.gds_max_concurrent_ops)?,
             source_fetch_runtime: default_source_fetch_runtime(),
+            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime(),
             source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
                 config.source_storage_profiles.clone(),
             )?),
@@ -675,8 +686,12 @@ impl QueryHandle {
             service_stream_pool: resources.service_stream_pool.clone(),
             host_fetch_budget: resources.host_fetch_budget.clone(),
             source_fetch_concurrency: resources.source_fetch_concurrency.clone(),
+            lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
+            lakehouse_cache_fill_concurrency: resources.lakehouse_cache_fill_concurrency.clone(),
+            lakehouse_cache_fill_events: super::LakehouseCacheFillEventSink::default(),
             gds_concurrency: resources.gds_concurrency.clone(),
             source_fetch_runtime: Arc::clone(&resources.source_fetch_runtime),
+            lakehouse_cache_fill_runtime: Arc::clone(&resources.lakehouse_cache_fill_runtime),
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation: ExecutionCancellation::new(),
@@ -877,6 +892,56 @@ mod tests {
         assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
         assert_eq!(handle.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
         assert_eq!(handle.stddev_samp_execution_mode(), StddevSampExecutionMode::GpuNativeTolerant);
+    }
+
+    #[test]
+    fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
+        let config = QueryServiceConfig {
+            source_fetch: SourceFetchConfig {
+                host_fetch_budget_bytes: Some(4096),
+                host_fetch_max_concurrent_ops: 5,
+                lakehouse_cache_fill_budget_bytes: Some(2048),
+                lakehouse_cache_fill_max_concurrent_ops: 2,
+                ..SourceFetchConfig::default()
+            },
+            ..QueryServiceConfig::default()
+        };
+        let service = QueryService::new_with_deployment(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let resources = service.inner.resources.as_ref().unwrap();
+
+        assert_eq!(resources.host_fetch_budget.budget_bytes(), 4096);
+        assert_eq!(resources.source_fetch_concurrency.max_concurrent_ops(), 5);
+        assert_eq!(resources.lakehouse_cache_fill_budget.budget_bytes(), 2048);
+        assert_eq!(resources.lakehouse_cache_fill_concurrency.max_concurrent_ops(), 2);
+
+        let handle = service.admit_query("tenant").unwrap();
+        let tenant_context = handle.acquire_context().unwrap();
+        let context = tenant_context.context();
+        assert_eq!(context.host_fetch_budget().budget_bytes(), 4096);
+        assert_eq!(context.host_fetch_max_concurrent_ops(), 5);
+        assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
+        assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 2);
+
+        context.lakehouse_cache_fill_events().record(super::super::LakehouseCacheFillEvent {
+            outcome: super::super::LakehouseCacheFillOutcome::Completed,
+            bytes: Some(128),
+            elapsed: Duration::from_millis(1),
+            cache_path_hash: "cache-path-hash".to_string(),
+            stable_id_hash: "stable-id-hash".to_string(),
+            file_index: None,
+            chunk_index: None,
+            error: None,
+        });
+        assert_eq!(context.lakehouse_cache_fill_event_snapshots().len(), 1);
+
+        let other_handle = service.admit_query("tenant").unwrap();
+        let other_tenant_context = other_handle.acquire_context().unwrap();
+        assert!(other_tenant_context.context().lakehouse_cache_fill_event_snapshots().is_empty());
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub(super) fn execute_compiled_filtered_join_build_from_frame(
         reservations,
         metrics,
     )?;
+    let input_build_rows = build.rows;
+    let input_build_bytes = build.bytes;
+    let build = deduplicate_filtered_join_build_keys(context, node_id, build, &right_keys, reservations, metrics)?;
     let overrides = execution_overrides(context);
     let filtered_options =
         cudf::DataFrameFilteredJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
@@ -83,6 +86,8 @@ pub(super) fn execute_compiled_filtered_join_build_from_frame(
         left_keys,
         left_columns,
         build,
+        input_build_rows,
+        input_build_bytes,
         filtered_join,
         hash_table_reservation,
         hash_table_bytes,
@@ -118,6 +123,9 @@ pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
         reservations,
         metrics,
     )?;
+    let input_build_rows = build.rows;
+    let input_build_bytes = build.bytes;
+    let build = deduplicate_filtered_join_build_keys(context, node_id, build, &right_keys, reservations, metrics)?;
     let overrides = execution_overrides(context);
     let filtered_options =
         cudf::DataFrameFilteredJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
@@ -171,11 +179,111 @@ pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
         left_keys,
         left_columns,
         build,
+        input_build_rows,
+        input_build_bytes,
         filtered_join,
         hash_table_reservation,
         hash_table_bytes,
         timer,
     })
+}
+
+fn deduplicate_filtered_join_build_keys(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    build: BoundedJoinSideFrame,
+    right_keys: &[String],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
+    let key_columns = right_keys.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut output_reservation = match reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::OperatorOutput,
+            "join_filtered_build_key_deduplicate",
+            build.bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_bounded_join_side_frame(build, reservations, metrics);
+            return Err(error);
+        },
+    };
+    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
+        reservations.release(output_reservation, metrics);
+        release_bounded_join_side_frame(build, reservations, metrics);
+        return Err(error);
+    }
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&output_reservation),
+        "join_filtered_build_key_deduplicate",
+        "nexus_query_engine.bounded.join.filtered_build_key_deduplicate.budget_token",
+        "failed to create filtered join build-key deduplication budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            release_bounded_join_side_frame(build, reservations, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let budget_overrides = token.execution_overrides();
+    let output = match build.frame.with_execution(&budget_overrides).drop_duplicates(
+        DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            reservations.release(output_reservation, metrics);
+            release_bounded_join_side_frame(build, reservations, metrics);
+            return Err(attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "nexus_query_engine.bounded.join.filtered_build_key_deduplicate",
+                    "failed to deduplicate compiled filtered join build keys",
+                    error,
+                ),
+                &token,
+            )
+            .with_fact("key_count", right_keys.len()));
+        },
+    };
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            reservations.release(output_reservation, metrics);
+            release_bounded_join_side_frame(build, reservations, metrics);
+            return Err(error);
+        },
+    };
+    if output_bytes > output_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(output_reservation.bytes());
+        if let Err(error) = reservations.try_grow(
+            &mut output_reservation,
+            bounded_join_request(
+                ReservationKind::OperatorOutput,
+                "join_filtered_build_key_deduplicate",
+                delta,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        ) {
+            drop(output);
+            reservations.release(output_reservation, metrics);
+            release_bounded_join_side_frame(build, reservations, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
+    }
+    let output_rows = output.num_rows() as u64;
+    release_bounded_join_side_frame(build, reservations, metrics);
+    Ok(BoundedJoinSideFrame { frame: output, _reservation: output_reservation, rows: output_rows, bytes: output_bytes })
 }
 
 pub(super) fn execute_compiled_filtered_join_probe_from_frame(
@@ -404,8 +512,8 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
                 null_equality: node.spec.null_equality.to_string(),
                 build_side: JoinSide::Right.to_string(),
                 probe_side: JoinSide::Left.to_string(),
-                build_rows: build.build.rows,
-                build_bytes: build.build.bytes,
+                build_rows: build.input_build_rows,
+                build_bytes: build.input_build_bytes,
                 probe_rows: probe.rows,
                 probe_bytes: probe.bytes,
                 hash_table_bytes: build.hash_table_bytes,
@@ -464,8 +572,8 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
                 null_equality: node.spec.null_equality.to_string(),
                 build_side: JoinSide::Right.to_string(),
                 probe_side: JoinSide::Left.to_string(),
-                build_rows: build.build.rows,
-                build_bytes: build.build.bytes,
+                build_rows: build.input_build_rows,
+                build_bytes: build.input_build_bytes,
                 probe_rows: probe.rows,
                 probe_bytes: probe.bytes,
                 hash_table_bytes: build.hash_table_bytes,
@@ -558,8 +666,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
                 null_equality: node.spec.null_equality.to_string(),
                 build_side: JoinSide::Right.to_string(),
                 probe_side: JoinSide::Left.to_string(),
-                build_rows: build.build.rows,
-                build_bytes: build.build.bytes,
+                build_rows: build.input_build_rows,
+                build_bytes: build.input_build_bytes,
                 probe_rows: probe.rows,
                 probe_bytes: probe.bytes,
                 hash_table_bytes: build.hash_table_bytes,
@@ -622,8 +730,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
                 null_equality: node.spec.null_equality.to_string(),
                 build_side: JoinSide::Right.to_string(),
                 probe_side: JoinSide::Left.to_string(),
-                build_rows: build.build.rows,
-                build_bytes: build.build.bytes,
+                build_rows: build.input_build_rows,
+                build_bytes: build.input_build_bytes,
                 probe_rows: probe.rows,
                 probe_bytes: probe.bytes,
                 hash_table_bytes: build.hash_table_bytes,

@@ -52,6 +52,7 @@ fn assert_modeled_reservation_facts_are_consistent(
                         | "aggregate_contract"
                         | "final_sort_contract"
                         | "keyed_equality_join_output_size_preflight"
+                        | "join_filtered_build_key_deduplicate_output_contract"
                 ),
                 "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
             );

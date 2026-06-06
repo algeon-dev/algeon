@@ -37,6 +37,18 @@ impl SourceStorageProfile {
     pub fn s3_profile(&self) -> &S3SourceStorageProfile {
         &self.s3
     }
+
+    /// Whether this profile needs per-profile settings that libcudf/KvikIO
+    /// cannot currently receive through the typed remote Parquet contract.
+    pub fn requires_scoped_remote_direct_profile(&self) -> bool {
+        self.s3.requires_scoped_remote_direct_profile()
+    }
+
+    /// Stable reason when this profile uses a shape that the explicit cuDF
+    /// remote datasource cannot currently represent.
+    pub fn remote_direct_profile_unsupported_reason(&self) -> Option<&'static str> {
+        self.s3.remote_direct_profile_unsupported_reason()
+    }
 }
 
 impl fmt::Debug for SourceStorageProfile {
@@ -118,6 +130,28 @@ impl S3SourceStorageProfile {
             session_token,
         };
         self
+    }
+
+    /// Whether remote-direct cuDF reads would need settings that are scoped to
+    /// this profile instead of available through process-global KvikIO config.
+    pub fn requires_scoped_remote_direct_profile(&self) -> bool {
+        self.region.as_ref().is_some_and(|region| !region.trim().is_empty())
+            || !matches!(self.credential, S3SourceStorageCredential::DefaultChain)
+            || self.endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            || self.virtual_hosted_style_request.is_some()
+            || self.allow_http.is_some()
+    }
+
+    /// Stable reason when this profile uses a shape that the explicit cuDF
+    /// remote datasource cannot currently represent.
+    pub fn remote_direct_profile_unsupported_reason(&self) -> Option<&'static str> {
+        if self.endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+            && self.virtual_hosted_style_request == Some(true)
+        {
+            Some("remote_direct_virtual_hosted_endpoint_unsupported")
+        } else {
+            None
+        }
     }
 }
 
@@ -248,6 +282,17 @@ impl SourceObjectStoreRegistry {
         stores.insert(key, Arc::clone(&store));
         Ok(store)
     }
+
+    pub(super) fn profile(&self, id: &str) -> Result<&SourceStorageProfile> {
+        self.profiles.get(id).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_object_store.profile",
+                "source storage profile id was not registered",
+            )
+            .with_fact("storage_profile_id", id)
+        })
+    }
 }
 
 fn build_s3_store(
@@ -278,6 +323,11 @@ fn build_s3_store(
     .with_region(region);
     if let Some(profile) = s3_profile {
         if let Some(endpoint) = profile.endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
+            if endpoint_authority_contains_userinfo(endpoint) {
+                return Err(
+                    s3_store_build_error(key, region, s3_profile).with_fact("reason", "endpoint_userinfo_unsupported")
+                );
+            }
             builder = builder.with_endpoint(endpoint);
             if profile.allow_http.unwrap_or_else(|| endpoint.trim_start().starts_with("http://")) {
                 builder = builder.with_allow_http(true);
@@ -289,19 +339,33 @@ fn build_s3_store(
             builder = builder.with_virtual_hosted_style_request(virtual_hosted_style_request);
         }
     }
-    builder.build().map_err(|error| {
-        let mut query_error = QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            "nexus_query_engine.source_object_store.s3",
-            "failed to build S3 object-store client for native source fetch",
-        )
-        .with_fact("bucket", key.bucket.as_str())
-        .with_fact("region", region);
-        if let Some(profile_id) = key.storage_profile_id.as_deref() {
-            query_error = query_error.with_fact("storage_profile_id", profile_id);
-        }
-        query_error.with_source(error)
-    })
+    builder.build().map_err(|_error| s3_store_build_error(key, region, s3_profile))
+}
+
+fn s3_store_build_error(
+    key: &S3ObjectStoreKey,
+    region: &str,
+    s3_profile: Option<&S3SourceStorageProfile>,
+) -> QueryError {
+    let mut query_error = QueryError::new(
+        QueryErrorCode::CudfDependencyFailure,
+        "nexus_query_engine.source_object_store.s3",
+        "failed to build S3 object-store client for native source fetch",
+    )
+    .with_fact("bucket", key.bucket.as_str())
+    .with_fact("region", region)
+    .with_fact("endpoint_configured", s3_profile.and_then(|profile| profile.endpoint.as_ref()).is_some());
+    if let Some(profile_id) = key.storage_profile_id.as_deref() {
+        query_error = query_error.with_fact("storage_profile_id", profile_id);
+    }
+    query_error
+}
+
+fn endpoint_authority_contains_userinfo(endpoint: &str) -> bool {
+    let trimmed = endpoint.trim();
+    let after_scheme = trimmed.split_once("://").map_or(trimmed, |(_, after_scheme)| after_scheme);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or(after_scheme);
+    authority.contains('@')
 }
 
 impl fmt::Debug for SourceObjectStoreRegistry {
@@ -323,6 +387,19 @@ pub(super) fn default_source_fetch_runtime() -> Arc<tokio::runtime::Runtime> {
                 .enable_all()
                 .build()
                 .expect("source fetch runtime should initialize"),
+        )
+    }))
+}
+
+pub(super) fn default_lakehouse_cache_fill_runtime() -> Arc<tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+    Arc::clone(RUNTIME.get_or_init(|| {
+        Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .thread_name("cudf-lakehouse-cache-fill")
+                .enable_all()
+                .build()
+                .expect("lakehouse cache fill runtime should initialize"),
         )
     }))
 }
@@ -388,5 +465,73 @@ mod tests {
 
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("storage_profile_id"), Some("missing"));
+    }
+
+    #[test]
+    fn source_storage_profile_reports_scoped_remote_direct_requirement_without_secrets() {
+        let default_chain = SourceStorageProfile::s3("aws-default", S3SourceStorageProfile::default_chain());
+        assert!(!default_chain.requires_scoped_remote_direct_profile());
+
+        let region_override =
+            SourceStorageProfile::s3("region", S3SourceStorageProfile::default_chain().with_region("us-west-2"));
+        assert!(region_override.requires_scoped_remote_direct_profile());
+
+        let static_credentials = SourceStorageProfile::s3(
+            "static",
+            S3SourceStorageProfile::default_chain().with_static_credentials("access", "secret", None),
+        );
+        assert!(static_credentials.requires_scoped_remote_direct_profile());
+
+        let custom_endpoint = SourceStorageProfile::s3(
+            "rustfs",
+            S3SourceStorageProfile::default_chain().with_endpoint("http://localhost:9000").with_path_style_access(true),
+        );
+        assert!(custom_endpoint.requires_scoped_remote_direct_profile());
+    }
+
+    #[test]
+    fn s3_store_build_errors_do_not_expose_endpoint_userinfo() {
+        let profile = SourceStorageProfile::s3(
+            "bad-endpoint",
+            S3SourceStorageProfile::default_chain()
+                .with_endpoint("http://user:password@[::1")
+                .with_path_style_access(true),
+        );
+        let key = S3ObjectStoreKey {
+            bucket: "bucket".to_string(),
+            region: "us-east-1".to_string(),
+            storage_profile_id: Some("bad-endpoint".to_string()),
+        };
+
+        let error = build_s3_store(&key, Some(&profile)).unwrap_err();
+        let rendered = format!("{error:?}\n{error}");
+
+        assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(error.fact_value("reason"), Some("endpoint_userinfo_unsupported"));
+        assert_eq!(error.fact_value("endpoint_configured"), Some("true"));
+        assert!(error.source_error().is_none());
+        assert!(!rendered.contains("user:password"));
+        assert!(!rendered.contains("password"));
+    }
+
+    #[test]
+    fn s3_store_rejects_endpoint_userinfo_without_scheme() {
+        let profile = SourceStorageProfile::s3(
+            "bad-endpoint",
+            S3SourceStorageProfile::default_chain()
+                .with_endpoint("user:password@localhost:9000")
+                .with_path_style_access(true),
+        );
+        let key = S3ObjectStoreKey {
+            bucket: "bucket".to_string(),
+            region: "us-east-1".to_string(),
+            storage_profile_id: Some("bad-endpoint".to_string()),
+        };
+
+        let error = build_s3_store(&key, Some(&profile)).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(error.fact_value("reason"), Some("endpoint_userinfo_unsupported"));
+        assert!(error.source_error().is_none());
     }
 }

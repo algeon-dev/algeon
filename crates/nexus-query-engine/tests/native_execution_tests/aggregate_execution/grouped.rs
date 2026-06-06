@@ -435,7 +435,7 @@ fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.source_read_prefetches_started, 0);

@@ -59,9 +59,45 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
     .attach_to(error)
     .with_fact_if_absent("chunk_index", chunk.chunk_index)
     .with_fact_if_absent("file_index", chunk.file_index)
-    .with_fact_if_absent("path", chunk.path.display());
+    .with_fact_if_absent("path", chunk_path_fact(chunk));
     if !chunk.reads_all_row_groups {
         error = error.with_fact_if_absent("row_groups", comma_separated_usize(&chunk.row_group_indexes));
     }
     error
+}
+
+fn chunk_path_fact(chunk: &SourceChunk) -> String {
+    if chunk.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&chunk.path)
+    } else {
+        chunk.location.diagnostic_location()
+    }
+}
+
+pub(in crate::exec) fn attach_source_batch_resource_facts(
+    error: QueryError,
+    batch: &SourceChunkBatch,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+    metrics: &QueryMetrics,
+) -> QueryError {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    if batch.is_singleton() {
+        return attach_chunk_resource_facts(error, first_chunk, memory_boundary, attempt, max_attempts, metrics);
+    }
+    if error.code() != QueryErrorCode::CudfResourceExhausted {
+        return error;
+    }
+
+    RuntimeResourceFacts {
+        memory_boundary,
+        stage: memory_boundary,
+        node_id: first_chunk.source_node_id,
+        attempt,
+        max_attempts,
+        resume_boundary: "source_chunk_batch",
+        metrics,
+    }
+    .attach_to(error)
 }

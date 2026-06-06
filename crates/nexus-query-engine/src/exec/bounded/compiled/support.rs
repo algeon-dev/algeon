@@ -195,6 +195,11 @@ fn join_strategy_specific_reservations_are_modeled(
         },
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
+                && task_has_hard_budgeted_modeled_reservation_gate(
+                    pipeline,
+                    group.build,
+                    ReservationKind::OperatorOutput,
+                )
                 && task_runtime_attachment_has_modeled_reservation_gate(
                     pipeline,
                     group.materialize,

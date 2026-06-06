@@ -436,14 +436,15 @@ fn build_tasks(
                 };
                 let build_gates = gate_builder.attach_requirements(
                     ReservationGateOwner::Task(build),
-                    capability.local_requirements.iter().filter(|requirement| {
-                        join_node_requirement_task(requirement.kind, build, materialize) == build
-                    }),
+                    capability
+                        .local_requirements
+                        .iter()
+                        .filter(|requirement| join_node_requirement_task(requirement, build, materialize) == build),
                 );
                 let materialize_gates = gate_builder.attach_requirements(
                     ReservationGateOwner::Task(materialize),
                     capability.local_requirements.iter().filter(|requirement| {
-                        join_node_requirement_task(requirement.kind, build, materialize) == materialize
+                        join_node_requirement_task(requirement, build, materialize) == materialize
                     }),
                 );
                 tasks.push(
@@ -473,11 +474,14 @@ fn build_tasks(
 }
 
 fn join_node_requirement_task(
-    kind: ReservationKind,
+    requirement: &ReservationRequirement,
     build: PipelineTaskId,
     materialize: PipelineTaskId,
 ) -> PipelineTaskId {
-    match kind {
+    match requirement.kind {
+        ReservationKind::OperatorOutput if requirement.memory_boundary == "join_filtered_build_key_deduplicate" => {
+            build
+        },
         ReservationKind::HashTable => build,
         ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData => materialize,
         ReservationKind::OperatorOutput

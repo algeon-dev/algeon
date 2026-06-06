@@ -154,6 +154,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         unresolved_gap: "libcudf_equality_join_output_size_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for keyed inner/left/full equality join indices",
     },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::OperatorOutput,
+        required_contract: "join_filtered_build_key_deduplicate_output_contract",
+        unresolved_gap: "libcudf_drop_duplicates_output_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf drop-duplicates output and temporary-workspace preflight",
+    },
 ];
 
 /// Rejection code for large grouping-set/rank-window scans whose blocking

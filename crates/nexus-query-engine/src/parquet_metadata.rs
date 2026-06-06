@@ -1,6 +1,12 @@
 //! Parquet footer metadata helpers shared by source planning and diagnostics.
 
-use std::sync::Arc;
+use std::{
+    fs,
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bytes::{Bytes, BytesMut};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
@@ -13,6 +19,16 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Speculative tail size for footer-only object-store metadata reads.
 const FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
+
+/// Footer sidecar file signature.
+///
+/// The bytes spell "NQPFTR2\0": Nexus Query Parquet FooTeR sidecar, header
+/// format 2, NUL-padded to 8 bytes. Readers check this before interpreting the
+/// following little-endian u64 fields as file size, content-identity hash, and
+/// file modified time.
+const FOOTER_SIDECAR_MAGIC: &[u8; 8] = b"NQPFTR2\0";
+const FOOTER_SIDECAR_HEADER_BYTES: usize =
+    FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>();
 
 /// Parses Parquet metadata from a complete in-memory Parquet payload.
 pub(crate) fn parse_complete_parquet_metadata(
@@ -82,7 +98,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
             operation,
             "object-store Parquet file is smaller than the footer",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", object_store_path_fact(&location))
         .with_fact("file_size", file_size));
     }
 
@@ -98,14 +114,14 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
             operation,
             "object-store Parquet tail fetch returned fewer bytes than the footer size",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", object_store_path_fact(&location))
         .with_fact("file_size", file_size)
         .with_fact("tail_bytes", tail.len()));
     }
 
     let footer_tail_bytes: [u8; FOOTER_SIZE] =
         tail[tail.len() - FOOTER_SIZE..].try_into().expect("footer tail slice was length-checked");
-    let footer_tail = parse_footer_tail(footer_tail_bytes, operation, &location.as_ref())?;
+    let footer_tail = parse_footer_tail(footer_tail_bytes, operation, &object_store_path_fact(&location))?;
     let metadata_len = footer_tail.metadata_length();
     let total_footer_len = metadata_len + FOOTER_SIZE;
     if (total_footer_len as u64) > file_size {
@@ -114,7 +130,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
             operation,
             "Parquet footer metadata length exceeds file size",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", object_store_path_fact(&location))
         .with_fact("file_size", file_size)
         .with_fact("metadata_length", metadata_len));
     }
@@ -130,9 +146,192 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
             object_store_metadata_error("failed to GET Parquet footer metadata range", error, &location)
         })?
     };
-    let metadata =
-        parse_metadata_from_footer_bytes(metadata_bytes, footer_tail_bytes, file_size, operation, &location)?;
+    let metadata = parse_metadata_from_footer_bytes(
+        metadata_bytes,
+        footer_tail_bytes,
+        file_size,
+        operation,
+        object_store_path_fact(&location),
+    )?;
     Ok((metadata, file_size))
+}
+
+/// Footer sidecar path for a complete lakehouse cache data file.
+pub(crate) fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
+    let file_name = data_path.file_name().and_then(|value| value.to_str()).unwrap_or("cache-entry");
+    data_path.with_file_name(format!(".{file_name}.footer.v1"))
+}
+
+/// Reads a persisted footer sidecar for a complete cache file.
+///
+/// Stale sidecars whose recorded file size or content identity does not match
+/// the data file are ignored so callers can fall back to the complete file.
+pub(crate) fn read_parquet_footer_sidecar(
+    data_path: &Path,
+    expected_content_identity: &str,
+) -> Result<Option<Arc<ParquetMetaData>>> {
+    let sidecar_path = parquet_footer_sidecar_path(data_path);
+    let Ok(bytes) = fs::read(&sidecar_path) else {
+        return Ok(None);
+    };
+    if bytes.len() < FOOTER_SIDECAR_HEADER_BYTES + FOOTER_SIZE
+        || &bytes[..FOOTER_SIDECAR_MAGIC.len()] != FOOTER_SIDECAR_MAGIC
+    {
+        return Ok(None);
+    }
+    let file_size_end = FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>();
+    let identity_hash_end = file_size_end + std::mem::size_of::<u64>();
+    let modified_nanos_end = identity_hash_end + std::mem::size_of::<u64>();
+    let file_size = u64::from_le_bytes(
+        bytes[FOOTER_SIDECAR_MAGIC.len()..file_size_end].try_into().expect("sidecar file-size slice is length-checked"),
+    );
+    let identity_hash = u64::from_le_bytes(
+        bytes[file_size_end..identity_hash_end].try_into().expect("sidecar identity-hash slice is length-checked"),
+    );
+    let modified_nanos = u64::from_le_bytes(
+        bytes[identity_hash_end..modified_nanos_end].try_into().expect("sidecar modified-time slice is length-checked"),
+    );
+    let Ok(data_metadata) = fs::metadata(data_path) else {
+        return Ok(None);
+    };
+    if data_metadata.len() != file_size {
+        return Ok(None);
+    }
+    if identity_hash != stable_fnv1a64(expected_content_identity.as_bytes()) {
+        return Ok(None);
+    }
+    if file_modified_nanos(&data_metadata) != Some(modified_nanos) {
+        return Ok(None);
+    }
+    let footer_bytes = &bytes[FOOTER_SIDECAR_HEADER_BYTES..];
+    let footer_tail_bytes: [u8; FOOTER_SIZE] = footer_bytes[footer_bytes.len() - FOOTER_SIZE..]
+        .try_into()
+        .expect("sidecar footer tail slice is length-checked");
+    let metadata_bytes = Bytes::copy_from_slice(&footer_bytes[..footer_bytes.len() - FOOTER_SIZE]);
+    parse_metadata_from_footer_bytes(
+        metadata_bytes,
+        footer_tail_bytes,
+        file_size,
+        "nexus_query_engine.source_metadata.footer_sidecar",
+        cache_metadata_path_fact(&sidecar_path),
+    )
+    .map(Some)
+}
+
+/// Persists a footer sidecar beside a complete lakehouse cache data file.
+pub(crate) fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity: &str) -> Result<()> {
+    let mut file = fs::File::open(data_path).map_err(|error| {
+        local_metadata_io_error("failed to open complete Parquet cache file for footer sidecar", error, data_path)
+    })?;
+    let data_metadata = file.metadata().map_err(|error| {
+        local_metadata_io_error("failed to stat complete Parquet cache file for footer sidecar", error, data_path)
+    })?;
+    let file_size = data_metadata.len();
+    if file_size < FOOTER_SIZE as u64 {
+        return Err(QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.source_metadata.footer_sidecar",
+            "complete Parquet cache file is smaller than the footer",
+        )
+        .with_fact("path", cache_metadata_path_fact(data_path))
+        .with_fact("file_size", file_size));
+    }
+    let mut footer_tail_bytes = [0u8; FOOTER_SIZE];
+    file.seek(SeekFrom::End(-(FOOTER_SIZE as i64))).map_err(|error| {
+        local_metadata_io_error("failed to seek complete Parquet cache footer tail", error, data_path)
+    })?;
+    file.read_exact(&mut footer_tail_bytes).map_err(|error| {
+        local_metadata_io_error("failed to read complete Parquet cache footer tail", error, data_path)
+    })?;
+    let footer_tail = parse_footer_tail(
+        footer_tail_bytes,
+        "nexus_query_engine.source_metadata.footer_sidecar",
+        &cache_metadata_path_fact(data_path),
+    )?;
+    let total_footer_len = footer_tail.metadata_length() + FOOTER_SIZE;
+    if total_footer_len as u64 > file_size {
+        return Err(QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.source_metadata.footer_sidecar",
+            "Parquet footer metadata length exceeds complete cache file size",
+        )
+        .with_fact("path", cache_metadata_path_fact(data_path))
+        .with_fact("file_size", file_size)
+        .with_fact("metadata_length", footer_tail.metadata_length()));
+    }
+
+    let mut footer_bytes = vec![0u8; total_footer_len];
+    file.seek(SeekFrom::Start(file_size - total_footer_len as u64)).map_err(|error| {
+        local_metadata_io_error("failed to seek complete Parquet cache footer metadata", error, data_path)
+    })?;
+    file.read_exact(&mut footer_bytes).map_err(|error| {
+        local_metadata_io_error("failed to read complete Parquet cache footer metadata", error, data_path)
+    })?;
+
+    let sidecar_path = parquet_footer_sidecar_path(data_path);
+    let temp_path = parquet_footer_sidecar_temp_path(&sidecar_path);
+    let mut sidecar = fs::OpenOptions::new().write(true).create_new(true).open(&temp_path).map_err(|error| {
+        local_metadata_io_error("failed to create Parquet footer sidecar temp file", error, &sidecar_path)
+            .with_fact("temp_path", cache_metadata_path_fact(&temp_path))
+    })?;
+    sidecar.write_all(FOOTER_SIDECAR_MAGIC).map_err(|error| {
+        sidecar_temp_io_error("failed to write Parquet footer sidecar header", error, &sidecar_path, &temp_path)
+    })?;
+    sidecar.write_all(&file_size.to_le_bytes()).map_err(|error| {
+        sidecar_temp_io_error("failed to write Parquet footer sidecar file size", error, &sidecar_path, &temp_path)
+    })?;
+    sidecar.write_all(&stable_fnv1a64(content_identity.as_bytes()).to_le_bytes()).map_err(|error| {
+        sidecar_temp_io_error(
+            "failed to write Parquet footer sidecar content identity",
+            error,
+            &sidecar_path,
+            &temp_path,
+        )
+    })?;
+    sidecar.write_all(&file_modified_nanos(&data_metadata).unwrap_or(0).to_le_bytes()).map_err(|error| {
+        sidecar_temp_io_error("failed to write Parquet footer sidecar modified time", error, &sidecar_path, &temp_path)
+    })?;
+    sidecar.write_all(&footer_bytes).map_err(|error| {
+        sidecar_temp_io_error("failed to write Parquet footer sidecar bytes", error, &sidecar_path, &temp_path)
+    })?;
+    sidecar.sync_all().map_err(|error| {
+        sidecar_temp_io_error("failed to sync Parquet footer sidecar", error, &sidecar_path, &temp_path)
+    })?;
+    drop(sidecar);
+    fs::rename(&temp_path, &sidecar_path).map_err(|error| {
+        sidecar_temp_io_error("failed to publish Parquet footer sidecar", error, &sidecar_path, &temp_path)
+    })?;
+    Ok(())
+}
+
+fn sidecar_temp_io_error(
+    message: &'static str,
+    error: std::io::Error,
+    sidecar_path: &Path,
+    temp_path: &Path,
+) -> QueryError {
+    let _ = fs::remove_file(temp_path);
+    local_metadata_io_error(message, error, sidecar_path).with_fact("temp_path", cache_metadata_path_fact(temp_path))
+}
+
+fn parquet_footer_sidecar_temp_path(sidecar_path: &Path) -> PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+    let file_name = sidecar_path.file_name().and_then(|value| value.to_str()).unwrap_or("footer-sidecar");
+    sidecar_path.with_file_name(format!(".{file_name}.tmp.{}.{}", std::process::id(), nonce))
+}
+
+fn stable_fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn file_modified_nanos(metadata: &fs::Metadata) -> Option<u64> {
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    u64::try_from(modified).ok()
 }
 
 fn parse_footer_tail(
@@ -181,7 +380,7 @@ fn parse_metadata_from_footer_bytes(
 
 fn object_store_metadata_error(
     message: &'static str,
-    error: object_store::Error,
+    _error: object_store::Error,
     location: &ObjectStorePath,
 ) -> QueryError {
     QueryError::new(
@@ -189,13 +388,35 @@ fn object_store_metadata_error(
         "nexus_query_engine.source_metadata.object_store_footer",
         message,
     )
-    .with_fact("path", location.as_ref())
-    .with_source(error)
+    .with_fact("path", object_store_path_fact(location))
+}
+
+fn object_store_path_fact(location: &ObjectStorePath) -> String {
+    crate::source::redacted_object_store_path_diagnostic(location.as_ref())
+}
+
+fn local_metadata_io_error(message: &'static str, error: std::io::Error, path: &Path) -> QueryError {
+    QueryError::new(QueryErrorCode::CudfDependencyFailure, "nexus_query_engine.source_metadata.footer_sidecar", message)
+        .with_fact("path", cache_metadata_path_fact(path))
+        .with_source(error)
+}
+
+fn cache_metadata_path_fact(path: &Path) -> String {
+    format!("lakehouse_cache_metadata_path:fnv64:{:016x}", stable_cache_metadata_hash(&path.display().to_string()))
+}
+
+/// Stable, non-cryptographic fingerprint for cache metadata paths in diagnostics.
+///
+/// This is FNV-1a 64-bit, chosen only so logs can correlate the same local path
+/// across runs without printing credential-bearing cache paths. The hex value is
+/// not reversible, not a security boundary, and must not be used as a cache key.
+fn stable_cache_metadata_hash(value: &str) -> u64 {
+    stable_fnv1a64(value.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{fs, sync::Arc};
 
     use arrow::{
         array::Int32Array,
@@ -242,5 +463,49 @@ mod tests {
 
         assert_eq!(file_size, bytes.len() as u64);
         assert_eq!(metadata.num_row_groups(), 4);
+    }
+
+    #[test]
+    fn object_store_footer_path_diagnostics_are_redacted() {
+        let location = ObjectStorePath::from("secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
+        let diagnostic = object_store_path_fact(&location);
+
+        assert!(diagnostic.starts_with("object_store_path:fnv64:"));
+        for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+            assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
+        }
+    }
+
+    #[test]
+    fn footer_sidecar_path_diagnostics_are_redacted() {
+        let path = Path::new("/tmp/cache/secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
+        let diagnostic = cache_metadata_path_fact(path);
+
+        assert!(diagnostic.starts_with("lakehouse_cache_metadata_path:fnv64:"));
+        for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+            assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
+        }
+    }
+
+    #[test]
+    fn footer_sidecar_round_trips_and_rejects_stale_file_size() {
+        let root = std::env::temp_dir().join(format!(
+            "nexus-query-engine-footer-sidecar-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let data_path = root.join("part-0.parquet");
+        fs::write(&data_path, write_test_parquet(12, 4)).unwrap();
+
+        write_parquet_footer_sidecar_from_file(&data_path, "content-a").unwrap();
+        let metadata = read_parquet_footer_sidecar(&data_path, "content-a").unwrap().unwrap();
+        assert_eq!(metadata.file_metadata().num_rows(), 12);
+        assert_eq!(metadata.num_row_groups(), 3);
+        assert!(read_parquet_footer_sidecar(&data_path, "content-b").unwrap().is_none());
+
+        fs::write(&data_path, b"stale").unwrap();
+        assert!(read_parquet_footer_sidecar(&data_path, "content-a").unwrap().is_none());
+
+        let _ = fs::remove_dir_all(root);
     }
 }

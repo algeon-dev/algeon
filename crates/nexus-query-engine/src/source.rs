@@ -38,7 +38,7 @@ pub use diagnostics::{
 pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 
 /// Explicit location/read-capability model for native Parquet sources.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ParquetSourceLocation {
     /// Local filesystem path readable by cuDF local Parquet readers.
     LocalPath(PathBuf),
@@ -49,6 +49,22 @@ pub enum ParquetSourceLocation {
         /// Original object-store URI.
         uri: String,
     },
+}
+
+impl fmt::Debug for ParquetSourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalPath(path) => f
+                .debug_tuple("LocalPath")
+                .field(&redacted_debug_value("path", path.display().to_string().as_str()))
+                .finish(),
+            Self::ObjectStoreUri { scheme, uri } => f
+                .debug_struct("ObjectStoreUri")
+                .field("scheme", scheme)
+                .field("uri", &redacted_debug_value("uri", uri))
+                .finish(),
+        }
+    }
 }
 
 impl ParquetSourceLocation {
@@ -109,6 +125,24 @@ impl ParquetSourceLocation {
     pub fn display(&self) -> impl fmt::Display + '_ {
         self
     }
+
+    /// Redacted diagnostic location. Local paths are preserved; object-store
+    /// URIs are represented by scheme plus stable hash only.
+    pub fn diagnostic_location(&self) -> String {
+        match self {
+            Self::LocalPath(path) => path.display().to_string(),
+            Self::ObjectStoreUri { scheme, uri } => object_store_diagnostic_id(scheme, uri),
+        }
+    }
+
+    pub(crate) fn diagnostic_stable_id(&self, stable_id: &str) -> String {
+        match self {
+            Self::LocalPath(_) => redacted_stable_id_diagnostic(stable_id),
+            Self::ObjectStoreUri { scheme, .. } => {
+                format!("object_store:{scheme}:stable_id_fnv64:{:016x}", stable_fnv1a64(stable_id.as_bytes()))
+            },
+        }
+    }
 }
 
 impl fmt::Display for ParquetSourceLocation {
@@ -129,6 +163,8 @@ pub enum ParquetReadStrategy {
     RemoteHostBuffer,
     /// Read a previously materialized local byte-cache entry through the path-based reader.
     LocalCacheKvikio,
+    /// Path-based cuDF/libcudf read for a remote object-store URI such as `s3://...`.
+    RemoteDirect,
     /// Experimental path-based cuDF/libcudf read for a remote URI such as `s3://...`.
     RemoteKvikioExperimental,
 }
@@ -140,6 +176,7 @@ impl ParquetReadStrategy {
             Self::LocalKvikio => "local_kvikio",
             Self::RemoteHostBuffer => "remote_host_buffer",
             Self::LocalCacheKvikio => "local_cache_kvikio",
+            Self::RemoteDirect => "remote_direct",
             Self::RemoteKvikioExperimental => "remote_kvikio_experimental",
         }
     }
@@ -171,6 +208,35 @@ impl SourceDecodeInput {
 }
 
 impl fmt::Display for SourceDecodeInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Remote object-store Parquet read fallback policy requested from lower layers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RemoteParquetReadMode {
+    /// Fail unless lower layers can prove direct/range-aware remote IO.
+    RequireDirect,
+    /// Prefer direct/range-aware remote IO but allow the reader implementation to choose.
+    #[default]
+    PreferDirect,
+    /// Explicitly allow host-buffer fallback when lower layers choose it.
+    AllowHostFallback,
+}
+
+impl RemoteParquetReadMode {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequireDirect => "require_direct",
+            Self::PreferDirect => "prefer_direct",
+            Self::AllowHostFallback => "allow_host_fallback",
+        }
+    }
+}
+
+impl fmt::Display for RemoteParquetReadMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -216,6 +282,8 @@ pub enum LakehouseCacheStatus {
     Miss,
     /// Cache fill was selected before reading.
     FillBeforeRead,
+    /// Cache lookup was explicitly bypassed for benchmark isolation.
+    Bypassed,
     /// Cache was considered but not used.
     Skipped,
 }
@@ -228,6 +296,7 @@ impl LakehouseCacheStatus {
             Self::Hit => "hit",
             Self::Miss => "miss",
             Self::FillBeforeRead => "fill_before_read",
+            Self::Bypassed => "bypassed",
             Self::Skipped => "skipped",
         }
     }
@@ -239,8 +308,60 @@ impl fmt::Display for LakehouseCacheStatus {
     }
 }
 
+/// Foreground lakehouse cache read behavior selected for a resolved source.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LakehouseCacheReadMode {
+    /// No complete-object cache lookup participates in the foreground read.
+    #[default]
+    Disabled,
+    /// Complete-object cache hits are eligible for foreground reads.
+    Enabled,
+    /// Complete-object cache hits were explicitly bypassed.
+    Bypassed,
+}
+
+impl LakehouseCacheReadMode {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Enabled => "enabled",
+            Self::Bypassed => "bypassed",
+        }
+    }
+}
+
+impl fmt::Display for LakehouseCacheReadMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Full-object lakehouse cache fill behavior selected for a resolved source.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LakehouseCacheFillMode {
+    /// Do not fill a missing complete cache entry.
+    #[default]
+    Disabled,
+    /// Fill the complete object asynchronously after the foreground read is scheduled.
+    Background,
+    /// Fill the complete cache entry before opening it as a local reader path.
+    Blocking,
+}
+
+impl LakehouseCacheFillMode {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Background => "background",
+            Self::Blocking => "blocking",
+        }
+    }
+}
+
 /// Resolved Parquet reader contract carried into native source execution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedParquetSource {
     /// Catalog or table-format location before read-strategy resolution.
     pub original_location: String,
@@ -259,16 +380,50 @@ pub struct ResolvedParquetSource {
     pub read_strategy: ParquetReadStrategy,
     /// Mechanical decoder input used by the executor.
     pub decode_input: SourceDecodeInput,
+    /// Remote object-store read fallback policy requested from lower layers.
+    pub remote_read_mode: RemoteParquetReadMode,
     /// Credential scope used by the selected strategy.
     pub credential_mode: CredentialMode,
     /// Local byte-cache status for this source.
     pub cache_status: LakehouseCacheStatus,
+    /// Foreground cache-read behavior for this source.
+    pub lakehouse_cache_read_mode: LakehouseCacheReadMode,
     /// Lakehouse byte-cache root used by cache maintenance, when configured.
     pub lakehouse_cache_root: Option<String>,
+    /// Complete-object cache path used for hit reads or background fills.
+    pub lakehouse_cache_path: Option<String>,
     /// Best-effort retained byte target for the lakehouse byte-cache root.
     pub lakehouse_cache_max_bytes: Option<u64>,
+    /// Cache-fill mode for complete-object lakehouse cache maintenance.
+    pub lakehouse_cache_fill_mode: LakehouseCacheFillMode,
+    /// Whether object-store host-buffer reads may use ranged mini-Parquet fallback.
+    pub remote_host_buffer_ranged_enabled: bool,
     /// Stable fallback reason when the preferred strategy was unavailable.
     pub fallback_reason: Option<String>,
+}
+
+impl fmt::Debug for ResolvedParquetSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedParquetSource")
+            .field("original_location", &redacted_debug_value("location", &self.original_location))
+            .field("reader_location", &redacted_debug_value("reader_location", &self.reader_location))
+            .field("storage_domain", &self.storage_domain)
+            .field("content_identity", &self.content_identity)
+            .field("storage_profile_id", &self.storage_profile_id)
+            .field("read_strategy", &self.read_strategy)
+            .field("decode_input", &self.decode_input)
+            .field("remote_read_mode", &self.remote_read_mode)
+            .field("credential_mode", &self.credential_mode)
+            .field("cache_status", &self.cache_status)
+            .field("lakehouse_cache_read_mode", &self.lakehouse_cache_read_mode)
+            .field("lakehouse_cache_root", &redacted_debug_option("cache_root", self.lakehouse_cache_root.as_deref()))
+            .field("lakehouse_cache_path", &redacted_debug_option("cache_path", self.lakehouse_cache_path.as_deref()))
+            .field("lakehouse_cache_max_bytes", &self.lakehouse_cache_max_bytes)
+            .field("lakehouse_cache_fill_mode", &self.lakehouse_cache_fill_mode)
+            .field("remote_host_buffer_ranged_enabled", &self.remote_host_buffer_ranged_enabled)
+            .field("fallback_reason", &self.fallback_reason)
+            .finish()
+    }
 }
 
 impl ResolvedParquetSource {
@@ -283,10 +438,15 @@ impl ResolvedParquetSource {
             storage_profile_id: None,
             read_strategy: ParquetReadStrategy::LocalKvikio,
             decode_input: SourceDecodeInput::Filepath,
+            remote_read_mode: RemoteParquetReadMode::PreferDirect,
             credential_mode: CredentialMode::None,
             cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
+            lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
+            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
+            remote_host_buffer_ranged_enabled: false,
             fallback_reason: None,
         }
     }
@@ -305,10 +465,15 @@ impl ResolvedParquetSource {
             storage_profile_id: None,
             read_strategy: ParquetReadStrategy::RemoteHostBuffer,
             decode_input: SourceDecodeInput::HostBuffer,
+            remote_read_mode: RemoteParquetReadMode::AllowHostFallback,
             credential_mode,
             cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
+            lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
+            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
+            remote_host_buffer_ranged_enabled: false,
             fallback_reason: None,
         }
     }
@@ -328,10 +493,15 @@ impl ResolvedParquetSource {
             storage_profile_id: None,
             read_strategy: ParquetReadStrategy::LocalCacheKvikio,
             decode_input: SourceDecodeInput::Filepath,
+            remote_read_mode: RemoteParquetReadMode::PreferDirect,
             credential_mode,
             cache_status,
+            lakehouse_cache_read_mode: LakehouseCacheReadMode::Enabled,
             lakehouse_cache_root: None,
+            lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
+            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
+            remote_host_buffer_ranged_enabled: false,
             fallback_reason: None,
         }
     }
@@ -347,10 +517,40 @@ impl ResolvedParquetSource {
             storage_profile_id: None,
             read_strategy: ParquetReadStrategy::RemoteKvikioExperimental,
             decode_input: SourceDecodeInput::Filepath,
+            remote_read_mode: RemoteParquetReadMode::PreferDirect,
             credential_mode,
             cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
+            lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
+            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
+            remote_host_buffer_ranged_enabled: false,
+            fallback_reason: None,
+        }
+    }
+
+    /// Builds a remote path-based read contract where cuDF/libcudf owns the
+    /// object-store read instead of receiving a host-memory Parquet payload.
+    pub fn remote_direct(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
+        let original_location = original_location.into();
+        Self {
+            reader_location: original_location.clone(),
+            original_location,
+            storage_domain: None,
+            content_identity: None,
+            storage_profile_id: None,
+            read_strategy: ParquetReadStrategy::RemoteDirect,
+            decode_input: SourceDecodeInput::Filepath,
+            remote_read_mode: RemoteParquetReadMode::PreferDirect,
+            credential_mode,
+            cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
+            lakehouse_cache_root: None,
+            lakehouse_cache_path: None,
+            lakehouse_cache_max_bytes: None,
+            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
+            remote_host_buffer_ranged_enabled: false,
             fallback_reason: None,
         }
     }
@@ -364,6 +564,18 @@ impl ResolvedParquetSource {
     /// Replaces the local byte-cache status after strategy fallback.
     pub fn with_cache_status(mut self, cache_status: LakehouseCacheStatus) -> Self {
         self.cache_status = cache_status;
+        self
+    }
+
+    /// Selects foreground complete-object lakehouse cache read behavior.
+    pub fn with_lakehouse_cache_read_mode(mut self, read_mode: LakehouseCacheReadMode) -> Self {
+        self.lakehouse_cache_read_mode = read_mode;
+        self
+    }
+
+    /// Selects remote object-store read fallback policy.
+    pub fn with_remote_read_mode(mut self, read_mode: RemoteParquetReadMode) -> Self {
+        self.remote_read_mode = read_mode;
         self
     }
 
@@ -399,6 +611,24 @@ impl ResolvedParquetSource {
     ) -> Self {
         self.lakehouse_cache_root = Some(cache_root.into());
         self.lakehouse_cache_max_bytes = max_retained_bytes;
+        self
+    }
+
+    /// Attaches a complete-object lakehouse cache path.
+    pub fn with_lakehouse_cache_path(mut self, cache_path: impl Into<String>) -> Self {
+        self.lakehouse_cache_path = Some(cache_path.into());
+        self
+    }
+
+    /// Selects complete-object lakehouse cache fill behavior.
+    pub fn with_lakehouse_cache_fill_mode(mut self, fill_mode: LakehouseCacheFillMode) -> Self {
+        self.lakehouse_cache_fill_mode = fill_mode;
+        self
+    }
+
+    /// Selects whether host-buffer object-store reads may use ranged mini-Parquet fallback.
+    pub fn with_remote_host_buffer_ranged_enabled(mut self, enabled: bool) -> Self {
+        self.remote_host_buffer_ranged_enabled = enabled;
         self
     }
 
@@ -550,6 +780,44 @@ impl MissingColumn {
     }
 }
 
+/// cuDF reader-side decimal storage type proven from Parquet metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParquetReaderDecimalTypeId {
+    /// 32-bit fixed-point decimal.
+    Decimal32,
+    /// 64-bit fixed-point decimal.
+    Decimal64,
+    /// 128-bit fixed-point decimal.
+    Decimal128,
+}
+
+impl ParquetReaderDecimalTypeId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Decimal32 => "decimal32",
+            Self::Decimal64 => "decimal64",
+            Self::Decimal128 => "decimal128",
+        }
+    }
+}
+
+/// Per-file Parquet decimal reader type for one decoded read column.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParquetReaderDecimalType {
+    /// Column name as it appears in the source read projection.
+    pub column_name: String,
+    /// cuDF storage width used by the Parquet reader.
+    pub type_id: ParquetReaderDecimalTypeId,
+    /// cuDF fixed-point scale. Parquet/Arrow scale 2 is represented as -2.
+    pub cudf_scale: i32,
+}
+
+impl ParquetReaderDecimalType {
+    pub fn new(column_name: impl Into<String>, type_id: ParquetReaderDecimalTypeId, cudf_scale: i32) -> Self {
+        Self { column_name: column_name.into(), type_id, cudf_scale }
+    }
+}
+
 /// Reference to the source location for a logical column.
 ///
 /// File columns are indexed against the Parquet file schema. Partition columns
@@ -592,6 +860,8 @@ pub struct LocalParquetSource {
     pub read_columns: Vec<String>,
     /// File-schema indices for `read_columns`.
     pub read_column_file_indices: Vec<usize>,
+    /// Total physical column count in the source Parquet file schema, when known.
+    pub file_column_count: Option<usize>,
     /// Source columns expected to remain after source-adjacent filtering/projection.
     ///
     /// These are role and diagnostic metadata, not the full emitted source
@@ -636,6 +906,7 @@ impl LocalParquetSource {
     /// partition columns or pure filter columns are represented.
     pub fn from_files(files: Vec<LocalParquetFile>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
         let read_column_file_indices = schema_column_indices(&schema, &read_columns);
+        let file_column_count = Some(schema.fields().len());
         let projected_output_columns = read_columns.clone();
         let projected_output_column_source_refs =
             read_column_file_indices.iter().copied().map(SourceColumnRef::File).collect::<Vec<_>>();
@@ -662,6 +933,7 @@ impl LocalParquetSource {
             schema,
             read_columns,
             read_column_file_indices,
+            file_column_count,
             projected_output_columns,
             projected_output_column_source_refs,
             pure_filter_columns,
@@ -749,6 +1021,12 @@ impl LocalParquetSource {
         )
     }
 
+    /// Sets the total physical column count in the source Parquet file schema.
+    pub fn with_file_column_count(mut self, file_column_count: usize) -> Self {
+        self.file_column_count = Some(file_column_count);
+        self
+    }
+
     /// Adds partition columns represented as synthetic source columns.
     pub fn with_partition_columns(mut self, partition_columns: Vec<PartitionColumn>) -> Self {
         self.partition_columns = partition_columns;
@@ -832,7 +1110,8 @@ impl LocalParquetSource {
         }
         self.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
         self.diagnostics.rejected_features.retain(|feature| *feature != RejectedSourceFeature::ZeroColumnCount);
-        self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
+        self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty()
+            && diagnostics::files_have_proven_direct_device_read(&self.files);
     }
 
     pub fn file_count(&self) -> usize {
@@ -914,6 +1193,46 @@ impl LocalParquetSource {
 
 fn object_store_reader_path(uri: &str) -> String {
     uri.to_string()
+}
+
+pub(crate) fn redacted_path_diagnostic(path: &Path) -> String {
+    let path = path.display().to_string();
+    redacted_location_diagnostic(path.as_str()).unwrap_or(path)
+}
+
+pub(crate) fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
+    redacted_location_diagnostic(stable_id).unwrap_or_else(|| stable_id.to_string())
+}
+
+pub(crate) fn redacted_object_store_path_diagnostic(path: &str) -> String {
+    format!("object_store_path:fnv64:{:016x}", stable_fnv1a64(path.as_bytes()))
+}
+
+fn redacted_debug_value(kind: &str, value: &str) -> String {
+    format!("{kind}:fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len())
+}
+
+fn redacted_debug_option(kind: &str, value: Option<&str>) -> Option<String> {
+    value.map(|value| redacted_debug_value(kind, value))
+}
+
+fn redacted_location_diagnostic(location: &str) -> Option<String> {
+    let (scheme, _) = location.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    Some(object_store_diagnostic_id(scheme.as_str(), location))
+}
+
+fn object_store_diagnostic_id(scheme: &str, identity: &str) -> String {
+    format!("object_store:{scheme}:fnv64:{:016x}", stable_fnv1a64(identity.as_bytes()))
+}
+
+fn stable_fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
@@ -1374,7 +1693,7 @@ fn invert_reader_op(op: crate::expr::BinaryOp) -> crate::expr::BinaryOp {
 /// Byte vectors are aligned with the selected row groups when `row_groups` is
 /// present, otherwise with the frontend's represented row-group order. `None`
 /// means the metadata is unavailable, not zero.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct LocalParquetFile {
     /// Explicit source location for the Parquet file.
     pub location: ParquetSourceLocation,
@@ -1413,8 +1732,31 @@ pub struct LocalParquetFile {
     pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     /// Estimated or known row counts for selected row groups.
     pub row_group_rows: Option<Vec<u64>>,
+    /// Per-read-column decimal storage types proven from Parquet metadata.
+    pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
     pub partition_values: Vec<LiteralValue>,
+}
+
+impl fmt::Debug for LocalParquetFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LocalParquetFile")
+            .field("location", &self.location.diagnostic_location())
+            .field("path", &redacted_debug_value("path", self.path.display().to_string().as_str()))
+            .field("resolved_source", &self.resolved_source)
+            .field("stable_id", &self.location.diagnostic_stable_id(self.stable_id.as_str()))
+            .field("file_size_bytes", &self.file_size_bytes)
+            .field("row_groups", &self.row_groups)
+            .field("row_group_bytes", &self.row_group_bytes)
+            .field("projected_row_group_compressed_bytes", &self.projected_row_group_compressed_bytes)
+            .field("projected_row_group_uncompressed_bytes", &self.projected_row_group_uncompressed_bytes)
+            .field("pure_filter_row_group_compressed_bytes", &self.pure_filter_row_group_compressed_bytes)
+            .field("pure_filter_row_group_uncompressed_bytes", &self.pure_filter_row_group_uncompressed_bytes)
+            .field("row_group_rows", &self.row_group_rows)
+            .field("reader_decimal_types", &self.reader_decimal_types)
+            .field("partition_values", &self.partition_values)
+            .finish()
+    }
 }
 
 impl LocalParquetFile {
@@ -1436,6 +1778,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            reader_decimal_types: Vec::new(),
             partition_values: Vec::new(),
         }
     }
@@ -1444,7 +1787,7 @@ impl LocalParquetFile {
     pub fn object_store_uri(uri: impl Into<String>) -> Result<Self, String> {
         let uri = uri.into();
         let location = ParquetSourceLocation::object_store_uri(uri.clone())?;
-        let stable_id = uri.clone();
+        let stable_id = location.diagnostic_location();
         let reader_path = object_store_reader_path(&uri);
         Ok(Self {
             location,
@@ -1463,6 +1806,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            reader_decimal_types: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1470,7 +1814,7 @@ impl LocalParquetFile {
     /// Creates a file descriptor from an already resolved reader contract.
     pub fn from_resolved_parquet_source(resolved_source: ResolvedParquetSource) -> Result<Self, String> {
         let location = parquet_source_location_for_original(&resolved_source.original_location)?;
-        let stable_id = resolved_source.original_location.clone();
+        let stable_id = location.diagnostic_location();
         Ok(Self {
             location,
             path: PathBuf::from(&resolved_source.reader_location),
@@ -1484,6 +1828,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            reader_decimal_types: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1541,6 +1886,12 @@ impl LocalParquetFile {
     /// Sets row-count metadata for selected row groups.
     pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
         self.row_group_rows = Some(row_group_rows);
+        self
+    }
+
+    /// Sets per-read-column decimal storage types proven from Parquet metadata.
+    pub fn with_reader_decimal_types(mut self, reader_decimal_types: Vec<ParquetReaderDecimalType>) -> Self {
+        self.reader_decimal_types = reader_decimal_types;
         self
     }
 
@@ -1608,5 +1959,72 @@ mod tests {
         .unwrap();
 
         assert_eq!(file.location.as_local_path(), Some(Path::new("/tmp/table.parquet")));
+    }
+
+    #[test]
+    fn remote_direct_source_diagnostics_are_not_proven_direct_device_reads() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part-0.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .unwrap();
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["id".to_string()]);
+
+        assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
+        assert_eq!(source.diagnostics.source_decode_input, "filepath");
+        assert!(!source.diagnostics.direct_device_read);
+        assert!(source.diagnostics.rejected_features.is_empty());
+    }
+
+    #[test]
+    fn object_store_default_stable_ids_are_redacted_hashes() {
+        let uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            uri,
+            CredentialMode::SharedProcessEnv,
+        ))
+        .unwrap();
+
+        assert!(file.stable_id.starts_with("object_store:s3:fnv64:"));
+        assert!(!file.stable_id.contains("secret-bucket"));
+        assert!(!file.stable_id.contains("X-Amz-Signature"));
+        assert_eq!(redacted_stable_id_diagnostic(uri), file.stable_id);
+    }
+
+    #[test]
+    fn source_debug_redacts_object_store_locations_and_stable_ids() {
+        let uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
+        let source = ResolvedParquetSource::remote_direct(uri, CredentialMode::SharedProcessEnv)
+            .with_lakehouse_cache_config("/tmp/cache/secret-bucket/private/key.parquet?token=abc", None)
+            .with_lakehouse_cache_path("/tmp/cache/secret-bucket/private/key.parquet?token=abc");
+        let file = LocalParquetFile::from_resolved_parquet_source(source)
+            .unwrap()
+            .with_stable_id("s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc");
+
+        let rendered = format!("{file:?}");
+        for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "token=abc"] {
+            assert!(!rendered.contains(sensitive), "debug output leaked {sensitive}: {rendered}");
+        }
+
+        let location = ParquetSourceLocation::object_store_uri(uri).unwrap();
+        let rendered_location = format!("{location:?}");
+        for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
+            assert!(
+                !rendered_location.contains(sensitive),
+                "location debug output leaked {sensitive}: {rendered_location}"
+            );
+        }
+    }
+
+    #[test]
+    fn object_store_path_diagnostics_are_redacted_hashes() {
+        let path = "secret-bucket/private/key.parquet?X-Amz-Signature=abc";
+        let diagnostic = redacted_object_store_path_diagnostic(path);
+
+        assert!(diagnostic.starts_with("object_store_path:fnv64:"));
+        for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
+            assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
+        }
     }
 }

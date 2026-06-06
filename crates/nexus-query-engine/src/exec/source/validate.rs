@@ -75,8 +75,8 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 )
                 .with_fact("reason", "missing_row_count_metadata")
                 .with_fact("file_index", file_index)
-                .with_fact("path", file.path.display())
-                .with_fact("stable_id", file.stable_id.as_str()));
+                .with_fact("path", file_path_fact(file))
+                .with_fact("stable_id", file_stable_id_fact(file)));
             }
         }
     }
@@ -126,7 +126,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                     "nexus_query_engine.local_parquet_source.validate",
                     "local parquet row group index exceeds the cudf reader range",
                 )
-                .with_fact("path", file.path.display())
+                .with_fact("path", file_path_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("row_group_position", index)
                 .with_fact("row_group", row_group)
@@ -140,7 +140,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                     "nexus_query_engine.local_parquet_source.validate",
                     "selected parquet row group is outside source contract row-group bytes",
                 )
-                .with_fact("path", file.path.display())
+                .with_fact("path", file_path_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("row_group_position", index)
                 .with_fact("row_group", row_group)
@@ -163,6 +163,18 @@ fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Optio
         .map(Vec::len)
 }
 
+fn file_path_fact(file: &LocalParquetFile) -> String {
+    if file.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&file.path)
+    } else {
+        file.location.diagnostic_location()
+    }
+}
+
+fn file_stable_id_fact(file: &LocalParquetFile) -> String {
+    file.location.diagnostic_stable_id(file.stable_id.as_str())
+}
+
 fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result<()> {
     let diagnostics = &source.diagnostics;
     if !diagnostics.rejected_features.is_empty() {
@@ -175,14 +187,6 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
         )
         .with_fact("reason", "rejected_source_features")
         .with_fact("rejected_features", features));
-    }
-    if !diagnostics.direct_device_read {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.local_parquet_source.validate",
-            "local parquet source is not eligible for direct device read",
-        )
-        .with_fact("reason", "direct_device_read_disabled"));
     }
     if diagnostics.byte_range_disposition == ByteRangeDisposition::Rejected {
         return Err(unsupported_source_contract_fact("byte_range", diagnostics.byte_range_disposition.as_str()));

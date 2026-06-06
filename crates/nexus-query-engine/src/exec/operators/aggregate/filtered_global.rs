@@ -548,6 +548,7 @@ fn prepare_filtered_global_predicates_for_chunk(
     Ok(FilteredGlobalPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
+#[allow(clippy::type_complexity)]
 fn prepare_filtered_global_partial_segment(
     prepared_chunk: &FilteredGlobalPreparedChunk,
     input_schema: &ArrowSchemaRef,

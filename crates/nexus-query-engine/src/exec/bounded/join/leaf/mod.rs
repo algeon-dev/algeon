@@ -10,8 +10,9 @@ use crate::{
     exec::{
         bounded::chunks::{
             SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
-            source_read_budget_correction_from_error, source_read_reservation_contract,
-            try_grow_source_read_reservation_for_budget_correction, try_read_cached_local_parquet_chunk,
+            source_read_batch_reservation_contract, source_read_budget_correction_from_error,
+            source_read_reservation_contract, try_grow_source_read_reservation_for_budget_correction,
+            try_read_cached_local_parquet_chunk,
         },
         source::{
             ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk_batch,
@@ -323,12 +324,13 @@ fn read_join_leaf_source_stream_chunks(
     }
 
     let grow_source_to_observed = stream.stages.is_empty();
-    let mut chunks = if stream_has_multi_source_batches(stream) {
-        read_join_leaf_source_chunks_serial(
+    let materialized_batches = materialized_source_chunk_batches(stream);
+    let mut chunks = if materialized_batches.iter().any(|batch| batch.chunk_count() > 1) {
+        read_join_leaf_source_batches_serial(
             context,
             &stream.source,
             stream.node_id,
-            &stream.chunks,
+            materialized_batches,
             &stream.reader_dynamic_filters,
             reservations,
             metrics,
@@ -410,7 +412,7 @@ fn empty_join_leaf_source_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_local_parquet_source(context, &stream.source, metrics)?;
+    let frame = read_local_parquet_source(context, stream.node_id, &stream.source, metrics)?;
     let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
     let reservation = reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())

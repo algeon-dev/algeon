@@ -340,6 +340,38 @@ impl QueryError {
             .with_source(source)
     }
 
+    /// Wraps a `cudf::Error` without attaching its display text as a source.
+    ///
+    /// Use this for diagnostics that may pass sensitive reader locations into
+    /// lower layers. The stable cuDF classification facts are retained, but
+    /// potentially unsanitized dependency messages are not exposed through this
+    /// error's `Display` or source chain.
+    pub(crate) fn from_cudf_without_source(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: &cudf::Error,
+    ) -> Self {
+        let code = code_for_cudf_error(source);
+        Self::new(code, operation, message)
+            .with_fact("cudf_code", source.code())
+            .with_fact("cudf_kind", source.kind())
+            .with_fact("cudf_status", source.status())
+            .with_fact("cudf_operation", source.operation())
+    }
+
+    pub(crate) fn from_cudf_without_source_with_budget_details(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: &cudf::Error,
+    ) -> Self {
+        let budget_details = cudf_budget_details(source);
+        let mut error = Self::from_cudf_without_source(operation, message, source);
+        for (key, value) in budget_details {
+            error = error.with_fact(key, value);
+        }
+        error
+    }
+
     /// Creates a native-engine error from cuDF and preserves budget-token
     /// diagnostics when the lower layer attached them.
     pub fn from_cudf_with_budget_details(
@@ -347,26 +379,7 @@ impl QueryError {
         message: impl Into<String>,
         source: cudf::Error,
     ) -> Self {
-        let budget_details = source
-            .details()
-            .iter()
-            .filter(|(key, _)| {
-                matches!(
-                    *key,
-                    "budget_boundary"
-                        | "budget_bytes"
-                        | "budget_enforcement"
-                        | "budget_status"
-                        | "budget_peak_bytes"
-                        | "budget_current_bytes"
-                        | "budget_peak_aligned_bytes"
-                        | "budget_current_aligned_bytes"
-                        | "budget_failed_allocation_count"
-                        | "budget_largest_failed_allocation_bytes"
-                )
-            })
-            .map(|(key, value)| (*key, value.clone()))
-            .collect::<Vec<_>>();
+        let budget_details = cudf_budget_details(&source);
         let mut error = Self::from_cudf(operation, message, source);
         for (key, value) in budget_details {
             error = error.with_fact(key, value);
@@ -426,6 +439,29 @@ impl QueryError {
         }
         None
     }
+}
+
+fn cudf_budget_details(source: &cudf::Error) -> Vec<(&'static str, String)> {
+    source
+        .details()
+        .iter()
+        .filter(|(key, _)| {
+            matches!(
+                *key,
+                "budget_boundary"
+                    | "budget_bytes"
+                    | "budget_enforcement"
+                    | "budget_status"
+                    | "budget_peak_bytes"
+                    | "budget_current_bytes"
+                    | "budget_peak_aligned_bytes"
+                    | "budget_current_aligned_bytes"
+                    | "budget_failed_allocation_count"
+                    | "budget_largest_failed_allocation_bytes"
+            )
+        })
+        .map(|(key, value)| (*key, value.clone()))
+        .collect()
 }
 
 impl fmt::Display for QueryError {

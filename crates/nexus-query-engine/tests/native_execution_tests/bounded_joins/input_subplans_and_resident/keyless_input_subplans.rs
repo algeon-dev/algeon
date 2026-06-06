@@ -66,6 +66,7 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::OperatorOutput, "join_filtered_build_key_deduplicate"),
             (ReservationKind::HashTable, "join_hash_table"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),

@@ -1443,6 +1443,108 @@ pub struct DimensionDerivedApplyResult {
     pub after: usize,
 }
 
+/// One per-file row-group selection derived outside the native engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalParquetRowGroupSelection {
+    /// Physical Parquet row-group count in the file footer.
+    pub total_row_groups: usize,
+    /// Physical row-group ids retained by the external pruning pass.
+    pub row_groups: Vec<usize>,
+}
+
+/// Outcome of [`apply_local_parquet_row_group_selections`].
+#[derive(Debug, Clone)]
+pub struct LocalParquetRowGroupSelectionApplyResult {
+    /// Plan with the source row-group selection narrowed when pruning applied.
+    pub plan: QueryPlan,
+    /// Whether pruning strictly narrowed the source.
+    pub applied: bool,
+    /// Total candidate row groups before pruning.
+    pub before: usize,
+    /// Retained row groups after pruning.
+    pub after: usize,
+}
+
+/// Applies externally-derived row-group selections to a `LocalParquetSource`.
+///
+/// The supplied selections are physical Parquet row-group ids, one entry per
+/// source file. Existing file-level selections are narrowed, never widened. An
+/// empty result is treated as non-applied for now because native empty-source
+/// representation is not modeled by this patching API.
+pub fn apply_local_parquet_row_group_selections(
+    plan: QueryPlan,
+    source_node_id: NodeId,
+    selections: &[LocalParquetRowGroupSelection],
+) -> LocalParquetRowGroupSelectionApplyResult {
+    let mut nodes = plan.nodes().to_vec();
+    let root = plan.root_id();
+    let sink = plan.sink().clone();
+    let dynamic_filter_routes = plan.dynamic_filter_routes().to_vec();
+    let unchanged = |nodes: Vec<QueryNode>| LocalParquetRowGroupSelectionApplyResult {
+        plan: QueryPlan::from_rewritten_parts(nodes, root, sink.clone())
+            .with_dynamic_filter_routes(dynamic_filter_routes.clone()),
+        applied: false,
+        before: 0,
+        after: 0,
+    };
+
+    let Some(source) = mutable_local_parquet_source(&mut nodes, source_node_id) else {
+        return unchanged(nodes);
+    };
+    if selections.len() != source.files.len() {
+        return unchanged(nodes);
+    }
+
+    let mut before = 0usize;
+    let mut after = 0usize;
+    let mut new_row_groups_by_file = Vec::with_capacity(source.files.len());
+    for (file, selection) in source.files.iter().zip(selections) {
+        if selection.total_row_groups == 0 {
+            return unchanged(nodes);
+        }
+        let candidates = selected_or_all_row_groups(file, selection.total_row_groups);
+        if candidates.iter().any(|row_group| *row_group >= selection.total_row_groups) {
+            return unchanged(nodes);
+        }
+        let candidate_set = candidates.iter().copied().collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        let mut previous_candidate_position = None;
+        for row_group in &selection.row_groups {
+            if !seen.insert(*row_group) {
+                return unchanged(nodes);
+            }
+            if !candidate_set.contains(row_group) {
+                return unchanged(nodes);
+            }
+            let Some(candidate_position) = candidates.iter().position(|candidate| candidate == row_group) else {
+                return unchanged(nodes);
+            };
+            if previous_candidate_position.is_some_and(|previous| candidate_position <= previous) {
+                return unchanged(nodes);
+            }
+            previous_candidate_position = Some(candidate_position);
+        }
+        before += candidates.len();
+        after += selection.row_groups.len();
+        new_row_groups_by_file.push(selection.row_groups.clone());
+    }
+
+    if after == 0 || after >= before {
+        return unchanged(nodes);
+    }
+
+    for (file, row_groups) in source.files.iter_mut().zip(new_row_groups_by_file) {
+        file.row_groups = Some(row_groups);
+    }
+    source.refresh_diagnostics();
+    LocalParquetRowGroupSelectionApplyResult {
+        plan: QueryPlan::from_rewritten_parts(nodes, root, sink).with_dynamic_filter_routes(dynamic_filter_routes),
+        applied: true,
+        before,
+        after,
+    }
+}
+
 /// Applies an externally-derived dimension key filter to a fact `LocalParquetSource`
 /// using caller-supplied per-row-group key statistics, returning a patched plan.
 ///
@@ -1540,4 +1642,101 @@ fn row_group_key_range(row_group: &RowGroupMetaData, column_index: usize) -> Opt
 
 fn ranges_overlap(left: KeyRange, right: KeyRange) -> bool {
     left.max >= right.min && right.max >= left.min
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::plan::QueryPlanBuilder;
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_narrows_existing_selection() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 2] }],
+        );
+
+        assert!(result.applied);
+        assert_eq!(result.before, 3);
+        assert_eq!(result.after, 2);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_rejects_widening_existing_selection() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 4] }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_rejects_empty_selection() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(None);
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: Vec::new() }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, None);
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_rejects_duplicate_selection() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 1] }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_rejects_noncanonical_order() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![2, 1] }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    fn test_plan_with_source_row_groups(row_groups: Option<Vec<usize>>) -> (QueryPlan, NodeId) {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+        let mut file = LocalParquetFile::new("/tmp/test.parquet");
+        file.row_groups = row_groups;
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["x".to_string()]);
+        let mut builder = QueryPlanBuilder::new();
+        let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+        (builder.finish_with_host_sink(source_node_id), source_node_id)
+    }
 }

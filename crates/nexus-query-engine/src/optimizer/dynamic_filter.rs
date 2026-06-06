@@ -257,9 +257,14 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                             diagnostics.candidates.push(candidate);
                             continue;
                         }
-                        let Some((consumer, consumer_column)) =
-                            post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true)
-                        else {
+                        let Some((consumer, consumer_column)) = post_decode_consumer_for_orientation(
+                            &plan,
+                            &parent_counts,
+                            node.id,
+                            &orientation,
+                            true,
+                            false,
+                        ) else {
                             candidate.rejected_reason =
                                 Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
                             diagnostics.candidates.push(candidate);
@@ -307,7 +312,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     continue;
                 } else {
                     let Some((consumer, consumer_column)) =
-                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, false)
+                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, false, true)
                     else {
                         candidate.rejected_reason =
                             Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
@@ -895,6 +900,7 @@ fn post_decode_consumer_for_orientation(
     join_node_id: NodeId,
     orientation: &RouteOrientation<'_>,
     stop_at_shared_path: bool,
+    allow_hash_join_probe_fallback: bool,
 ) -> Option<(DynamicFilterConsumer, String)> {
     let consumer_key = orientation.consumer_key.name();
     if !plan
@@ -904,19 +910,21 @@ fn post_decode_consumer_for_orientation(
     {
         return None;
     }
-    Some(
-        earliest_filter_consumer_for_column(
-            plan,
-            parent_counts,
-            orientation.consumer_input,
-            consumer_key,
-            stop_at_shared_path,
-        )
-        .unwrap_or((
-            DynamicFilterConsumer::HashJoinProbe { join_node_id, probe_side: orientation.consumer_side },
-            consumer_key.to_string(),
-        )),
-    )
+    let consumer = earliest_filter_consumer_for_column(
+        plan,
+        parent_counts,
+        orientation.consumer_input,
+        consumer_key,
+        stop_at_shared_path,
+    );
+    consumer.or_else(|| {
+        allow_hash_join_probe_fallback.then(|| {
+            (
+                DynamicFilterConsumer::HashJoinProbe { join_node_id, probe_side: orientation.consumer_side },
+                consumer_key.to_string(),
+            )
+        })
+    })
 }
 
 fn populate_selected_consumer_diagnostics(

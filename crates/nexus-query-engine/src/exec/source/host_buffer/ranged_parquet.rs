@@ -16,8 +16,8 @@
 //!    counts, column-chunk byte ranges, and the file schema.
 //! 3. The minimum prefix of row groups that covers `scan_limit` rows, or an
 //!    explicit row-group subset selected by bounded chunk planning, is selected.
-//! 4. The byte ranges spanning those row groups are fetched with
-//!    `ObjectStore::get_ranges`.
+//! 4. The byte ranges spanning selected column chunks in those row groups are
+//!    fetched with `ObjectStore::get_ranges`.
 //! 5. A compact, legal Parquet file is rewritten in memory: magic header,
 //!    selected row-group bytes laid out back-to-back, and a regenerated footer
 //!    whose column-chunk offsets point at the new buffer layout. Bloom filter,
@@ -36,12 +36,15 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
-use parquet::file::{
-    FOOTER_SIZE,
-    metadata::{
-        ColumnChunkMetaData, FooterTail, ParquetMetaDataBuilder, ParquetMetaDataReader, ParquetMetaDataWriter,
-        RowGroupMetaData,
+use parquet::{
+    file::{
+        FOOTER_SIZE,
+        metadata::{
+            ColumnChunkMetaData, FooterTail, ParquetMetaDataBuilder, ParquetMetaDataReader, ParquetMetaDataWriter,
+            RowGroupMetaData,
+        },
     },
+    schema::types::{ColumnDescPtr, SchemaDescriptor, Type},
 };
 
 use crate::error::{QueryError, QueryErrorCode, Result};
@@ -61,6 +64,19 @@ pub(super) enum RangedRowGroupSelector {
     Explicit(Vec<usize>),
 }
 
+/// Ranged mini-Parquet request.
+#[derive(Debug, Clone)]
+pub(super) struct RangedParquetFetchRequest {
+    pub(super) row_group_selector: RangedRowGroupSelector,
+    pub(super) file_column_indices: Option<Vec<usize>>,
+}
+
+impl RangedParquetFetchRequest {
+    pub(super) fn new(row_group_selector: RangedRowGroupSelector, file_column_indices: Option<Vec<usize>>) -> Self {
+        Self { row_group_selector, file_column_indices }
+    }
+}
+
 /// A compact, legal Parquet payload derived from one object-store Parquet file.
 ///
 /// `mini_*` metadata describes row groups inside `bytes`.
@@ -74,6 +90,9 @@ pub(super) struct RangedParquetFetch {
     pub(super) mini_row_group_rows: Vec<u64>,
     pub(super) mini_row_group_bytes: Vec<u64>,
     pub(super) footer_bytes: u64,
+    pub(super) selected_file_column_indices: Vec<usize>,
+    pub(super) requested_range_count: usize,
+    pub(super) requested_range_bytes: u64,
 }
 
 impl RangedParquetFetch {
@@ -119,9 +138,9 @@ impl RangedParquetFetch {
 pub(super) async fn fetch_ranged_parquet(
     store: Arc<dyn ObjectStore>,
     location: ObjectStorePath,
-    selector: RangedRowGroupSelector,
+    request: RangedParquetFetchRequest,
 ) -> Result<RangedParquetFetch> {
-    match &selector {
+    match &request.row_group_selector {
         RangedRowGroupSelector::ScanLimit(0) => {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -150,11 +169,13 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "object-store Parquet file is smaller than the Parquet footer",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_fact("file_size", file_size));
     }
 
     let prefetch = FOOTER_PREFETCH_BYTES.min(file_size);
+    let mut requested_range_count = 1usize;
+    let mut requested_range_bytes = prefetch;
     let tail_start = file_size - prefetch;
     let tail = store
         .get_range(&location, tail_start..file_size)
@@ -166,7 +187,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "object-store Parquet tail fetch returned fewer bytes than the footer size",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_fact("file_size", file_size)
         .with_fact("tail_bytes", tail.len()));
     }
@@ -179,7 +200,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "failed to decode Parquet footer tail",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_source(error)
     })?;
     if footer_tail.is_encrypted_footer() {
@@ -188,7 +209,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "encrypted Parquet footers are not supported by ranged scan-limit fetch",
         )
-        .with_fact("path", location.as_ref()));
+        .with_fact("path", ranged_path_fact(&location)));
     }
 
     let metadata_len = footer_tail.metadata_length();
@@ -199,7 +220,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "Parquet footer metadata length exceeds file size",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_fact("file_size", file_size)
         .with_fact("metadata_length", metadata_len));
     }
@@ -211,6 +232,8 @@ pub(super) async fn fetch_ranged_parquet(
     } else {
         let metadata_start = file_size - total_footer_len as u64;
         let metadata_end = file_size - FOOTER_SIZE as u64;
+        requested_range_count += 1;
+        requested_range_bytes = requested_range_bytes.saturating_add(metadata_end.saturating_sub(metadata_start));
         store
             .get_range(&location, metadata_start..metadata_end)
             .await
@@ -227,7 +250,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "failed to decode Parquet footer metadata",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_source(error)
     })?;
     let metadata = reader.finish().map_err(|error| {
@@ -236,7 +259,7 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "failed to finalize Parquet footer metadata",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_source(error)
     })?;
 
@@ -247,10 +270,10 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "Parquet footer reports zero row groups",
         )
-        .with_fact("path", location.as_ref()));
+        .with_fact("path", ranged_path_fact(&location)));
     }
 
-    let selected_indices: Vec<usize> = match &selector {
+    let selected_indices: Vec<usize> = match &request.row_group_selector {
         RangedRowGroupSelector::ScanLimit(scan_limit) => {
             let mut needed_rows = *scan_limit;
             let mut selected = Vec::new();
@@ -272,7 +295,7 @@ pub(super) async fn fetch_ranged_parquet(
                         "nexus_query_engine.source_fetch.ranged_parquet",
                         "explicit row-group selection references an unknown row group",
                     )
-                    .with_fact("path", location.as_ref())
+                    .with_fact("path", ranged_path_fact(&location))
                     .with_fact("requested_row_group", idx)
                     .with_fact("row_groups_in_file", row_groups.len()));
                 }
@@ -282,13 +305,15 @@ pub(super) async fn fetch_ranged_parquet(
     };
     let selected_count = selected_indices.len();
     let selected_row_groups: Vec<&RowGroupMetaData> = selected_indices.iter().map(|&idx| &row_groups[idx]).collect();
+    let selected_file_column_indices =
+        selected_file_column_indices(request.file_column_indices.as_deref(), &metadata, &location)?;
     let mini_row_group_rows = selected_row_groups
         .iter()
         .map(|row_group| u64::try_from(row_group.num_rows().max(0)).unwrap_or(0))
         .collect::<Vec<_>>();
 
-    // Compute the byte ranges to fetch (one per column chunk in each selected
-    // row group), and prepare a parallel list of new offsets after rewrite.
+    // Compute the byte ranges to fetch (one per selected column chunk in each
+    // selected row group), and prepare a parallel list of new offsets after rewrite.
     let mut fetch_ranges: Vec<std::ops::Range<u64>> = Vec::new();
     let mut new_offsets: Vec<u64> = Vec::new();
     let mut row_group_start_offsets: Vec<u64> = Vec::with_capacity(selected_row_groups.len());
@@ -297,7 +322,17 @@ pub(super) async fn fetch_ranged_parquet(
     for row_group in &selected_row_groups {
         row_group_start_offsets.push(next_offset);
         let row_group_start = next_offset;
-        for column in row_group.columns() {
+        for &column_index in &selected_file_column_indices {
+            let column = row_group.columns().get(column_index).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.source_fetch.ranged_parquet",
+                    "selected Parquet column index is not present in a selected row group",
+                )
+                .with_fact("path", ranged_path_fact(&location))
+                .with_fact("column_index", column_index)
+                .with_fact("row_group_columns", row_group.columns().len())
+            })?;
             let (start, length) = column.byte_range();
             fetch_ranges.push(
                 start..start.checked_add(length).ok_or_else(|| {
@@ -306,7 +341,7 @@ pub(super) async fn fetch_ranged_parquet(
                         "nexus_query_engine.source_fetch.ranged_parquet",
                         "Parquet column-chunk byte range overflows file size",
                     )
-                    .with_fact("path", location.as_ref())
+                    .with_fact("path", ranged_path_fact(&location))
                     .with_fact("column_start", start)
                     .with_fact("column_length", length)
                 })?,
@@ -318,13 +353,16 @@ pub(super) async fn fetch_ranged_parquet(
                     "nexus_query_engine.source_fetch.ranged_parquet",
                     "rewritten Parquet column-chunk offset overflows u64",
                 )
-                .with_fact("path", location.as_ref())
+                .with_fact("path", ranged_path_fact(&location))
             })?;
         }
         mini_row_group_bytes.push(next_offset - row_group_start);
     }
 
     let column_data_total_bytes = next_offset - PARQUET_MAGIC.len() as u64;
+    requested_range_count += fetch_ranges.len();
+    requested_range_bytes = requested_range_bytes
+        .saturating_add(fetch_ranges.iter().map(|range| range.end.saturating_sub(range.start)).sum::<u64>());
     let column_chunks = if fetch_ranges.is_empty() {
         Vec::new()
     } else {
@@ -339,20 +377,35 @@ pub(super) async fn fetch_ranged_parquet(
             "nexus_query_engine.source_fetch.ranged_parquet",
             "object-store ranged GET returned an unexpected chunk count",
         )
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(&location))
         .with_fact("requested_ranges", fetch_ranges.len())
         .with_fact("returned_chunks", column_chunks.len()));
     }
 
     // Rebuild metadata with adjusted column-chunk offsets and stripped
     // bloom-filter / column-index / offset-index references.
+    let source_file_metadata = metadata.file_metadata();
+    let projected_schema = projected_flat_schema_descriptor(&metadata, &selected_file_column_indices, &location)?;
+    let projects_all_columns = selected_file_column_indices.len() == source_file_metadata.schema_descr().num_columns()
+        && selected_file_column_indices.iter().copied().eq(0..source_file_metadata.schema_descr().num_columns());
     let mut rewritten_row_groups: Vec<RowGroupMetaData> = Vec::with_capacity(selected_row_groups.len());
     let mut column_iter = new_offsets.into_iter();
-    for (row_group, &rg_start) in selected_row_groups.iter().zip(row_group_start_offsets.iter()) {
-        let mut rg_builder = (*row_group).clone().into_builder();
-        let columns: Vec<ColumnChunkMetaData> = rg_builder.take_columns();
-        let mut rewritten_columns = Vec::with_capacity(columns.len());
-        for column in columns {
+    for (mini_row_group_index, (row_group, &rg_start)) in
+        selected_row_groups.iter().zip(row_group_start_offsets.iter()).enumerate()
+    {
+        let columns: Vec<ColumnChunkMetaData> = row_group.columns().to_vec();
+        let mut rewritten_columns = Vec::with_capacity(selected_file_column_indices.len());
+        for (projected_column_index, &column_index) in selected_file_column_indices.iter().enumerate() {
+            let column = columns.get(column_index).cloned().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.source_fetch.ranged_parquet",
+                    "selected Parquet column index is missing during metadata rewrite",
+                )
+                .with_fact("path", ranged_path_fact(&location))
+                .with_fact("column_index", column_index)
+                .with_fact("row_group_columns", columns.len())
+            })?;
             let new_start = column_iter.next().ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::Internal,
@@ -373,26 +426,12 @@ pub(super) async fn fetch_ranged_parquet(
                 Some(dict) => (new_chunk_start + (data_offset - dict), Some(new_chunk_start)),
                 None => (new_chunk_start, None),
             };
-            let rewritten = column
-                .into_builder()
-                .set_data_page_offset(new_data_page_offset)
-                .set_dictionary_page_offset(new_dictionary_page_offset)
-                .set_index_page_offset(None)
-                .set_bloom_filter_offset(None)
-                .set_bloom_filter_length(None)
-                .set_offset_index_offset(None)
-                .set_offset_index_length(None)
-                .set_column_index_offset(None)
-                .set_column_index_length(None)
-                .build()
-                .map_err(|error| {
-                    QueryError::new(
-                        QueryErrorCode::CudfDependencyFailure,
-                        "nexus_query_engine.source_fetch.ranged_parquet",
-                        "failed to rebuild rewritten Parquet column-chunk metadata",
-                    )
-                    .with_source(error)
-                })?;
+            let rewritten = rewrite_column_chunk_metadata(
+                column,
+                projected_schema.column(projected_column_index),
+                new_data_page_offset,
+                new_dictionary_page_offset,
+            )?;
             rewritten_columns.push(rewritten);
         }
         let rg_file_offset = i64::try_from(rg_start).map_err(|_error| {
@@ -402,17 +441,35 @@ pub(super) async fn fetch_ranged_parquet(
                 "rewritten Parquet row-group file offset exceeds i64 range",
             )
         })?;
-        let rg_meta =
-            rg_builder.set_column_metadata(rewritten_columns).set_file_offset(rg_file_offset).build().map_err(
-                |error| {
-                    QueryError::new(
-                        QueryErrorCode::CudfDependencyFailure,
-                        "nexus_query_engine.source_fetch.ranged_parquet",
-                        "failed to rebuild rewritten Parquet row-group metadata",
-                    )
-                    .with_source(error)
-                },
-            )?;
+        let total_byte_size = rewritten_columns
+            .iter()
+            .try_fold(0i64, |total, column| total.checked_add(column.uncompressed_size()).ok_or(()))
+            .map_err(|()| {
+                QueryError::new(
+                    QueryErrorCode::CudfDependencyFailure,
+                    "nexus_query_engine.source_fetch.ranged_parquet",
+                    "rewritten Parquet row-group byte size overflows i64",
+                )
+            })?;
+        let mut rg_builder = RowGroupMetaData::builder(projected_schema.clone())
+            .set_num_rows(row_group.num_rows())
+            .set_total_byte_size(total_byte_size)
+            .set_column_metadata(rewritten_columns)
+            .set_file_offset(rg_file_offset);
+        if projects_all_columns {
+            rg_builder = rg_builder.set_sorting_columns(row_group.sorting_columns().cloned());
+        }
+        if let Ok(ordinal) = i16::try_from(mini_row_group_index) {
+            rg_builder = rg_builder.set_ordinal(ordinal);
+        }
+        let rg_meta = rg_builder.build().map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::CudfDependencyFailure,
+                "nexus_query_engine.source_fetch.ranged_parquet",
+                "failed to rebuild rewritten Parquet row-group metadata",
+            )
+            .with_source(error)
+        })?;
         rewritten_row_groups.push(rg_meta);
     }
 
@@ -423,17 +480,25 @@ pub(super) async fn fetch_ranged_parquet(
                 "nexus_query_engine.source_fetch.ranged_parquet",
                 "rewritten Parquet file row count overflows i64",
             )
-            .with_fact("path", location.as_ref())
+            .with_fact("path", ranged_path_fact(&location))
         })
     })?;
-    let source_file_metadata = metadata.file_metadata();
+    let key_value_metadata =
+        if projects_all_columns { source_file_metadata.key_value_metadata().cloned() } else { None };
+    let column_orders = source_file_metadata.column_orders().map(|orders| {
+        if projects_all_columns {
+            orders.clone()
+        } else {
+            selected_file_column_indices.iter().filter_map(|index| orders.get(*index).cloned()).collect()
+        }
+    });
     let rewritten_file_metadata = parquet::file::metadata::FileMetaData::new(
         source_file_metadata.version(),
         mini_total_rows,
         source_file_metadata.created_by().map(ToOwned::to_owned),
-        source_file_metadata.key_value_metadata().cloned(),
-        source_file_metadata.schema_descr_ptr(),
-        source_file_metadata.column_orders().cloned(),
+        key_value_metadata,
+        projected_schema,
+        column_orders,
     );
     let rewritten_metadata = ParquetMetaDataBuilder::new(rewritten_file_metadata)
         .set_row_groups(rewritten_row_groups)
@@ -487,19 +552,159 @@ pub(super) async fn fetch_ranged_parquet(
         mini_row_group_rows,
         mini_row_group_bytes,
         footer_bytes,
+        selected_file_column_indices,
+        requested_range_count,
+        requested_range_bytes,
     }
     .validate(&location)
 }
 
-fn ranged_fetch_error(message: &'static str, error: object_store::Error, location: &ObjectStorePath) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfDependencyFailure, "nexus_query_engine.source_fetch.ranged_parquet", message)
-        .with_fact("path", location.as_ref())
+fn selected_file_column_indices(
+    requested: Option<&[usize]>,
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    location: &ObjectStorePath,
+) -> Result<Vec<usize>> {
+    let total_columns = metadata.file_metadata().schema_descr().num_columns();
+    let mut columns = requested
+        .filter(|columns| !columns.is_empty())
+        .map(|columns| columns.to_vec())
+        .unwrap_or_else(|| (0..total_columns).collect());
+    if columns.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_fetch.ranged_parquet",
+            "ranged Parquet fetch requires at least one selected file column",
+        )
+        .with_fact("path", ranged_path_fact(location)));
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    if let Some(column) = columns.iter().find(|column| **column >= total_columns) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_fetch.ranged_parquet",
+            "selected Parquet file column index is out of bounds",
+        )
+        .with_fact("path", ranged_path_fact(location))
+        .with_fact("column_index", *column)
+        .with_fact("file_columns", total_columns));
+    }
+    Ok(columns)
+}
+
+fn projected_flat_schema_descriptor(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    selected_file_column_indices: &[usize],
+    location: &ObjectStorePath,
+) -> Result<std::sync::Arc<SchemaDescriptor>> {
+    let schema = metadata.file_metadata().schema_descr();
+    let root = schema.root_schema();
+    let fields = root.get_fields();
+    let total_columns = schema.num_columns();
+    if selected_file_column_indices.len() == total_columns
+        && selected_file_column_indices.iter().copied().eq(0..total_columns)
+    {
+        return Ok(metadata.file_metadata().schema_descr_ptr());
+    }
+    for &column_index in selected_file_column_indices {
+        let column = schema.column(column_index);
+        let path = column.path().parts();
+        if path.len() != 1 {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.source_fetch.ranged_parquet",
+                "projected ranged mini-Parquet rewrite currently supports only flat top-level columns",
+            )
+            .with_fact("path", ranged_path_fact(location))
+            .with_fact("column_index", column_index)
+            .with_fact("column_path", path.join(".")));
+        }
+    }
+    let projected_fields = selected_file_column_indices
+        .iter()
+        .map(|index| {
+            fields.get(*index).cloned().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.source_fetch.ranged_parquet",
+                    "selected Parquet file column index is missing from the root schema",
+                )
+                .with_fact("path", ranged_path_fact(location))
+                .with_fact("column_index", *index)
+                .with_fact("root_fields", fields.len())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let projected_schema =
+        Type::group_type_builder(root.name()).with_fields(projected_fields).build().map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::CudfDependencyFailure,
+                "nexus_query_engine.source_fetch.ranged_parquet",
+                "failed to build projected flat Parquet schema for ranged mini-Parquet rewrite",
+            )
+            .with_fact("path", ranged_path_fact(location))
+            .with_source(error)
+        })?;
+    Ok(Arc::new(SchemaDescriptor::new(Arc::new(projected_schema))))
+}
+
+fn rewrite_column_chunk_metadata(
+    column: ColumnChunkMetaData,
+    projected_column_descriptor: ColumnDescPtr,
+    new_data_page_offset: i64,
+    new_dictionary_page_offset: Option<i64>,
+) -> Result<ColumnChunkMetaData> {
+    let mut builder = ColumnChunkMetaData::builder(projected_column_descriptor)
+        .set_encodings(column.encodings().collect())
+        .set_num_values(column.num_values())
+        .set_compression(column.compression())
+        .set_total_compressed_size(column.compressed_size())
+        .set_total_uncompressed_size(column.uncompressed_size())
+        .set_data_page_offset(new_data_page_offset)
+        .set_dictionary_page_offset(new_dictionary_page_offset)
+        .set_index_page_offset(None)
+        .set_bloom_filter_offset(None)
+        .set_bloom_filter_length(None)
+        .set_offset_index_offset(None)
+        .set_offset_index_length(None)
+        .set_column_index_offset(None)
+        .set_column_index_length(None)
+        .set_unencoded_byte_array_data_bytes(column.unencoded_byte_array_data_bytes())
+        .set_repetition_level_histogram(column.repetition_level_histogram().cloned())
+        .set_definition_level_histogram(column.definition_level_histogram().cloned());
+    if let Some(file_path) = column.file_path() {
+        builder = builder.set_file_path(file_path.to_string());
+    }
+    if let Some(statistics) = column.statistics().cloned() {
+        builder = builder.set_statistics(statistics);
+    }
+    if let Some(encoding_stats) = column.page_encoding_stats().cloned() {
+        builder = builder.set_page_encoding_stats(encoding_stats);
+    } else if let Some(encoding_stats_mask) = column.page_encoding_stats_mask().cloned() {
+        builder = builder.set_page_encoding_stats_mask(encoding_stats_mask);
+    }
+    builder.build().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.source_fetch.ranged_parquet",
+            "failed to rebuild rewritten Parquet column-chunk metadata",
+        )
         .with_source(error)
+    })
+}
+
+fn ranged_fetch_error(message: &'static str, _error: object_store::Error, location: &ObjectStorePath) -> QueryError {
+    QueryError::new(QueryErrorCode::CudfDependencyFailure, "nexus_query_engine.source_fetch.ranged_parquet", message)
+        .with_fact("path", ranged_path_fact(location))
 }
 
 fn invalid_rewrite(location: &ObjectStorePath, message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::CudfDependencyFailure, "nexus_query_engine.source_fetch.ranged_parquet", message)
-        .with_fact("path", location.as_ref())
+        .with_fact("path", ranged_path_fact(location))
+}
+
+fn ranged_path_fact(location: impl AsRef<str>) -> String {
+    crate::source::redacted_object_store_path_diagnostic(location.as_ref())
 }
 
 #[cfg(test)]
@@ -507,8 +712,8 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
-        array::{Int64Array, RecordBatch, StringArray},
-        datatypes::{DataType, Field, Schema},
+        array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray},
+        datatypes::{DataType, Field, Fields, Schema},
     };
     use bytes::Bytes;
     use object_store::{ObjectStoreExt, memory::InMemory, path::Path as ObjectStorePath};
@@ -532,6 +737,52 @@ mod tests {
             vec![Arc::new(Int64Array::from(ids)), Arc::new(StringArray::from(names))],
         )
         .unwrap();
+
+        let mut buf: Vec<u8> = Vec::new();
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        Bytes::from(buf)
+    }
+
+    fn write_three_column_test_parquet(num_row_groups: usize, rows_per_group: usize) -> Bytes {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("amount", DataType::Int64, false),
+        ]));
+        let total_rows = num_row_groups * rows_per_group;
+        let ids: Vec<i64> = (0..total_rows as i64).collect();
+        let names: Vec<String> = (0..total_rows).map(|i| format!("row-{i}")).collect();
+        let amounts: Vec<i64> = (0..total_rows as i64).map(|i| i * 10).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(StringArray::from(names)),
+                Arc::new(Int64Array::from(amounts)),
+            ],
+        )
+        .unwrap();
+
+        let mut buf: Vec<u8> = Vec::new();
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        Bytes::from(buf)
+    }
+
+    fn write_nested_test_parquet(rows_per_group: usize) -> Bytes {
+        let child_field = Arc::new(Field::new("x", DataType::Int64, false));
+        let struct_type = DataType::Struct(Fields::from(vec![child_field.clone()]));
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("s", struct_type, false)]));
+        let ids: ArrayRef = Arc::new(Int64Array::from((0..rows_per_group as i64).collect::<Vec<_>>()));
+        let values: ArrayRef = Arc::new(Int64Array::from((0..rows_per_group as i64).collect::<Vec<_>>()));
+        let struct_array: ArrayRef = Arc::new(StructArray::from(vec![(child_field, values)]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![ids, struct_array]).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
         let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
@@ -567,6 +818,31 @@ mod tests {
         ParquetRecordBatchReaderBuilder::try_new(parquet_bytes).unwrap().metadata().file_metadata().num_rows()
     }
 
+    fn parquet_schema_field_names(parquet_bytes: Bytes) -> Vec<String> {
+        ParquetRecordBatchReaderBuilder::try_new(parquet_bytes)
+            .unwrap()
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    }
+
+    fn request(selector: RangedRowGroupSelector) -> RangedParquetFetchRequest {
+        RangedParquetFetchRequest::new(selector, None)
+    }
+
+    #[test]
+    fn ranged_path_fact_redacts_object_store_keys() {
+        let location = ObjectStorePath::from("secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
+        let diagnostic = ranged_path_fact(location);
+
+        assert!(diagnostic.starts_with("object_store_path:fnv64:"));
+        for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+            assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
+        }
+    }
+
     #[tokio::test]
     async fn fetches_only_first_row_group_when_limit_fits() {
         let parquet_bytes = write_test_parquet(4, 25);
@@ -574,7 +850,7 @@ mod tests {
         let location = ObjectStorePath::from("table/part-0.parquet");
         store.put(&location, parquet_bytes.clone().into()).await.unwrap();
 
-        let mini = fetch_ranged_parquet(store, location, RangedRowGroupSelector::ScanLimit(10)).await.unwrap();
+        let mini = fetch_ranged_parquet(store, location, request(RangedRowGroupSelector::ScanLimit(10))).await.unwrap();
 
         assert!(mini.bytes.len() < parquet_bytes.len(), "mini-Parquet should be smaller than original");
         assert_eq!(mini.original_file_bytes, parquet_bytes.len() as u64);
@@ -597,7 +873,7 @@ mod tests {
         let location = ObjectStorePath::from("table/part-0.parquet");
         store.put(&location, parquet_bytes.clone().into()).await.unwrap();
 
-        let mini = fetch_ranged_parquet(store, location, RangedRowGroupSelector::ScanLimit(30)).await.unwrap();
+        let mini = fetch_ranged_parquet(store, location, request(RangedRowGroupSelector::ScanLimit(30))).await.unwrap();
 
         assert_eq!(mini.selected_original_row_groups, vec![0, 1]);
         assert_eq!(mini.mini_row_group_rows, vec![25, 25]);
@@ -614,7 +890,7 @@ mod tests {
         let location = ObjectStorePath::from("tiny.parquet");
         store.put(&location, parquet_bytes.clone().into()).await.unwrap();
 
-        let mini = fetch_ranged_parquet(store, location, RangedRowGroupSelector::ScanLimit(4)).await.unwrap();
+        let mini = fetch_ranged_parquet(store, location, request(RangedRowGroupSelector::ScanLimit(4))).await.unwrap();
         let ids = collect_int64_column(mini.bytes, 0);
         assert_eq!(ids, (0..8).collect::<Vec<_>>());
     }
@@ -626,7 +902,8 @@ mod tests {
         let location = ObjectStorePath::from("table/part-1.parquet");
         store.put(&location, parquet_bytes.into()).await.unwrap();
 
-        let mini = fetch_ranged_parquet(store, location, RangedRowGroupSelector::Explicit(vec![2, 3])).await.unwrap();
+        let mini =
+            fetch_ranged_parquet(store, location, request(RangedRowGroupSelector::Explicit(vec![2, 3]))).await.unwrap();
 
         assert_eq!(mini.selected_original_row_groups, vec![2, 3]);
         assert_eq!(mini.mini_row_group_rows, vec![25, 25]);
@@ -636,13 +913,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projected_flat_columns_rewrite_schema_and_data() {
+        let parquet_bytes = write_three_column_test_parquet(3, 10);
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let location = ObjectStorePath::from("table/part-2.parquet");
+        store.put(&location, parquet_bytes.clone().into()).await.unwrap();
+
+        let mini = fetch_ranged_parquet(
+            store,
+            location,
+            RangedParquetFetchRequest::new(RangedRowGroupSelector::Explicit(vec![0, 2]), Some(vec![2, 0])),
+        )
+        .await
+        .unwrap();
+
+        assert!(mini.bytes.len() < parquet_bytes.len(), "projected mini-Parquet should be smaller than original");
+        assert_eq!(mini.selected_original_row_groups, vec![0, 2]);
+        assert_eq!(mini.selected_file_column_indices, vec![0, 2]);
+        assert_eq!(parquet_schema_field_names(mini.bytes.clone()), vec!["id".to_string(), "amount".to_string()]);
+        assert_eq!(collect_int64_column(mini.bytes.clone(), 0), (0..10).chain(20..30).collect::<Vec<_>>());
+        assert_eq!(
+            collect_int64_column(mini.bytes, 1),
+            (0..10).chain(20..30).map(|value| value * 10).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn projected_nested_schema_falls_back_to_full_host_buffer() {
+        let parquet_bytes = write_nested_test_parquet(8);
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let location = ObjectStorePath::from("nested.parquet");
+        store.put(&location, parquet_bytes.into()).await.unwrap();
+
+        let error = fetch_ranged_parquet(
+            store,
+            location,
+            RangedParquetFetchRequest::new(RangedRowGroupSelector::Explicit(vec![0]), Some(vec![1])),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    }
+
+    #[tokio::test]
     async fn zero_scan_limit_is_rejected() {
         let parquet_bytes = write_test_parquet(1, 8);
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let location = ObjectStorePath::from("tiny.parquet");
         store.put(&location, parquet_bytes.into()).await.unwrap();
 
-        let error = fetch_ranged_parquet(store, location, RangedRowGroupSelector::ScanLimit(0)).await.unwrap_err();
+        let error =
+            fetch_ranged_parquet(store, location, request(RangedRowGroupSelector::ScanLimit(0))).await.unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     }
 }

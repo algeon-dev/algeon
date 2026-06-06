@@ -12,7 +12,7 @@ use crate::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
-    source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
+    source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef, SourceNode},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -446,9 +446,10 @@ fn local_parquet_file_rowset_signature(file: &crate::source::LocalParquetFile) -
         .map(|row_groups| row_groups.iter().map(ToString::to_string).collect::<Vec<_>>().join(","))
         .unwrap_or_else(|| "all".to_string());
     format!(
-        "stable_id={};location={};row_groups={};partition_values={:?}",
-        file.stable_id,
-        file.location.reader_path(),
+        "stable_id={};location={};resolved_contract={};row_groups={};partition_values={:?}",
+        file.location.diagnostic_stable_id(file.stable_id.as_str()),
+        file.location.diagnostic_location(),
+        resolved_source_contract_signature(&file.resolved_source),
         row_groups,
         file.partition_values
     )
@@ -2614,9 +2615,11 @@ fn source_column_ref_signature(source_ref: SourceColumnRef) -> String {
 fn file_signature(file: &crate::source::LocalParquetFile) -> String {
     let partition_values = file.partition_values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join(",");
     format!(
-        "stable_id={};location={};row_groups={};partition_values={}",
-        file.stable_id,
+        "stable_id={};location={};resolved_contract={};reader_decimal_contract={};row_groups={};partition_values={}",
+        file.location.diagnostic_stable_id(file.stable_id.as_str()),
         location_signature(&file.location),
+        resolved_source_contract_signature(&file.resolved_source),
+        reader_decimal_contract_signature(&file.reader_decimal_types),
         file.row_groups
             .as_ref()
             .map(|row_groups| row_groups.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(","))
@@ -2628,8 +2631,86 @@ fn file_signature(file: &crate::source::LocalParquetFile) -> String {
 fn location_signature(location: &ParquetSourceLocation) -> String {
     match location {
         ParquetSourceLocation::LocalPath(path) => format!("local:{}", path.display()),
-        ParquetSourceLocation::ObjectStoreUri { scheme, uri } => format!("{scheme}:{uri}"),
+        ParquetSourceLocation::ObjectStoreUri { .. } => location.diagnostic_location(),
     }
+}
+
+fn reader_decimal_contract_signature(reader_decimal_types: &[crate::source::ParquetReaderDecimalType]) -> String {
+    let mut output = String::new();
+    push_contract_value(&mut output, "reader_decimal_types.len", reader_decimal_types.len().to_string().as_str());
+    for (index, decimal_type) in reader_decimal_types.iter().enumerate() {
+        push_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.column_name").as_str(),
+            decimal_type.column_name.as_str(),
+        );
+        push_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.type_id").as_str(),
+            decimal_type.type_id.as_str(),
+        );
+        push_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.cudf_scale").as_str(),
+            decimal_type.cudf_scale.to_string().as_str(),
+        );
+    }
+    output
+}
+
+fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -> String {
+    let mut output = String::new();
+    push_contract_hash(&mut output, "original_location", Some(resolved_source.original_location.as_str()));
+    push_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location.as_str()));
+    push_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
+    push_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
+    push_contract_value(
+        &mut output,
+        "storage_profile_id",
+        resolved_source.storage_profile_id.as_deref().unwrap_or("none"),
+    );
+    push_contract_value(&mut output, "read_strategy", resolved_source.read_strategy.as_str());
+    push_contract_value(&mut output, "decode_input", resolved_source.decode_input.as_str());
+    push_contract_value(&mut output, "remote_read_mode", resolved_source.remote_read_mode.as_str());
+    push_contract_value(&mut output, "credential_mode", resolved_source.credential_mode.as_str());
+    push_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());
+    push_contract_value(&mut output, "lakehouse_cache_read_mode", resolved_source.lakehouse_cache_read_mode.as_str());
+    push_contract_hash(&mut output, "lakehouse_cache_root", resolved_source.lakehouse_cache_root.as_deref());
+    push_contract_hash(&mut output, "lakehouse_cache_path", resolved_source.lakehouse_cache_path.as_deref());
+    push_contract_value(
+        &mut output,
+        "lakehouse_cache_max_bytes",
+        resolved_source
+            .lakehouse_cache_max_bytes
+            .map_or_else(|| "none".to_string(), |bytes| bytes.to_string())
+            .as_str(),
+    );
+    push_contract_value(&mut output, "lakehouse_cache_fill_mode", resolved_source.lakehouse_cache_fill_mode.as_str());
+    push_contract_value(
+        &mut output,
+        "remote_host_buffer_ranged_enabled",
+        if resolved_source.remote_host_buffer_ranged_enabled { "true" } else { "false" },
+    );
+    push_contract_value(&mut output, "fallback_reason", resolved_source.fallback_reason.as_deref().unwrap_or("none"));
+    output
+}
+
+fn push_contract_hash(output: &mut String, key: &str, value: Option<&str>) {
+    match value {
+        Some(value) => push_contract_value(
+            output,
+            key,
+            format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len()).as_str(),
+        ),
+        None => push_contract_value(output, key, "none"),
+    }
+}
+
+fn push_contract_value(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push(';');
 }
 
 fn aggregate_expr_signature(expr: &AggregateExpr) -> String {

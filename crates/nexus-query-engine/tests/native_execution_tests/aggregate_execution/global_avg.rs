@@ -171,7 +171,7 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
-    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.partial_aggregate_count, 1);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_budgeted_success_event_with_contract(

@@ -62,7 +62,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
     let mut aggregate_outputs = Vec::with_capacity(partition_count);
 
     let source_batches = source_adjacent_raw_source_batches(context, bounded, chunks);
-    let mut committed_source_batch_row_groups = Vec::with_capacity(source_batches.len());
+    let mut committed_source_batches = Vec::with_capacity(source_batches.len());
     for batch in source_batches {
         let raw_inputs = match execute_source_adjacent_raw_source_batch(context, bounded, batch, reservations, metrics)
         {
@@ -101,7 +101,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
                     });
                 }
             }
-            committed_source_batch_row_groups.push(raw.source_row_group_count);
+            committed_source_batches.push((batch_chunks.len() as u64, raw.source_row_group_count));
         }
         for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
             if source_adjacent_partition_batch_ready(context, inputs) {
@@ -148,8 +148,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             },
         }
     }
-    for row_group_count in committed_source_batch_row_groups {
-        metrics.record_source_chunk_commit(row_group_count);
+    for (chunk_count, row_group_count) in committed_source_batches {
+        metrics.record_source_chunk_commit_count(chunk_count, row_group_count);
     }
 
     execute_final_aggregate_merge(context, bounded, aggregate_outputs, reservations, metrics)

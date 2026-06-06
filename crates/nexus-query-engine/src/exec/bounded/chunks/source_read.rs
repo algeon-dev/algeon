@@ -207,7 +207,7 @@ fn read_local_parquet_source_batch_or_split(
         grow_source_to_observed,
     ) {
         Ok(output) => {
-            metrics.record_source_chunk_commit(batch.row_group_count() as u64);
+            metrics.record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
             Ok(vec![output])
         },
         Err(error) if is_retryable_chunk_error(&error) => {
@@ -395,26 +395,19 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<ScheduledLocalParquetReadOutput> {
-    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     for _chunk in &batch.chunks {
         metrics.record_source_chunk_attempt();
     }
     let selected_row_groups_before_read = metrics.row_groups_selected;
-    let requested_bytes = source_chunk_batch_requested_bytes(context.memory_control_policy(), batch);
     let mut reservation = reservations.try_reserve(
-        chunk_reservation_request(
+        source_read_batch_reservation_request(
+            context.memory_control_policy(),
             ReservationKind::SourceRead,
             memory_boundary,
-            requested_bytes,
             reservations.budget(),
-            first_chunk,
+            batch,
             1,
             1,
-        )
-        .with_source_read_contract(
-            SourceReadReservationContractQuality::ConservativeEstimate.as_str(),
-            batch.estimated_source_read_bytes,
-            batch.estimated_source_read_bytes,
         ),
         metrics,
     )?;
@@ -435,22 +428,22 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
         },
     };
     let observed_bytes = match if grow_source_to_observed {
-        grow_source_reservation_to_observed(
+        grow_source_batch_reservation_to_observed(
             &frame,
             &mut reservation,
             reservations,
-            first_chunk,
+            batch,
             metrics,
             memory_boundary,
             1,
             1,
         )
     } else {
-        shrink_source_reservation_to_observed_without_grow(
+        shrink_source_batch_reservation_to_observed_without_grow(
             &frame,
             &mut reservation,
             reservations,
-            first_chunk,
+            batch,
             metrics,
             memory_boundary,
             1,
@@ -464,6 +457,7 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
             return Err(error);
         },
     };
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     Ok(ScheduledLocalParquetReadOutput {
         chunk: first_chunk.clone(),
         frame,
@@ -534,10 +528,6 @@ fn source_chunk_batch_decode_scratch_risk(source: &LocalParquetSource, chunks: &
             chunk.known_pure_filter_compressed_bytes.unwrap_or(0) > 0
                 || chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0) > 0
         })
-}
-
-fn source_chunk_batch_requested_bytes(policy: MemoryControlPolicy, batch: &crate::chunk::SourceChunkBatch) -> u64 {
-    batch.chunks.iter().fold(0u64, |total, chunk| total.saturating_add(chunk_requested_bytes(policy, chunk)))
 }
 
 pub(in crate::exec::bounded) fn release_source_read_outputs_reverse(

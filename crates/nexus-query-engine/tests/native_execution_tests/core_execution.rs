@@ -53,6 +53,15 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(metrics.read_columns, 4);
     assert_eq!(metrics.input_batches, 1);
     assert_eq!(metrics.input_rows, 4);
+    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+    let source_read_row = &metrics.source_read_runtime_rows[0];
+    assert_eq!(source_read_row.source_node_id, source.to_string());
+    assert_eq!(source_read_row.read_kind, "file");
+    assert_eq!(source_read_row.read_strategy, "local_kvikio");
+    assert_eq!(source_read_row.parquet_read_evidence.input_kind, "local_path");
+    assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
+    assert_eq!(source_read_row.parquet_read_evidence.backend, "libcudf_path_reader");
+    assert_eq!(source_read_row.parquet_read_evidence.fallback_reason, "not_applicable");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.boundary.device_to_host_materialized_rows, 2);
@@ -692,7 +701,7 @@ fn bounded_generic_local_parquet_source_batches_adjacent_files() {
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.source_read_runtime_rows.len(), 1);
@@ -704,6 +713,10 @@ fn bounded_generic_local_parquet_source_batches_adjacent_files() {
     assert_eq!(source_read_row.row_group_count, 3);
     assert_eq!(source_read_row.read_columns_per_file, 2);
     assert_eq!(source_read_row.read_columns_total, 6);
+    assert_eq!(source_read_row.parquet_read_evidence.input_kind, "local_path_multi");
+    assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
+    assert_eq!(source_read_row.parquet_read_evidence.backend, "libcudf_path_reader");
+    assert_eq!(source_read_row.parquet_read_evidence.fallback_reason, "not_applicable");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
