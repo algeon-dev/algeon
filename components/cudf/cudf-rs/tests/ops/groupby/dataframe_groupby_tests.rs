@@ -2,6 +2,8 @@
 
 use cudf::{Agg, AggSpec, Column, DataFrame, ErrorKind};
 
+use crate::common::assert_missing_column_error;
+
 // ---------------------------------------------------------------------------
 // Groupby aggregation
 // ---------------------------------------------------------------------------
@@ -100,9 +102,7 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
         .agg(&[AggSpec::new("nonexistent", Agg::Sum)])
         .expect_err("expected error for nonexistent column");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    let msg = format!("{}", err);
-    assert!(msg.contains("nonexistent"), "error should mention column name");
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]

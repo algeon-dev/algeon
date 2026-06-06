@@ -16,10 +16,7 @@ mod select;
 pub use info::{
     ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
 };
-pub use io::{
-    DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, DataFrameJsonReaderOptions, DataFrameJsonWriterOptions,
-    DataframeParquetReaderOptions, DataFrameParquetWriterOptions,
-};
+pub use io::{CsvReadOptions, CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions};
 pub use owned::{DataFrame, DataFrameJoinResult};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use reshape::{DistinctOptions, DropNaOptions, MeltOptions};

@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorKind, Series, TypeId};
 
+use crate::common::{assert_duplicate_name_error, error_context_value};
+
 // ---------------------------------------------------------------------------
 // from_columns: happy path
 // ---------------------------------------------------------------------------
@@ -59,8 +61,7 @@ fn test_from_columns_rejects_duplicate_names() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("duplicate"));
+    assert_duplicate_name_error(&err, "x");
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,9 @@ fn test_from_columns_rejects_length_mismatch() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("rows"));
+    assert_eq!(error_context_value(&err, "column_name"), Some("y"));
+    assert_eq!(error_context_value(&err, "column_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 // ---------------------------------------------------------------------------

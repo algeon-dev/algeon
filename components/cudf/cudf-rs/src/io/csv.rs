@@ -19,9 +19,11 @@ use crate::{
 
 /// Options for reading a CSV file into a low-level [`Table`].
 ///
+/// **Advanced.** Most users should prefer [`DataFrame::read_csv`](crate::DataFrame::read_csv).
+///
 /// This type controls parsing only. It does not carry schema names because
 /// the low-level CSV reader returns an unnamed [`Table`].
-#[derive(TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct CsvReaderOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
@@ -73,9 +75,11 @@ pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
 
 /// Options for writing a low-level [`Table`] to a CSV file.
 ///
+/// **Advanced.** Most users should prefer [`DataFrame::write_csv`](crate::DataFrame::write_csv).
+///
 /// Column names here control only the emitted CSV header row. They do not
 /// rename the input table because [`Table`] itself is unnamed.
-#[derive(TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct CsvWriterOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,

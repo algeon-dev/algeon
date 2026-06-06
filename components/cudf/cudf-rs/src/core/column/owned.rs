@@ -567,8 +567,7 @@ impl Column {
     /// Returns an error if `size` exceeds `i32::MAX` (FFI limit).
     pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
         let size_i32 = i32::try_from(size).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX")
-                .with_operation("column::from_scalar")
+            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX").with_operation("column::from_scalar")
         })?;
         let mut handle = ptr::null_mut();
         let exec_options = scalar.domain.explicit_exec_options_raw();

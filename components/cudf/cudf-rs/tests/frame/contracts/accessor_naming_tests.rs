@@ -13,6 +13,8 @@
 
 use cudf::{DataFrame, Series, TypeId};
 
+use crate::common::assert_missing_column_error;
+
 // ===========================================================================
 // Helpers
 // ===========================================================================
@@ -51,7 +53,7 @@ fn test_dataframe_series_miss() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("not found"), "error should mention 'not found': {err}");
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================

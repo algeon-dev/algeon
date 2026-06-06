@@ -8,6 +8,8 @@
 
 use cudf::{Column, DataFrame, DistinctOptions, DuplicateKeepOption, Series};
 
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error};
+
 // ---------------------------------------------------------------------------
 // TempTableView — exercised via filter, sort, distinct, drop_nulls
 // These operations internally build a TempTableView from column views.
@@ -76,9 +78,7 @@ fn sort_with_missing_column_returns_error() {
     let df = DataFrame::from_columns([("a", a)]).unwrap();
 
     let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    let msg = err.to_string();
-    assert!(msg.contains("nonexistent"), "error should name the missing column: {}", msg);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +115,7 @@ fn from_series_rejects_duplicate_names() {
     let b = Series::new::<i32>("b", &[2]).unwrap();
 
     let err = DataFrame::from_series(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    let msg = err.to_string();
-    assert!(msg.contains("duplicate"), "error message should mention duplicate: {}", msg);
+    assert_duplicate_name_error(&err, "x");
 }
 
 #[test]
@@ -125,7 +123,5 @@ fn dataframe_new_rejects_duplicate_names() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let c2 = Column::from_slice(&[2i32]).unwrap();
     let err = DataFrame::new(vec!["dup".into(), "dup".into()], vec![c1, c2]).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    let msg = err.to_string();
-    assert!(msg.contains("duplicate"), "error message should mention duplicate: {}", msg);
+    assert_duplicate_name_error(&err, "dup");
 }

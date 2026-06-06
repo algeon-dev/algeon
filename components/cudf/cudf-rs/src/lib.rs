@@ -103,13 +103,13 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        ColumnMemoryAccounting, DataFrame, DataFrameColumnInfo, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions,
-        DataFrameInfo, DataFrameJoinResult, DataFrameJsonReaderOptions, DataFrameJsonWriterOptions,
-        DataFrameMemoryAccounting, DataframeParquetReaderOptions, DataFrameParquetWriterOptions, DataTypeCount,
-        DistinctOptions, DropNaOptions, InfoDetail, MeltOptions,
+        ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
+        DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail,
+        JsonWriteOptions, MeltOptions, ParquetWriteOptions,
     },
     series::{IntoSeries, Series},
 };
+pub use io::{json::JsonReaderOptions, parquet::ParquetReaderOptions};
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{

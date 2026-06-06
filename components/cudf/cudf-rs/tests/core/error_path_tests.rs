@@ -67,14 +67,6 @@ fn test_concatenate_tables_column_count_mismatch() {
 }
 
 #[test]
-fn test_dataframe_series_nonexistent_column() {
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let df = DataFrame::new(vec!["a".to_string()], vec![c1]).unwrap();
-    let result = df.series("nonexistent");
-    assert!(result.is_err());
-}
-
-#[test]
 fn test_dataframe_new_names_columns_count_mismatch() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let result = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![c1]);

@@ -73,3 +73,24 @@ pub fn sample_runtime() -> Runtime {
     let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
     Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
+
+#[allow(dead_code)]
+pub fn error_context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a str> {
+    err.context()
+        .iter()
+        .find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
+}
+
+#[allow(dead_code)]
+pub fn assert_missing_column_error(err: &cudf::Error, expected_column: &str) {
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(error_context_value(err, "column_name"), Some(expected_column));
+}
+
+#[allow(dead_code)]
+pub fn assert_duplicate_name_error(err: &cudf::Error, expected_name: &str) {
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    let duplicate_name =
+        error_context_value(err, "duplicate_name").or_else(|| error_context_value(err, "duplicate_column"));
+    assert_eq!(duplicate_name, Some(expected_name));
+}
