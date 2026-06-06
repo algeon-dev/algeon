@@ -497,7 +497,6 @@ impl ColumnView<'_> {
     ///
     /// Both `self` and `values` must have the same data type.
     pub fn isin(&self, values: &ColumnView<'_>) -> Result<Column> {
-        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &values.domain, "column_view::isin")?;
         let input_type_id = match self.data_type() {
             Ok(dt) => dt.id(),
             Err(e) => return Err(e.with_operation("column_view::isin")),
@@ -509,7 +508,7 @@ impl ColumnView<'_> {
         })?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 
-        search::contains(values, self).map(|col| col.with_execution_domain(output_domain)).map_err(|e| {
+        search::contains(values, self).map_err(|e| {
             e.with_operation("column_view::isin")
                 .with_context("input_type_id", input_type_id_str)
                 .with_context("values_type_id", values_type_id_str)

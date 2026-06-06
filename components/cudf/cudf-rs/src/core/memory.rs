@@ -95,7 +95,13 @@ impl DeviceMemoryResource {
 
     #[doc(hidden)]
     pub fn __debug_raw_handle_value(&self) -> usize {
-        self.handle.raw.as_ptr() as usize
+        let mut out = std::ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
+            "memory::device_memory_resource::__debug_raw_handle_value",
+        )
+        .expect("failed to read raw device memory resource pointer");
+        out as usize
     }
 }
 

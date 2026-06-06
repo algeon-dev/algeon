@@ -110,6 +110,8 @@ fn sort_values_with_context_on_runtime_seeded_dataframe_uses_override_stream_and
     assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
+/// [INV-AP-01] Ambient promotion rejection: borrowed context overrides cannot promote
+/// ambient-default objects to explicit domains (Rule 5 — preserved in v2).
 #[test]
 fn sort_values_with_context_rejects_ambient_default_promotion() {
     let df = DataFrame::from_series([("id", Series::new::<i32>("id", &[3, 1, 2]).unwrap())]).unwrap();
@@ -457,4 +459,175 @@ fn assign_with_runtime_deep_copies_existing_and_new_columns_into_target_runtime(
     assert_ne!(device_ptr(&result, "val"), original_replacement_ptr);
     assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(result.series_view("bonus").unwrap().to_vec::<i32>().unwrap(), vec![70, 80, 90]);
+}
+
+// === v2: *_with_context mixed-domain + context-derived provenance ===
+//
+// These tests express the v2 contract where *_with_context methods work with
+// mixed-domain inputs and produce context-derived provenance. The explicit
+// context stream is the operation authority (Rule 1), not the input provenance.
+//
+// INV-PR-03: output provenance reflects context overrides.
+// INV-SY-03: sync targets the context's stream after mixed-domain ops.
+
+#[test]
+fn sort_values_with_context_succeeds_on_mixed_domain_inputs() {
+    // Two-column DataFrame from domain A, sort with context derived from domain B.
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&rt_a, "id", &[3i32, 1, 2]).unwrap()),
+        ("val", Series::new_with_runtime(&rt_a, "val", &[30i32, 10, 20]).unwrap()),
+    ])
+    .unwrap();
+
+    // Context borrows stream from rt_b — different domain than df
+    let ctx = ExecutionContext::new().with_stream(rt_b.stream()).with_memory_resource(rt_b.memory_resource());
+    let ctx_stream_value = rt_b.stream().__debug_raw_handle_value();
+    let ctx_mr_value = rt_b.memory_resource().__debug_raw_handle_value();
+    assert_ne!(ctx_stream_value, rt_a.stream().__debug_raw_handle_value());
+
+    obs_reset();
+    let sorted = df.sort_values_with_context(["id"], SortOptions::default(), &ctx).unwrap();
+
+    // Output FFI stream = context stream
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    // Output FFI MR = context MR
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    // Output provenance stream = context stream
+    assert_eq!(sorted.__debug_execution_domain_stream_value(), ctx_stream_value);
+    // Output provenance MR = context MR
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), ctx_mr_value);
+    // Output identity is preserved from the primary input (df)
+    assert_eq!(sorted.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    // Value correctness
+    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn merge_with_context_succeeds_on_mixed_domain_inputs() {
+    // DataFrames from different domains, merge with explicit context.
+    let rt_left = sample_runtime();
+    let rt_right = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&rt_left, "id", &[1i32, 2, 3]).unwrap()),
+        ("val", Series::new_with_runtime(&rt_left, "val", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&rt_right, "id", &[2i32, 3, 4]).unwrap()),
+        ("score", Series::new_with_runtime(&rt_right, "score", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+
+    // Context uses left's stream — but the point is mixed inputs succeed
+    let override_stream = CudaStream::new().unwrap();
+    let ctx_stream_value = override_stream.__debug_raw_handle_value();
+    let left_mr_value = left.__debug_execution_domain_mr_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    obs_reset();
+    let joined = left.merge_with_context(&right, MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
+
+    // Output FFI stream = context stream
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    // Output FFI MR = primary input MR (stream-only override)
+    assert_eq!(obs_last_mr() as usize, left_mr_value);
+    // Output provenance stream = context stream
+    assert_eq!(joined.__debug_execution_domain_stream_value(), ctx_stream_value);
+    // Output provenance MR = primary input MR (stream-only override)
+    assert_eq!(joined.__debug_execution_domain_mr_value(), left_mr_value);
+    // Output identity = left (primary) input's identity
+    assert_eq!(joined.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    // Value correctness
+    assert_eq!(joined.column_names(), vec!["id", "val", "score"]);
+    assert_eq!(joined.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![2, 3]);
+}
+
+#[test]
+fn gather_with_context_succeeds_on_mixed_domain_inputs() {
+    // Data from domain A, gather map from domain B, context from domain C.
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+    let df =
+        DataFrame::from_series([("id", Series::new_with_runtime(&rt_a, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let indices = Series::new_with_runtime(&rt_b, "idx", &[2i32, 0]).unwrap();
+
+    // Context uses a third stream
+    let override_stream = CudaStream::new().unwrap();
+    let ctx_stream_value = override_stream.__debug_raw_handle_value();
+    let df_mr_value = df.__debug_execution_domain_mr_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    obs_reset();
+    let gathered = df.gather_with_context(&indices, &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, df_mr_value);
+    assert_eq!(gathered.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(gathered.__debug_execution_domain_mr_value(), df_mr_value);
+    assert_eq!(gathered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(gathered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+}
+
+#[test]
+fn filter_with_context_succeeds_on_mixed_domain_inputs() {
+    // Data from domain A, mask from domain B, context from domain C.
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+    let df =
+        DataFrame::from_series([("id", Series::new_with_runtime(&rt_a, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let mask = Series::new_with_runtime(&rt_b, "mask", &[true, false, true]).unwrap();
+
+    let override_stream = CudaStream::new().unwrap();
+    let ctx_stream_value = override_stream.__debug_raw_handle_value();
+    let df_mr_value = df.__debug_execution_domain_mr_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    obs_reset();
+    let filtered = df.filter_with_context(&mask, &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, df_mr_value);
+    assert_eq!(filtered.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), df_mr_value);
+    assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30]);
+}
+
+#[test]
+fn mixed_domain_with_context_output_sync_targets_context_stream() {
+    // After mixed-domain op with explicit context, synchronize_for_host_visibility
+    // must target the context's stream (which is now the output's provenance stream).
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+    let df =
+        DataFrame::from_series([("id", Series::new_with_runtime(&rt_a, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let indices = Series::new_with_runtime(&rt_b, "idx", &[2i32, 0]).unwrap();
+
+    let override_stream = CudaStream::new().unwrap();
+    let ctx_stream_value = override_stream.__debug_raw_handle_value();
+    let df_mr_value = df.__debug_execution_domain_mr_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+    assert_ne!(df.__debug_execution_domain_stream_value(), indices.as_column().__debug_execution_domain_stream_value());
+    assert_ne!(ctx_stream_value, df.__debug_execution_domain_stream_value());
+    assert_ne!(ctx_stream_value, indices.as_column().__debug_execution_domain_stream_value());
+
+    obs_reset();
+    let gathered = df.gather_with_context(&indices, &ctx).unwrap();
+
+    // Output provenance stream = context stream
+    assert_eq!(gathered.__debug_execution_domain_stream_value(), ctx_stream_value);
+    // Stream-only override keeps the primary input MR.
+    assert_eq!(obs_last_mr() as usize, df_mr_value);
+    assert_eq!(gathered.__debug_execution_domain_mr_value(), df_mr_value);
+
+    // Now read host data — this triggers synchronize_for_host_visibility.
+    // The sync must target the context's stream, not either input provenance stream.
+    let mut sync_out: usize = 0;
+    let host = gathered.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let status = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut sync_out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read sync stream observation");
+    assert_eq!(sync_out, ctx_stream_value, "sync must target context stream, not either input provenance stream");
+    assert_eq!(host, vec![30, 10]);
 }

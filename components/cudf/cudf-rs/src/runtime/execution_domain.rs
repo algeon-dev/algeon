@@ -1,10 +1,11 @@
-//! Private retained execution-domain substrate for owned GPU objects.
+//! Private retained-provenance substrate for owned GPU objects.
 
 use std::{
+    collections::HashMap,
     num::NonZeroU64,
     os::raw::c_void,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -16,6 +17,7 @@ use crate::core::{
 };
 
 static AMBIENT_DEFAULT_DOMAIN: OnceLock<Arc<ExecutionDomain>> = OnceLock::new();
+static DEBUG_EXPLICIT_DOMAINS: OnceLock<Mutex<HashMap<u64, Arc<ExecutionDomain>>>> = OnceLock::new();
 static NEXT_EXPLICIT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct ExecutionDomain {
     kind: DomainKind,
@@ -58,9 +60,17 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
+        let cache = DEBUG_EXPLICIT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut cache = cache.lock().expect("debug explicit execution-domain cache poisoned");
+        if let Some(domain) = cache.get(&identity) {
+            return Ok(Arc::clone(domain));
+        }
+
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
-        Ok(Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } }))
+        let domain = Arc::new(Self { kind: DomainKind::Explicit { stream, mr, identity: ExecutionIdentity::new(identity)? } });
+        cache.insert(identity, Arc::clone(&domain));
+        Ok(domain)
     }
 
     pub(crate) fn debug_kind(&self) -> &'static str {
@@ -167,15 +177,30 @@ impl ExecutionDomain {
         }
     }
 
+    pub(crate) fn same_provenance(left: &Arc<Self>, right: &Arc<Self>) -> bool {
+        match (&left.kind, &right.kind) {
+            (DomainKind::AmbientDefault, DomainKind::AmbientDefault) => true,
+            (
+                DomainKind::Explicit { stream: left_stream, mr: left_mr, .. },
+                DomainKind::Explicit { stream: right_stream, mr: right_mr, .. },
+            ) => left_stream.as_raw() == right_stream.as_raw() && left_mr.as_raw() == right_mr.as_raw(),
+            _ => false,
+        }
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn same_identity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
         left.debug_id() == right.debug_id() && left.debug_kind() == right.debug_kind()
     }
 
     pub(crate) fn compatible_domain(left: &Arc<Self>, right: &Arc<Self>, operation: &'static str) -> Result<Arc<Self>> {
-        if Self::same_identity(left, right) {
+        if Self::same_provenance(left, right) {
             Ok(Arc::clone(left))
         } else {
-            Err(Error::new(ErrorKind::InvalidOperation, "mixed execution domains require one shared retained lineage")
+            Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "container construction requires one shared retained provenance",
+            )
                 .with_operation(operation)
                 .with_context("left_domain", left.debug_label())
                 .with_context("right_domain", right.debug_label()))

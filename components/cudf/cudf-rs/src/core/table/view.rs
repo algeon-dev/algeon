@@ -126,7 +126,7 @@ impl<'a> TableView<'a> {
         let domain = if let Some(first) = views.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, view) in views.iter().enumerate().skip(1) {
-                if !ExecutionDomain::same_identity(&domain, view.execution_domain()) {
+                if !ExecutionDomain::same_provenance(&domain, view.execution_domain()) {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
                         "all column views in a table view must share one execution domain",

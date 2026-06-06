@@ -8,7 +8,6 @@ use crate::{
         error::{self, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
 };
 
 fn gather_impl(
@@ -59,8 +58,7 @@ fn gather_impl(
 /// // result row 0 = source row 2 (30), result row 1 = source row 0 (10)
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain =
-        ExecutionDomain::compatible_domain(input.execution_domain(), gather_map.execution_domain(), "copying::gather")?;
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(input, gather_map, 0, "nullify", exec_options.as_ref(), "copying::gather")
         .map(|table| table.with_execution_domain(output_domain))
@@ -103,11 +101,7 @@ pub(crate) fn gather_with_exec_options(
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        input.execution_domain(),
-        gather_map.execution_domain(),
-        "copying::gather_unchecked",
-    )?;
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(input, gather_map, 1, "dont_check", exec_options.as_ref(), "copying::gather_unchecked")
         .map(|table| table.with_execution_domain(output_domain))

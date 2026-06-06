@@ -202,6 +202,12 @@ impl MemoryResource {
         status_to_result(unsafe { cudf_test_memory_resource_allocation_count(self.handle, &mut out) })?;
         Ok(out)
     }
+
+    pub fn test_raw_device_resource(&self) -> Result<*mut c_void, cudf_status_t> {
+        let mut out = std::ptr::null_mut();
+        status_to_result(unsafe { cudf_test_memory_resource_raw(self.handle, &mut out) })?;
+        Ok(out)
+    }
 }
 
 impl Drop for MemoryResource {
@@ -1677,6 +1683,9 @@ extern "C" {
         handle: cudf_memory_resource_handle,
         out: *mut i64,
     ) -> cudf_status_t;
+
+    /// Resolve a memory-resource handle to its underlying `device_memory_resource*`.
+    pub fn cudf_test_memory_resource_raw(handle: cudf_memory_resource_handle, out: *mut *mut c_void) -> cudf_status_t;
 
     /// Install the memory resource owned by `handle` as the process-global
     /// current device resource for tests.

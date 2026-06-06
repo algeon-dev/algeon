@@ -29,41 +29,27 @@ use crate::{
 
 fn compatible_column_domain(
     columns: &[&ColumnView<'_>],
-    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let mut iter = columns.iter();
-    let Some(first) = iter.next() else {
+    let Some(first) = columns.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
-
-    let mut output_domain = std::sync::Arc::clone(first.execution_domain());
-    for column in iter {
-        output_domain = ExecutionDomain::compatible_domain(&output_domain, column.execution_domain(), operation)?;
-    }
-    Ok(output_domain)
+    Ok(std::sync::Arc::clone(first.execution_domain()))
 }
 
 fn compatible_table_domain(
     tables: &[&TableView<'_>],
-    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let mut iter = tables.iter();
-    let Some(first) = iter.next() else {
+    let Some(first) = tables.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
-
-    let mut output_domain = std::sync::Arc::clone(first.execution_domain());
-    for table in iter {
-        output_domain = ExecutionDomain::compatible_domain(&output_domain, table.execution_domain(), operation)?;
-    }
-    Ok(output_domain)
+    Ok(std::sync::Arc::clone(first.execution_domain()))
 }
 
 /// Concatenate multiple columns into a single column.
 ///
 /// All columns must have the same data type.
 pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
-    let output_domain = compatible_column_domain(columns, "concatenate::concatenate_columns")?;
+    let output_domain = compatible_column_domain(columns)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     concatenate_columns_with_exec(columns, exec_options.as_ref())
         .map(|column| column.with_execution_domain(output_domain))
@@ -95,7 +81,7 @@ pub(crate) fn concatenate_columns_with_exec(
 ///
 /// All tables must have the same number of columns with matching types.
 pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
-    let output_domain = compatible_table_domain(tables, "concatenate::concatenate_tables")?;
+    let output_domain = compatible_table_domain(tables)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     concatenate_tables_with_exec(tables, exec_options.as_ref()).map(|table| table.with_execution_domain(output_domain))
 }

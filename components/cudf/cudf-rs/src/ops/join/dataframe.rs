@@ -275,17 +275,7 @@ impl DataFrame {
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
-        let output_domain =
-            match ExecutionDomain::compatible_domain(self.execution_domain(), right.execution_domain(), operation) {
-                Ok(domain) => forced_output_domain.unwrap_or(domain),
-                Err(err) => {
-                    if exec_options.is_some() {
-                        forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()))
-                    } else {
-                        return Err(err);
-                    }
-                },
-            };
+        let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
 
         if left_on.len() != right_on.len() {
             return Err(Error::new(
@@ -385,8 +375,7 @@ fn build_join_schema_names(
 /// Coalesce two columns by preferring non-null values from `left`; if null,
 /// take from `right`. Runs entirely on GPU via `replace_nulls_column`.
 fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> Result<Column> {
-    let output_domain =
-        ExecutionDomain::compatible_domain(left.execution_domain(), right.execution_domain(), operation)?;
+    let output_domain = Arc::clone(left.execution_domain());
     let lcv = left.view()?;
     let rcv = right.view()?;
 

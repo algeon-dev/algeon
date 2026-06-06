@@ -98,18 +98,11 @@ fn set_keys_impl(
 
 fn compatible_column_domain(
     columns: &[&ColumnView<'_>],
-    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let mut iter = columns.iter();
-    let Some(first) = iter.next() else {
+    let Some(first) = columns.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
-
-    let mut output_domain = std::sync::Arc::clone(first.execution_domain());
-    for column in iter {
-        output_domain = ExecutionDomain::compatible_domain(&output_domain, column.execution_domain(), operation)?;
-    }
-    Ok(output_domain)
+    Ok(std::sync::Arc::clone(first.execution_domain()))
 }
 
 fn match_dictionaries_impl(
@@ -251,11 +244,7 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 /// This is useful for aligning two dictionary columns to the same key set
 /// so their indices are directly comparable.
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        dict_column.execution_domain(),
-        keys.execution_domain(),
-        "dictionary::set_keys",
-    )?;
+    let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     set_keys_impl(dict_column, keys, exec_options.as_ref(), "dictionary::set_keys")
         .map(|column| column.with_execution_domain(output_domain))
@@ -302,7 +291,7 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         .with_operation("dictionary::match_dictionaries"));
     }
 
-    let output_domain = compatible_column_domain(dict_columns, "dictionary::match_dictionaries")?;
+    let output_domain = compatible_column_domain(dict_columns)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     match_dictionaries_impl(dict_columns, exec_options.as_ref(), "dictionary::match_dictionaries").map(|columns| {
         columns.into_iter().map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain))).collect()

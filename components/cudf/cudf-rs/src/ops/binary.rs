@@ -20,7 +20,6 @@ use crate::{
         scalar::Scalar,
         types::{DataType, TypeId},
     },
-    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).
@@ -224,11 +223,7 @@ pub fn binary_operation_vv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        lhs.execution_domain(),
-        rhs.execution_domain(),
-        "binary::binary_operation_vv",
-    )?;
+    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vv")
         .map(|column| column.with_execution_domain(output_domain))
@@ -285,11 +280,7 @@ pub fn binary_operation_vs(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        lhs.execution_domain(),
-        rhs.execution_domain(),
-        "binary::binary_operation_vs",
-    )?;
+    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vs_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vs")
         .map(|column| column.with_execution_domain(output_domain))
@@ -346,11 +337,7 @@ pub fn binary_operation_sv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        lhs.execution_domain(),
-        rhs.execution_domain(),
-        "binary::binary_operation_sv",
-    )?;
+    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_sv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_sv")
         .map(|column| column.with_execution_domain(output_domain))

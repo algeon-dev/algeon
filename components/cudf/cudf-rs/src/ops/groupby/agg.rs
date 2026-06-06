@@ -191,14 +191,9 @@ fn groupby_aggregate_impl(
 fn compatible_groupby_domain(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
-    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let mut output_domain = std::sync::Arc::clone(keys.execution_domain());
-    for request in requests {
-        output_domain =
-            ExecutionDomain::compatible_domain(&output_domain, request.values.execution_domain(), operation)?;
-    }
-    Ok(output_domain)
+    let _ = requests;
+    Ok(std::sync::Arc::clone(keys.execution_domain()))
 }
 
 fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::Arc<ExecutionDomain>) -> GroupByResult {
@@ -292,7 +287,7 @@ pub fn groupby_aggregate(
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
 ) -> Result<GroupByResult> {
-    let output_domain = compatible_groupby_domain(keys, requests, "groupby::groupby_aggregate")?;
+    let output_domain = compatible_groupby_domain(keys, requests)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     groupby_aggregate_impl(keys, requests, null_policy, exec_options.as_ref(), "groupby::groupby_aggregate")
         .map(|result| bind_groupby_result_domain(result, output_domain))
