@@ -345,6 +345,198 @@ fn test_series_div_all_scalar_types() {
 }
 
 // ===========================================================================
+// Rem (modulo) operator — Series % Series and Series % scalar
+// ===========================================================================
+
+#[test]
+fn test_series_rem_operator_i32() {
+    let a = Series::new::<i32>("a", &[10, 23, 17]).unwrap();
+    let b = Series::new::<i32>("b", &[3, 5, 4]).unwrap();
+
+    let result: cudf::Result<Series> = &a % &b;
+    let s = result.unwrap();
+
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(s.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 1]);
+}
+
+#[test]
+fn test_series_rem_operator_f64() {
+    let a = Series::new::<f64>("a", &[10.5, 7.0]).unwrap();
+    let b = Series::new::<f64>("b", &[3.0, 2.5]).unwrap();
+
+    let result: cudf::Result<Series> = &a % &b;
+    let s = result.unwrap();
+
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
+    let vals = s.view().unwrap().to_vec::<f64>().unwrap();
+    assert!((vals[0] - 1.5).abs() < 1e-10);
+    assert!((vals[1] - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn test_series_rem_scalar_i32_operator() {
+    let s = Series::new::<i32>("x", &[10, 23, 17]).unwrap();
+
+    let result: cudf::Result<Series> = &s % 3_i32;
+    let out = result.unwrap();
+
+    assert_eq!(out.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 2]);
+}
+
+#[test]
+fn test_series_rem_scalar_f64_operator() {
+    let s = Series::new::<f64>("x", &[10.5, 7.0]).unwrap();
+
+    let result: cudf::Result<Series> = &s % 3.0_f64;
+    let out = result.unwrap();
+
+    let vals = out.view().unwrap().to_vec::<f64>().unwrap();
+    assert!((vals[0] - 1.5).abs() < 1e-10);
+    assert!((vals[1] - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn test_series_rem_owned_owned() {
+    let a = Series::new::<i32>("a", &[10, 7]).unwrap();
+    let b = Series::new::<i32>("b", &[3, 4]).unwrap();
+
+    let result: cudf::Result<Series> = a % b;
+    assert_eq!(result.unwrap().view().unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
+}
+
+#[test]
+fn test_series_rem_produces_unnamed_result() {
+    let a = Series::new::<i32>("named_a", &[10]).unwrap();
+    let b = Series::new::<i32>("named_b", &[3]).unwrap();
+
+    let result = (&a % &b).unwrap();
+    assert_eq!(result.name(), None);
+}
+
+#[test]
+fn test_series_rem_scalar_inherits_name() {
+    let s = Series::new::<i32>("my_col", &[10, 23]).unwrap();
+
+    let result = (&s % 3_i32).unwrap();
+    assert_eq!(result.name(), Some("my_col"));
+}
+
+#[test]
+fn test_scalar_rem_series_i32() {
+    let s = Series::new::<i32>("x", &[3, 4]).unwrap();
+
+    let result: cudf::Result<Series> = 10_i32 % &s;
+    let out = result.unwrap();
+
+    assert_eq!(out.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
+}
+
+#[test]
+fn test_scalar_rem_series_f64() {
+    let s = Series::new::<f64>("x", &[3.0]).unwrap();
+
+    let result: cudf::Result<Series> = 10.0_f64 % &s;
+    let out = result.unwrap();
+
+    let vals = out.view().unwrap().to_vec::<f64>().unwrap();
+    assert!((vals[0] - 1.0).abs() < 1e-10);
+}
+
+// ===========================================================================
+// Neg operator — -Series
+// ===========================================================================
+
+#[test]
+fn test_series_neg_operator_i32() {
+    let s = Series::new::<i32>("x", &[1, -2, 3]).unwrap();
+
+    let result: cudf::Result<Series> = -&s;
+    let out = result.unwrap();
+
+    assert_eq!(out.view().unwrap().to_vec::<i32>().unwrap(), vec![-1, 2, -3]);
+}
+
+#[test]
+fn test_series_neg_operator_f64() {
+    let s = Series::new::<f64>("x", &[1.5, -2.5]).unwrap();
+
+    let result: cudf::Result<Series> = -&s;
+    let out = result.unwrap();
+
+    assert_eq!(out.view().unwrap().to_vec::<f64>().unwrap(), vec![-1.5, 2.5]);
+}
+
+#[test]
+fn test_series_neg_owned() {
+    let s = Series::new::<i32>("x", &[1, -2]).unwrap();
+
+    let result: cudf::Result<Series> = -s;
+    assert_eq!(result.unwrap().view().unwrap().to_vec::<i32>().unwrap(), vec![-1, 2]);
+}
+
+#[test]
+fn test_series_neg_inherits_name() {
+    let s = Series::new::<i32>("my_col", &[1, 2]).unwrap();
+
+    let result = (-&s).unwrap();
+    assert_eq!(result.name(), Some("my_col"));
+}
+
+// ===========================================================================
+// Not operator — !Series (logical not for Bool8)
+// ===========================================================================
+
+#[test]
+fn test_series_not_operator_bool() {
+    let s = Series::new::<bool>("x", &[true, false, true]).unwrap();
+
+    let result: cudf::Result<Series> = !&s;
+    let out = result.unwrap();
+
+    assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(out.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_series_not_owned() {
+    let s = Series::new::<bool>("x", &[true, false]).unwrap();
+
+    let result: cudf::Result<Series> = !s;
+    assert_eq!(result.unwrap().view().unwrap().to_vec::<bool>().unwrap(), vec![false, true]);
+}
+
+#[test]
+fn test_series_not_inherits_name() {
+    let s = Series::new::<bool>("flags", &[true, false]).unwrap();
+
+    let result = (!&s).unwrap();
+    assert_eq!(result.name(), Some("flags"));
+}
+
+// ===========================================================================
+// Named rem / rem_scalar methods
+// ===========================================================================
+
+#[test]
+fn test_series_rem_method() {
+    let a = Series::new::<i32>("a", &[10, 23]).unwrap();
+    let b = Series::new::<i32>("b", &[3, 5]).unwrap();
+
+    let result = a.rem(&b).unwrap();
+    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 3]);
+}
+
+#[test]
+fn test_series_rem_scalar_method() {
+    let s = Series::new::<i32>("x", &[10, 23]).unwrap();
+
+    let result = s.rem_scalar(3i32).unwrap();
+    assert_eq!(result.name(), Some("x"));
+    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2]);
+}
+
+// ===========================================================================
 // Non-commutative scalar ops produce correct directional results
 // ===========================================================================
 

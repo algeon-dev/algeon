@@ -505,6 +505,41 @@ impl Column {
         }
     }
 
+    /// Create an all-null column of the given type and length inside the given
+    /// explicit runtime.
+    ///
+    /// The resulting column carries the runtime's retained provenance so it can
+    /// participate in explicit-provenance pipelines without triggering
+    /// mixed-provenance rejection.
+    pub fn nulls_with_runtime(runtime: &Runtime, type_id: TypeId, len: usize) -> Result<Self> {
+        let _size = usize_to_i32_len(len, "data", "column::nulls_with_runtime")?;
+        if len == 0 {
+            return Self::empty_with_runtime(runtime, type_id);
+        }
+
+        match type_id {
+            TypeId::String => {
+                let dummy: Vec<&str> = vec![""; len];
+                let validity = vec![false; len];
+                Self::from_strings_nullable_with_runtime(runtime, &dummy, &validity)
+            },
+            _ => {
+                // Build an ambient-domain null column, then stamp the runtime domain.
+                let col = Self::nulls(type_id, len)?;
+                Ok(col.with_execution_domain(Arc::clone(runtime.execution_domain())))
+            },
+        }
+    }
+
+    /// Create a column by repeating a scalar value `size` times inside the
+    /// given explicit runtime.
+    ///
+    /// The resulting column carries the runtime's retained provenance.
+    pub fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: i32) -> Result<Self> {
+        let col = Self::from_scalar(scalar, size)?;
+        Ok(col.with_execution_domain(Arc::clone(runtime.execution_domain())))
+    }
+
     /// Create a nullable STRING type column from host string data and a validity mask.
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).

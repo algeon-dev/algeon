@@ -2,7 +2,12 @@ use std::sync::Arc;
 
 use super::owned::Series;
 use crate::{
-    core::{column::Column, error::Result, types::CudfType},
+    core::{
+        column::Column,
+        error::Result,
+        scalar::Scalar,
+        types::{CudfType, TypeId},
+    },
     runtime::Runtime,
 };
 
@@ -101,6 +106,94 @@ impl Series {
             (cv.len()?, cv.null_count()? as usize)
         };
         Ok(Self { name: None, column, cached_len, cached_null_count })
+    }
+
+    /// Create an all-null `Series` of the given type and length.
+    ///
+    /// Every element is null (invalid). The underlying column is allocated on
+    /// the GPU with a zeroed data buffer and an all-null validity mask.
+    ///
+    /// # Cost
+    /// GPU-allocating: one device allocation.
+    pub fn nulls(name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Self> {
+        let column = Column::nulls(type_id, len)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create a `Series` by repeating a scalar value `size` times.
+    ///
+    /// If the scalar is null, all elements will be null.
+    ///
+    /// # Cost
+    /// GPU-allocating: one device allocation of `size` elements.
+    pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: i32) -> Result<Self> {
+        let column = Column::from_scalar(scalar, size)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create an empty (zero-length) `Series` of the given type.
+    ///
+    /// This is equivalent to `Series::nulls(name, type_id, 0)` but may be
+    /// slightly cheaper.
+    pub fn empty(name: impl Into<String>, type_id: TypeId) -> Result<Self> {
+        let column = Column::empty(type_id)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create an all-null `Series` inside the given explicit runtime.
+    ///
+    /// The resulting series carries the runtime's retained provenance so it can
+    /// participate in explicit-provenance DataFrames without triggering
+    /// mixed-provenance rejection.
+    ///
+    /// # Cost
+    /// GPU-allocating: one device allocation.
+    pub fn nulls_with_runtime(
+        runtime: &Runtime,
+        name: impl Into<String>,
+        type_id: TypeId,
+        len: usize,
+    ) -> Result<Self> {
+        let column = Column::nulls_with_runtime(runtime, type_id, len)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create a `Series` by repeating a scalar value inside the given explicit
+    /// runtime.
+    ///
+    /// The resulting series carries the runtime's retained provenance.
+    ///
+    /// # Cost
+    /// GPU-allocating: one device allocation of `size` elements.
+    pub fn from_scalar_with_runtime(
+        runtime: &Runtime,
+        name: impl Into<String>,
+        scalar: &Scalar,
+        size: i32,
+    ) -> Result<Self> {
+        let column = Column::from_scalar_with_runtime(runtime, scalar, size)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create an empty (zero-length) `Series` inside the given explicit
+    /// runtime.
+    ///
+    /// The resulting series carries the runtime's retained provenance.
+    pub fn empty_with_runtime(runtime: &Runtime, name: impl Into<String>, type_id: TypeId) -> Result<Self> {
+        let column = Column::empty_with_runtime(runtime, type_id)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
     }
 
     /// Private helper: wrap a `Column` and read its cached metadata.

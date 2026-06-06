@@ -4,13 +4,13 @@ use super::view::SeriesView;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::Result,
+        error::{Error, ErrorKind, Result},
         scalar::Scalar,
         types::{CudfType, DataType, TypeId},
     },
     internal::temp_table::TempTableView,
     ops::{
-        replace,
+        binary, concatenate, replace,
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         unary,
@@ -426,6 +426,45 @@ impl Series {
         let col = self.column.div_scalar(&s)?;
         self.with_inherited_name(col)
     }
+
+    /// Element-wise `self % rhs` (modulo). Output type inferred. Returns an
+    /// unnamed Series.
+    pub fn rem(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.modulo(&rhs.column)?;
+        Self::from_column(col)
+    }
+
+    /// Element-wise `self % scalar`. Inherits the source Series' name.
+    pub fn rem_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.binary_op_scalar(&s, binary::BinaryOperator::Mod)?;
+        self.with_inherited_name(col)
+    }
+
+    // -- Static constructors for combining Series ----------------------------
+
+    /// Concatenate multiple series into a single unnamed Series.
+    ///
+    /// All series must have the same data type.
+    ///
+    /// # Errors
+    /// Returns `InvalidOperation` if the input slice is empty.
+    /// Returns an error if the series have mismatched dtypes.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new column combining all input data.
+    pub fn concat(series: &[&Series]) -> Result<Series> {
+        if series.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "cannot concatenate empty slice of Series")
+                .with_operation("series::concat"));
+        }
+
+        let views: Vec<_> = series.iter().map(|s| s.column.view()).collect::<Result<Vec<_>>>()?;
+        let view_refs: Vec<&ColumnView<'_>> = views.iter().collect();
+        let col = concatenate::concatenate_columns(&view_refs)?;
+        Self::from_column(col)
+    }
+
     /// Clone or deep-copy an `Arc<Column>` into the target domain.
     fn clone_or_copy_into_domain(
         column: &Arc<Column>,
