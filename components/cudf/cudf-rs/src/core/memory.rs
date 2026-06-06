@@ -27,11 +27,18 @@ use std::{
     sync::Arc,
 };
 
-use crate::core::error::{self, Result};
+use crate::{
+    DeviceId,
+    core::error::{self, Result},
+};
 
 /// An owned device memory resource.
 ///
 /// Wraps an `rmm::mr::device_memory_resource` via the C shim.
+///
+/// Each resource records the CUDA device it was created on. This provenance is
+/// used by [`crate::Runtime`] builder validation to reject cross-device
+/// handle combinations.
 ///
 /// Use this with [`crate::Runtime::builder`] to seed explicit retained
 /// provenance, or with [`crate::ExecutionContext::with_memory_resource`]
@@ -43,6 +50,7 @@ pub struct DeviceMemoryResource {
 
 struct DeviceMemoryResourceHandle {
     raw: NonNull<std::ffi::c_void>,
+    device: DeviceId,
 }
 
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
@@ -52,8 +60,10 @@ unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
 
 impl DeviceMemoryResource {
-    /// Create a CUDA (default) memory resource handle.
+    /// Create a CUDA (default) memory resource handle on the calling thread's
+    /// current device.
     pub fn cuda() -> Result<Self> {
+        let device = DeviceId::current()?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in(
@@ -63,15 +73,18 @@ impl DeviceMemoryResource {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: NonNull::new(handle).expect("cudf_memory_resource_create_cuda returned null on success"),
+                device,
             }),
         })
     }
 
-    /// Create a pool memory resource handle.
+    /// Create a pool memory resource handle on the calling thread's current
+    /// device.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or 0 for unbounded.
     pub fn pool(initial_pool_size: usize, maximum_pool_size: usize) -> Result<Self> {
+        let device = DeviceId::current()?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in_with(
@@ -85,8 +98,14 @@ impl DeviceMemoryResource {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: NonNull::new(handle).expect("cudf_memory_resource_create_pool returned null on success"),
+                device,
             }),
         })
+    }
+
+    /// The CUDA device this memory resource was created on.
+    pub fn device(&self) -> DeviceId {
+        self.handle.device
     }
 
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {

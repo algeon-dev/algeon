@@ -7,6 +7,17 @@
 //! - it supplies default stream / MR handles when no explicit operation context
 //!   is provided
 //! - it does not decide whether mixed-input operations are legal
+//!
+//! **Device pinning:** `Explicit` domains carry a [`DeviceId`] that flows
+//! through the FFI ABI (`cudf_exec_options_t::device` + `CUDF_EXEC_FLAG_DEVICE_EXPLICIT`).
+//! The C++ shim re-enters the pinned device before resolving stream/MR defaults,
+//! so operations execute on the correct GPU regardless of the calling thread's
+//! ambient device.
+//!
+//! `AmbientDefault` domains do not pin a device — they snapshot the calling
+//! thread's device at creation time for provenance comparison only. This mode
+//! is unsuitable for multi-GPU correctness; use [`super::Runtime`] for
+//! device-pinned execution.
 
 use std::{
     collections::HashMap,
@@ -199,11 +210,12 @@ impl ExecutionDomain {
     pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
         match &self.kind {
             DomainKind::AmbientDefault { .. } => None,
-            DomainKind::Explicit { stream, mr, .. } => Some(cudf_sys::cudf_exec_options_t {
+            DomainKind::Explicit { device, stream, mr, .. } => Some(cudf_sys::cudf_exec_options_t {
                 struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
+                device: device.ordinal_raw(),
+                flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
                 stream: stream.as_raw() as *mut c_void,
                 mr: mr.as_raw() as *mut c_void,
-                flags: 0,
                 reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
             }),
         }
@@ -244,16 +256,41 @@ impl ExecutionDomain {
 
                 Ok(Arc::clone(input))
             },
-            DomainKind::Explicit { device, stream, mr, identity } => Ok(Arc::new(Self {
-                kind: DomainKind::Explicit {
-                    device: *device,
-                    stream: override_stream
-                        .map(|stream| Arc::new(stream.clone()))
-                        .unwrap_or_else(|| Arc::clone(stream)),
-                    mr: override_mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(mr)),
-                    identity: *identity,
-                },
-            })),
+            DomainKind::Explicit { device, stream, mr, identity } => {
+                if let Some(os) = override_stream {
+                    if os.device() != *device {
+                        return Err(Error::new(
+                            ErrorKind::InvalidOperation,
+                            "cross-device borrowed stream override: stream was created on a different device than the domain",
+                        )
+                        .with_operation(operation)
+                        .with_context("domain_device", device.ordinal().to_string())
+                        .with_context("override_stream_device", os.device().ordinal().to_string()));
+                    }
+                }
+                if let Some(omr) = override_mr {
+                    if omr.device() != *device {
+                        return Err(Error::new(
+                            ErrorKind::InvalidOperation,
+                            "cross-device borrowed MR override: memory resource was created on a different device than the domain",
+                        )
+                        .with_operation(operation)
+                        .with_context("domain_device", device.ordinal().to_string())
+                        .with_context("override_mr_device", omr.device().ordinal().to_string()));
+                    }
+                }
+
+                Ok(Arc::new(Self {
+                    kind: DomainKind::Explicit {
+                        device: *device,
+                        stream: override_stream
+                            .map(|stream| Arc::new(stream.clone()))
+                            .unwrap_or_else(|| Arc::clone(stream)),
+                        mr: override_mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(mr)),
+                        identity: *identity,
+                    },
+                }))
+            },
         }
     }
 
@@ -264,9 +301,13 @@ impl ExecutionDomain {
                 DomainKind::AmbientDefault { device_snapshot: right_dev },
             ) => left_dev == right_dev,
             (
-                DomainKind::Explicit { stream: left_stream, mr: left_mr, .. },
-                DomainKind::Explicit { stream: right_stream, mr: right_mr, .. },
-            ) => left_stream.as_raw() == right_stream.as_raw() && left_mr.as_raw() == right_mr.as_raw(),
+                DomainKind::Explicit { device: left_dev, stream: left_stream, mr: left_mr, .. },
+                DomainKind::Explicit { device: right_dev, stream: right_stream, mr: right_mr, .. },
+            ) => {
+                left_dev == right_dev
+                    && left_stream.as_raw() == right_stream.as_raw()
+                    && left_mr.as_raw() == right_mr.as_raw()
+            },
             _ => false,
         }
     }

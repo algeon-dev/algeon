@@ -343,7 +343,7 @@ fn test_from_device_ptr_i32_roundtrip() {
     let src_view = src_col.view().unwrap();
 
     let device_ptr = src_view.device_data_ptr().unwrap();
-    let len = src_view.len().unwrap() as usize;
+    let len = src_view.len().unwrap();
 
     let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() };
 
@@ -363,7 +363,7 @@ fn test_from_device_ptr_f64_roundtrip() {
     let src_view = src_col.view().unwrap();
 
     let device_ptr = src_view.device_data_ptr().unwrap();
-    let len = src_view.len().unwrap() as usize;
+    let len = src_view.len().unwrap();
 
     let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Float64).unwrap() };
 
@@ -378,7 +378,7 @@ fn test_from_device_ptr_i64_roundtrip() {
     let src_view = src_col.view().unwrap();
 
     let device_ptr = src_view.device_data_ptr().unwrap();
-    let len = src_view.len().unwrap() as usize;
+    let len = src_view.len().unwrap();
 
     let new_col = unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int64).unwrap() };
 
@@ -396,7 +396,7 @@ fn test_from_device_ptr_independent_of_source() {
         let src_col = Column::from_slice(&original_data).unwrap();
         let src_view = src_col.view().unwrap();
         let device_ptr = src_view.device_data_ptr().unwrap();
-        let len = src_view.len().unwrap() as usize;
+        let len = src_view.len().unwrap();
 
         unsafe { Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() }
         // src_col is dropped here
@@ -448,7 +448,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_i8).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Int8).unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
@@ -457,7 +457,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_u32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::UInt32).unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
@@ -466,7 +466,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_f32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Float32).unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Float32).unwrap()
     };
     let result = new_col.view().unwrap().to_vec::<f32>().unwrap();
     assert_eq!(result, data_f32);

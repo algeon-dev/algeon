@@ -109,6 +109,10 @@ impl Column {
         )
     }
 
+    pub(crate) fn from_slice_in_domain<T: CudfType>(data: &[T], domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        Self::from_slice_impl(data, None, Some(Arc::clone(domain)), "column::from_slice_in_domain")
+    }
+
     fn from_slice_impl<T: CudfType>(
         data: &[T],
         validity: Option<&[bool]>,
@@ -384,6 +388,10 @@ impl Column {
         )
     }
 
+    pub(crate) fn from_strings_in_domain(data: &[&str], domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        Self::from_strings_impl(data, None, Some(Arc::clone(domain)), "column::from_strings_in_domain")
+    }
+
     fn from_strings_impl(
         data: &[&str],
         validity: Option<&[bool]>,
@@ -448,31 +456,40 @@ impl Column {
     /// Every element is null (invalid). For `len == 0` this is equivalent
     /// to [`Column::empty`].
     pub fn nulls(type_id: TypeId, len: usize) -> Result<Self> {
-        let size = usize_to_i32_len(len, "data", "column::nulls")?;
+        let domain = ExecutionDomain::ambient_default();
+        Self::nulls_in_domain(type_id, len, &domain, "column::nulls")
+    }
+
+    fn nulls_in_domain(
+        type_id: TypeId,
+        len: usize,
+        domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let size = usize_to_i32_len(len, "data", operation)?;
         if len == 0 {
-            return Self::empty(type_id);
+            return Ok(Self::empty(type_id)?.with_execution_domain(Arc::clone(domain)));
         }
 
         match type_id {
             TypeId::String => {
                 let dummy: Vec<&str> = vec![""; len];
                 let validity = vec![false; len];
-                Self::from_strings_nullable(&dummy, &validity)
+                Self::from_strings_impl(&dummy, Some(&validity), Some(Arc::clone(domain)), operation)
             },
             _ => {
-                let elem_size =
-                    type_id.size_in_bytes().map_err(|e| e.with_operation("column::nulls"))?.ok_or_else(|| {
-                        Error::new(
-                            ErrorKind::InvalidOperation,
-                            format!("column::nulls does not support variable-width type {:?}", type_id),
-                        )
-                        .with_operation("column::nulls")
-                        .with_context("type_id", format!("{:?}", type_id).to_lowercase())
-                    })?;
+                let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidOperation,
+                        format!("{operation} does not support variable-width type {:?}", type_id),
+                    )
+                    .with_operation(operation)
+                    .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+                })?;
 
                 let data_len_bytes = len.checked_mul(elem_size as usize).ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, "column::nulls byte size overflow")
-                        .with_operation("column::nulls")
+                    Error::new(ErrorKind::InvalidOperation, "column byte size overflow")
+                        .with_operation(operation)
                         .with_context("len", len.to_string())
                         .with_context("elem_size_bytes", elem_size.to_string())
                 })?;
@@ -481,25 +498,39 @@ impl Column {
                 let validity = vec![false; len];
                 let null_mask = validity_to_bitmask(&validity);
                 let null_count = size;
+                let exec_options = domain.explicit_exec_options_raw();
 
                 let mut handle = ptr::null_mut();
                 // SAFETY: data is zeroed bytes of the correct size, null_mask marks
                 // all elements null. type_id.to_raw() is valid for fixed-width types.
                 error::check_status_in_with(
-                    unsafe {
-                        cudf_sys::cudf_column_create_numeric(
-                            type_id.to_raw(),
-                            data.as_ptr() as *const c_void,
-                            size,
-                            null_mask.as_ptr(),
-                            null_count,
-                            &mut handle,
-                        )
+                    match exec_options.as_ref() {
+                        Some(options) => unsafe {
+                            cudf_sys::cudf_column_create_numeric_ex(
+                                type_id.to_raw(),
+                                data.as_ptr() as *const c_void,
+                                size,
+                                null_mask.as_ptr(),
+                                null_count,
+                                options,
+                                &mut handle,
+                            )
+                        },
+                        None => unsafe {
+                            cudf_sys::cudf_column_create_numeric(
+                                type_id.to_raw(),
+                                data.as_ptr() as *const c_void,
+                                size,
+                                null_mask.as_ptr(),
+                                null_count,
+                                &mut handle,
+                            )
+                        },
                     },
-                    "column::nulls",
+                    operation,
                     [("type_id", format!("{:?}", type_id).to_lowercase()), ("len", len.to_string())],
                 )?;
-                Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+                Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
             },
         }
     }
@@ -511,23 +542,7 @@ impl Column {
     /// participate in explicit-provenance pipelines without triggering
     /// mixed-provenance rejection.
     pub fn nulls_with_runtime(runtime: &Runtime, type_id: TypeId, len: usize) -> Result<Self> {
-        let _size = usize_to_i32_len(len, "data", "column::nulls_with_runtime")?;
-        if len == 0 {
-            return Self::empty_with_runtime(runtime, type_id);
-        }
-
-        match type_id {
-            TypeId::String => {
-                let dummy: Vec<&str> = vec![""; len];
-                let validity = vec![false; len];
-                Self::from_strings_nullable_with_runtime(runtime, &dummy, &validity)
-            },
-            _ => {
-                // Build an ambient-domain null column, then stamp the runtime domain.
-                let col = Self::nulls(type_id, len)?;
-                Ok(col.with_execution_domain(Arc::clone(runtime.execution_domain())))
-            },
-        }
+        Self::nulls_in_domain(type_id, len, runtime.execution_domain(), "column::nulls_with_runtime")
     }
 
     /// Create a column by repeating a scalar value `size` times inside the

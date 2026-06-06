@@ -1,9 +1,9 @@
 use std::{ffi::c_void, ptr};
 
-use cudf::{Column, DataFrame, Runtime, Series, core::memory::DeviceMemoryResource, runtime::CudaStream};
+use cudf::{Column, DataFrame, DeviceId, Runtime, Series, core::memory::DeviceMemoryResource, runtime::CudaStream};
 use cudf_sys::{
-    cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
-    cudf_test_exec_reset_observation,
+    CUDF_SUCCESS, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
+    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
 };
 
 #[allow(dead_code)]
@@ -37,6 +37,20 @@ pub fn last_exec_mr_value() -> usize {
     let status = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last exec mr observation");
     out as usize
+}
+
+#[allow(dead_code)]
+pub fn last_exec_device() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_test_exec_last_device(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last exec device observation");
+    out
+}
+
+#[allow(dead_code)]
+pub fn set_current_device(device: DeviceId) {
+    let status = unsafe { cudf_cuda_set_device(device.ordinal() as i32) };
+    assert_eq!(status, CUDF_SUCCESS, "failed to set current device to {}", device.ordinal());
 }
 
 #[allow(dead_code)]

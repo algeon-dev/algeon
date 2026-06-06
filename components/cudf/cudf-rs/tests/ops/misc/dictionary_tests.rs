@@ -6,6 +6,17 @@ use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
+fn dictionary_indices_to_i64(dict_view: &cudf::ColumnView<'_>) -> Vec<i64> {
+    let indices_view = dictionary::indices(dict_view).unwrap();
+    match indices_view.data_type().unwrap().id() {
+        TypeId::Int8 => indices_view.to_vec::<i8>().unwrap().into_iter().map(i64::from).collect(),
+        TypeId::Int16 => indices_view.to_vec::<i16>().unwrap().into_iter().map(i64::from).collect(),
+        TypeId::Int32 => indices_view.to_vec::<i32>().unwrap().into_iter().map(i64::from).collect(),
+        TypeId::Int64 => indices_view.to_vec::<i64>().unwrap(),
+        other => panic!("unexpected dictionary index type: {other:?}"),
+    }
+}
+
 #[test]
 fn test_dictionary_encode_i32() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
@@ -247,8 +258,8 @@ fn test_match_dictionaries_shared_key_space() {
     assert_eq!(decoded_dst.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40, 20]);
 
     // Verify that the same value maps to the same index in both columns.
-    let src_indices = dictionary::indices(&matched_src_view).unwrap().to_vec::<i32>().unwrap();
-    let dst_indices = dictionary::indices(&matched_dst_view).unwrap().to_vec::<i32>().unwrap();
+    let src_indices = dictionary_indices_to_i64(&matched_src_view);
+    let dst_indices = dictionary_indices_to_i64(&matched_dst_view);
 
     // Value 20 appears in both: src[1]=20, dst[0]=20 → same index.
     assert_eq!(src_indices[1], dst_indices[0]);

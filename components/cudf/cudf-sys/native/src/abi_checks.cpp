@@ -53,12 +53,18 @@ static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
               "cudf_exec_options_t::struct_size must be the first field");
-static_assert(offsetof(cudf_exec_options_t, stream) > offsetof(cudf_exec_options_t, struct_size),
-              "cudf_exec_options_t::stream must follow struct_size");
+static_assert(sizeof(((cudf_exec_options_t*)nullptr)->device) == sizeof(int32_t),
+              "cudf_exec_options_t::device must be 32-bit");
+static_assert(offsetof(cudf_exec_options_t, device) > offsetof(cudf_exec_options_t, struct_size),
+              "cudf_exec_options_t::device must follow struct_size");
+static_assert(sizeof(((cudf_exec_options_t*)nullptr)->flags) == sizeof(uint32_t),
+              "cudf_exec_options_t::flags must be 32-bit");
+static_assert(offsetof(cudf_exec_options_t, flags) > offsetof(cudf_exec_options_t, device),
+              "cudf_exec_options_t::flags must follow device");
+static_assert(offsetof(cudf_exec_options_t, stream) > offsetof(cudf_exec_options_t, flags),
+              "cudf_exec_options_t::stream must follow flags");
 static_assert(offsetof(cudf_exec_options_t, mr) > offsetof(cudf_exec_options_t, stream),
               "cudf_exec_options_t::mr must follow stream");
-static_assert(sizeof(((cudf_exec_options_t*)nullptr)->flags) == sizeof(uint64_t),
-              "cudf_exec_options_t::flags must be 64-bit");
 static_assert(sizeof(((cudf_exec_options_t*)nullptr)->reserved) == sizeof(uint64_t) * 4,
               "cudf_exec_options_t::reserved must expose four 64-bit slots");
 

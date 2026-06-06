@@ -11,12 +11,17 @@ use std::{
     sync::Arc,
 };
 
+use super::device::DeviceId;
 use crate::core::error::{self, Result};
 
 /// An owned CUDA stream.
 ///
 /// Wraps an `rmm::cuda_stream` via the C shim. The stream is destroyed when
 /// this value is dropped.
+///
+/// Each stream records the CUDA device it was created on. This provenance is
+/// used by [`crate::Runtime`] builder validation to reject cross-device
+/// handle combinations.
 ///
 /// Use this with [`crate::Runtime::builder`] to seed explicit retained
 /// provenance, or with [`crate::ExecutionContext::with_stream`] to
@@ -28,6 +33,7 @@ pub struct CudaStream {
 
 struct CudaStreamHandle {
     raw: NonNull<std::ffi::c_void>,
+    device: DeviceId,
 }
 
 // SAFETY: CUDA streams are thread-safe by design — operations can be enqueued
@@ -38,16 +44,23 @@ unsafe impl Send for CudaStreamHandle {}
 unsafe impl Sync for CudaStreamHandle {}
 
 impl CudaStream {
-    /// Create a new CUDA stream.
+    /// Create a new CUDA stream on the calling thread's current device.
     pub fn new() -> Result<Self> {
+        let device = DeviceId::current()?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, "stream::new")?;
         Ok(Self {
             handle: Arc::new(CudaStreamHandle {
                 raw: NonNull::new(handle).expect("cudf_stream_create returned null on success"),
+                device,
             }),
         })
+    }
+
+    /// The CUDA device this stream was created on.
+    pub fn device(&self) -> DeviceId {
+        self.handle.device
     }
 
     /// Block the calling thread until all operations already enqueued on this

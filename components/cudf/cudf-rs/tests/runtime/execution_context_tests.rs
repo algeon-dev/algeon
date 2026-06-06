@@ -18,11 +18,11 @@
 
 use std::{ffi::c_void, ptr};
 
-use cudf::{core::memory::DeviceMemoryResource, runtime::CudaStream};
+use cudf::{DeviceId, core::memory::DeviceMemoryResource, runtime::CudaStream};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_mr_raw,
-    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
-    cudf_test_stream_handle_value,
+    cudf_test_exec_last_device, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
+    cudf_test_exec_reset_observation, cudf_test_stream_handle_value,
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +47,14 @@ fn obs_last_sync_stream() -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
     assert_eq!(status, 0, "cudf_test_exec_last_sync_stream_value failed");
+    out
+}
+
+/// Last device observed by an `_ex` shim call.
+fn obs_last_device() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_test_exec_last_device(&mut out) };
+    assert_eq!(status, 0, "cudf_test_exec_last_device failed");
     out
 }
 
@@ -1116,4 +1124,155 @@ fn device_memory_resource_create_cuda() {
 #[test]
 fn device_memory_resource_create_pool() {
     let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+}
+
+// ===========================================================================
+// Category 7: Exec options validation (negative tests)
+//
+// These tests construct raw `cudf_exec_options_t` structs with deliberately
+// invalid fields and verify that the C++ shim rejects them before performing
+// any side-effects (such as device switching).
+// ===========================================================================
+
+/// A `cudf_exec_options_t` with `struct_size` smaller than the actual struct
+/// is rejected with `CUDF_ERROR_INVALID_OPERATION`.
+#[test]
+fn exec_options_struct_size_too_small_returns_error() {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+
+    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
+    opts.struct_size = 8; // too small
+
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(
+            col,
+            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
+            &mut out,
+        )
+    };
+
+    assert_eq!(
+        status,
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        "struct_size too small should return CUDF_ERROR_INVALID_OPERATION"
+    );
+    assert!(out.is_null(), "output handle should remain null on validation error");
+
+    unsafe { cudf_sys::cudf_column_destroy(col) };
+}
+
+/// A `cudf_exec_options_t` with unknown flag bits is rejected with
+/// `CUDF_ERROR_INVALID_OPERATION`.
+#[test]
+fn exec_options_unknown_flags_returns_error() {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+
+    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
+    opts.flags = 0x8000_0000; // unknown bit
+
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(
+            col,
+            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
+            &mut out,
+        )
+    };
+
+    assert_eq!(
+        status,
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        "unknown flag bits should return CUDF_ERROR_INVALID_OPERATION"
+    );
+    assert!(out.is_null(), "output handle should remain null on validation error");
+
+    unsafe { cudf_sys::cudf_column_destroy(col) };
+}
+
+/// A `cudf_exec_options_t` with a non-zero reserved field is rejected with
+/// `CUDF_ERROR_INVALID_OPERATION`.
+#[test]
+fn exec_options_nonzero_reserved_returns_error() {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+
+    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
+    opts.reserved[2] = 0xDEAD_BEEF;
+
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(
+            col,
+            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
+            &mut out,
+        )
+    };
+
+    assert_eq!(
+        status,
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        "non-zero reserved field should return CUDF_ERROR_INVALID_OPERATION"
+    );
+    assert!(out.is_null(), "output handle should remain null on validation error");
+
+    unsafe { cudf_sys::cudf_column_destroy(col) };
+}
+
+/// A `cudf_exec_options_t` with an explicit device ordinal that does not exist
+/// is rejected with `CUDF_ERROR_CUDA` before any execution observation occurs.
+#[test]
+fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+    let before = DeviceId::current().unwrap();
+
+    let mut opts = cudf_sys::cudf_exec_options_t::defaults();
+    opts.flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+    opts.device = DeviceId::count().unwrap() as i32 + 1000;
+
+    obs_reset();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(
+            col,
+            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
+            &mut out,
+        )
+    };
+
+    assert_eq!(
+        status,
+        cudf_sys::CUDF_ERROR_CUDA,
+        "invalid explicit device should return CUDF_ERROR_CUDA"
+    );
+    assert!(out.is_null(), "output handle should remain null on device-selection error");
+    assert_eq!(obs_last_device(), -1, "failed device selection should not record execution observation");
+    assert_eq!(DeviceId::current().unwrap(), before, "failed device selection should not change the ambient device");
+
+    unsafe { cudf_sys::cudf_column_destroy(col) };
+}
+
+/// A `cudf_exec_options_t` constructed via `defaults()` (correct struct_size,
+/// zero flags, zero reserved) is accepted.
+#[test]
+fn exec_options_valid_defaults_succeeds() {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+
+    let opts = cudf_sys::cudf_exec_options_t::defaults();
+
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(
+            col,
+            &opts as *const cudf_sys::cudf_exec_options_t as *const _,
+            &mut out,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "valid defaults should succeed");
+    assert!(!out.is_null(), "output handle should be non-null on success");
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_destroy(col);
+    };
 }

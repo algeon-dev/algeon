@@ -50,7 +50,7 @@ use crate::{
 /// Not part of the public API — use [`lit()`] to create literals.
 enum LitValueInner {
     /// A numeric scalar factory. The closure creates the Scalar on demand.
-    Numeric(Box<dyn Fn() -> Result<Scalar> + Send + Sync>),
+    Numeric(Box<dyn Fn(&Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> + Send + Sync>),
     /// A string literal.
     String(String),
 }
@@ -62,14 +62,16 @@ enum LitValueInner {
 pub struct LitValue(Arc<LitValueInner>);
 
 impl LitValue {
-    fn to_scalar(&self) -> Result<Scalar> {
+    fn to_scalar_in_domain(&self, domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> {
         match &*self.0 {
-            LitValueInner::Numeric(f) => f(),
-            LitValueInner::String(s) => Scalar::from_string(s),
+            LitValueInner::Numeric(f) => f(domain),
+            LitValueInner::String(s) => Scalar::from_string_in_domain(s, domain),
         }
     }
 
-    fn numeric(f: impl Fn() -> Result<Scalar> + Send + Sync + 'static) -> Self {
+    fn numeric(
+        f: impl Fn(&Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static,
+    ) -> Self {
         Self(Arc::new(LitValueInner::Numeric(Box::new(f))))
     }
 
@@ -192,7 +194,7 @@ impl Expr {
             Expr::Column(name) => df.series(name),
 
             Expr::Literal(lit_val) => {
-                let scalar = lit_val.to_scalar()?;
+                let scalar = lit_val.to_scalar_in_domain(df.execution_domain())?;
                 let size = df.num_rows();
                 let col = Column::from_scalar(&scalar, size)?;
                 Series::from_column(col)
@@ -268,7 +270,7 @@ pub trait IntoLit {
 impl<T: CudfType + Send + Sync> IntoLit for T {
     fn into_expr(self) -> Expr {
         let val = self;
-        Expr::Literal(LitValue::numeric(move || Scalar::from_value(val)))
+        Expr::Literal(LitValue::numeric(move |domain| Scalar::from_value_in_domain(val, domain)))
     }
 }
 

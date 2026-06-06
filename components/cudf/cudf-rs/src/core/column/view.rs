@@ -644,15 +644,17 @@ impl ColumnView<'_> {
         }
 
         if input_count == 0 {
-            return Column::empty(values_type_id).map_err(|e| {
-                e.with_operation("column_view::map")
-                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
-                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
-                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
-                    .with_context("input_count", input_count.to_string())
-                    .with_context("keys_count", keys_count.to_string())
-                    .with_context("values_count", values_count.to_string())
-            });
+            return Column::empty(values_type_id)
+                .map(|column| column.with_execution_domain(Arc::clone(&self.domain)))
+                .map_err(|e| {
+                    e.with_operation("column_view::map")
+                        .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                        .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                        .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                        .with_context("input_count", input_count.to_string())
+                        .with_context("keys_count", keys_count.to_string())
+                        .with_context("values_count", values_count.to_string())
+                });
         }
 
         let keys_owned = copy_view_to_owned(keys).map_err(|e| {
@@ -736,7 +738,7 @@ impl ColumnView<'_> {
         // Build a row-index column [0, 1, 2, ..., len-1] as left payload
         // to restore original ordering after the join.
         let row_indices: Vec<i32> = (0..input_count as i32).collect();
-        let idx_col = Column::from_slice(&row_indices).map_err(|e| {
+        let idx_col = Column::from_slice_in_domain(&row_indices, &self.domain).map_err(|e| {
             e.with_operation("column_view::map")
                 .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
                 .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
