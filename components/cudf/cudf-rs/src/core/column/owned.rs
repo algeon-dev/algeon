@@ -146,8 +146,9 @@ impl Column {
 
     fn create_empty_in_domain(type_id: TypeId, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
+            unsafe { cudf_sys::cudf_column_create_empty_ex(type_id.to_raw(), &exec_options, &mut handle) },
             operation,
         )?;
         Self::from_handle_with_domain(handle, domain)

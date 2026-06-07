@@ -65,9 +65,14 @@ typedef struct cudf_interop_semantic_column_t {
   uint32_t keys_column_id;
 } cudf_interop_semantic_column_t;
 
-/// Create an empty column of the given type.
-cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
-                                       cudf_column_handle *out);
+/// Create an empty column of the given type with explicit execution options.
+///
+/// `options` must be non-NULL and must name an explicit valid device, a
+/// non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive
+/// the returned column.
+cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
+                                          const cudf_exec_options_t *options,
+                                          cudf_column_handle *out);
 
 /// Create a numeric column from host data with explicit execution options.
 ///

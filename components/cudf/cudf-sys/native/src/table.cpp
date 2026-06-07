@@ -144,6 +144,7 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy =
           cudf_table_state_from_handle(src).deep_copy(exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(copy),

@@ -126,43 +126,46 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
     if (valid) {
       CUDF_RUST_NULL_CHECK(value, "value is null");
     }
-    switch (to_cudf_type_id(type_id)) {
-    case cudf::type_id::INT8:
-      s = make_numeric_scalar<int8_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::INT16:
-      s = make_numeric_scalar<int16_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::INT32:
-      s = make_numeric_scalar<int32_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::INT64:
-      s = make_numeric_scalar<int64_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::UINT8:
-      s = make_numeric_scalar<uint8_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::UINT16:
-      s = make_numeric_scalar<uint16_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::UINT32:
-      s = make_numeric_scalar<uint32_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::UINT64:
-      s = make_numeric_scalar<uint64_t>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::FLOAT32:
-      s = make_numeric_scalar<float>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::FLOAT64:
-      s = make_numeric_scalar<double>(value, valid, exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::BOOL8:
-      s = make_numeric_scalar<bool>(value, valid, exec->stream, *exec->mr);
-      break;
-    default:
-      set_error("Unsupported type for numeric scalar");
-      return CUDF_ERROR_TYPE;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      switch (to_cudf_type_id(type_id)) {
+      case cudf::type_id::INT8:
+        s = make_numeric_scalar<int8_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::INT16:
+        s = make_numeric_scalar<int16_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::INT32:
+        s = make_numeric_scalar<int32_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::INT64:
+        s = make_numeric_scalar<int64_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::UINT8:
+        s = make_numeric_scalar<uint8_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::UINT16:
+        s = make_numeric_scalar<uint16_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::UINT32:
+        s = make_numeric_scalar<uint32_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::UINT64:
+        s = make_numeric_scalar<uint64_t>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::FLOAT32:
+        s = make_numeric_scalar<float>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::FLOAT64:
+        s = make_numeric_scalar<double>(value, valid, exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::BOOL8:
+        s = make_numeric_scalar<bool>(value, valid, exec->stream, *exec->mr);
+        break;
+      default:
+        set_error("Unsupported type for numeric scalar");
+        return CUDF_ERROR_TYPE;
+      }
     }
     *out = cudf_release_scalar_handle(std::move(s),
                                       cudf_capture_exec_provenance(*exec));
@@ -189,22 +192,25 @@ cudf_status_t cudf_scalar_create_decimal_raw_ex(
     }
 
     std::unique_ptr<cudf::scalar> s;
-    switch (to_cudf_type_id(type_id)) {
-    case cudf::type_id::DECIMAL32:
-      s = make_decimal_scalar<numeric::decimal32>(value, scale, valid,
-                                                  exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::DECIMAL64:
-      s = make_decimal_scalar<numeric::decimal64>(value, scale, valid,
-                                                  exec->stream, *exec->mr);
-      break;
-    case cudf::type_id::DECIMAL128:
-      s = make_decimal_scalar<numeric::decimal128>(value, scale, valid,
-                                                   exec->stream, *exec->mr);
-      break;
-    default:
-      set_error("Unsupported type for decimal scalar");
-      return CUDF_ERROR_TYPE;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      switch (to_cudf_type_id(type_id)) {
+      case cudf::type_id::DECIMAL32:
+        s = make_decimal_scalar<numeric::decimal32>(value, scale, valid,
+                                                    exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::DECIMAL64:
+        s = make_decimal_scalar<numeric::decimal64>(value, scale, valid,
+                                                    exec->stream, *exec->mr);
+        break;
+      case cudf::type_id::DECIMAL128:
+        s = make_decimal_scalar<numeric::decimal128>(value, scale, valid,
+                                                     exec->stream, *exec->mr);
+        break;
+      default:
+        set_error("Unsupported type for decimal scalar");
+        return CUDF_ERROR_TYPE;
+      }
     }
     *out = cudf_release_scalar_handle(std::move(s),
                                       cudf_capture_exec_provenance(*exec));
@@ -229,30 +235,33 @@ cudf_status_t cudf_scalar_create_timestamp_raw_ex(
     std::unique_ptr<cudf::scalar> s;
     bool valid = is_valid != 0;
     cudf_status_t status = CUDF_SUCCESS;
-    switch (to_cudf_type_id(type_id)) {
-    case cudf::type_id::TIMESTAMP_DAYS:
-      status = make_timestamp_scalar<cudf::timestamp_D>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::TIMESTAMP_SECONDS:
-      status = make_timestamp_scalar<cudf::timestamp_s>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::TIMESTAMP_MILLISECONDS:
-      status = make_timestamp_scalar<cudf::timestamp_ms>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::TIMESTAMP_MICROSECONDS:
-      status = make_timestamp_scalar<cudf::timestamp_us>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::TIMESTAMP_NANOSECONDS:
-      status = make_timestamp_scalar<cudf::timestamp_ns>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    default:
-      set_error("Unsupported type for timestamp scalar");
-      return CUDF_ERROR_TYPE;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      switch (to_cudf_type_id(type_id)) {
+      case cudf::type_id::TIMESTAMP_DAYS:
+        status = make_timestamp_scalar<cudf::timestamp_D>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::TIMESTAMP_SECONDS:
+        status = make_timestamp_scalar<cudf::timestamp_s>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::TIMESTAMP_MILLISECONDS:
+        status = make_timestamp_scalar<cudf::timestamp_ms>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::TIMESTAMP_MICROSECONDS:
+        status = make_timestamp_scalar<cudf::timestamp_us>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::TIMESTAMP_NANOSECONDS:
+        status = make_timestamp_scalar<cudf::timestamp_ns>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      default:
+        set_error("Unsupported type for timestamp scalar");
+        return CUDF_ERROR_TYPE;
+      }
     }
     if (status != CUDF_SUCCESS) {
       return status;
@@ -280,30 +289,33 @@ cudf_status_t cudf_scalar_create_duration_raw_ex(
     std::unique_ptr<cudf::scalar> s;
     bool valid = is_valid != 0;
     cudf_status_t status = CUDF_SUCCESS;
-    switch (to_cudf_type_id(type_id)) {
-    case cudf::type_id::DURATION_DAYS:
-      status = make_duration_scalar<cudf::duration_D>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::DURATION_SECONDS:
-      status = make_duration_scalar<cudf::duration_s>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::DURATION_MILLISECONDS:
-      status = make_duration_scalar<cudf::duration_ms>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::DURATION_MICROSECONDS:
-      status = make_duration_scalar<cudf::duration_us>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    case cudf::type_id::DURATION_NANOSECONDS:
-      status = make_duration_scalar<cudf::duration_ns>(
-          value, valid, exec->stream, *exec->mr, &s);
-      break;
-    default:
-      set_error("Unsupported type for duration scalar");
-      return CUDF_ERROR_TYPE;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      switch (to_cudf_type_id(type_id)) {
+      case cudf::type_id::DURATION_DAYS:
+        status = make_duration_scalar<cudf::duration_D>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::DURATION_SECONDS:
+        status = make_duration_scalar<cudf::duration_s>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::DURATION_MILLISECONDS:
+        status = make_duration_scalar<cudf::duration_ms>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::DURATION_MICROSECONDS:
+        status = make_duration_scalar<cudf::duration_us>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      case cudf::type_id::DURATION_NANOSECONDS:
+        status = make_duration_scalar<cudf::duration_ns>(
+            value, valid, exec->stream, *exec->mr, &s);
+        break;
+      default:
+        set_error("Unsupported type for duration scalar");
+        return CUDF_ERROR_TYPE;
+      }
     }
     if (status != CUDF_SUCCESS) {
       return status;
@@ -333,8 +345,12 @@ cudf_status_t cudf_scalar_create_string_ex(const char *value, int32_t is_valid,
 
     std::string str_val =
         (value != nullptr) ? std::string(value) : std::string();
-    auto s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0,
-                                                   exec->stream, *exec->mr);
+    std::unique_ptr<cudf::string_scalar> s;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0,
+                                                exec->stream, *exec->mr);
+    }
     exec->stream.synchronize();
     cudf_record_synchronized_stream(exec->stream);
     *out = cudf_release_scalar_handle(std::move(s),
@@ -361,8 +377,10 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
     auto const &s = cudf_scalar_from_handle_const(src);
     std::unique_ptr<cudf::scalar> copy;
 
-    switch (s.type().id()) {
-      // Numeric types
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      switch (s.type().id()) {
+        // Numeric types
 #define CUDF_COPY_NUMERIC(ENUM, TYPE)                                          \
   case cudf::type_id::ENUM:                                                    \
     copy = std::make_unique<cudf::numeric_scalar<TYPE>>(                       \
@@ -448,6 +466,7 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
     default:
       set_error("Unsupported type for scalar copy");
       return CUDF_ERROR_TYPE;
+      }
     }
 
     *out = cudf_release_scalar_handle(std::move(copy),
@@ -634,7 +653,7 @@ cudf_status_t cudf_scalar_string_value_ex(cudf_scalar_handle handle, char **out,
       return CUDF_ERROR_TYPE;
     }
     auto &str_scalar = static_cast<cudf::string_scalar &>(s);
-    auto host_value = str_scalar.to_string(exec->stream);
+    std::string host_value = str_scalar.to_string(exec->stream);
     if (host_value.size() >
         static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
       set_error("String scalar value exceeds supported host length");

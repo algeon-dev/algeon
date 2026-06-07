@@ -522,8 +522,14 @@ pub(crate) fn make_string_scalar(value: &str) -> *mut c_void {
 }
 
 pub(crate) fn make_empty_i32_column() -> *mut c_void {
+    let stream = OwnedStream::new();
+    let mr = make_stats_memory_resource();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut out: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_column_create_empty(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    let st =
+        unsafe { cudf_sys::cudf_column_create_empty_ex(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &exec, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
