@@ -33,12 +33,24 @@ pub struct DeploymentIoCapability {
 
 impl DeploymentIoCapability {
     /// Probes the current host and returns a non-failing diagnostic summary.
+    ///
+    /// Always runs the cuFile driver probe. Per-query paths should use
+    /// [`DeploymentIoCapability::cached_current_host`].
     pub fn probe_current_host() -> Self {
         Self::from_probe_inputs(
             probe_nvidia_fs_status(),
             KvikioCompatModeStatus::from_env_value(std::env::var(KVIKIO_COMPAT_MODE_ENV).ok().as_deref()),
             probe_cudf_gds_driver(),
         )
+    }
+
+    /// Returns a process-wide cached host capability summary, probing once.
+    ///
+    /// Treats deployment IO state as process-static and avoids repeating the
+    /// expensive cuFile driver probe on each execution-context build.
+    pub fn cached_current_host() -> Self {
+        static CACHED: std::sync::OnceLock<DeploymentIoCapability> = std::sync::OnceLock::new();
+        CACHED.get_or_init(Self::probe_current_host).clone()
     }
 
     /// Builds a capability summary from already-collected pure probe inputs.

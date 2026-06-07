@@ -404,7 +404,7 @@ impl ExecutionContext {
             source_fetch_runtime: default_source_fetch_runtime(),
             lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime(),
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
-            deployment_io_capability: DeploymentIoCapability::probe_current_host(),
+            deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
@@ -1015,7 +1015,7 @@ impl ExecutionContextBuilder {
             validate_service_stream_pool_size(service_stream_pool_size)?;
         }
         let deployment_io_capability =
-            self.deployment_io_capability.unwrap_or_else(DeploymentIoCapability::probe_current_host);
+            self.deployment_io_capability.unwrap_or_else(DeploymentIoCapability::cached_current_host);
         let mut source_fetch_config = self.source_fetch_config.unwrap_or_default();
         if let Some(host_fetch_budget_bytes) = self.host_fetch_budget_bytes {
             source_fetch_config.host_fetch_budget_bytes = Some(host_fetch_budget_bytes);

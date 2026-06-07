@@ -486,8 +486,6 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
 
     let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
 
-    assert_eq!(result.plan, plan);
-    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
     assert_eq!(diagnostics.considered_count, 3);
     assert_eq!(diagnostics.candidate_count, 1);
@@ -507,6 +505,13 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
         candidate.rejected_reason,
         Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)
     );
+    let local_source_reuse = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(local_source_reuse.considered_count, 1);
+    assert_eq!(local_source_reuse.applied_count, 1);
+    let source_reuse_candidate = &local_source_reuse.candidates[0];
+    assert!(source_reuse_candidate.applied);
+    assert_eq!(source_reuse_candidate.rejected_reason, None);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "store_sales"), 1);
 
     let aggregates = result
         .plan
@@ -2423,19 +2428,19 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 }
 
 #[test]
-fn native_optimizer_keeps_large_local_parquet_source_variants_independent() {
+fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants() {
     let plan = large_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
 
-    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
-    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
-    assert_eq!(diagnostics.applied_count, 0);
-    assert_eq!(
-        diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
-    );
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+    assert_eq!(candidate.superset_read_columns, vec!["inv_item_sk", "inv_date_sk", "inv_store_sk"]);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
 }
 
 #[test]

@@ -627,12 +627,29 @@ pub fn tpcds_glue_table_name(table_name: &str, scale_factor: &str) -> String {
     table_name.to_string()
 }
 
+/// Shared cuDF runtime for Iceberg native smoke/benchmark runs.
+///
+/// Avoids charging each query for CUDA/runtime setup in
+/// `native_runtime_elapsed_ms`, matching the non-Iceberg benchmark path.
+fn shared_native_runtime() -> SmokeResult<Arc<cudf::Runtime>> {
+    static SHARED_RUNTIME: std::sync::OnceLock<Result<Arc<cudf::Runtime>, String>> = std::sync::OnceLock::new();
+    SHARED_RUNTIME
+        .get_or_init(|| {
+            cudf::Runtime::new()
+                .map(Arc::new)
+                .map_err(|error| format!("failed to initialize shared native Iceberg benchmark runtime: {error}"))
+        })
+        .clone()
+        .map_err(smoke_error)
+}
+
 pub(crate) async fn native_session_context(
     source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
     let mut execution_config =
         native_execution_config_for_profile_with_env(native_execution_profile, |name| std::env::var(name).ok())?;
+    execution_config = execution_config.with_shared_runtime(shared_native_runtime()?);
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }

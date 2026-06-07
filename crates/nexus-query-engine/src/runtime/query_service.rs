@@ -290,7 +290,7 @@ struct AdmissionRequest {
 impl QueryService {
     /// Creates a service entry point and initializes service-owned runtime gates.
     pub fn new(config: QueryServiceConfig, tenants: Vec<QueryServiceTenantConfig>) -> Result<Self> {
-        let deployment = DeploymentIoCapability::probe_current_host();
+        let deployment = DeploymentIoCapability::cached_current_host();
         Self::new_with_deployment(config, tenants, deployment)
     }
 
