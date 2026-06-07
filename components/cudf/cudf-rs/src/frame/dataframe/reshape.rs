@@ -809,9 +809,12 @@ impl DataFrame {
     /// of evaluation does not matter.
     ///
     /// Each expression must have a determinable output name: either via
-    /// [`.alias()`](crate::ops::expr::Expr::alias) or by being a bare
-    /// [`col()`](crate::ops::expr::col) reference. Expressions without a name
-    /// produce an error **before** any GPU work.
+    /// [`.alias()`](crate::ops::expr::Expr::alias), by being a bare
+    /// [`col()`](crate::ops::expr::col) reference, or by being a single-input
+    /// transform that inherits its input name (for example `cast`, `is_null`,
+    /// `fillna`, cumulative scans, broadcast reductions, and string unary
+    /// operations). Expressions without a name produce an error **before** any
+    /// GPU work.
     ///
     /// # Errors
     ///
