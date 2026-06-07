@@ -8,10 +8,10 @@ use cudf::{
     },
 };
 use rapids_interop::{DataType as InteropDataType, TypeId as InteropTypeId};
-use static_assertions::assert_not_impl_any;
+use static_assertions::assert_impl_all;
 
-assert_not_impl_any!(Series: TryIntoOwnedDeviceColumnTransfer);
-assert_not_impl_any!(DataFrame: TryIntoOwnedDeviceTableTransfer);
+assert_impl_all!(Series: TryIntoOwnedDeviceColumnTransfer);
+assert_impl_all!(DataFrame: TryIntoOwnedDeviceTableTransfer);
 
 fn binding_ptr_eq(transfer: &OwnedColumnTransfer, expected_ptr: *const std::ffi::c_void) -> bool {
     transfer.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr)
@@ -110,6 +110,98 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
 }
 
 #[test]
+fn series_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contract() {
+    let runtime = Runtime::builder().build().unwrap();
+    let series = Series::new_with_runtime(&runtime, "numbers", &[1i32, 2, 3]).unwrap();
+    let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
+    let expected_stream = series.as_column().__debug_execution_domain_stream_value();
+
+    let transfer = series.try_into_owned_device_column_transfer().unwrap();
+
+    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
+    assert_eq!(transfer.column().len(), 3);
+    assert!(binding_ptr_eq(&transfer, expected_ptr));
+    assert_eq!(
+        transfer.release_contract().completion(),
+        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
+    );
+    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+
+    match transfer.readiness() {
+        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
+            assert_eq!(stream.as_raw() as usize, expected_stream);
+            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
+        },
+        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+    }
+}
+
+#[test]
+fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared() {
+    let runtime = Runtime::builder().build().unwrap();
+    let series = Series::new_with_runtime(&runtime, "numbers", &[7i32, 8, 9]).unwrap();
+    let shared = series.clone();
+    let original_ptr = shared.as_column_view().unwrap().device_data_ptr().unwrap();
+
+    let transfer = series.try_into_owned_device_column_transfer().unwrap();
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    let imported_ptr = imported.view().unwrap().device_data_ptr().unwrap();
+
+    assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_ne!(imported_ptr, original_ptr);
+    assert_eq!(shared.to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(shared.as_column_view().unwrap().device_data_ptr().unwrap(), original_ptr);
+}
+
+#[test]
+fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let values = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
+
+    let transfer = frame.try_into_owned_device_table_transfer().unwrap();
+
+    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
+    assert_eq!(transfer.table().num_rows(), 3);
+    assert_eq!(transfer.columns().len(), 2);
+    assert_eq!(transfer.table().names(), Some(expected_names.as_slice()));
+    assert_eq!(
+        transfer.release_contract().completion(),
+        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
+    );
+    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+}
+
+#[test]
+fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let values = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let shared = frame.clone();
+    let original_id_ptr = shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let original_value_ptr = shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+
+    let transfer = frame.try_into_owned_device_table_transfer().unwrap();
+    let imported = DataFrame::try_from_owned_device_table_transfer(transfer).unwrap();
+    let imported_id_ptr = imported.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let imported_value_ptr = imported.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+
+    assert_eq!(imported.column_names(), vec!["id", "value"]);
+    assert_eq!(imported.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("value").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_ne!(imported_id_ptr, original_id_ptr);
+    assert_ne!(imported_value_ptr, original_value_ptr);
+    assert_eq!(shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap(), original_id_ptr);
+    assert_eq!(
+        shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap(),
+        original_value_ptr
+    );
+}
+
+#[test]
 fn owned_column_transfer_import_round_trips_original_column_without_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let column = Column::from_slice_with_runtime(&runtime, &[7i32, 8, 9]).unwrap();
@@ -200,12 +292,32 @@ fn ambient_default_column_owned_transfer_is_rejected() {
 }
 
 #[test]
+fn ambient_default_series_owned_transfer_is_rejected() {
+    let series = Series::new("values", &[1i32, 2, 3]).unwrap();
+
+    let err = series.try_into_owned_device_column_transfer().unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+}
+
+#[test]
 fn ambient_default_table_owned_transfer_is_rejected() {
     let c0 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let c1 = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
 
     let err = table.try_into_owned_device_table_transfer().unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+}
+
+#[test]
+fn ambient_default_dataframe_owned_transfer_is_rejected() {
+    let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
+    let values = Series::new("value", &[10i32, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+
+    let err = frame.try_into_owned_device_table_transfer().unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
 }

@@ -32,6 +32,10 @@ pub struct PreparedColumnExport<'a> {
     lease_backend: LeaseBackend,
 }
 
+/// Structural equality over all observable export state.  `lease_backend` is
+/// compared by its `incomplete_drop_behavior()` rather than identity because
+/// backends are trait objects without a meaningful equality relation — the drop
+/// behavior is the only semantically relevant property for export comparison.
 impl PartialEq for PreparedColumnExport<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.column == other.column
@@ -82,35 +86,25 @@ impl<'a> PreparedColumnExport<'a> {
         let binding_map = binding_map(&bindings)?;
         let producer_device = match profile {
             ExportProfile::PreparedDeviceExport => {
+                let mut visited = HashMap::new();
                 let producer_device = validate_prepared_column_against_bindings(
                     &column,
                     &column_map,
                     &binding_map,
                     InteropErrorKind::PlacementUnsupported,
                     &mut HashSet::new(),
-                    &mut HashMap::new(),
+                    &mut visited,
                 )?;
-                if column_map.len() != 1 {
-                    let mut visited = HashMap::new();
-                    validate_prepared_column_against_bindings(
-                        &column,
-                        &column_map,
-                        &binding_map,
-                        InteropErrorKind::PlacementUnsupported,
-                        &mut HashSet::new(),
-                        &mut visited,
-                    )?;
-                    if visited.len() != column_map.len() {
-                        let unreferenced = semantic_columns
-                            .iter()
-                            .find(|candidate| !visited.contains_key(&candidate.id()))
-                            .expect("missing visited semantic column must exist");
-                        return Err(InteropError::new(
-                            InteropErrorKind::InvalidView,
-                            "prepared column export included an unreferenced semantic column",
-                        )
-                        .with_context("column_id", unreferenced.id().get().to_string()));
-                    }
+                if visited.len() != column_map.len() {
+                    let unreferenced = semantic_columns
+                        .iter()
+                        .find(|candidate| !visited.contains_key(&candidate.id()))
+                        .expect("missing visited semantic column must exist");
+                    return Err(InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "prepared column export included an unreferenced semantic column",
+                    )
+                    .with_context("column_id", unreferenced.id().get().to_string()));
                 }
                 Some(producer_device)
             },
