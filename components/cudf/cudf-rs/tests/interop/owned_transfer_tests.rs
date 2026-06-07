@@ -14,7 +14,7 @@ assert_not_impl_any!(Series: TryIntoOwnedDeviceColumnTransfer);
 assert_not_impl_any!(DataFrame: TryIntoOwnedDeviceTableTransfer);
 
 fn binding_ptr_eq(transfer: &OwnedColumnTransfer, expected_ptr: *const std::ffi::c_void) -> bool {
-    transfer.bindings().iter().any(|binding| binding.bytes().base_ptr().as_ptr() as *const _ == expected_ptr)
+    transfer.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr)
 }
 
 fn fake_ptr(addr: usize) -> *const std::ffi::c_void {

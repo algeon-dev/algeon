@@ -108,8 +108,7 @@ fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'sta
 }
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
-    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr().as_ptr() as *const u8, binding.bytes().byte_len()) }
-        .to_vec()
+    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()) }.to_vec()
 }
 
 fn expected_i32_bytes(values: &[i32]) -> Vec<u8> {
@@ -1337,7 +1336,7 @@ fn column_view_prepare_device_export_preserves_fixed_width_metadata() {
     };
 
     let binding = export.bindings().iter().find(|binding| binding.id() == values).unwrap();
-    assert_eq!(binding.bytes().base_ptr().as_ptr() as *const _, view.device_data_ptr().unwrap());
+    assert_eq!(binding.bytes().base_ptr(), view.device_data_ptr().unwrap());
     assert_eq!(binding.placement(), &Placement::CudaDevice { device: runtime.device().ordinal() as i32 });
 
     match export.readiness() {
@@ -1388,7 +1387,7 @@ fn sliced_column_prepare_device_export_preserves_base_pointer_and_offset() {
     };
 
     let binding = export.bindings().iter().find(|binding| binding.id() == values).unwrap();
-    assert_eq!(binding.bytes().base_ptr().as_ptr() as *const _, base.device_data_ptr().unwrap());
+    assert_eq!(binding.bytes().base_ptr(), base.device_data_ptr().unwrap());
 }
 
 #[test]
@@ -2339,7 +2338,7 @@ fn string_column_prepare_device_export_preserves_binary_like_metadata() {
     };
 
     let offsets_binding = export.bindings().iter().find(|binding| binding.id() == offsets).unwrap();
-    assert_eq!(offsets_binding.bytes().base_ptr().as_ptr() as *const _, offsets_view.device_data_ptr().unwrap());
+    assert_eq!(offsets_binding.bytes().base_ptr(), offsets_view.device_data_ptr().unwrap());
     assert_eq!(offsets_binding.placement(), &Placement::CudaDevice { device: runtime.device().ordinal() as i32 });
     assert!(offsets_binding.bytes().byte_len() >= 3 * std::mem::size_of::<i32>());
 
@@ -2383,7 +2382,7 @@ fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span(
     let base_data_binding = base_export.bindings().iter().find(|binding| binding.id() == *base_data).unwrap();
 
     let offsets_binding = export.bindings().iter().find(|binding| binding.id() == offsets).unwrap();
-    assert_eq!(offsets_binding.bytes().base_ptr().as_ptr() as *const _, offsets_view.device_data_ptr().unwrap());
+    assert_eq!(offsets_binding.bytes().base_ptr(), offsets_view.device_data_ptr().unwrap());
     assert_eq!(offsets_binding.placement(), &Placement::CudaDevice { device: runtime.device().ordinal() as i32 });
     assert_eq!(offsets_binding.bytes().byte_len(), 4 * std::mem::size_of::<i32>());
 
@@ -2538,7 +2537,7 @@ fn list_column_prepare_device_export_preserves_offsets_and_child_metadata() {
     assert!(matches!(child_column.layout(), ColumnLayout::FixedWidth { .. }));
 
     let offsets_binding = export.bindings().iter().find(|binding| binding.id() == offsets).unwrap();
-    assert_eq!(offsets_binding.bytes().base_ptr().as_ptr() as *const _, offsets_view.device_data_ptr().unwrap());
+    assert_eq!(offsets_binding.bytes().base_ptr(), offsets_view.device_data_ptr().unwrap());
     assert_eq!(offsets_binding.bytes().byte_len(), 5 * std::mem::size_of::<i32>());
     assert!(matches!(offsets_binding.placement(), Placement::CudaDevice { .. }));
 
@@ -2577,7 +2576,7 @@ fn sliced_list_column_prepare_device_export_preserves_root_offset_and_child_slic
     assert!(matches!(child_column.layout(), ColumnLayout::FixedWidth { .. }));
 
     let offsets_binding = export.bindings().iter().find(|binding| binding.id() == offsets).unwrap();
-    assert_eq!(offsets_binding.bytes().base_ptr().as_ptr() as *const _, offsets_view.device_data_ptr().unwrap());
+    assert_eq!(offsets_binding.bytes().base_ptr(), offsets_view.device_data_ptr().unwrap());
     assert_eq!(offsets_binding.bytes().byte_len(), 4 * std::mem::size_of::<i32>());
 }
 
@@ -2625,17 +2624,11 @@ fn sliced_list_of_strings_prepare_device_export_preserves_binary_like_child_slic
     };
 
     let list_offsets_binding = export.bindings().iter().find(|binding| binding.id() == list_offsets).unwrap();
-    assert_eq!(
-        list_offsets_binding.bytes().base_ptr().as_ptr() as *const _,
-        base_offsets_view.device_data_ptr().unwrap()
-    );
+    assert_eq!(list_offsets_binding.bytes().base_ptr(), base_offsets_view.device_data_ptr().unwrap());
     assert_eq!(list_offsets_binding.bytes().byte_len(), 4 * std::mem::size_of::<i32>());
 
     let child_offsets_binding = export.bindings().iter().find(|binding| binding.id() == child_offsets).unwrap();
-    assert_eq!(
-        child_offsets_binding.bytes().base_ptr().as_ptr() as *const _,
-        child_offsets_view.device_data_ptr().unwrap()
-    );
+    assert_eq!(child_offsets_binding.bytes().base_ptr(), child_offsets_view.device_data_ptr().unwrap());
     assert_eq!(child_offsets_binding.bytes().byte_len(), (expected_child_end + 1) * std::mem::size_of::<i32>());
 
     let base_child_data_binding =
@@ -2676,7 +2669,7 @@ fn dictionary_column_prepare_device_export_preserves_indices_and_keys_metadata()
     assert!(matches!(keys_column.layout(), ColumnLayout::FixedWidth { .. }));
 
     let indices_binding = export.bindings().iter().find(|binding| binding.id() == indices).unwrap();
-    assert_eq!(indices_binding.bytes().base_ptr().as_ptr() as *const _, indices_view.device_data_ptr().unwrap());
+    assert_eq!(indices_binding.bytes().base_ptr(), indices_view.device_data_ptr().unwrap());
     assert_eq!(indices_binding.bytes().byte_len(), dict_view.len().unwrap() * std::mem::size_of::<i32>());
     assert!(matches!(indices_binding.placement(), Placement::CudaDevice { .. }));
 
@@ -2712,7 +2705,7 @@ fn dictionary_string_column_prepare_device_export_preserves_binary_like_keys() {
     assert_eq!(keys_column.offset(), usize::try_from(keys_view.offset().unwrap()).unwrap());
 
     let offsets_binding = export.bindings().iter().find(|binding| binding.id() == offsets).unwrap();
-    assert_eq!(offsets_binding.bytes().base_ptr().as_ptr() as *const _, keys_offsets_view.device_data_ptr().unwrap());
+    assert_eq!(offsets_binding.bytes().base_ptr(), keys_offsets_view.device_data_ptr().unwrap());
     assert_eq!(offsets_binding.bytes().byte_len(), (keys_view.len().unwrap() + 1) * std::mem::size_of::<i32>());
 
     let data_binding = export.bindings().iter().find(|binding| binding.id() == data).unwrap();
@@ -2776,7 +2769,7 @@ fn sliced_dictionary_column_prepare_device_export_preserves_root_offset_and_indi
     assert_eq!(keys_column.offset(), usize::try_from(keys_view.offset().unwrap()).unwrap());
 
     let indices_binding = export.bindings().iter().find(|binding| binding.id() == indices).unwrap();
-    assert_eq!(indices_binding.bytes().base_ptr().as_ptr() as *const _, indices_view.device_data_ptr().unwrap());
+    assert_eq!(indices_binding.bytes().base_ptr(), indices_view.device_data_ptr().unwrap());
     assert_eq!(
         indices_binding.bytes().byte_len(),
         (expected_root_offset + expected_root_len) * std::mem::size_of::<i32>(),

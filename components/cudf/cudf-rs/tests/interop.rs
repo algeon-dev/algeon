@@ -9,6 +9,9 @@ mod import_tests;
 #[path = "interop/prepared_export_tests.rs"]
 mod prepared_export_tests;
 
+#[path = "interop/send_sync_contract_tests.rs"]
+mod send_sync_contract_tests;
+
 #[path = "interop/owned_transfer_tests.rs"]
 mod owned_transfer_tests;
 

@@ -10,3 +10,6 @@ repository.workspace = true
 [lib]
 name = "rapids_interop"
 path = "src/lib.rs"
+
+[dev-dependencies]
+static_assertions = "1"

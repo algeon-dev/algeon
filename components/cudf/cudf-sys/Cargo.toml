@@ -11,3 +11,6 @@ links = "cudf_rust"
 
 [build-dependencies]
 cmake = "0.1"
+
+[dev-dependencies]
+static_assertions = "1"

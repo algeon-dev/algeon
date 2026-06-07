@@ -14,8 +14,7 @@ use tempfile::TempDir;
 use crate::common;
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
-    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr().as_ptr() as *const u8, binding.bytes().byte_len()) }
-        .to_vec()
+    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()) }.to_vec()
 }
 
 fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {

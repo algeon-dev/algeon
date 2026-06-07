@@ -143,8 +143,25 @@ fn dictionary_columns_fail_clearly_as_unsupported_v1_types() {
     assert!(err.context().iter().any(|(key, value)| *key == "type_id" && value == "dictionary32"));
 }
 
+// ---------------------------------------------------------------------------
+// Nested-type constructor guards
+//
+// These tests verify that List and Struct columns cannot be created through the
+// normal Column / Series construction APIs (the C++ layer rejects them in
+// make_empty_column).  Because no current API produces a runtime-backed nested
+// Column, we cannot directly exercise the borrowed-interop-v1 type guard
+// (borrow_from_materialized_view) for List/Struct.  That guard independently
+// rejects non-fixed-width types and child-bearing layouts; it is covered for
+// other variable-width types by the string and dictionary tests above.
+//
+// If a future API (e.g. a runtime-aware JSON reader) makes it possible to
+// produce runtime-backed nested columns, a test should be added here that
+// constructs such a column and asserts that try_borrow_column_view() returns
+// InteropErrorKind::UnsupportedType.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn nested_list_column_construction_is_rejected() {
+fn nested_list_column_construction_is_rejected_before_interop() {
     let err = match Column::empty(cudf::TypeId::List) {
         Ok(_) => panic!("expected nested list column construction to fail"),
         Err(err) => err,
@@ -155,7 +172,7 @@ fn nested_list_column_construction_is_rejected() {
 }
 
 #[test]
-fn nested_struct_series_construction_is_rejected() {
+fn nested_struct_series_construction_is_rejected_before_interop() {
     let err = match Series::empty("nested", cudf::TypeId::Struct) {
         Ok(_) => panic!("expected nested struct series construction to fail"),
         Err(err) => err,
