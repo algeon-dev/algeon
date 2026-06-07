@@ -190,11 +190,14 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 #[test]
 fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();
+    obs_reset();
     let col = rt.empty_column(TypeId::Int32).unwrap();
 
     assert_eq!(col.testing_execution_domain_kind(), "explicit");
     assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
+    assert_eq!(obs_last_stream(), rt.stream().testing_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, rt.memory_resource().testing_raw_handle_value());
 }
 
 /// A `Runtime::empty_column` result can be added to an explicit-domain

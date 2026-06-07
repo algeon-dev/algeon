@@ -10,7 +10,8 @@ use cudf::{
 
 use crate::common::{
     arm_next_table_view_negative_num_columns_fault, arm_next_table_view_negative_num_rows_fault, column_from_slice,
-    column_from_slice_nullable, error_context_value,
+    column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
+    reset_exec_observation,
 };
 
 #[test]
@@ -195,12 +196,19 @@ fn test_table_view_from_column_views() {
 
 #[test]
 fn test_table_view_from_column_views_single_column() {
-    let c1 = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let c1 = column_from_slice(&[10i64, 20, 30, 40]).unwrap().testing_rebind_execution_domain_explicit(607).unwrap();
+    let expected_stream = c1.testing_execution_domain_stream_value();
+    let expected_mr = c1.testing_execution_domain_mr_value();
     let v1 = c1.testing_view().unwrap();
 
+    reset_exec_observation();
     let table_view = TableView::from_column_views(&[&v1]).unwrap();
     assert_eq!(table_view.num_columns().unwrap(), 1);
     assert_eq!(table_view.num_rows().unwrap(), 4);
+    assert_eq!(table_view.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(table_view.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
 
     let col0 = table_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i64>().unwrap(), vec![10, 20, 30, 40]);

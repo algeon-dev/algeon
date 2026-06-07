@@ -2,7 +2,10 @@
 
 use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 
-use crate::common::{column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value};
+use crate::common::{
+    column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, reset_exec_observation,
+};
 
 #[test]
 fn test_from_strs_basic() {
@@ -106,11 +109,23 @@ fn test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slic
 
 #[test]
 fn test_sliced_nullable_string_materialization_preserves_active_range() {
-    let col = column_from_strs_nullable(&["alpha", "", "gamma", "delta"], &[true, false, true, true]).unwrap();
+    let col = column_from_strs_nullable(&["alpha", "", "gamma", "delta"], &[true, false, true, true])
+        .unwrap()
+        .testing_rebind_execution_domain_explicit(606)
+        .unwrap();
+    let expected_stream = col.testing_execution_domain_stream_value();
+    let expected_mr = col.testing_execution_domain_mr_value();
     let sliced = col.testing_slice_view(1, 3).unwrap();
 
+    reset_exec_observation();
     assert_eq!(sliced.to_strings_lossy().unwrap(), vec![String::new(), "gamma".to_string(), "delta".to_string()]);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_exec_observation();
     assert_eq!(sliced.to_optional_strings().unwrap(), vec![None, Some("gamma".to_string()), Some("delta".to_string())]);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
 }
 
 #[test]

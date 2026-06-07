@@ -44,6 +44,10 @@ fn assert_export_exec_observation_matches_runtime(runtime: &Runtime) {
     assert_eq!(last_exec_mr_value(), runtime.memory_resource().testing_raw_handle_value());
 }
 
+fn assert_exec_observation_matches_runtime(runtime: &Runtime) {
+    assert_export_exec_observation_matches_runtime(runtime);
+}
+
 fn reset_event_observation() {
     unsafe { cudf_sys::cudf_test_event_reset_observation() };
 }
@@ -481,8 +485,12 @@ fn numeric_column_device_arrow_export_with_deep_copy_reports_bridge_owned_device
 
     assert_eq!(foreign.materialization(), DeviceArrowImportMaterialization::ForeignRetainedView);
 
+    reset_exec_observation();
     let imported = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
+    assert_exec_observation_matches_runtime(&runtime);
+    assert_eq!(imported.testing_execution_domain_stream_value(), runtime.stream().testing_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_mr_value(), runtime.memory_resource().testing_raw_handle_value());
     assert_eq!(imported.device_data_ptr().unwrap(), export_ptr);
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
 }
@@ -1184,7 +1192,11 @@ fn numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_
 
     assert_eq!(foreign.materialization(), DeviceArrowImportMaterialization::ForeignRetainedView);
 
+    reset_exec_observation();
     let imported = Table::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime).unwrap();
+    assert_exec_observation_matches_runtime(&runtime);
+    assert_eq!(imported.testing_execution_domain_stream_value(), runtime.stream().testing_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_mr_value(), runtime.memory_resource().testing_raw_handle_value());
     let imported_columns = imported.into_columns().unwrap();
 
     assert_eq!(imported_columns[0].device_data_ptr().unwrap(), export_ids_ptr);
