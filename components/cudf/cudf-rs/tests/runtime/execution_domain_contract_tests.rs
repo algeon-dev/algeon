@@ -225,7 +225,8 @@ fn dataframe_new_rejects_mixed_domain_columns() {
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(100).unwrap();
     let right = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(200).unwrap();
 
-    let err = DataFrame::new(vec!["left".into(), "right".into()], vec![left, right]).unwrap_err();
+    let err =
+        crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "dataframe::new");

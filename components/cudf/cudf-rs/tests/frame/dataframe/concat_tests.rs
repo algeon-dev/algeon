@@ -9,13 +9,13 @@ use crate::common::{
 
 #[test]
 fn test_concat_matching_schemas() {
-    let df1 = DataFrame::new(
+    let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10.0f64, 20.0]).unwrap()],
     )
     .unwrap();
 
-    let df2 = DataFrame::new(
+    let df2 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30.0f64, 40.0]).unwrap()],
     )
@@ -36,13 +36,13 @@ fn test_concat_matching_schemas() {
 
 #[test]
 fn test_concat_mismatched_column_names_returns_error() {
-    let df1 = DataFrame::new(
+    let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
-    let df2 = DataFrame::new(
+    let df2 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "c".to_string()],
         vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i32, 40]).unwrap()],
     )
@@ -54,9 +54,11 @@ fn test_concat_mismatched_column_names_returns_error() {
 
 #[test]
 fn test_concat_mismatched_column_count_returns_error() {
-    let df1 = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let df1 =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
 
-    let df2 = DataFrame::new(
+    let df2 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i32, 40]).unwrap()],
     )
@@ -68,14 +70,14 @@ fn test_concat_mismatched_column_count_returns_error() {
 
 #[test]
 fn test_concat_mismatched_column_types_returns_error() {
-    let df1 = DataFrame::new(
+    let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
     // Same schema names/order, but "b" has different type (i64 vs i32).
-    let df2 = DataFrame::new(
+    let df2 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30i64, 40]).unwrap()],
     )
@@ -111,8 +113,121 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
 }
 
 #[test]
+fn test_concat_many_three_dataframes() {
+    let df1 = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10.0f64, 20.0]).unwrap()],
+    )
+    .unwrap();
+
+    let df2 = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[3i32, 4]).unwrap(), Column::from_slice(&[30.0f64, 40.0]).unwrap()],
+    )
+    .unwrap();
+
+    let df3 = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[5i32, 6]).unwrap(), Column::from_slice(&[50.0f64, 60.0]).unwrap()],
+    )
+    .unwrap();
+
+    let result = df1.concat_many(&[&df2, &df3]).unwrap();
+
+    assert_eq!(result.num_columns(), 2);
+    assert_eq!(result.num_rows(), 6);
+    assert_eq!(result.column_names(), vec!["a", "b"]);
+
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
+    assert_eq!(a_vals, vec![1, 2, 3, 4, 5, 6]);
+
+    let b_vals: Vec<f64> = result.series("b").unwrap().to_vec_strict::<f64>().unwrap();
+    assert_eq!(b_vals, vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+}
+
+#[test]
+fn test_concat_many_empty_slice_returns_self() {
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap();
+
+    let result = df.concat_many(&[]).unwrap();
+
+    assert_eq!(result.num_columns(), 1);
+    assert_eq!(result.num_rows(), 3);
+    let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
+    assert_eq!(a_vals, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_concat_many_single_other() {
+    let df1 =
+        crate::common::dataframe_from_columns(vec!["x".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
+
+    let df2 =
+        crate::common::dataframe_from_columns(vec!["x".to_string()], vec![Column::from_slice(&[3i32, 4]).unwrap()])
+            .unwrap();
+
+    let result = df1.concat_many(&[&df2]).unwrap();
+
+    assert_eq!(result.num_rows(), 4);
+    let vals: Vec<i32> = result.series("x").unwrap().to_vec_strict::<i32>().unwrap();
+    assert_eq!(vals, vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn test_concat_many_mismatched_schema_returns_error() {
+    let df1 =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
+
+    let df2 =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[3i32, 4]).unwrap()])
+            .unwrap();
+
+    let df3 =
+        crate::common::dataframe_from_columns(vec!["b".to_string()], vec![Column::from_slice(&[5i32, 6]).unwrap()])
+            .unwrap();
+
+    let err = df1.concat_many(&[&df2, &df3]).expect_err("expected schema mismatch");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_concat_many_mismatched_types_returns_error() {
+    let df1 =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
+
+    let df2 =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[3i64, 4]).unwrap()])
+            .unwrap();
+
+    let err = df1.concat_many(&[&df2]).expect_err("expected type mismatch");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
+    let rt1 = sample_runtime();
+    let rt2 = sample_runtime();
+    let rt3 = sample_runtime();
+    let df1 = DataFrame::from_series([rt1.series("a", &[1i32, 2]).unwrap()]).unwrap();
+    let df2 = DataFrame::from_series([rt2.series("a", &[3i32, 4]).unwrap()]).unwrap();
+    let df3 = DataFrame::from_series([rt3.series("a", &[5i32, 6]).unwrap()]).unwrap();
+    let expected_domain_id = df1.__debug_execution_domain_id();
+
+    let result = df1.concat_many(&[&df2, &df3]).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), expected_domain_id);
+    let vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
+    assert_eq!(vals, vec![1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
 fn test_copy_preserves_schema_and_data() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
         vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
@@ -133,7 +248,7 @@ fn test_copy_preserves_schema_and_data() {
 
 #[test]
 fn test_rename_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["old_name".to_string(), "other".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
@@ -156,7 +271,8 @@ fn test_rename_column() {
 
 #[test]
 fn test_rename_nonexistent_column_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()])
+        .unwrap();
 
     let err = df.rename_column("nonexistent", "new").expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -164,7 +280,7 @@ fn test_rename_nonexistent_column_returns_error() {
 
 #[test]
 fn test_rename_to_existing_name_returns_error() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[2i32]).unwrap()],
     )
@@ -176,7 +292,7 @@ fn test_rename_to_existing_name_returns_error() {
 
 #[test]
 fn test_select_subset_of_columns() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
         vec![
             Column::from_slice(&[1i32, 2]).unwrap(),
@@ -201,7 +317,9 @@ fn test_select_subset_of_columns() {
 
 #[test]
 fn test_select_nonexistent_column_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
 
     let err = df.select(["nonexistent"]).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -209,7 +327,7 @@ fn test_select_nonexistent_column_returns_error() {
 
 #[test]
 fn test_select_duplicate_column_names_returns_error() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
@@ -221,7 +339,7 @@ fn test_select_duplicate_column_names_returns_error() {
 
 #[test]
 fn test_select_preserves_data() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
         vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
@@ -239,7 +357,7 @@ fn test_select_preserves_data() {
 
 #[test]
 fn test_select_accepts_string_vec() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
@@ -253,7 +371,7 @@ fn test_select_accepts_string_vec() {
 
 #[test]
 fn test_rename_preserves_column_order() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
         vec![
             Column::from_slice(&[1i32]).unwrap(),
@@ -269,7 +387,7 @@ fn test_rename_preserves_column_order() {
 
 #[test]
 fn test_rename_same_name_is_schema_only_and_preserves_data() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -287,7 +405,7 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
 
 #[test]
 fn test_select_all_columns_returns_full_copy() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[3i32, 4]).unwrap()],
     )

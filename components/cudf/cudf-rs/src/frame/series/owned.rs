@@ -26,23 +26,16 @@ use crate::{
 ///
 /// Metadata queries (`len()`, `is_empty()`, `null_count()`) are infallible and
 /// free — the values are cached at construction time.
+///
+/// [`std::fmt::Display`] for `Series` is metadata-only. It reports the name,
+/// dtype, length, and nullability summary, but it never materializes values to
+/// host memory.
 #[derive(Clone)]
 pub struct Series {
     pub(super) name: Option<String>,
     pub(super) column: Arc<Column>,
     pub(super) cached_len: usize,
     pub(super) cached_null_count: usize,
-}
-
-impl std::fmt::Debug for Series {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut ds = f.debug_struct("Series");
-        ds.field("name", &self.name);
-        let dtype_str = self.dtype().map(|dt| format!("{:?}", dt.id())).unwrap_or_else(|_| "?".to_string());
-        ds.field("dtype", &dtype_str);
-        ds.field("len", &self.cached_len);
-        ds.finish()
-    }
 }
 
 impl TryFrom<Column> for Series {

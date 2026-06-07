@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding, ExportDiagnostics,
     ExportProfile, InteropError, InteropErrorKind, LeaseReadiness, PhysicalValidity, Placement, ProducerReadiness,
-    ReadStartAuthority, ReadStartBinding, Result, SemanticColumn, TypeId,
+    ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization, Result, SemanticColumn,
+    TransferCompletionRule, TypeId,
 };
 
 fn export_profile_name(profile: ExportProfile) -> &'static str {
@@ -45,6 +46,38 @@ pub(crate) fn validate_owned_transfer_profile(diagnostics: ExportDiagnostics) ->
             other,
             "owned transfer values must declare an owned device transfer profile in diagnostics",
         )),
+    }
+}
+
+pub(crate) fn validate_release_contract(release_contract: ReleaseContract) -> Result<()> {
+    if release_contract.release_device() < 0 {
+        return Err(InteropError::new(
+            InteropErrorKind::InvalidView,
+            "owned device transfer release device must be >= 0",
+        )
+        .with_context("release_device", release_contract.release_device().to_string()));
+    }
+
+    match (release_contract.completion(), release_contract.synchronization()) {
+        (
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::Asynchronous,
+        ) => Err(owned_transfer_profile_error(
+            ExportProfile::OwnedDeviceTransfer,
+            "owned device transfer release contract cannot declare caller-proven completion with asynchronous release",
+        )
+        .with_context("completion", "caller_must_release_after_consumer_work_completes")
+        .with_context("synchronization", "asynchronous")),
+        (
+            TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
+            ReleaseSynchronization::RequiresCallerSynchronization,
+        ) => Err(owned_transfer_profile_error(
+            ExportProfile::OwnedDeviceTransfer,
+            "owned device transfer release contract cannot declare signal-waited release with caller-required synchronization",
+        )
+        .with_context("completion", "release_waits_on_consumer_signal")
+        .with_context("synchronization", "requires_caller_synchronization")),
+        _ => Ok(()),
     }
 }
 

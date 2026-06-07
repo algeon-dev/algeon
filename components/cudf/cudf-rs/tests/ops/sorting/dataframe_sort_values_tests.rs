@@ -188,7 +188,11 @@ fn test_sort_values_empty_options_means_defaults() {
 fn test_sort_values_nulls_first() {
     let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
-    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "val".to_string()],
+        vec![ids.unwrap(), vals.unwrap()],
+    )
+    .unwrap();
 
     // Sort by id ascending, nulls first.
     let sorted = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
@@ -206,7 +210,11 @@ fn test_sort_values_nulls_first() {
 fn test_sort_values_default_places_nulls_last() {
     let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
-    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "val".to_string()],
+        vec![ids.unwrap(), vals.unwrap()],
+    )
+    .unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let id_col = sorted.series("id").unwrap();

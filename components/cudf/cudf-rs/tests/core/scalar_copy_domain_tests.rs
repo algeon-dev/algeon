@@ -37,10 +37,7 @@ fn assert_binding_equivalent(source: &BufferBinding<'_>, copied: &BufferBinding<
     assert_eq!(binding_bytes(source), binding_bytes(copied));
 }
 
-fn validity_bits(
-    column: &SemanticColumn,
-    bindings: &HashMap<u32, &BufferBinding<'_>>,
-) -> Option<Vec<bool>> {
+fn validity_bits(column: &SemanticColumn, bindings: &HashMap<u32, &BufferBinding<'_>>) -> Option<Vec<bool>> {
     match column.validity() {
         PhysicalValidity::NoValidityBuffer => None,
         PhysicalValidity::ValidityMask { mask, .. } => {

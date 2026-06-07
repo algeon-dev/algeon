@@ -447,6 +447,7 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
         transfer.release_contract().completion(),
         TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
     );
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 }
 
@@ -466,6 +467,7 @@ fn series_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contra
         transfer.release_contract().completion(),
         TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
     );
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 
     match transfer.readiness() {
@@ -512,6 +514,7 @@ fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract()
         transfer.release_contract().completion(),
         TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
     );
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 }
 

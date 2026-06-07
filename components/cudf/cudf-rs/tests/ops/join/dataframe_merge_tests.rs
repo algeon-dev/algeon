@@ -15,26 +15,26 @@ fn left_df() -> DataFrame {
     // id: [1, 2, 3], score: [10, 20, 30]
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df() -> DataFrame {
     // id: [2, 3, 4], value: [200, 300, 400]
     let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
     let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    crate::common::dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn left_df_asym() -> DataFrame {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    DataFrame::new(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    crate::common::dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df_asym() -> DataFrame {
     let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
     let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
-    DataFrame::new(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    crate::common::dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
@@ -200,7 +200,11 @@ fn test_merge_suffix_overlapping_payload() {
     let left = left_df();
     let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
     let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
-    let right = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string()],
+        vec![right_ids, right_scores],
+    )
+    .unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
@@ -222,7 +226,11 @@ fn test_merge_custom_suffixes() {
     let left = left_df();
     let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
     let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
-    let right = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string()],
+        vec![right_ids, right_scores],
+    )
+    .unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["id"]).suffixes("_x", "_y")).unwrap();
 
@@ -500,13 +508,19 @@ fn test_merge_no_keys_specified() {
 fn test_merge_rejects_duplicate_output_names_after_reassembly() {
     let left_ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let left_conflicting = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let left =
-        DataFrame::new(vec!["left_id".to_string(), "right_id".to_string()], vec![left_ids, left_conflicting]).unwrap();
+    let left = crate::common::dataframe_from_columns(
+        vec!["left_id".to_string(), "right_id".to_string()],
+        vec![left_ids, left_conflicting],
+    )
+    .unwrap();
 
     let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
     let right_values = Column::from_slice(&[200i32, 300, 400]).unwrap();
-    let right =
-        DataFrame::new(vec!["right_id".to_string(), "value".to_string()], vec![right_ids, right_values]).unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["right_id".to_string(), "value".to_string()],
+        vec![right_ids, right_values],
+    )
+    .unwrap();
 
     let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"])).unwrap_err();
 
@@ -524,12 +538,20 @@ fn test_merge_multi_key_inner() {
     let lk0 = Column::from_slice(&[1i32, 1, 2]).unwrap();
     let lk1 = Column::from_slice(&[10i32, 20, 10]).unwrap();
     let lp = Column::from_slice(&[100i32, 200, 300]).unwrap();
-    let left = DataFrame::new(vec!["a".to_string(), "b".to_string(), "val".to_string()], vec![lk0, lk1, lp]).unwrap();
+    let left = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string(), "val".to_string()],
+        vec![lk0, lk1, lp],
+    )
+    .unwrap();
 
     let rk0 = Column::from_slice(&[1i32, 2, 2]).unwrap();
     let rk1 = Column::from_slice(&[10i32, 10, 20]).unwrap();
     let rp = Column::from_slice(&[1000i32, 2000, 3000]).unwrap();
-    let right = DataFrame::new(vec!["a".to_string(), "b".to_string(), "rval".to_string()], vec![rk0, rk1, rp]).unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string(), "rval".to_string()],
+        vec![rk0, rk1, rp],
+    )
+    .unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["a", "b"])).unwrap();
 
@@ -557,11 +579,15 @@ fn test_merge_null_equality_unequal() {
     // With null_equality(Unequal), null keys should NOT match.
     let left_ids = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let left_vals = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let left = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals]).unwrap();
+    let left =
+        crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals])
+            .unwrap();
 
     let right_ids = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let right_vals = Column::from_slice(&[100i32, 200, 300]).unwrap();
-    let right = DataFrame::new(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals]).unwrap();
+    let right =
+        crate::common::dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals])
+            .unwrap();
 
     use cudf::NullEquality;
 

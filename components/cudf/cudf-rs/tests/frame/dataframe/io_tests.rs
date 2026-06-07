@@ -66,7 +66,7 @@ fn test_write_parquet_preserves_schema() {
 
     let c1 = Column::from_slice(&[100i32, 200]).unwrap();
     let c2 = Column::from_slice(&[1.5f64, 2.5]).unwrap();
-    let df = DataFrame::new(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
     df.write_parquet(&path).unwrap();
 
@@ -91,8 +91,11 @@ fn test_roundtrip_create_write_read() {
     let c1 = Column::from_slice(&[10i64, 20, 30]).unwrap();
     let c2 = Column::from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let c3 = Column::from_slice(&[7i32, 8, 9]).unwrap();
-    let df =
-        DataFrame::new(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()], vec![c1, c2, c3]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        vec![c1, c2, c3],
+    )
+    .unwrap();
 
     df.write_parquet(&path).unwrap();
 

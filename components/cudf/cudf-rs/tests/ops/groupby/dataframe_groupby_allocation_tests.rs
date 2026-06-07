@@ -10,7 +10,8 @@ fn sample_df() -> DataFrame {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
-    DataFrame::new(vec!["key".to_string(), "a".to_string(), "b".to_string()], vec![keys, a, b]).unwrap()
+    crate::common::dataframe_from_columns(vec!["key".to_string(), "a".to_string(), "b".to_string()], vec![keys, a, b])
+        .unwrap()
 }
 
 #[test]

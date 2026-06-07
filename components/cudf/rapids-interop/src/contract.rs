@@ -303,19 +303,30 @@ impl fmt::Debug for RetainedHostBuffers {
     }
 }
 
+/// Declares who is responsible for establishing that consumer work is complete
+/// before an owned-transfer release may finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferCompletionRule {
+    /// The caller must determine that consumer work has completed before it
+    /// begins release.
     CallerMustReleaseAfterConsumerWorkCompletes,
+    /// The release path itself waits on a consumer-provided completion signal.
     ReleaseWaitsOnConsumerSignal,
 }
 
+/// Declares whether owned-transfer release may block internally or requires
+/// synchronization outside the release call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseSynchronization {
+    /// Release proceeds asynchronously once started.
     Asynchronous,
+    /// Release may block internally while carrying out the release contract.
     MaySynchronizeInternally,
+    /// The caller must perform any required synchronization before release.
     RequiresCallerSynchronization,
 }
 
+/// Shared semantic release contract for an ownership-bearing device transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseContract {
     release_device: i32,
@@ -324,6 +335,8 @@ pub struct ReleaseContract {
 }
 
 impl ReleaseContract {
+    /// Build a plain release-contract value. Semantic validation happens when
+    /// the contract is used to construct an owned transfer root.
     pub fn new(
         release_device: i32,
         completion: TransferCompletionRule,

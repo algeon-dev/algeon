@@ -151,7 +151,8 @@ fn df_to_table_source_still_usable() {
 /// count == 1), `into_table()` can unwrap without copying.
 #[test]
 fn df_into_table_unique_owner_no_extra_copy() {
-    let df = DataFrame::new(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+        .unwrap();
 
     let original_ptr = device_ptr(&df, "a");
     let (table, names) = df.try_into_table().unwrap();

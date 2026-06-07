@@ -1,6 +1,6 @@
 //! Tests for DataFrame Display and Debug formatting.
 
-use cudf::{DataFrame, TypeId, core::Column};
+use cudf::{TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
 // Display
@@ -8,7 +8,7 @@ use cudf::{DataFrame, TypeId, core::Column};
 
 #[test]
 fn test_display_reports_schema_metadata_without_values() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![
             Column::from_slice(&[101i32, 202, 303]).unwrap(),
@@ -40,14 +40,14 @@ fn test_display_reports_schema_metadata_without_values() {
 
 #[test]
 fn test_display_empty_dataframe() {
-    let df = DataFrame::new(vec![], vec![]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
     let output = format!("{}", df);
     assert_eq!(output, "DataFrame [0 columns x 0 rows]");
 }
 
 #[test]
 fn test_display_zero_rows() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::empty(TypeId::Int32).unwrap(), Column::empty(TypeId::Float64).unwrap()],
     )
@@ -68,7 +68,7 @@ fn test_display_large_dataframe_still_omits_values() {
     let n = 30;
     let ids: Vec<i32> = (1000..1000 + n).collect();
     let vals: Vec<f64> = (0..n).map(|i| 5000.0 + i as f64 * 1.25).collect();
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "val".to_string()],
         vec![Column::from_slice(&ids).unwrap(), Column::from_slice(&vals).unwrap()],
     )
@@ -83,7 +83,7 @@ fn test_display_large_dataframe_still_omits_values() {
 
 #[test]
 fn test_display_nullable_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string()],
         vec![Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
     )
@@ -96,7 +96,11 @@ fn test_display_nullable_column() {
 
 #[test]
 fn test_display_bool_column() {
-    let df = DataFrame::new(vec!["flag".to_string()], vec![Column::from_slice(&[true, false, true]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["flag".to_string()],
+        vec![Column::from_slice(&[true, false, true]).unwrap()],
+    )
+    .unwrap();
 
     let output = format!("{}", df);
     assert!(output.contains("flag"), "output should contain column name: {}", output);
@@ -107,9 +111,11 @@ fn test_display_bool_column() {
 
 #[test]
 fn test_display_string_column_reports_dtype_without_materializing_values() {
-    let df =
-        DataFrame::new(vec!["city".to_string()], vec![Column::from_strings(&["Tokyo", "Paris", "Taipei"]).unwrap()])
-            .unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["city".to_string()],
+        vec![Column::from_strings(&["Tokyo", "Paris", "Taipei"]).unwrap()],
+    )
+    .unwrap();
 
     let output = format!("{}", df);
     assert!(output.contains("city"), "output should contain column name: {}", output);
@@ -128,7 +134,7 @@ fn test_display_string_column_reports_dtype_without_materializing_values() {
 
 #[test]
 fn test_debug_produces_output() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
     )
@@ -153,7 +159,7 @@ fn test_debug_produces_output() {
 
 #[test]
 fn test_debug_contains_types() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[1.0f64]).unwrap()],
     )
@@ -172,7 +178,11 @@ fn test_debug_contains_types() {
 
 #[test]
 fn test_debug_contains_row_count() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["a".to_string()],
+        vec![Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap()],
+    )
+    .unwrap();
 
     let output = format!("{:?}", df);
 
@@ -185,7 +195,7 @@ fn test_debug_contains_row_count() {
 
 #[test]
 fn test_debug_empty_dataframe() {
-    let df = DataFrame::new(vec![], vec![]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
     let output = format!("{:?}", df);
     assert!(output.contains("DataFrame"), "debug output should contain 'DataFrame': {}", output);
     assert!(output.contains("0"), "debug output should indicate 0 columns: {}", output);

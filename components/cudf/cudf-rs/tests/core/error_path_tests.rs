@@ -1,5 +1,5 @@
 use cudf::{
-    DataFrame, ErrorKind,
+    ErrorKind,
     core::{Column, Table},
 };
 
@@ -7,14 +7,14 @@ use cudf::{
 fn test_dataframe_new_mismatched_column_lengths() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = Column::from_slice(&[1.0f64, 2.0]).unwrap(); // length 2 vs 3
-    let result = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![c1, c2]);
+    let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1, c2]);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_dataframe_series_miss_returns_err() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let df = DataFrame::new(vec!["a".to_string()], vec![c1]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![c1]).unwrap();
     let result = df.series("nonexistent");
     assert!(result.is_err());
 }
@@ -72,7 +72,7 @@ fn test_concatenate_tables_column_count_mismatch() {
 #[test]
 fn test_dataframe_new_names_columns_count_mismatch() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let result = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![c1]);
+    let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -82,7 +82,7 @@ fn test_dataframe_new_names_columns_count_mismatch() {
 fn test_dataframe_new_duplicate_names() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let c2 = Column::from_slice(&[3i32, 4]).unwrap();
-    let result = DataFrame::new(vec!["a".to_string(), "a".to_string()], vec![c1, c2]);
+    let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "a".to_string()], vec![c1, c2]);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);

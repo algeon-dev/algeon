@@ -54,6 +54,8 @@ mod series_concat_tests;
 mod series_constructor_tests;
 #[path = "frame/series/convenience_tests.rs"]
 mod series_convenience_tests;
+#[path = "frame/series/display_tests.rs"]
+mod series_display_tests;
 #[path = "frame/series/host_materialization_tests.rs"]
 mod series_host_materialization_tests;
 #[path = "frame/series/materialization_naming_tests.rs"]

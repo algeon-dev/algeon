@@ -199,7 +199,7 @@ fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
 
 #[test]
 fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
-    let df = DataFrame::new(vec![], vec![]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
 
     let info = df.info_with(InfoDetail::ALL).unwrap();
 

@@ -11,15 +11,15 @@ repository.workspace = true
 strict-multi-gpu = []
 
 [dependencies]
+cudf-sys = { path = "../cudf-sys" }
+rapids-interop = { path = "../rapids-interop" }
 ahash = "0.8"
 anyhow = "1"
 arrow = { version = "58" }
 bitflags = "2"
-typed-builder = "0.23"
 csv = "1.4"
-cudf-sys = { path = "../cudf-sys" }
 indexmap = "2"
-rapids-interop = { path = "../rapids-interop" }
+typed-builder = "0.23"
 smallvec = "1.15"
 
 
@@ -30,3 +30,4 @@ serde_json = "1"
 static_assertions = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+trybuild = "1"

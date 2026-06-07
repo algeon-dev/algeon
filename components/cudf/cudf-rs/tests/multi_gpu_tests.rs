@@ -225,7 +225,7 @@ fn adopted_device_buffer_preserves_creation_device_provenance() {
 
     common::set_current_device(device0);
     let ambient = Column::from_slice(&[4i32, 5, 6]).unwrap();
-    let frame = DataFrame::new(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
     assert!(
         frame.is_ok(),
         "adopted column should retain ambient-default provenance from device {} even after switching to device {}",
@@ -253,7 +253,7 @@ fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
 
     common::set_current_device(device0);
     let ambient = Column::from_slice(&[40i32, 50, 60]).unwrap();
-    let frame = DataFrame::new(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
     assert!(
         frame.is_ok(),
         "nullable adopted column should retain ambient-default provenance from device {} even after switching to device {}",

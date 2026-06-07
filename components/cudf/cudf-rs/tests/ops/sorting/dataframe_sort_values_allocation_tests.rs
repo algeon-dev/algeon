@@ -10,7 +10,11 @@ fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[2i32, 1, 2, 1]).unwrap();
     let scores = Column::from_slice(&[20i32, 10, 40, 30]).unwrap();
     let tags = Column::from_slice(&[200i32, 100, 400, 300]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "score".to_string(), "tag".to_string()], vec![ids, scores, tags]).unwrap()
+    crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string(), "tag".to_string()],
+        vec![ids, scores, tags],
+    )
+    .unwrap()
 }
 
 #[test]

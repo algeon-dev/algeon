@@ -45,11 +45,19 @@ fn owned_transfer_diagnostics() -> ExportDiagnostics {
 }
 
 fn release_contract() -> ReleaseContract {
-    ReleaseContract::new(
+    release_contract_with(
         0,
         TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
         ReleaseSynchronization::MaySynchronizeInternally,
     )
+}
+
+fn release_contract_with(
+    device: i32,
+    completion: TransferCompletionRule,
+    synchronization: ReleaseSynchronization,
+) -> ReleaseContract {
+    ReleaseContract::new(device, completion, synchronization)
 }
 
 fn owned_fixed_width_table_transfer_on_device(
@@ -60,6 +68,30 @@ fn owned_fixed_width_table_transfer_on_device(
     device: i32,
     num_rows: usize,
 ) -> OwnedTableTransfer {
+    owned_fixed_width_table_transfer_with_release_contract(
+        table_id,
+        column_id,
+        buffer_id,
+        addr,
+        device,
+        num_rows,
+        release_contract_with(
+            device,
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::MaySynchronizeInternally,
+        ),
+    )
+}
+
+fn owned_fixed_width_table_transfer_with_release_contract(
+    table_id: u32,
+    column_id: u32,
+    buffer_id: u32,
+    addr: usize,
+    device: i32,
+    num_rows: usize,
+    release_contract: ReleaseContract,
+) -> OwnedTableTransfer {
     OwnedTableTransfer::try_new(
         SemanticTable::new(TableId::new(table_id), num_rows, vec![ColumnId::new(column_id)], None),
         vec![fixed_width_column(column_id, buffer_id, num_rows, 0)],
@@ -68,11 +100,7 @@ fn owned_fixed_width_table_transfer_on_device(
             stream: CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut core::ffi::c_void, device).unwrap(),
         },
         owned_transfer_diagnostics(),
-        ReleaseContract::new(
-            device,
-            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
-            ReleaseSynchronization::MaySynchronizeInternally,
-        ),
+        release_contract,
         DropFlagOwner { dropped: Arc::new(AtomicBool::new(false)) },
     )
     .unwrap()
@@ -179,6 +207,78 @@ fn owned_column_transfer_rejects_host_visible_readiness() {
 }
 
 #[test]
+fn owned_column_transfer_accepts_all_supported_release_contract_combinations() {
+    let cases = [
+        (
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::MaySynchronizeInternally,
+        ),
+        (
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::RequiresCallerSynchronization,
+        ),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::Asynchronous),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::MaySynchronizeInternally),
+    ];
+
+    for (index, (completion, synchronization)) in cases.into_iter().enumerate() {
+        let release_contract = release_contract_with(0, completion, synchronization);
+        let transfer = OwnedColumnTransfer::try_new(
+            fixed_width_column(1 + index as u32, 11 + index as u32, 3, 0),
+            vec![device_binding(11 + index as u32, 0x1000 + (index * 0x1000), 12, 0)],
+            owned_transfer_readiness(),
+            owned_transfer_diagnostics(),
+            release_contract,
+            format!("owner-{index}"),
+        )
+        .unwrap();
+
+        assert_eq!(transfer.release_contract(), &release_contract);
+    }
+}
+
+#[test]
+fn owned_column_transfer_rejects_contradictory_release_contract_combinations() {
+    let cases = [
+        (TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes, ReleaseSynchronization::Asynchronous),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::RequiresCallerSynchronization),
+    ];
+
+    for (completion, synchronization) in cases {
+        let err = OwnedColumnTransfer::try_new(
+            fixed_width_column(1, 11, 3, 0),
+            vec![device_binding(11, 0x1000, 12, 0)],
+            owned_transfer_readiness(),
+            owned_transfer_diagnostics(),
+            release_contract_with(0, completion, synchronization),
+            String::from("owner"),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    }
+}
+
+#[test]
+fn owned_column_transfer_rejects_negative_release_device() {
+    let err = OwnedColumnTransfer::try_new(
+        fixed_width_column(1, 11, 3, 0),
+        vec![device_binding(11, 0x1000, 12, 0)],
+        owned_transfer_readiness(),
+        owned_transfer_diagnostics(),
+        release_contract_with(
+            -1,
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::MaySynchronizeInternally,
+        ),
+        String::from("owner"),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+}
+
+#[test]
 fn owned_table_transfer_reports_owned_device_profile_and_release_contract() {
     let dropped = Arc::new(AtomicBool::new(false));
     let columns = vec![fixed_width_column(1, 11, 3, 0), fixed_width_column(2, 12, 3, 0)];
@@ -223,6 +323,81 @@ fn owned_table_transfer_can_recover_typed_owner() {
 }
 
 #[test]
+fn owned_table_transfer_accepts_all_supported_release_contract_combinations() {
+    let cases = [
+        (
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::MaySynchronizeInternally,
+        ),
+        (
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::RequiresCallerSynchronization,
+        ),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::Asynchronous),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::MaySynchronizeInternally),
+    ];
+
+    for (index, (completion, synchronization)) in cases.into_iter().enumerate() {
+        let release_contract = release_contract_with(0, completion, synchronization);
+        let transfer = OwnedTableTransfer::try_new(
+            SemanticTable::new(TableId::new(7 + index as u32), 3, vec![ColumnId::new(1)], None),
+            vec![fixed_width_column(1, 11 + index as u32, 3, 0)],
+            vec![device_binding(11 + index as u32, 0x1000 + (index * 0x1000), 12, 0)],
+            owned_transfer_readiness(),
+            owned_transfer_diagnostics(),
+            release_contract,
+            format!("owner-{index}"),
+        )
+        .unwrap();
+
+        assert_eq!(transfer.release_contract(), &release_contract);
+    }
+}
+
+#[test]
+fn owned_table_transfer_rejects_contradictory_release_contract_combinations() {
+    let cases = [
+        (TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes, ReleaseSynchronization::Asynchronous),
+        (TransferCompletionRule::ReleaseWaitsOnConsumerSignal, ReleaseSynchronization::RequiresCallerSynchronization),
+    ];
+
+    for (completion, synchronization) in cases {
+        let err = OwnedTableTransfer::try_new(
+            SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None),
+            vec![fixed_width_column(1, 11, 3, 0)],
+            vec![device_binding(11, 0x1000, 12, 0)],
+            owned_transfer_readiness(),
+            owned_transfer_diagnostics(),
+            release_contract_with(0, completion, synchronization),
+            String::from("owner"),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    }
+}
+
+#[test]
+fn owned_table_transfer_rejects_negative_release_device() {
+    let err = OwnedTableTransfer::try_new(
+        SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None),
+        vec![fixed_width_column(1, 11, 3, 0)],
+        vec![device_binding(11, 0x1000, 12, 0)],
+        owned_transfer_readiness(),
+        owned_transfer_diagnostics(),
+        release_contract_with(
+            -1,
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::MaySynchronizeInternally,
+        ),
+        String::from("owner"),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+}
+
+#[test]
 fn partitioned_owned_table_transfer_accepts_two_partitions_on_different_devices() {
     let left = owned_fixed_width_table_transfer_on_device(10, 1, 11, 0x1000, 0, 3);
     let right = owned_fixed_width_table_transfer_on_device(11, 2, 12, 0x2000, 1, 3);
@@ -251,8 +426,32 @@ fn partitioned_owned_table_transfer_accepts_two_partitions_on_different_devices(
 
 #[test]
 fn partitioned_owned_table_transfer_preserves_per_partition_release_contracts() {
-    let left = owned_fixed_width_table_transfer_on_device(10, 1, 11, 0x1000, 0, 3);
-    let right = owned_fixed_width_table_transfer_on_device(11, 2, 12, 0x2000, 1, 3);
+    let left = owned_fixed_width_table_transfer_with_release_contract(
+        10,
+        1,
+        11,
+        0x1000,
+        0,
+        3,
+        release_contract_with(
+            0,
+            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            ReleaseSynchronization::RequiresCallerSynchronization,
+        ),
+    );
+    let right = owned_fixed_width_table_transfer_with_release_contract(
+        11,
+        2,
+        12,
+        0x2000,
+        1,
+        3,
+        release_contract_with(
+            1,
+            TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
+            ReleaseSynchronization::Asynchronous,
+        ),
+    );
 
     let transfer = PartitionedOwnedTableTransfer::try_new(
         Some(vec!["left".into(), "right".into()]),
@@ -267,11 +466,19 @@ fn partitioned_owned_table_transfer_preserves_per_partition_release_contracts() 
     assert_eq!(transfer.partitions()[0].transfer().release_contract().release_device(), 0);
     assert_eq!(transfer.partitions()[1].transfer().release_contract().release_device(), 1);
     assert_eq!(
+        transfer.partitions()[0].transfer().release_contract().completion(),
+        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
+    );
+    assert_eq!(
+        transfer.partitions()[1].transfer().release_contract().completion(),
+        TransferCompletionRule::ReleaseWaitsOnConsumerSignal
+    );
+    assert_eq!(
         transfer.partitions()[0].transfer().release_contract().synchronization(),
-        ReleaseSynchronization::MaySynchronizeInternally
+        ReleaseSynchronization::RequiresCallerSynchronization
     );
     assert_eq!(
         transfer.partitions()[1].transfer().release_contract().synchronization(),
-        ReleaseSynchronization::MaySynchronizeInternally
+        ReleaseSynchronization::Asynchronous
     );
 }
