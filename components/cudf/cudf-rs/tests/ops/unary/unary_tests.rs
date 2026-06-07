@@ -1,7 +1,8 @@
 //! Tests for unary operations.
 
 use cudf::{
-    Column, DataType, TypeId,
+    DataType, TypeId,
+    core::Column,
     ops::unary::{self, UnaryOperator},
 };
 

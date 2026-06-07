@@ -1,6 +1,10 @@
 //! Tests for Column-level arithmetic, comparison, and scalar operations.
 
-use cudf::{Column, DataType, Scalar, TypeId, ops::binary::BinaryOperator};
+use cudf::{
+    DataType, TypeId,
+    core::{Column, Scalar},
+    ops::binary::BinaryOperator,
+};
 
 // ---------------------------------------------------------------------------
 // Arithmetic methods on Column

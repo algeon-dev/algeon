@@ -2,8 +2,8 @@
 //!
 //! Start with [`DataFrame`] and [`Series`]. They provide a cuDF-Python-like
 //! experience with immutable-value semantics, `Arc`-shared columns, and
-//! GPU-only data operations. Use [`Column`]/[`Table`] only when you need
-//! fine-grained GPU memory control.
+//! GPU-only data operations. Use [`core::Column`]/[`core::Table`] only when
+//! you need fine-grained GPU memory control.
 //!
 //! # Quick Start
 //!
@@ -39,18 +39,20 @@
 //!
 //! # Advanced Usage
 //!
-//! The core types give direct control over GPU memory layout and lifetimes.
+//! The `core` types give direct control over GPU memory layout and lifetimes.
 //! Most users should not need these.
 //! Use [`Runtime`] to own default execution resources plus retained provenance
 //! for a pipeline, and [`ExecutionContext`] when you need a borrowed
 //! per-operation override.
 //!
-//! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
-//! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
-//! - [`Table`] — An owned GPU table (collection of columns).
-//! - [`TableView`] — A non-owning borrow of a table.
-//! - [`Scalar`] — A single value on the GPU.
+//! - [`core::Column`] — An owned GPU column (analogous to `cudf::column`).
+//! - [`core::ColumnView`] — A non-owning borrow of a column, tied by lifetime.
+//! - [`core::Table`] — An owned GPU table (collection of columns).
+//! - [`core::TableView`] — A non-owning borrow of a table.
+//! - [`core::Scalar`] — A single value on the GPU.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
+//! - [`DataFrame::table_view`] — zero-copy bridge from high-level
+//!   `DataFrame` into low-level [`core::TableView`] workflows.
 //! - [`interop`] — the preferred external interop boundary for the shared
 //!   borrowed compatibility profile, producer-rooted prepared exports, and
 //!   activated read-lease APIs.
@@ -58,9 +60,9 @@
 //!
 //! If you need to hand device-backed cudf data to another Rust GPU library,
 //! prefer the shared descriptors and prepared export types in [`interop`] over
-//! [`core::column::DeviceSlice`]. `DeviceSlice` is only a raw pointer + length
-//! helper and does not carry null-mask, offset-base, readiness, completion, or
-//! execution-provenance semantics.
+//! [`core::DeviceSlice`]. `core::DeviceSlice` is only a raw pointer + length
+//! helper and does not carry null-mask, offset-base, readiness, completion,
+//! or execution-provenance semantics.
 //!
 //! For new interop APIs, prefer the shared names in [`interop`]. The
 //! `interop::Runtime*` names remain available as CUDA-specific compatibility
@@ -69,20 +71,20 @@
 //!
 //! # Stream Synchronization Strategy
 //!
-//! Every owned GPU object ([`Column`], [`Table`], [`DataFrame`], [`Scalar`])
-//! carries *retained provenance* — a record of the CUDA stream and memory
-//! resource that produced it.  This differs from upstream libcudf, where
-//! callers pass a stream to each function call and are responsible for all
-//! cross-stream ordering themselves.
+//! Every owned GPU object ([`core::Column`], [`core::Table`], [`DataFrame`],
+//! [`core::Scalar`]) carries *retained provenance* — a record of the CUDA
+//! stream and memory resource that produced it. This differs from upstream
+//! libcudf, where callers pass a stream to each function call and are
+//! responsible for all cross-stream ordering themselves.
 //!
 //! **Single-stream (default) path:** Objects created without an explicit
-//! [`Runtime`] use the process-global default stream.  No synchronization
+//! [`Runtime`] use the process-global default stream. No synchronization
 //! overhead is incurred.
 //!
 //! **Mixed-provenance operations:** When inputs from different [`Runtime`]
 //! instances are combined (e.g. `merge`, `concat`), cudf-rs automatically
 //! fences the secondary stream with `cudaStreamSynchronize` before the
-//! operation proceeds on the output stream.  This is a *host fence*: it
+//! operation proceeds on the output stream. This is a *host fence*: it
 //! blocks the calling CPU thread until the secondary stream's GPU work
 //! completes.
 //!
@@ -134,13 +136,9 @@ pub mod ops;
 pub mod runtime;
 
 // — Primary entry points —
-// — Core types (advanced — most users should prefer DataFrame/Series) —
 // — Types and error —
 pub use core::{
-    column::{Column, ColumnView, DeviceBuffer, DeviceSlice},
     error::{Error, ErrorKind, ErrorStatus, Result},
-    scalar::Scalar,
-    table::{Table, TableView},
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };
 

@@ -1,7 +1,7 @@
 //! Tests for join operations.
 
 use cudf::{
-    Column, Table,
+    core::{Column, Table},
     ops::join::{self, NullEquality},
 };
 

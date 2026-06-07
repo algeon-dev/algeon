@@ -1,6 +1,6 @@
 //! Tests for DataFrame row slicing helpers.
 
-use cudf::{Column, DataFrame};
+use cudf::{DataFrame, core::Column};
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
 fn sample_df() -> DataFrame {

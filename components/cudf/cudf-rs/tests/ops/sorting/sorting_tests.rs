@@ -1,7 +1,7 @@
 //! Tests for sorting operations.
 
 use cudf::{
-    Column, Table,
+    core::{Column, Table},
     ops::sorting::{self, NullOrder, Order},
 };
 

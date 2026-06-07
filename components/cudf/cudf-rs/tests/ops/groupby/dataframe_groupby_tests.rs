@@ -1,6 +1,6 @@
 //! Tests for DataFrame groupby aggregation.
 
-use cudf::{Agg, AggSpec, Column, DataFrame, ErrorKind};
+use cudf::{Agg, AggSpec, DataFrame, ErrorKind, core::Column};
 
 use crate::common::assert_missing_column_error;
 

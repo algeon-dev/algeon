@@ -1,7 +1,7 @@
 //! Parquet file I/O.
 
 use std::{
-    ffi::{CStr, CString},
+    ffi::CString,
     os::raw::c_char,
     path::{Path, PathBuf},
     ptr,
@@ -15,13 +15,14 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
+    io::IoTableResult,
     runtime::Runtime,
 };
 
 /// Options for reading a Parquet file.
 ///
-/// Used by both the low-level [`read_parquet_with_metadata`] function and the
-/// high-level [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
+/// Used by both the low-level [`read_parquet`] function and the high-level
+/// [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetReaderOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -38,21 +39,13 @@ pub struct ParquetReaderOptions {
     runtime: Option<Runtime>,
 }
 
-/// A table read from Parquet along with its column name metadata.
-pub struct ParquetTableWithMetadata {
-    /// The table containing the data.
-    pub table: Table,
-    /// The column names from the Parquet file schema.
-    pub column_names: Vec<String>,
-}
-
-/// Read a Parquet file into a `Table` along with column name metadata.
+/// Read a Parquet file into a low-level table result.
 ///
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
-    let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet_with_metadata")?;
+pub fn read_parquet(options: ParquetReaderOptions) -> Result<IoTableResult> {
+    let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet")?;
 
     // Validate that row_groups is not combined with skip_rows or num_rows.
     if options.row_groups.is_some() && (options.skip_rows > 0 || options.num_rows >= 0) {
@@ -60,7 +53,7 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
             ErrorKind::InvalidOperation,
             "row_groups cannot be combined with skip_rows or num_rows",
         )
-        .with_operation("io::parquet::read_parquet_with_metadata")
+        .with_operation("io::parquet::read_parquet")
         .with_context("skip_rows", options.skip_rows.to_string())
         .with_context("num_rows", options.num_rows.to_string()));
     }
@@ -81,7 +74,7 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
                         Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
-                            .with_operation("io::parquet::read_parquet_with_metadata")
+                            .with_operation("io::parquet::read_parquet")
                             .with_context("column_name", s.to_string())
                     })
                 })
@@ -134,7 +127,7 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
                 )
             },
         },
-        "io::parquet::read_parquet_with_metadata",
+        "io::parquet::read_parquet",
         [
             ("selected_column_count", num_cols.to_string()),
             ("skip_rows", options.skip_rows.to_string()),
@@ -153,57 +146,12 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
     // SAFETY: names_ptr and num_names were returned by a successful FFI call.
     // cudf_io_free_column_names frees the C-allocated name strings and array.
     let column_names = unsafe {
-        let names = collect_column_names(names_ptr, num_names);
+        let names = super::collect_column_names(names_ptr, num_names, "io::parquet::read_parquet");
         cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         names?
     };
 
-    Ok(ParquetTableWithMetadata { table, column_names })
-}
-
-unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> Result<Vec<String>> {
-    let operation = "io::parquet::read_parquet_with_metadata";
-
-    if num_names < 0 {
-        return Err(crate::core::error::Error::new(
-            crate::core::error::ErrorKind::InvalidOperation,
-            "ffi returned negative column name count",
-        )
-        .with_operation(operation)
-        .with_context("num_names", num_names.to_string()));
-    }
-
-    if num_names > 0 && names_ptr.is_null() {
-        return Err(crate::core::error::Error::new(
-            crate::core::error::ErrorKind::InvalidOperation,
-            "ffi returned null column name array with positive count",
-        )
-        .with_operation(operation)
-        .with_context("num_names", num_names.to_string())
-        .with_context("names_ptr_null", "true"));
-    }
-
-    let mut names = Vec::with_capacity(num_names as usize);
-    for i in 0..num_names {
-        // SAFETY: names_ptr is valid for num_names elements (checked above).
-        let name_ptr = *names_ptr.add(i as usize);
-        if name_ptr.is_null() {
-            return Err(crate::core::error::Error::new(
-                crate::core::error::ErrorKind::InvalidOperation,
-                "ffi returned null column name entry",
-            )
-            .with_operation(operation)
-            .with_context("num_names", num_names.to_string())
-            .with_context("name_index", i.to_string()));
-        }
-
-        // SAFETY: name_ptr is non-null (checked above) and points to a
-        // valid null-terminated C string allocated by the C shim.
-        let c_str = CStr::from_ptr(name_ptr);
-        names.push(c_str.to_string_lossy().into_owned());
-    }
-
-    Ok(names)
+    Ok(IoTableResult { table, column_names: Some(column_names) })
 }
 
 /// Options for writing a Parquet file.
@@ -309,43 +257,4 @@ pub(crate) fn write_parquet_with_exec(
         "io::parquet::write_parquet",
         [("output_column_name_count", num_cols.to_string())],
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::error::ErrorKind;
-
-    #[test]
-    fn test_collect_column_names_rejects_negative_count() {
-        let err = unsafe { collect_column_names(ptr::null_mut(), -1) }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err.context().iter().any(|(k, v)| *k == "num_names" && v == "-1"));
-    }
-
-    #[test]
-    fn test_collect_column_names_rejects_null_names_ptr_with_positive_count() {
-        let err = unsafe { collect_column_names(ptr::null_mut(), 1) }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err.context().iter().any(|(k, v)| *k == "names_ptr_null" && v == "true"));
-    }
-
-    #[test]
-    fn test_collect_column_names_rejects_null_entry_pointer() {
-        let mut ptrs: Vec<*mut c_char> = vec![ptr::null_mut()];
-        let err = unsafe { collect_column_names(ptrs.as_mut_ptr(), 1) }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert_eq!(err.operation(), "io::parquet::read_parquet_with_metadata");
-        assert!(err.context().iter().any(|(k, v)| *k == "name_index" && v == "0"));
-    }
-
-    #[test]
-    fn test_collect_column_names_success() {
-        let mut raw = [CString::new("alpha").unwrap(), CString::new("beta").unwrap()];
-        let mut ptrs: Vec<*mut c_char> = raw.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
-        let names = unsafe { collect_column_names(ptrs.as_mut_ptr(), ptrs.len() as i32) }.unwrap();
-        assert_eq!(names, vec!["alpha", "beta"]);
-    }
 }

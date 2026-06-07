@@ -1,6 +1,9 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{Column, DataFrame, ErrorKind, Series, Table};
+use cudf::{
+    DataFrame, ErrorKind, Series,
+    core::{Column, Table},
+};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access

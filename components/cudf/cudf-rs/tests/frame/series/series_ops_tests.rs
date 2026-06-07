@@ -180,7 +180,7 @@ fn test_series_op_scalar_inherits_name() {
 #[test]
 fn test_series_op_scalar_unnamed_stays_unnamed() {
     // from_column produces an unnamed Series (name = None).
-    let unnamed = Series::from_column(cudf::Column::from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
+    let unnamed = Series::from_column(cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
     assert_eq!(unnamed.name(), None);
 
     let result = (&unnamed + 10_i32).unwrap();

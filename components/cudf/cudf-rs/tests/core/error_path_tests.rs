@@ -1,4 +1,7 @@
-use cudf::{Column, DataFrame, ErrorKind};
+use cudf::{
+    DataFrame, ErrorKind,
+    core::{Column, Table},
+};
 
 #[test]
 fn test_dataframe_new_mismatched_column_lengths() {
@@ -20,7 +23,7 @@ fn test_dataframe_series_miss_returns_err() {
 fn test_filter_mask_length_mismatch() {
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let mask = Column::from_slice(&[true, false]).unwrap(); // length 2 vs 3
-    let table = cudf::Table::from_columns(vec![col]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
     let mask_view = mask.view().unwrap();
     let result = cudf::ops::filter::apply_boolean_mask(&table.view().unwrap(), &mask_view);
     assert!(result.is_err());
@@ -39,7 +42,7 @@ fn test_parquet_read_nonexistent_file() {
     let options = cudf::io::parquet::ParquetReaderOptions::builder()
         .filepath("/tmp/nonexistent_cudf_test_file_12345.parquet")
         .build();
-    let result = cudf::io::parquet::read_parquet_with_metadata(options);
+    let result = cudf::io::parquet::read_parquet(options);
     assert!(result.is_err());
 }
 
@@ -58,8 +61,8 @@ fn test_concatenate_tables_column_count_mismatch() {
     let a = Column::from_slice(&[1i32, 2]).unwrap();
     let b = Column::from_slice(&[3i32, 4]).unwrap();
     let c = Column::from_slice(&[5i32, 6]).unwrap();
-    let t1 = cudf::Table::from_columns(vec![a, b]).unwrap();
-    let t2 = cudf::Table::from_columns(vec![c]).unwrap();
+    let t1 = Table::from_columns(vec![a, b]).unwrap();
+    let t2 = Table::from_columns(vec![c]).unwrap();
     let t1_view = t1.view().unwrap();
     let t2_view = t2.view().unwrap();
     let result = cudf::ops::concatenate::concatenate_tables(&[&t1_view, &t2_view]);

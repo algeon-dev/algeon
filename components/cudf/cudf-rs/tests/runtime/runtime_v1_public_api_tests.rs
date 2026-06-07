@@ -34,6 +34,13 @@ fn obs_last_mr() -> *mut c_void {
     out
 }
 
+fn obs_last_sync_stream() -> usize {
+    let mut out: usize = 0;
+    let status = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut out) };
+    assert_eq!(status, 0, "cudf_test_exec_last_sync_stream_value failed");
+    out
+}
+
 fn obs_current_device_resource() -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_test_current_device_resource_raw(&mut out) };
@@ -105,6 +112,28 @@ fn sort_values_with_context_on_runtime_seeded_dataframe_uses_override_stream_and
     assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
+#[test]
+fn sort_values_with_context_fences_input_stream_before_override_exec() {
+    let rt = sample_runtime();
+    let df = DataFrame::from_series([("id", Series::new_with_runtime(&rt, "id", &[3i32, 1, 2]).unwrap())]).unwrap();
+    let input_stream_value = df.__debug_execution_domain_stream_value();
+
+    let override_stream = CudaStream::new().unwrap();
+    let override_stream_value = override_stream.__debug_raw_handle_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    obs_reset();
+    let sorted = df.sort_values_with_context(["id"], SortOptions::default(), &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), override_stream_value);
+    assert_eq!(obs_last_sync_stream(), input_stream_value);
+    assert_eq!(sorted.__debug_execution_domain_stream_value(), override_stream_value);
+
+    obs_reset();
+    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(obs_last_sync_stream(), override_stream_value);
+}
+
 /// [INV-AP-01] Ambient promotion rejection: borrowed context overrides cannot promote
 /// ambient-default objects to explicit domains (Rule 5 — preserved in v2).
 #[test]
@@ -158,6 +187,40 @@ fn merge_groupby_gather_and_filter_with_context_are_public_and_route_override_st
     assert_eq!(obs_last_stream(), override_stream_value);
     assert_eq!(filtered.__debug_execution_domain_stream_value(), override_stream_value);
     assert_eq!(filtered.num_rows(), 1);
+}
+
+#[test]
+fn groupby_with_context_fences_input_stream_before_override_exec() {
+    let rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&rt, "id", &[1i32, 1, 2, 2]).unwrap()),
+        ("val", Series::new_with_runtime(&rt, "val", &[10i64, 20, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+    let input_stream_value = df.__debug_execution_domain_stream_value();
+
+    let override_stream = CudaStream::new().unwrap();
+    let override_stream_value = override_stream.__debug_raw_handle_value();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    obs_reset();
+    let grouped = df.groupby(["id"]).agg_with_context(&[AggSpec::new("val", Agg::Sum)], &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), override_stream_value);
+    assert_eq!(obs_last_sync_stream(), input_stream_value);
+    assert_eq!(grouped.__debug_execution_domain_stream_value(), override_stream_value);
+
+    obs_reset();
+    let rows: Vec<_> = grouped
+        .series("id")
+        .unwrap()
+        .to_vec::<i32>()
+        .unwrap()
+        .into_iter()
+        .zip(grouped.series("val_sum").unwrap().to_vec::<i64>().unwrap())
+        .collect();
+    assert_eq!(rows, vec![(1, 30), (2, 70)]);
+    assert_eq!(obs_last_sync_stream(), override_stream_value);
 }
 
 #[test]
@@ -303,7 +366,30 @@ fn dataframe_write_csv_with_options_runtime_override_recovers_mixed_explicit_dom
 }
 
 #[test]
-fn merge_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
+fn dataframe_copy_into_runtime_places_columns_in_target_runtime() {
+    let source_rt = sample_runtime();
+    let target_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&source_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("val", Series::new_with_runtime(&source_rt, "val", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let original_id_ptr = device_ptr(&df, "id");
+
+    obs_reset();
+    let copied = df.copy_into_runtime(&target_rt).unwrap();
+
+    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(copied.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(copied.__debug_execution_domain_stream_value(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(copied.__debug_execution_domain_mr_value(), target_rt.memory_resource().__debug_raw_handle_value());
+    assert_ne!(device_ptr(&copied, "id"), original_id_ptr);
+    assert_eq!(copied.column_names(), vec!["id", "val"]);
+    assert_eq!(copied.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn merge_after_copy_into_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -318,8 +404,11 @@ fn merge_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
     ])
     .unwrap();
 
+    let left = left.copy_into_runtime(&target_rt).unwrap();
+    let right = right.copy_into_runtime(&target_rt).unwrap();
+
     obs_reset();
-    let joined = left.merge_with_runtime(&right, MergeOptions::new().how_inner().on(["id"]), &target_rt).unwrap();
+    let joined = left.merge(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(joined.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
@@ -329,7 +418,7 @@ fn merge_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
 }
 
 #[test]
-fn merge_with_context_recovers_mixed_explicit_domains_into_left_lineage() {
+fn merge_with_context_uses_left_lineage_for_mixed_explicit_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -357,7 +446,7 @@ fn merge_with_context_recovers_mixed_explicit_domains_into_left_lineage() {
 }
 
 #[test]
-fn concat_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
+fn concat_after_copy_into_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -372,8 +461,11 @@ fn concat_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
     ])
     .unwrap();
 
+    let left = left.copy_into_runtime(&target_rt).unwrap();
+    let right = right.copy_into_runtime(&target_rt).unwrap();
+
     obs_reset();
-    let combined = left.concat_with_runtime(&right, &target_rt).unwrap();
+    let combined = left.concat(&right).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(combined.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
@@ -381,7 +473,7 @@ fn concat_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
 }
 
 #[test]
-fn merge_split_with_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
+fn merge_split_after_copy_into_runtime_recovers_mixed_explicit_domains_into_target_runtime() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -396,8 +488,11 @@ fn merge_split_with_runtime_recovers_mixed_explicit_domains_into_target_runtime(
     ])
     .unwrap();
 
+    let left = left.copy_into_runtime(&target_rt).unwrap();
+    let right = right.copy_into_runtime(&target_rt).unwrap();
+
     obs_reset();
-    let split = left.merge_split_with_runtime(&right, MergeOptions::new().how_inner().on(["id"]), &target_rt).unwrap();
+    let split = left.merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(split.left.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
@@ -407,7 +502,7 @@ fn merge_split_with_runtime_recovers_mixed_explicit_domains_into_target_runtime(
 }
 
 #[test]
-fn merge_split_with_context_recovers_mixed_explicit_domains_into_left_lineage() {
+fn merge_split_with_context_uses_left_lineage_for_mixed_explicit_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -437,7 +532,7 @@ fn merge_split_with_context_recovers_mixed_explicit_domains_into_left_lineage() 
 }
 
 #[test]
-fn concat_with_context_recovers_mixed_explicit_domains_into_left_lineage() {
+fn concat_with_context_uses_left_lineage_for_mixed_explicit_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -464,7 +559,7 @@ fn concat_with_context_recovers_mixed_explicit_domains_into_left_lineage() {
 }
 
 #[test]
-fn with_column_with_runtime_deep_copies_into_target_runtime() {
+fn with_column_after_copy_into_runtime_remains_schema_only_while_preserving_target_runtime_residency() {
     let base_rt = sample_runtime();
     let extra_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -477,18 +572,26 @@ fn with_column_with_runtime_deep_copies_into_target_runtime() {
     let original_id_ptr = device_ptr(&df, "id");
     let original_extra_ptr = extra.as_column_view().unwrap().device_data_ptr().unwrap();
 
-    obs_reset();
-    let result = df.with_column_with_runtime("extra", extra, &target_rt).unwrap();
+    let df = df.copy_into_runtime(&target_rt).unwrap();
+    let extra = extra.copy_into_runtime(&target_rt).unwrap();
+    let copied_id_ptr = device_ptr(&df, "id");
+    let copied_extra_ptr = extra.as_column_view().unwrap().device_data_ptr().unwrap();
 
-    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    obs_reset();
+    let result = df.with_column("extra", extra).unwrap();
+
+    assert_eq!(obs_last_stream(), usize::MAX);
     assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_stream_value(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(device_ptr(&result, "id"), copied_id_ptr);
     assert_ne!(device_ptr(&result, "id"), original_id_ptr);
+    assert_eq!(device_ptr(&result, "extra"), copied_extra_ptr);
     assert_ne!(device_ptr(&result, "extra"), original_extra_ptr);
     assert_eq!(result.series("extra").unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 }
 
 #[test]
-fn assign_with_runtime_deep_copies_existing_and_new_columns_into_target_runtime() {
+fn assign_after_copy_into_runtime_remains_schema_only_while_preserving_target_runtime_residency() {
     let base_rt = sample_runtime();
     let extra_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -502,22 +605,34 @@ fn assign_with_runtime_deep_copies_existing_and_new_columns_into_target_runtime(
     let original_id_ptr = device_ptr(&df, "id");
     let original_replacement_ptr = replacement.as_column_view().unwrap().device_data_ptr().unwrap();
 
-    obs_reset();
-    let result = df.assign_with_runtime([("val", replacement), ("bonus", bonus)], &target_rt).unwrap();
+    let df = df.copy_into_runtime(&target_rt).unwrap();
+    let replacement = replacement.copy_into_runtime(&target_rt).unwrap();
+    let bonus = bonus.copy_into_runtime(&target_rt).unwrap();
+    let copied_id_ptr = device_ptr(&df, "id");
+    let copied_replacement_ptr = replacement.as_column_view().unwrap().device_data_ptr().unwrap();
+    let copied_bonus_ptr = bonus.as_column_view().unwrap().device_data_ptr().unwrap();
 
-    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    obs_reset();
+    let result = df.assign([("val", replacement), ("bonus", bonus)]).unwrap();
+
+    assert_eq!(obs_last_stream(), usize::MAX);
     assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_stream_value(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(device_ptr(&result, "id"), copied_id_ptr);
     assert_ne!(device_ptr(&result, "id"), original_id_ptr);
+    assert_eq!(device_ptr(&result, "val"), copied_replacement_ptr);
     assert_ne!(device_ptr(&result, "val"), original_replacement_ptr);
+    assert_eq!(device_ptr(&result, "bonus"), copied_bonus_ptr);
     assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(result.series("bonus").unwrap().to_vec::<i32>().unwrap(), vec![70, 80, 90]);
 }
 
-// === v2: *_with_context mixed-domain + context-derived provenance ===
+// === v2: *_with_context remains execution override, not explicit placement ===
 //
-// These tests express the v2 contract where *_with_context methods work with
-// mixed-domain inputs and produce context-derived provenance. The explicit
-// context stream is the operation authority (Rule 1), not the input provenance.
+// These tests cover mixed-domain inputs where the operation still runs under a
+// borrowed execution override. Output provenance remains derived from the
+// primary input identity; placement is still an explicit `copy_into_runtime`
+// step, not a `_with_context` side effect.
 //
 // INV-PR-03: output provenance reflects context overrides.
 // INV-SY-03: sync targets the context's stream after mixed-domain ops.

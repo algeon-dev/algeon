@@ -3,7 +3,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Column, ops::concatenate};
+//! use cudf::{core::Column, ops::concatenate};
 //!
 //! let a = Column::from_slice(&[1i32, 2]).unwrap();
 //! let b = Column::from_slice(&[3i32, 4, 5]).unwrap();

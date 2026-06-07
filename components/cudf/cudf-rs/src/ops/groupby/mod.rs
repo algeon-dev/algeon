@@ -7,5 +7,5 @@
 mod agg;
 mod dataframe;
 
-pub use agg::{Aggregation, AggregationRequest, GroupByResult, NullPolicy, groupby_aggregate};
-pub use dataframe::{Agg, AggSpec, GroupBy, GroupByOptions};
+pub use agg::{Agg, AggregationRequest, GroupByResult, NullPolicy, groupby_aggregate};
+pub use dataframe::{AggSpec, GroupBy, GroupByOptions};

@@ -6,7 +6,7 @@
 //! Sharing is verified by comparing device pointers: two `ColumnView`s that
 //! originate from the same `Arc<Column>` will report the same `as_ptr()`.
 
-use cudf::{Column, DataFrame};
+use cudf::{DataFrame, core::Column};
 
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {

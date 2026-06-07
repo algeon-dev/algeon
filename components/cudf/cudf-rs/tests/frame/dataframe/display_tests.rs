@@ -1,6 +1,6 @@
 //! Tests for DataFrame Display and Debug formatting.
 
-use cudf::{Column, DataFrame, TypeId};
+use cudf::{DataFrame, TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
 // Display

@@ -1,6 +1,6 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 
-use cudf::{Column, DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, Series};
+use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, Series, core::Column};
 
 use crate::common::{
     assert_duplicate_name_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,

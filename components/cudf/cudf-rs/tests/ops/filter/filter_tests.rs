@@ -1,6 +1,9 @@
 //! Tests for filter operations.
 
-use cudf::{Column, Table, ops::filter};
+use cudf::{
+    core::{Column, Table},
+    ops::filter,
+};
 
 use crate::common::{
     explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,

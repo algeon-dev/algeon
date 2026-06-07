@@ -463,6 +463,19 @@ impl Series {
         Self::from_column(col)
     }
 
+    /// Ensure this Series is placed in the target runtime.
+    ///
+    /// If the underlying column already has the target runtime's retained
+    /// provenance, this reuses the existing GPU allocation. Otherwise the
+    /// column is fenced and deep-copied into the target runtime.
+    pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
+        let column =
+            Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
+        let mut series = Self::from_column_arc(column);
+        series.name = self.name.clone();
+        Ok(series)
+    }
+
     /// Clone or deep-copy an `Arc<Column>` into the target domain.
     fn clone_or_copy_into_domain(
         column: &Arc<Column>,
@@ -592,35 +605,6 @@ impl Series {
             "series::fillna_with_series",
         )?
         .with_execution_domain(output_domain);
-        self.with_inherited_name(col)
-    }
-
-    /// Replace null values using corresponding elements from another Series,
-    /// copying inputs into the target [`Runtime`]'s retained provenance when
-    /// necessary.
-    ///
-    /// Unlike [`fillna_with_series`](Self::fillna_with_series), this method
-    /// recovers from mixed retained provenance by deep-copying both series
-    /// into the runtime's domain before executing the replace-nulls
-    /// operation. Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: a new column is produced. If any input is in a
-    /// different domain, an additional device-to-device copy per mismatched
-    /// series occurs.
-    pub fn fillna_with_series_with_runtime(&self, other: &Series, runtime: &Runtime) -> Result<Series> {
-        let operation = "series::fillna_with_series_with_runtime";
-        let output_domain = Arc::clone(runtime.execution_domain());
-
-        // Copy self and other into the target domain if not already there.
-        let self_col = Self::clone_or_copy_into_domain(&self.column, &output_domain, operation)?;
-        let other_col = Self::clone_or_copy_into_domain(&other.column, &output_domain, operation)?;
-
-        let cv = self_col.view()?;
-        let other_cv = other_col.view()?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_column_with_exec_options(&cv, &other_cv, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 

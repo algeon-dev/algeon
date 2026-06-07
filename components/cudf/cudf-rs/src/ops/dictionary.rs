@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Column, TypeId, ops::dictionary};
+//! use cudf::{TypeId, core::Column, ops::dictionary};
 //!
 //! let col =
 //!     Column::from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
@@ -265,7 +265,7 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 /// # Example
 ///
 /// ```no_run
-/// use cudf::{Column, TypeId, ops::dictionary};
+/// use cudf::{TypeId, core::Column, ops::dictionary};
 ///
 /// let src = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let dst = Column::from_slice(&[20i32, 30, 40]).unwrap();

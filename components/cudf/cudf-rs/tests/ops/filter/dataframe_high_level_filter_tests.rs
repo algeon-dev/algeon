@@ -1,6 +1,10 @@
 //! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
 
-use cudf::{Column, ErrorKind, Series};
+use cudf::{
+    DataFrame, ErrorKind, Series,
+    core::Column,
+    ops::filter as low_level_filter,
+};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -151,39 +155,48 @@ fn test_filter_series_with_le_scalar_mask() {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level filter_by_mask(&ColumnView) still works (backward compat)
+// Advanced low-level path uses table_view() + cudf::ops::filter
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_low_level_filter_by_mask_still_works() {
+fn test_advanced_low_level_filter_still_works_via_table_view() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask_view = mask_col.view().unwrap();
+    let table_view = df.table_view().unwrap();
 
-    let filtered = df.filter_by_mask(&mask_view).unwrap();
+    let filtered = low_level_filter::apply_boolean_mask(table_view.table(), &mask_view).unwrap();
+    let filtered = DataFrame::from_table(filtered, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
 }
 
 #[test]
-fn test_low_level_filter_by_mask_rejects_non_bool_mask() {
+fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
     let mask_view = mask_col.view().unwrap();
+    let table_view = df.table_view().unwrap();
 
-    let err = df.filter_by_mask(&mask_view).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
-    assert!(err.to_string().contains("Bool8"));
+    let err = match low_level_filter::apply_boolean_mask(table_view.table(), &mask_view) {
+        Ok(_) => panic!("expected non-bool mask to be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.to_string().contains("mask") || err.to_string().contains("bool") || err.to_string().contains("BOOL"));
 }
 
 #[test]
-fn test_low_level_filter_by_mask_rejects_wrong_length_mask() {
+fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[true, false]).unwrap();
     let mask_view = mask_col.view().unwrap();
+    let table_view = df.table_view().unwrap();
 
-    let err = df.filter_by_mask(&mask_view).unwrap_err();
+    let err = match low_level_filter::apply_boolean_mask(table_view.table(), &mask_view) {
+        Ok(_) => panic!("expected wrong-length mask to be rejected"),
+        Err(err) => err,
+    };
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("length"));
 }

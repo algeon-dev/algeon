@@ -1,6 +1,6 @@
 //! Tests for Column, ColumnView, and DeviceSlice.
 
-use cudf::{Column, DataType, TypeId};
+use cudf::{DataType, TypeId, core::Column};
 
 #[test]
 fn test_create_empty_column() {
@@ -240,7 +240,7 @@ fn test_device_slice_stays_under_core_domain_module() {
 
 #[test]
 fn test_device_slice_is_reexported_at_crate_root() {
-    let _: Option<cudf::DeviceSlice<'static>> = None;
+    let _: Option<cudf::core::DeviceSlice<'static>> = None;
 }
 
 // --- DeviceSlice tests ---

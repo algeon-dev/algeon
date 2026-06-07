@@ -1,6 +1,6 @@
 //! Tests for Column::factorize
 
-use cudf::{Column, TypeId};
+use cudf::{TypeId, core::Column};
 
 use crate::common::{last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation};
 

@@ -7,12 +7,12 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    Agg, AggSpec, Column, DataFrame, DataType, ErrorKind, Scalar, Series, Table, TableView, TypeId,
-    core::memory::DeviceMemoryResource,
+    Agg, AggSpec, DataFrame, DataType, ErrorKind, Series, TypeId,
+    core::{Column, Scalar, Table, TableView, memory::DeviceMemoryResource},
     ops::{
         binary::{self, BinaryOperator},
         concatenate, copying, dictionary, filter,
-        groupby::{self, Aggregation, AggregationRequest},
+        groupby::{self, AggregationRequest},
         hashing, join,
         reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
         replace, search, sorting, stream_compaction,
@@ -2138,7 +2138,7 @@ fn groupby_aggregate_retains_explicit_domain_and_uses_exec_options() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 186)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 186);
     let values_view = values.view().unwrap();
-    let aggregations = [Aggregation::Sum];
+    let aggregations = [Agg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let expected_stream = keys.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
@@ -2170,7 +2170,7 @@ fn groupby_aggregate_succeeds_with_mixed_domains() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 187)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 188);
     let values_view = values.view().unwrap();
-    let aggregations = [Aggregation::Sum];
+    let aggregations = [Agg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let expected_stream = keys.__debug_execution_domain_stream_value();
     let expected_mr = keys.__debug_execution_domain_mr_value();

@@ -3,7 +3,7 @@
 //! All tests require a GPU.
 
 use cudf::{
-    Column, Table,
+    core::{Column, Table},
     io::json::{self, JsonReaderOptions, JsonWriterOptions},
 };
 use tempfile::TempDir;
@@ -26,14 +26,14 @@ fn test_json_lines_roundtrip_i32() {
     let write_opts = JsonWriterOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
     json::write_json(&view, &write_opts).unwrap();
 
-    // Read back with metadata
+    // Read back through the shared low-level result envelope.
     let read_opts = JsonReaderOptions::builder().filepath(&path).build();
-    let result = json::read_json_with_metadata(&read_opts).unwrap();
+    let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
-    assert_eq!(result.column_names, vec!["ids", "values"]);
+    assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
 
     let col0 = read_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i64>().unwrap(), vec![1, 2, 3]); // JSON integers default to i64
@@ -48,31 +48,13 @@ fn test_json_lines_roundtrip_strings() {
     std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
 
     let read_opts = JsonReaderOptions::builder().filepath(&path).build();
-    let result = json::read_json_with_metadata(&read_opts).unwrap();
+    let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_rows().unwrap(), 2);
-    assert!(result.column_names.contains(&"name".to_string()));
-    assert!(result.column_names.contains(&"age".to_string()));
-}
-
-// ===========================================================================
-// Read without metadata
-// ===========================================================================
-
-#[test]
-fn test_json_lines_read_without_metadata() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.jsonl");
-
-    std::fs::write(&path, "{\"x\":1}\n{\"x\":2}\n").unwrap();
-
-    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
-    let table = json::read_json(&read_opts).unwrap();
-    let view = table.view().unwrap();
-
-    assert_eq!(view.num_columns().unwrap(), 1);
-    assert_eq!(view.num_rows().unwrap(), 2);
+    let names = result.column_names.expect("json object keys should be exposed as schema metadata");
+    assert!(names.contains(&"name".to_string()));
+    assert!(names.contains(&"age".to_string()));
 }
 
 // ===========================================================================
@@ -87,7 +69,7 @@ fn test_json_lines_empty_file() {
     std::fs::write(&path, "").unwrap();
 
     let read_opts = JsonReaderOptions::builder().filepath(&path).build();
-    let result = json::read_json_with_metadata(&read_opts).unwrap();
+    let result = json::read_json(&read_opts).unwrap();
 
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 0);
 }

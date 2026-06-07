@@ -1,6 +1,9 @@
 //! Tests for CU-1 (unique), CU-3 (drop_nulls), CU-8 (drop_duplicates / distinct).
 
-use cudf::{Column, Table, ops::stream_compaction};
+use cudf::{
+    core::{Column, Table},
+    ops::stream_compaction,
+};
 
 // ===== CU-3: drop_nulls =====================================================
 

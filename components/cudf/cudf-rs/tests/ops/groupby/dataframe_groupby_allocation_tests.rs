@@ -1,6 +1,7 @@
 use cudf::{
-    Agg, AggSpec, Column, DataFrame, TableView,
-    ops::groupby::{Aggregation, AggregationRequest, NullPolicy, groupby_aggregate},
+    Agg, AggSpec, DataFrame,
+    core::{Column, TableView},
+    ops::groupby::{AggregationRequest, NullPolicy, groupby_aggregate},
 };
 
 use crate::allocation::allocation_count_delta;
@@ -37,8 +38,8 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
         let b_series = df.series("b").unwrap();
         let a_cv = a_series.as_column_view().unwrap();
         let b_cv = b_series.as_column_view().unwrap();
-        let a_aggs = [Aggregation::Sum, Aggregation::Min];
-        let b_aggs = [Aggregation::Sum];
+        let a_aggs = [Agg::Sum, Agg::Min];
+        let b_aggs = [Agg::Sum];
         let requests = [
             AggregationRequest { values: &a_cv, aggregations: &a_aggs },
             AggregationRequest { values: &b_cv, aggregations: &b_aggs },

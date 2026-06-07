@@ -1,6 +1,9 @@
 //! Integration tests for DeviceBuffer and zero-copy Column adoption.
 
-use cudf::{Column, DeviceBuffer, ErrorKind, TypeId};
+use cudf::{
+    ErrorKind, TypeId,
+    core::{Column, DeviceBuffer},
+};
 
 // ---------------------------------------------------------------------------
 // DeviceBuffer lifecycle

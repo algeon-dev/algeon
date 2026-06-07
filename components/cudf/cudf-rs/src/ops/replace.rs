@@ -29,7 +29,10 @@ pub enum FillPolicy {
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, Scalar, ops::replace};
+/// use cudf::{
+///     core::{Column, Scalar},
+///     ops::replace,
+/// };
 ///
 /// let col = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
@@ -75,7 +78,7 @@ pub(crate) fn replace_nulls_with_exec_options(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, ops::replace};
+/// use cudf::{core::Column, ops::replace};
 ///
 /// let left = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
@@ -126,7 +129,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 /// # Example
 /// ```no_run
 /// use cudf::{
-///     Column,
+///     core::Column,
 ///     ops::replace::{self, FillPolicy},
 /// };
 ///

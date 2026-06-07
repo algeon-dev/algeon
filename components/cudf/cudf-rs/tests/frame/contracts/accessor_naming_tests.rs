@@ -150,7 +150,7 @@ fn test_dataframe_iter_series_shares_device_buffers() {
 #[test]
 fn test_series_as_column() {
     let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let col: &cudf::Column = s.as_column();
+    let col: &cudf::core::Column = s.as_column();
 
     // The column should have the same length as the series.
     let view = col.view().unwrap();
@@ -166,7 +166,7 @@ fn test_series_as_column() {
 #[test]
 fn test_series_into_inner() {
     let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let arc: std::sync::Arc<cudf::Column> = s.into_inner();
+    let arc: std::sync::Arc<cudf::core::Column> = s.into_inner();
 
     // Should be a valid Column with the same data.
     let view = arc.view().unwrap();

@@ -17,6 +17,7 @@ const INTERNAL_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 const INTEROP_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interop/mod.rs"));
 const DATAFRAME_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/dataframe/owned.rs"));
 const SERIES_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/series/owned.rs"));
+const IO_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/io/mod.rs"));
 const JSON_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/io/json.rs"));
 const JOIN_DATAFRAME_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops/join/dataframe.rs"));
 const REMOVED_ROOT_MODULES: &[&str] = &[
@@ -288,12 +289,16 @@ fn series_bool_materialization_does_not_use_transmute_copy() {
 #[test]
 fn json_metadata_name_collection_guards_null_name_entries() {
     assert!(
-        JSON_RS.contains("name_ptr.is_null()"),
+        IO_MOD_RS.contains("name_ptr.is_null()"),
         "expected JSON metadata name collection to reject null name entries before CStr::from_ptr"
     );
     assert!(
-        JSON_RS.contains("ffi returned null column name entry"),
+        IO_MOD_RS.contains("ffi returned null column name entry"),
         "expected JSON metadata name collection to emit a structured null-entry error"
+    );
+    assert!(
+        JSON_RS.contains("collect_column_names"),
+        "expected JSON reader implementation to delegate metadata-name collection through the shared io module helper"
     );
 }
 

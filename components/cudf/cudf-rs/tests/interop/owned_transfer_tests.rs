@@ -1,5 +1,6 @@
 use cudf::{
-    Column, DataFrame, Runtime, Series, Table,
+    DataFrame, Runtime, Series,
+    core::{Column, Table},
     interop::{
         BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
         InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness,

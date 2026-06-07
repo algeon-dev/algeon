@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use cudf::{Column, DataFrame, Series, TypeId};
+use cudf::{DataFrame, Series, TypeId, core::Column};
 
 // ===========================================================================
 // Helpers
@@ -204,15 +204,14 @@ fn df_into_table_values_preserved() {
 // 5. Schema-only DataFrame metadata ops remain zero-copy
 // ===========================================================================
 
-/// `filter_by_mask` produces a new GPU allocation.
+/// `filter(&Series)` produces a new GPU allocation.
 #[test]
-fn filter_by_mask_allocates_new_gpu_data() {
+fn filter_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let mask = Column::from_slice(&[true, false, true]).unwrap();
-    let mask_view = mask.view().unwrap();
-    let filtered = df.filter_by_mask(&mask_view).unwrap();
+    let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
+    let filtered = df.filter(&mask).unwrap();
 
     let filtered_ptr = device_ptr(&filtered, "id");
     assert_ne!(original_ptr, filtered_ptr);

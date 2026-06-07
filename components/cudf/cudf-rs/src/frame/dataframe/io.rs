@@ -9,6 +9,7 @@ use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
     io::{
+        IoTableResult,
         csv::{self, CsvReaderOptions, CsvWriterOptions},
         json::{self, JsonReaderOptions, JsonWriterOptions},
         parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
@@ -20,8 +21,8 @@ use crate::{
 ///
 /// This is the schema-aware CSV reader API for `DataFrame`. Unlike the
 /// lower-level [`crate::io::csv::CsvReaderOptions`], it can also resolve
-/// DataFrame column names from either an explicit override, the CSV header
-/// row, or generated fallback names.
+/// DataFrame column names from either an explicit override, low-level header
+/// metadata, or generated fallback names.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct CsvReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -53,44 +54,24 @@ impl CsvReadOptions {
         }
     }
 
-    fn resolve_column_names(&self, num_columns: usize) -> Result<Vec<String>> {
+    fn resolve_column_names(&self, result: &IoTableResult) -> Result<Vec<String>> {
         let operation = "dataframe::read_csv_with_options";
+        let num_columns = {
+            let view = result.table.view()?;
+            view.num_columns()? as usize
+        };
 
         if let Some(names) = self.column_names.as_ref() {
             validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
             return Ok(names.clone());
         }
 
-        if self.has_header {
-            let names = self.read_header_names()?;
+        if let Some(names) = result.column_names.as_ref() {
             validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
-            return Ok(names);
+            return Ok(names.clone());
         }
 
         Ok((0..num_columns).map(|idx| format!("column_{idx}")).collect())
-    }
-
-    fn read_header_names(&self) -> Result<Vec<String>> {
-        let operation = "dataframe::read_csv_with_options";
-
-        let mut reader =
-            ::csv::ReaderBuilder::new().has_headers(true).delimiter(self.delimiter).from_path(&self.filepath).map_err(
-                |source| {
-                    Error::new(ErrorKind::IoError, "failed to open CSV file for header parsing")
-                        .with_operation(operation)
-                        .with_context("path", self.filepath.display().to_string())
-                        .set_source(source)
-                },
-            )?;
-
-        let headers = reader.headers().map_err(|source| {
-            Error::new(ErrorKind::IoError, "failed to read CSV header")
-                .with_operation(operation)
-                .with_context("path", self.filepath.display().to_string())
-                .set_source(source)
-        })?;
-
-        Ok(headers.iter().map(str::to_owned).collect())
     }
 }
 
@@ -163,17 +144,13 @@ impl DataFrame {
 
     /// Read a CSV file into a `DataFrame` using caller-provided options.
     ///
-    /// When `has_header == true`, this reader API parses the header row on the
-    /// host to recover schema names. This metadata parsing does not
-    /// materialize data columns through host memory.
+    /// When the low-level CSV reader returns truthful header metadata, those
+    /// names are used unless the caller provides an explicit override.
+    /// Generated fallback names are used only for headerless CSV results.
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
-        let table = csv::read_csv(&options.to_table_options())?;
-        let num_columns = {
-            let view = table.view()?;
-            view.num_columns()? as usize
-        };
-        let names = options.resolve_column_names(num_columns)?;
-        Self::from_table(table, names)
+        let result = csv::read_csv(&options.to_table_options())?;
+        let names = options.resolve_column_names(&result)?;
+        Self::from_table(result.table, names)
     }
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
@@ -217,8 +194,15 @@ impl DataFrame {
     ///
     /// Column names are taken from the Parquet file's schema metadata.
     pub fn read_parquet_with_options(options: ParquetReaderOptions) -> Result<Self> {
-        let result = parquet::read_parquet_with_metadata(options)?;
-        Self::from_table(result.table, result.column_names)
+        let result = parquet::read_parquet(options)?;
+        let names = result.column_names.ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                "parquet reader did not return column names; this is unexpected for the parquet format",
+            )
+            .with_operation("dataframe::read_parquet_with_options")
+        })?;
+        Self::from_table(result.table, names)
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in
@@ -258,11 +242,11 @@ impl DataFrame {
     /// Read a JSON file into a `DataFrame` using caller-provided
     /// [`JsonReaderOptions`].
     ///
-    /// Column names are extracted from JSON key names via
-    /// [`json::read_json_with_metadata`].
+    /// Column names are extracted from JSON key names when the low-level
+    /// reader can recover them truthfully from the file.
     pub fn read_json_with_options(options: JsonReaderOptions) -> Result<Self> {
-        let result = json::read_json_with_metadata(&options)?;
-        Self::from_table(result.table, result.column_names)
+        let result = json::read_json(&options)?;
+        Self::from_table(result.table, result.column_names.unwrap_or_default())
     }
 
     /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column

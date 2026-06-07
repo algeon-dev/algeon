@@ -1,4 +1,4 @@
-use cudf::{Scalar, TypeId};
+use cudf::{TypeId, core::Scalar};
 
 #[test]
 fn test_string_scalar_value_round_trip() {

@@ -7,9 +7,8 @@
 mod common;
 
 use cudf::{
-    Column, DataFrame, DeviceBuffer, DeviceId, ExecutionContext, MeltOptions, Runtime, Scalar, Series, SortOptions,
-    TypeId,
-    core::memory::DeviceMemoryResource,
+    DataFrame, DeviceId, ExecutionContext, MeltOptions, Runtime, Series, SortOptions, TypeId,
+    core::{Column, DeviceBuffer, Scalar, memory::DeviceMemoryResource},
     ops::expr::{col, lit},
     runtime::CudaStream,
 };

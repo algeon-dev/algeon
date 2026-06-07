@@ -8,7 +8,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Agg, AggSpec, Column, DataFrame};
+use cudf::{Agg, AggSpec, DataFrame, core::Column};
 
 /// Helper: build a DataFrame with key and value columns for groupby tests.
 fn df_with_nullable_values() -> DataFrame {

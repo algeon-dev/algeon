@@ -5,10 +5,10 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
 
-use super::agg::{Aggregation, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_with_exec_options};
+use super::agg::{Agg, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_with_exec_options};
 use crate::{
     core::{
-        column::ColumnView,
+        column::{Column, ColumnView},
         error::{Error, ErrorKind, Result},
     },
     frame::dataframe::DataFrame,
@@ -22,48 +22,7 @@ const GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY: usize = 8;
 const GROUPBY_AGG_SLICE_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_INLINE_CAPACITY: usize = 8;
 
-/// High-level aggregation type for the user-facing groupby API.
-///
-/// This mirrors cuDF-Python's aggregation names. Internally each variant maps
-/// to the corresponding [`Aggregation`] for the low-level
-/// [`groupby_aggregate`] call.
-#[derive(Debug, Clone)]
-pub enum Agg {
-    Sum,
-    Min,
-    Max,
-    Mean,
-    Count {
-        include_nulls: bool,
-    },
-    Median,
-    NUnique,
-    /// Standard deviation with degrees-of-freedom correction.
-    Std {
-        ddof: u8,
-    },
-    /// Variance with degrees-of-freedom correction.
-    Variance {
-        ddof: u8,
-    },
-}
-
 impl Agg {
-    /// Convert to the low-level [`Aggregation`] type.
-    fn to_aggregation(&self) -> Aggregation {
-        match self {
-            Agg::Sum => Aggregation::Sum,
-            Agg::Min => Aggregation::Min,
-            Agg::Max => Aggregation::Max,
-            Agg::Mean => Aggregation::Mean,
-            Agg::Count { include_nulls } => Aggregation::Count { include_nulls: *include_nulls },
-            Agg::Median => Aggregation::Median,
-            Agg::NUnique => Aggregation::NUnique,
-            Agg::Std { ddof } => Aggregation::Std { ddof: i32::from(*ddof) },
-            Agg::Variance { ddof } => Aggregation::Variance { ddof: i32::from(*ddof) },
-        }
-    }
-
     /// Return the default output column suffix for this aggregation.
     fn suffix(&self) -> &'static str {
         match self {
@@ -200,6 +159,10 @@ impl<'a> GroupBy<'a> {
             resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         };
 
+        if !ExecutionDomain::same_provenance(self.df.execution_domain(), &output_domain) {
+            self.df.execution_domain().fence_stream(operation)?;
+        }
+
         if specs.is_empty() {
             return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")
                 .with_operation(operation));
@@ -226,8 +189,7 @@ impl<'a> GroupBy<'a> {
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
 
         let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
-        let mut request_meta: SmallVec<[(usize, Vec<Aggregation>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
-            SmallVec::new();
+        let mut request_meta: SmallVec<[(usize, Vec<Agg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> = SmallVec::new();
         let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
 
         let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
@@ -258,13 +220,13 @@ impl<'a> GroupBy<'a> {
             };
 
             let agg_idx_within_group = request_meta[group_idx].1.len();
-            request_meta[group_idx].1.push(spec.agg.to_aggregation());
+            request_meta[group_idx].1.push(spec.agg.clone());
             output_order.push((group_idx, agg_idx_within_group));
 
             result_names.push(spec.output_name());
         }
 
-        let agg_slices: SmallVec<[Vec<Aggregation>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
+        let agg_slices: SmallVec<[Vec<Agg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
             request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
 
         let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
@@ -288,7 +250,7 @@ impl<'a> GroupBy<'a> {
             groupby_aggregate(keys_table.table(), &requests, self.options.null_policy())?
         };
 
-        let mut grouped_results: Vec<Vec<Option<crate::Column>>> = gb_result
+        let mut grouped_results: Vec<Vec<Option<Column>>> = gb_result
             .results
             .into_iter()
             .map(|cols| {
@@ -296,7 +258,7 @@ impl<'a> GroupBy<'a> {
             })
             .collect();
 
-        let mut all_result_cols: Vec<crate::Column> = Vec::with_capacity(output_order.len());
+        let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
         for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
             let group_count = grouped_results.len();
             let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
@@ -326,7 +288,7 @@ impl<'a> GroupBy<'a> {
 
         let result_keys_cols = gb_result.keys.with_execution_domain(Arc::clone(&output_domain)).into_columns()?;
 
-        let mut final_cols: Vec<crate::Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
+        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
         final_cols.extend(result_keys_cols);
         final_cols.extend(all_result_cols);
 

@@ -590,7 +590,7 @@ impl<'a> ColumnView<'a> {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::Column;
+    /// use cudf::core::Column;
     ///
     /// let col = Column::from_slice(&[1i32, 2, 3, 4]).unwrap();
     /// let view = col.view().unwrap();
@@ -719,7 +719,7 @@ impl ColumnView<'_> {
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::Column;
+    /// use cudf::core::Column;
     /// let input = Column::from_strings(&["a", "b", "c", "a"]).unwrap();
     /// let keys = Column::from_strings(&["a", "b", "c"]).unwrap();
     /// let values = Column::from_slice(&[1i32, 2, 3]).unwrap();

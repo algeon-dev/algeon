@@ -37,7 +37,8 @@
 use std::path::Path;
 
 use cudf::{
-    Column, DataFrame, Table,
+    DataFrame,
+    core::{Column, Table},
     io::parquet::{ParquetWriterOptions, write_parquet},
 };
 use tempfile::TempDir;

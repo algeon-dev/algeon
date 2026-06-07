@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cudf::{Column, Table, TypeId};
+use cudf::{
+    TypeId,
+    core::{Column, Table},
+};
 
 fn assert_send_sync<T: Send + Sync>() {}
 

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use cudf::{Column, Series, TypeId};
+use cudf::{Series, TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
 // Constructors preserve dtype and length
