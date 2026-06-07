@@ -126,7 +126,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let s0 = rt0.series("id", &[3, 1, 4]).unwrap();
-    let df0 = DataFrame::from_columns([("id", s0)]).unwrap();
+    let df0 = DataFrame::from_series([("id", s0)]).unwrap();
     common::reset_exec_observation();
     let sorted0 = df0.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -140,7 +140,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let s1 = rt1.series("id", &[8, 2, 5]).unwrap();
-    let df1 = DataFrame::from_columns([("id", s1)]).unwrap();
+    let df1 = DataFrame::from_series([("id", s1)]).unwrap();
     common::reset_exec_observation();
     let sorted1 = df1.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -205,7 +205,7 @@ fn columns_from_different_devices_have_different_domains() {
     );
 
     // Mixing columns from different devices into one DataFrame must fail.
-    let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -314,7 +314,7 @@ fn runtime_device_flows_through_sort() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
-    let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = DataFrame::from_series([("id", ids)]).unwrap();
 
     common::reset_exec_observation();
     let _sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -342,7 +342,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
     let mask = rt1.series("mask", &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     common::reset_exec_observation();
     let filtered = df.filter(&mask).unwrap();
@@ -386,7 +386,7 @@ fn runtime_gt_scalar_mask_filter_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     common::reset_exec_observation();
     let mask = df.series("score").unwrap().gt_scalar(20.0f64).unwrap();
@@ -646,7 +646,7 @@ fn same_provenance_differs_by_device() {
     let s1 = rt1.series("y", &[3, 4]).unwrap();
 
     // Attempting to build a DataFrame from columns on different devices should fail.
-    let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -1445,7 +1445,7 @@ fn runtime_expr_literal_with_columns_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let x = rt1.series("x", &[10, 20, 30]).unwrap();
     let y = rt1.series("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("x", x), ("y", y)]).unwrap();
+    let df = DataFrame::from_series([("x", x), ("y", y)]).unwrap();
 
     common::reset_exec_observation();
     let result = match df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]) {
@@ -1476,7 +1476,7 @@ fn runtime_head_tail_slice_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[10, 20, 30, 40]).unwrap();
     let scores = rt1.series("score", &[1, 2, 3, 4]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     common::reset_exec_observation();
     let head = match df.head(2) {

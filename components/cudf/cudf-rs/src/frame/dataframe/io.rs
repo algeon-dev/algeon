@@ -10,9 +10,9 @@ use crate::{
     core::error::{Error, ErrorKind, Result},
     io::{
         IoTableResult,
-        csv::{self, CsvReaderOptions, CsvWriterOptions},
-        json::{self, JsonReaderOptions, JsonWriterOptions},
-        parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
+        csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
+        json::{self, JsonTableReadOptions, JsonTableWriteOptions},
+        parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
@@ -20,7 +20,7 @@ use crate::{
 /// Options for [`DataFrame::read_csv_with_options`].
 ///
 /// This is the schema-aware CSV reader API for `DataFrame`. Unlike the
-/// lower-level [`crate::io::csv::CsvReaderOptions`], it can also resolve
+/// lower-level [`crate::io::csv::CsvTableReadOptions`], it can also resolve
 /// DataFrame column names from either an explicit override, low-level header
 /// metadata, or generated fallback names.
 #[derive(Debug, Clone, TypedBuilder)]
@@ -38,15 +38,15 @@ pub struct CsvReadOptions {
 }
 
 impl CsvReadOptions {
-    fn to_table_options(&self) -> CsvReaderOptions {
+    fn to_table_options(&self) -> CsvTableReadOptions {
         match self.runtime.as_ref() {
-            Some(rt) => CsvReaderOptions::builder()
+            Some(rt) => CsvTableReadOptions::builder()
                 .filepath(&self.filepath)
                 .delimiter(self.delimiter)
                 .has_header(self.has_header)
                 .with_runtime(rt)
                 .build(),
-            None => CsvReaderOptions::builder()
+            None => CsvTableReadOptions::builder()
                 .filepath(&self.filepath)
                 .delimiter(self.delimiter)
                 .has_header(self.has_header)
@@ -94,21 +94,82 @@ pub struct CsvWriteOptions {
 }
 
 impl CsvWriteOptions {
-    fn to_table_options(&self, column_names: &[&str]) -> CsvWriterOptions {
+    fn to_table_options(&self, column_names: &[&str]) -> CsvTableWriteOptions {
         match self.runtime.as_ref() {
-            Some(rt) => CsvWriterOptions::builder()
+            Some(rt) => CsvTableWriteOptions::builder()
                 .filepath(&self.filepath)
                 .column_names(column_names)
                 .delimiter(self.delimiter)
                 .include_header(self.include_header)
                 .with_runtime(rt)
                 .build(),
-            None => CsvWriterOptions::builder()
+            None => CsvTableWriteOptions::builder()
                 .filepath(&self.filepath)
                 .column_names(column_names)
                 .delimiter(self.delimiter)
                 .include_header(self.include_header)
                 .build(),
+        }
+    }
+}
+
+/// Options for [`DataFrame::read_parquet_with_options`].
+///
+/// This is the schema-aware Parquet reader API for `DataFrame`. It controls
+/// which rows and columns are materialized and, via [`Self::builder`]'s
+/// `with_runtime(...)` setter, which runtime receives the newly created
+/// outputs.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct ParquetReadOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
+    filepath: PathBuf,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    columns: Option<Vec<String>>,
+    #[builder(default)]
+    skip_rows: i64,
+    #[builder(default = -1)]
+    num_rows: i64,
+    #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
+    row_groups: Option<Vec<i32>>,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
+    runtime: Option<Runtime>,
+}
+
+impl ParquetReadOptions {
+    fn to_table_options(&self) -> ParquetTableReadOptions {
+        ParquetTableReadOptions::from_parts(
+            self.filepath.clone(),
+            self.columns.clone(),
+            self.skip_rows,
+            self.num_rows,
+            self.row_groups.clone(),
+            self.runtime.clone(),
+        )
+    }
+}
+
+/// Options for [`DataFrame::read_json_with_options`].
+///
+/// This is the schema-aware JSON reader API for `DataFrame`. It controls the
+/// input format and, via `with_runtime(...)`, the placement runtime for the
+/// newly created outputs.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct JsonReadOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
+    filepath: PathBuf,
+    #[builder(default = true)]
+    lines: bool,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
+    runtime: Option<Runtime>,
+}
+
+impl JsonReadOptions {
+    fn to_table_options(&self) -> JsonTableReadOptions {
+        match self.runtime.as_ref() {
+            Some(runtime) => {
+                JsonTableReadOptions::builder().filepath(&self.filepath).lines(self.lines).with_runtime(runtime).build()
+            },
+            None => JsonTableReadOptions::builder().filepath(&self.filepath).lines(self.lines).build(),
         }
     }
 }
@@ -201,15 +262,15 @@ impl DataFrame {
     /// This is a convenience wrapper around
     /// [`read_parquet_with_options`](Self::read_parquet_with_options).
     pub fn read_parquet(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_parquet_with_options(ParquetReaderOptions::builder().filepath(path).build())
+        Self::read_parquet_with_options(ParquetReadOptions::builder().filepath(path).build())
     }
 
     /// Read a Parquet file into a `DataFrame` using caller-provided
-    /// [`ParquetReaderOptions`].
+    /// [`ParquetReadOptions`].
     ///
     /// Column names are taken from the Parquet file's schema metadata.
-    pub fn read_parquet_with_options(options: ParquetReaderOptions) -> Result<Self> {
-        let result = parquet::read_parquet(options)?;
+    pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
+        let result = parquet::read_parquet(options.to_table_options())?;
         let names = result.column_names.ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidOperation,
@@ -249,16 +310,16 @@ impl DataFrame {
     /// Read a JSON Lines (NDJSON) file into a `DataFrame`, using key names
     /// from the JSON objects as column names.
     pub fn read_json(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_json_with_options(JsonReaderOptions::builder().filepath(path).build())
+        Self::read_json_with_options(JsonReadOptions::builder().filepath(path).build())
     }
 
     /// Read a JSON file into a `DataFrame` using caller-provided
-    /// [`JsonReaderOptions`].
+    /// [`JsonReadOptions`].
     ///
     /// Column names are extracted from JSON key names when the low-level
     /// reader can recover them truthfully from the file.
-    pub fn read_json_with_options(options: JsonReaderOptions) -> Result<Self> {
-        let result = json::read_json(&options)?;
+    pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
+        let result = json::read_json(&options.to_table_options())?;
         Self::from_table(result.table, result.column_names.unwrap_or_default())
     }
 
@@ -313,16 +374,16 @@ pub struct JsonWriteOptions {
 }
 
 impl JsonWriteOptions {
-    fn to_table_options(&self, column_names: &[&str]) -> JsonWriterOptions {
+    fn to_table_options(&self, column_names: &[&str]) -> JsonTableWriteOptions {
         match self.runtime.as_ref() {
-            Some(rt) => JsonWriterOptions::builder()
+            Some(rt) => JsonTableWriteOptions::builder()
                 .filepath(&self.filepath)
                 .column_names(column_names)
                 .lines(self.lines)
                 .include_nulls(self.include_nulls)
                 .with_runtime(rt)
                 .build(),
-            None => JsonWriterOptions::builder()
+            None => JsonTableWriteOptions::builder()
                 .filepath(&self.filepath)
                 .column_names(column_names)
                 .lines(self.lines)
@@ -353,8 +414,8 @@ pub struct ParquetWriteOptions {
 }
 
 impl ParquetWriteOptions {
-    fn to_table_options(&self, column_names: &[&str]) -> ParquetWriterOptions {
-        let base = ParquetWriterOptions::builder()
+    fn to_table_options(&self, column_names: &[&str]) -> ParquetTableWriteOptions {
+        let base = ParquetTableWriteOptions::builder()
             .filepath(&self.filepath)
             .column_names(column_names)
             .row_group_size_rows(self.row_group_size_rows);

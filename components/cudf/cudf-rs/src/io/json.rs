@@ -27,7 +27,7 @@ use crate::{
 ///
 /// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonReaderOptions {
+pub struct JsonTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     /// If `true` (default), read as JSON Lines (one JSON object per line).
@@ -39,7 +39,7 @@ pub struct JsonReaderOptions {
 }
 
 /// Read a JSON file into a low-level table result.
-pub fn read_json(options: &JsonReaderOptions) -> Result<IoTableResult> {
+pub fn read_json(options: &JsonTableReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::json::read_json")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
@@ -97,7 +97,7 @@ pub fn read_json(options: &JsonReaderOptions) -> Result<IoTableResult> {
 /// - `lines` = `true` (JSON Lines / NDJSON format)
 /// - `include_nulls` = `true`
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonWriterOptions {
+pub struct JsonTableWriteOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     /// Column names for the output.
@@ -113,14 +113,14 @@ pub struct JsonWriterOptions {
     runtime: Option<Runtime>,
 }
 
-impl JsonWriterOptions {
+impl JsonTableWriteOptions {
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
     }
 }
 
 /// Write a table to a JSON file.
-pub fn write_json(table: &TableView<'_>, options: &JsonWriterOptions) -> Result<()> {
+pub fn write_json(table: &TableView<'_>, options: &JsonTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
     write_json_with_exec(table, options, exec_options.as_ref())
@@ -128,7 +128,7 @@ pub fn write_json(table: &TableView<'_>, options: &JsonWriterOptions) -> Result<
 
 pub(crate) fn write_json_with_exec(
     table: &TableView<'_>,
-    options: &JsonWriterOptions,
+    options: &JsonTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {
     let operation = "io::json::write_json";

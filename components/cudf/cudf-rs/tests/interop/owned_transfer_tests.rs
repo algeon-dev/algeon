@@ -110,7 +110,7 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
+    let (table, _names) = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
 
     let transfer = table.try_into_owned_device_table_transfer().unwrap();
 
@@ -173,7 +173,7 @@ fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract()
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
     let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
 
     let transfer = frame.try_into_owned_device_table_transfer().unwrap();
@@ -194,7 +194,7 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
     let shared = frame.clone();
     let original_id_ptr = shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
     let original_value_ptr = shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
@@ -349,7 +349,7 @@ fn ambient_default_table_owned_transfer_is_rejected() {
 fn ambient_default_dataframe_owned_transfer_is_rejected() {
     let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
     let values = Series::new("value", &[10i32, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
 
     let err = frame.try_into_owned_device_table_transfer().unwrap_err();
 

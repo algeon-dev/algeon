@@ -137,13 +137,13 @@ impl<'a> GroupBy<'a> {
     /// Returns an error if:
     /// - `specs` is empty
     /// - Any key or value column name is not in the DataFrame's schema
-    pub fn agg(self, specs: &[AggSpec]) -> Result<DataFrame> {
+    pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         let output_domain = Arc::clone(self.df.execution_domain());
         self.agg_impl(specs, None, output_domain, "groupby::GroupBy::agg")
     }
 
     /// Execute the groupby with a borrowed per-operation execution override.
-    pub(crate) fn agg_in_context(self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(
             specs,
@@ -154,12 +154,12 @@ impl<'a> GroupBy<'a> {
     }
 
     #[doc(hidden)]
-    pub fn __debug_agg_in_context(self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }
 
     fn agg_impl(
-        self,
+        &self,
         specs: &[AggSpec],
         exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
@@ -304,14 +304,14 @@ impl<'a> GroupBy<'a> {
         final_cols.extend(all_result_cols);
 
         let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + result_names.len());
-        schema_names.extend(self.keys);
+        schema_names.extend(self.keys.iter().cloned());
         schema_names.extend(result_names);
 
         DataFrame::new(schema_names, final_cols)
     }
 
     /// Shortcut: compute the sum of each named column per group.
-    pub fn sum<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn sum<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -321,7 +321,7 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Shortcut: compute the mean of each named column per group.
-    pub fn mean<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn mean<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -331,7 +331,7 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Shortcut: count non-null values of each named column per group.
-    pub fn count<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn count<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -342,7 +342,7 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Shortcut: compute the median of each named column per group.
-    pub fn median<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn median<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -352,7 +352,7 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Shortcut: count unique non-null values of each named column per group.
-    pub fn nunique<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn nunique<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -363,7 +363,7 @@ impl<'a> GroupBy<'a> {
 
     /// Shortcut: compute the sample standard deviation (ddof=1) of each named
     /// column per group.
-    pub fn std<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn std<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -375,7 +375,7 @@ impl<'a> GroupBy<'a> {
 
     /// Shortcut: compute the sample variance (ddof=1) of each named column
     /// per group.
-    pub fn var<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn var<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -388,12 +388,12 @@ impl<'a> GroupBy<'a> {
 
 impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     /// Execute the groupby with the given aggregation specifications.
-    pub fn agg(self, specs: &[AggSpec]) -> Result<DataFrame> {
+    pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         self.groupby.agg_in_context(specs, self.ctx)
     }
 
     /// Shortcut: compute the sum of each named column per group.
-    pub fn sum<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn sum<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -403,7 +403,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: compute the mean of each named column per group.
-    pub fn mean<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn mean<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -413,7 +413,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: count non-null values of each named column per group.
-    pub fn count<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn count<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -424,7 +424,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: compute the median of each named column per group.
-    pub fn median<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn median<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -434,7 +434,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: count unique non-null values of each named column per group.
-    pub fn nunique<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn nunique<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -444,7 +444,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
-    pub fn std<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn std<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -455,7 +455,7 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     }
 
     /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
-    pub fn var<I, S>(self, columns: I) -> Result<DataFrame>
+    pub fn var<I, S>(&self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,

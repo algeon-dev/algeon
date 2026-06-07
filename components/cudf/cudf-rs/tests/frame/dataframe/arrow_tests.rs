@@ -200,7 +200,7 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = cudf::Series::new_nullable("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = cudf::Series::new_nullable("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap().rename("flag");
-    let df = DataFrame::from_columns([("flag", flag)]).unwrap();
+    let df = DataFrame::from_series([("flag", flag)]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();

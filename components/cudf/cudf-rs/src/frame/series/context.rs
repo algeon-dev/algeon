@@ -307,8 +307,8 @@ impl Series {
         let target = target.into();
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = unary::cast_impl(&cv, &target, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col =
+            unary::cast_impl(&cv, &target, exec_options.as_ref(), operation)?.with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 
@@ -357,15 +357,8 @@ impl Series {
         let rhs = other.column.view()?;
         let output_type = binary::infer_binary_output_type(lhs.data_type()?.id(), rhs.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vv_impl(
-            &lhs,
-            &rhs,
-            op,
-            &output_type,
-            exec_options.as_ref(),
-            operation,
-        )?
-        .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vv_impl(&lhs, &rhs, op, &output_type, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
         Series::from_column(col)
     }
 
@@ -381,15 +374,8 @@ impl Series {
         let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
         let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(
-            &cv,
-            &scalar,
-            op,
-            &output_type,
-            exec_options.as_ref(),
-            operation,
-        )?
-        .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vs_impl(&cv, &scalar, op, &output_type, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 
@@ -405,15 +391,8 @@ impl Series {
         let scalar = Scalar::from_string_in_domain(value, &output_domain)?;
         let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(
-            &cv,
-            &scalar,
-            op,
-            &output_type,
-            exec_options.as_ref(),
-            operation,
-        )?
-        .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vs_impl(&cv, &scalar, op, &output_type, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 }
@@ -791,20 +770,12 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
 
     /// Lowercase strings using the borrowed execution override.
     pub fn str_lower(&self) -> Result<Series> {
-        self.series.string_unary_in_context(
-            strings::to_lower_impl,
-            self.ctx,
-            "series::in_context::str_lower",
-        )
+        self.series.string_unary_in_context(strings::to_lower_impl, self.ctx, "series::in_context::str_lower")
     }
 
     /// Uppercase strings using the borrowed execution override.
     pub fn str_upper(&self) -> Result<Series> {
-        self.series.string_unary_in_context(
-            strings::to_upper_impl,
-            self.ctx,
-            "series::in_context::str_upper",
-        )
+        self.series.string_unary_in_context(strings::to_upper_impl, self.ctx, "series::in_context::str_upper")
     }
 
     /// Literal substring containment using the borrowed execution override.
@@ -889,12 +860,7 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
 
     /// Ends-with test using the borrowed execution override.
     pub fn str_endswith(&self, pat: &str) -> Result<Series> {
-        self.series.string_scalar_in_context(
-            pat,
-            self.ctx,
-            "series::in_context::str_endswith",
-            strings::ends_with_impl,
-        )
+        self.series.string_scalar_in_context(pat, self.ctx, "series::in_context::str_endswith", strings::ends_with_impl)
     }
 
     /// Strip whitespace using the borrowed execution override.
@@ -919,19 +885,11 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
 
     /// Character counts using the borrowed execution override.
     pub fn str_len(&self) -> Result<Series> {
-        self.series.string_unary_in_context(
-            strings::count_characters_impl,
-            self.ctx,
-            "series::in_context::str_len",
-        )
+        self.series.string_unary_in_context(strings::count_characters_impl, self.ctx, "series::in_context::str_len")
     }
 
     /// Byte counts using the borrowed execution override.
     pub fn str_byte_count(&self) -> Result<Series> {
-        self.series.string_unary_in_context(
-            strings::count_bytes_impl,
-            self.ctx,
-            "series::in_context::str_byte_count",
-        )
+        self.series.string_unary_in_context(strings::count_bytes_impl, self.ctx, "series::in_context::str_byte_count")
     }
 }

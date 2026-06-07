@@ -100,16 +100,16 @@
 //! removed `DataFrame` operation-specific `_with_runtime` methods (Slice 4),
 //! which hid placement as a side effect of a compute operation.
 
-mod borrowed;
+pub mod borrowed;
 mod column;
 mod common;
 mod consumer_import;
-mod frame;
+pub mod frame;
 mod projection;
 mod runtime_lease;
 mod table;
 mod table_export;
-mod transfer;
+pub mod transfer;
 
 use std::sync::Arc;
 
@@ -123,6 +123,17 @@ use consumer_import::{
 };
 pub use frame::PartitionedDataFrameExport;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
+pub mod prepared {
+    pub use rapids_interop::{
+        ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActiveTableReadLease, CompletionAuthority,
+        CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind, ExportDiagnostics,
+        ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation, LeaseBackend,
+        LeaseCompletionResult, LeaseExportContext, LeaseReadiness, PreparedColumnExport, PreparedTableExport,
+        ProducerReadiness, ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization,
+        TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport,
+        TryPrepareHostColumnExport, TryPrepareHostTableExport,
+    };
+}
 pub use rapids_interop::{
     ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActiveTableReadLease, BorrowedColumnView,
     BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority,
@@ -144,6 +155,14 @@ pub use runtime_lease::{
     RuntimeLeaseCompletionResult, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
     TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
 };
+pub mod runtime {
+    pub use super::runtime_lease::{
+        RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority,
+        RuntimeCompletionWitness, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
+        TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+        cuda_explicit_completion_required_lease_backend,
+    };
+}
 use table_export::{
     prepare_device_table_export_from_columns, prepare_device_table_export_from_columns_with_readiness,
     prepare_host_table_export_from_columns, prepare_host_table_export_from_view,

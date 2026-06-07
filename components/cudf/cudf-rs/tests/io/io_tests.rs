@@ -45,11 +45,12 @@ fn test_parquet_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
+    let write_opts =
+        parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -75,11 +76,12 @@ fn test_parquet_column_selection() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["a", "b", "c"]).build();
+    let write_opts =
+        parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b", "c"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only column "b"
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).columns(&["b"]).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -99,11 +101,11 @@ fn test_parquet_row_limits() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only first 10 rows
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).num_rows(10).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).num_rows(10).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -125,12 +127,15 @@ fn test_csv_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts =
-        csv::CsvWriterOptions::builder().filepath(&path).column_names(&["ids", "values"]).include_header(true).build();
+    let write_opts = csv::CsvTableWriteOptions::builder()
+        .filepath(&path)
+        .column_names(&["ids", "values"])
+        .include_header(true)
+        .build();
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = csv::CsvReaderOptions::builder().filepath(&path).has_header(true).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(true).build();
     let result = csv::read_csv(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -146,7 +151,7 @@ fn test_csv_read_without_header_returns_no_schema_metadata() {
 
     std::fs::write(&path, "1,10\n2,20\n").unwrap();
 
-    let read_opts = csv::CsvReaderOptions::builder().filepath(&path).has_header(false).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build();
     let result = csv::read_csv(&read_opts).unwrap();
 
     assert_eq!(result.column_names, None);
@@ -166,11 +171,11 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
     let view = table.view().unwrap();
 
     let write_opts =
-        parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["alpha", "beta", "gamma"]).build();
+        parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["alpha", "beta", "gamma"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back with metadata
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
     let result = parquet::read_parquet(read_opts).unwrap();
 
     // Verify column names
@@ -202,11 +207,12 @@ fn test_parquet_read_column_selection_preserves_projected_names() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["x", "y", "z"]).build();
+    let write_opts =
+        parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x", "y", "z"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only columns "x" and "z"
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).columns(&["x", "z"]).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["x", "z"]).build();
     let result = parquet::read_parquet(read_opts).unwrap();
 
     // Only the selected columns should appear
@@ -230,10 +236,10 @@ fn test_parquet_read_single_column_preserves_name() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["only_col"]).build();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["only_col"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
     let result = parquet::read_parquet(read_opts).unwrap();
 
     assert_eq!(result.column_names, Some(vec!["only_col".to_string()]));
@@ -253,7 +259,7 @@ fn test_parquet_row_group_selection() {
     }
 
     // Read only row group 1 (rows 40, 50, 60)
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).row_groups(&[1]).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[1]).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -276,7 +282,7 @@ fn test_parquet_row_group_multiple_selection() {
     }
 
     // Read row groups 0 and 2 (rows 10,20,30 and 70,80,90)
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).row_groups(&[0, 2]).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0, 2]).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -295,11 +301,11 @@ fn test_parquet_row_group_empty_selection() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Empty row_groups slice — should read all rows (libcudf treats empty as "all")
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).row_groups(&[]).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[]).build();
     let result = parquet::read_parquet(read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -318,11 +324,11 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Combining row_groups with skip_rows should error (Rust-side validation)
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).row_groups(&[0]).skip_rows(1).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0]).skip_rows(1).build();
     let result = parquet::read_parquet(read_opts);
     let err = result.err().expect("expected error when combining row_groups with skip_rows");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -337,11 +343,11 @@ fn test_parquet_row_groups_with_num_rows_errors() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Combining row_groups with num_rows should error (Rust-side validation)
-    let read_opts = parquet::ParquetReaderOptions::builder().filepath(&path).row_groups(&[0]).num_rows(2).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0]).num_rows(2).build();
     let result = parquet::read_parquet(read_opts);
     let err = result.err().expect("expected error when combining row_groups with num_rows");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -356,10 +362,10 @@ fn test_csv_custom_delimiter() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = csv::CsvWriterOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
+    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
     csv::write_csv(&view, &write_opts).unwrap();
 
-    let read_opts = csv::CsvReaderOptions::builder().filepath(&path).delimiter(b'\t').build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).delimiter(b'\t').build();
     let result = csv::read_csv(&read_opts).unwrap();
     assert_eq!(result.column_names, Some(vec!["x".to_string()]));
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 2);

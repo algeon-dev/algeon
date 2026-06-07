@@ -11,7 +11,7 @@
 //!     ops::expr::{col, lit},
 //! };
 //!
-//! let df = DataFrame::from_columns([
+//! let df = DataFrame::from_series([
 //!     ("x", Series::new::<i32>("x", &[1, 2, 3]).unwrap()),
 //!     ("y", Series::new::<i32>("y", &[10, 20, 30]).unwrap()),
 //! ])

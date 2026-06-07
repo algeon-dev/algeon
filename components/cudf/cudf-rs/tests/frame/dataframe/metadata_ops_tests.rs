@@ -16,7 +16,7 @@ fn sample_df() -> DataFrame {
     let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
     let flags = Series::new::<i32>("flags", &[100, 200, 300]).unwrap();
 
-    DataFrame::from_columns([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
 }
 
 /// Returns the raw device data pointer for a named column in a DataFrame.

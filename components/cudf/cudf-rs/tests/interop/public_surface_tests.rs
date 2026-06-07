@@ -3,10 +3,15 @@ use std::sync::Arc;
 use cudf::{
     DataFrame, Runtime, Series,
     interop::{
-        ActiveLeaseActivation, ActiveLeaseBackend, BorrowedColumnView, BorrowedTableView, CompletionBinding,
-        IncompleteDropBehavior, InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
-        LeaseReadiness, OwnedColumnTransfer, OwnedTableTransfer, PreparedColumnExport, PreparedTableExport,
-        ReadStartBinding, cuda_explicit_completion_required_lease_backend,
+        borrowed::{BorrowedColumnView, BorrowedTableView},
+        frame::PartitionedDataFrameExport,
+        prepared::{
+            ActiveLeaseActivation, ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError,
+            LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
+            PreparedColumnExport, PreparedTableExport, ReadStartBinding,
+        },
+        runtime::cuda_explicit_completion_required_lease_backend,
+        transfer::{OwnedColumnTransfer, OwnedTableTransfer},
     },
 };
 
@@ -133,4 +138,9 @@ fn cudf_interop_exposes_high_level_owned_transfer_producers() {
 
     assert_series_owned_producer(Series::try_into_owned_device_column_transfer);
     assert_dataframe_owned_producer(DataFrame::try_into_owned_device_table_transfer);
+}
+
+#[test]
+fn cudf_interop_exposes_grouped_frame_namespace() {
+    let _: Option<PartitionedDataFrameExport> = None;
 }

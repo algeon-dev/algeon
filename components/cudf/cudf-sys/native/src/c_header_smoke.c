@@ -71,6 +71,10 @@ int cudf_rust_c_header_smoke(void)
     &cudf_scalar_value_ex;
   cudf_status_t (*f22f)(cudf_scalar_handle, char**, int32_t*, const cudf_exec_options_t*) =
     &cudf_scalar_string_value_ex;
+  cudf_status_t (*f22g)(cudf_scalar_handle, cudf_scalar_handle*) =
+    &cudf_scalar_copy;
+  cudf_status_t (*f22h)(cudf_scalar_handle, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    &cudf_scalar_copy_ex;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
 
   cudf_status_t (*f23)(size_t, cudf_device_buffer_handle*) = &cudf_device_buffer_create;
@@ -182,6 +186,8 @@ int cudf_rust_c_header_smoke(void)
   (void)f22d;
   (void)f22e;
   (void)f22f;
+  (void)f22g;
+  (void)f22h;
   (void)f23;
   (void)f24;
   (void)f25;
