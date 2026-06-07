@@ -12,6 +12,7 @@ use parquet::{
 
 use super::{TpchWorkloadError, TpchWorkloadResult, tiny::write_tiny_tpch_parquet_dataset};
 
+/// Canonical TPC-H table names in fixture discovery order.
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
 /// Explicit Parquet fixture root. When unset, report helpers use the default

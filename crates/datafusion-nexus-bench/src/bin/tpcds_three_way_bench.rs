@@ -70,7 +70,7 @@ const TSV_HEADER: &str = concat!(
     "\tstatistical_aggregate_execution_mode\tstatistical_aggregate_tolerance_contract",
 );
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 16)]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(

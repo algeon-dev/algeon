@@ -43,15 +43,7 @@ pub use aggregate::{
     AggregateStrategyCapability, AggregateStrategyCapabilityDecision, aggregate_strategy_capability_decision,
 };
 pub use entry::analyze_query_capabilities;
-pub(crate) use join::{
-    JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
-    KeylessConditionalJoinKind, LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD, LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
-    LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
-    SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD, join_node_execution_capability, join_residual_requires_post_join_filter,
-    keyed_filtered_semi_anti_join_capable, keyed_hash_join_capable, keyed_hash_join_strategy_decision,
-    keyed_hash_join_strategy_decision_for_plan, keyed_hash_join_strategy_input_facts_for_plan,
-    multi_join_subtree_join_execution_capability, one_shot_equi_join_supported,
-};
+pub(crate) use join::*;
 pub use model::{
     AggregateGrouping, BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityAnalysis, CapabilityDecision,
     CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection,

@@ -27,6 +27,7 @@ use super::CugraphAlgorithm;
 
 /// Manifest JSON resident next to locally prepared cuGraph datasets.
 pub const CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST: &str = "fixture/data/cugraph";
+/// Manifest file describing locally prepared cuGraph parity datasets.
 pub const CUGRAPH_DATA_MANIFEST_PATH: &str = "fixture/data/cugraph/manifest.json";
 
 /// Comparator family expected for a parity row.
