@@ -475,11 +475,13 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
     auto* view = static_cast<cudf::column_view*>(handle);
     auto const start = static_cast<cudf::size_type>(offset);
     auto const len   = static_cast<cudf::size_type>(length);
-    auto const end   = start + len;
-    if (start > view->size() || end > view->size()) {
+    // Guard against int32_t overflow before computing end.
+    if (start > view->size() || len > view->size() - start) {
       set_error("slice range is out of bounds");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    auto const active_begin = view->offset() + start;
+    auto const active_end   = active_begin + len;
 
     std::vector<cudf::column_view> children{};
     children.reserve(view->num_children());
@@ -488,8 +490,9 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
     }
 
     auto const exec_stream = cudf::get_default_stream();
-    auto const null_count =
-        view->nullable() ? cudf::detail::null_count(view->null_mask(), start, end, exec_stream) : 0;
+    auto const null_count = view->nullable()
+                                ? cudf::detail::null_count(view->null_mask(), active_begin, active_end, exec_stream)
+                                : 0;
 
     auto* slice = new cudf::column_view(
         view->type(), len, view->head(), view->null_mask(), null_count, view->offset() + start, children);

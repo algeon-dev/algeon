@@ -179,13 +179,14 @@ fn strip_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // Safety: StripSide and cudf_sys::cudf_strip_side_t are both #[repr(i32)]
+    // with identical discriminant values.
+    let side_ffi: cudf_sys::cudf_strip_side_t = unsafe { std::mem::transmute(side) };
     let status = match exec_options {
         Some(options) => unsafe {
-            cudf_sys::cudf_strings_strip_ex(input.raw_handle(), side as i32, to_strip.raw_handle(), &mut out, options)
+            cudf_sys::cudf_strings_strip_ex(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out, options)
         },
-        None => unsafe {
-            cudf_sys::cudf_strings_strip(input.raw_handle(), side as i32, to_strip.raw_handle(), &mut out)
-        },
+        None => unsafe { cudf_sys::cudf_strings_strip(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
     Ok(unsafe { Column::from_raw(out) })

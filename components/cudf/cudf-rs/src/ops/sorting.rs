@@ -85,13 +85,16 @@ fn validate_sort_params(
 }
 
 /// Helper: convert Option slices to raw pointers.
-fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrder]>) -> (*const i32, *const i32) {
+fn sort_params(
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+) -> (*const cudf_sys::cudf_order_t, *const cudf_sys::cudf_null_order_t) {
     let co = match column_order {
-        Some(s) => s.as_ptr() as *const i32,
+        Some(s) => s.as_ptr() as *const cudf_sys::cudf_order_t,
         None => ptr::null(),
     };
     let np = match null_precedence {
-        Some(s) => s.as_ptr() as *const i32,
+        Some(s) => s.as_ptr() as *const cudf_sys::cudf_null_order_t,
         None => ptr::null(),
     };
     (co, np)

@@ -99,61 +99,55 @@ fn reduce_agg_name(agg: &ReduceAggregation) -> &'static str {
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_reduce_aggregation_destroy`.
 unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_void> {
+    use cudf_sys::cudf_reduce_aggregation_kind_t::*;
+
     let mut handle = ptr::null_mut();
     match agg {
         ReduceAggregation::Sum => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(0, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_SUM, &mut handle),
                 "reduction::create_reduce_agg_handle(sum)",
             )?;
         },
         ReduceAggregation::Min => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(1, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MIN, &mut handle),
                 "reduction::create_reduce_agg_handle(min)",
             )?;
         },
         ReduceAggregation::Max => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(2, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MAX, &mut handle),
                 "reduction::create_reduce_agg_handle(max)",
             )?;
         },
         ReduceAggregation::Product => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(3, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_PRODUCT, &mut handle),
                 "reduction::create_reduce_agg_handle(product)",
             )?;
         },
         ReduceAggregation::Mean => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(4, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEAN, &mut handle),
                 "reduction::create_reduce_agg_handle(mean)",
             )?;
         },
         ReduceAggregation::Median => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(5, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEDIAN, &mut handle),
                 "reduction::create_reduce_agg_handle(median)",
             )?;
         },
         ReduceAggregation::Any => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(6, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ANY, &mut handle),
                 "reduction::create_reduce_agg_handle(any)",
             )?;
         },
         ReduceAggregation::All => {
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(7, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ALL, &mut handle),
                 "reduction::create_reduce_agg_handle(all)",
             )?;
         },
@@ -190,12 +184,14 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_scan_aggregation_destroy`.
 unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
+    use cudf_sys::cudf_reduce_aggregation_kind_t::*;
+
     let mut handle = ptr::null_mut();
     let kind = match agg {
-        ScanAggregation::Sum => 0,
-        ScanAggregation::Min => 1,
-        ScanAggregation::Max => 2,
-        ScanAggregation::Product => 3,
+        ScanAggregation::Sum => CUDF_REDUCE_AGG_SUM,
+        ScanAggregation::Min => CUDF_REDUCE_AGG_MIN,
+        ScanAggregation::Max => CUDF_REDUCE_AGG_MAX,
+        ScanAggregation::Product => CUDF_REDUCE_AGG_PRODUCT,
     };
     // SAFETY: handle is initialized to null and set by the C shim on success.
     error::check_status_in_with(
@@ -280,21 +276,17 @@ fn scan_impl(
     let agg_handle = unsafe { create_scan_agg_handle(agg)? };
 
     let mut out = ptr::null_mut();
+    // Safety: ScanType and cudf_sys::cudf_scan_type_t are both #[repr(i32)]
+    // with identical discriminant values.
+    let scan_type_ffi: cudf_sys::cudf_scan_type_t = unsafe { std::mem::transmute(scan_type) };
     // SAFETY: input handle is valid (NonNull). agg_handle was returned by a
     // successful FFI call.
     let status = match exec_options {
         Some(options) => unsafe {
-            cudf_sys::cudf_scan_ex(
-                input.raw_handle(),
-                agg_handle,
-                scan_type as i32,
-                null_policy as i32,
-                &mut out,
-                options,
-            )
+            cudf_sys::cudf_scan_ex(input.raw_handle(), agg_handle, scan_type_ffi, null_policy as i32, &mut out, options)
         },
         None => unsafe {
-            cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type as i32, null_policy as i32, &mut out)
+            cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type_ffi, null_policy as i32, &mut out)
         },
     };
 

@@ -83,15 +83,20 @@ fn distinct_impl(
     })?;
 
     let mut out = ptr::null_mut();
+    // Safety: DuplicateKeepOption, NullEquality, NanEquality and their cudf_sys counterparts
+    // are all #[repr(i32)] with identical discriminant values.
+    let keep_ffi: cudf_sys::cudf_duplicate_keep_option_t = unsafe { std::mem::transmute(keep) };
+    let null_eq_ffi: cudf_sys::cudf_stream_compaction_null_equality_t = unsafe { std::mem::transmute(null_equality) };
+    let nan_eq_ffi: cudf_sys::cudf_stream_compaction_nan_equality_t = unsafe { std::mem::transmute(nan_equality) };
     let status = match exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_distinct_ex(
                 input.raw_handle(),
                 keys.as_ptr(),
                 num_keys,
-                keep as i32,
-                null_equality as i32,
-                nan_equality as i32,
+                keep_ffi,
+                null_eq_ffi,
+                nan_eq_ffi,
                 &mut out,
                 options,
             )
@@ -101,9 +106,9 @@ fn distinct_impl(
                 input.raw_handle(),
                 keys.as_ptr(),
                 num_keys,
-                keep as i32,
-                null_equality as i32,
-                nan_equality as i32,
+                keep_ffi,
+                null_eq_ffi,
+                nan_eq_ffi,
                 &mut out,
             )
         },

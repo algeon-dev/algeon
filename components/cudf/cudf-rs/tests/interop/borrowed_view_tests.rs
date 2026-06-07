@@ -98,8 +98,11 @@ fn ambient_column_view_borrow_is_rejected() {
     let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-    assert!(err.context().iter().any(|(key, value)| *key == "operation"
-        && value == "interop::ColumnView::try_borrow_column_view"));
+    assert!(
+        err.context()
+            .iter()
+            .any(|(key, value)| *key == "operation" && value == "interop::ColumnView::try_borrow_column_view")
+    );
 }
 
 #[test]
@@ -111,8 +114,11 @@ fn ambient_dataframe_borrow_is_rejected() {
     let err = frame.try_borrow_table_view().unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-    assert!(err.context().iter().any(|(key, value)| *key == "operation"
-        && value == "interop::DataFrame::try_borrow_table_view"));
+    assert!(
+        err.context()
+            .iter()
+            .any(|(key, value)| *key == "operation" && value == "interop::DataFrame::try_borrow_table_view")
+    );
 }
 
 #[test]

@@ -77,9 +77,12 @@ fn unary_operation_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
+    // Safety: UnaryOperator and cudf_sys::cudf_unary_operator_t are both #[repr(i32)]
+    // with identical discriminant values.
+    let op_ffi: cudf_sys::cudf_unary_operator_t = unsafe { std::mem::transmute(op) };
     let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op as i32, &mut out, options) },
-        None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op as i32, &mut out) },
+        Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op_ffi, &mut out, options) },
+        None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op_ffi, &mut out) },
     };
     error::check_status_in_with(
         status,

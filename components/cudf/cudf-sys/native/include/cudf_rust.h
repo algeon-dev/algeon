@@ -27,5 +27,7 @@
 #include "search.h"
 #include "copying.h"
 #include "stream_compaction.h"
+#include "strings.h"
+#include "device.h"
 
 #endif  // CUDF_RUST_H

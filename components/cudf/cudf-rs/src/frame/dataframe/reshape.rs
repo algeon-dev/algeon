@@ -907,9 +907,7 @@ impl DataFrame {
     /// Returns an error if any expression lacks an output name, or if
     /// evaluation of any expression fails.
     pub fn with_columns<I>(&self, exprs: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = ops::expr::Expr>,
-    {
+    where I: IntoIterator<Item = ops::expr::Expr> {
         let exprs: Vec<ops::expr::Expr> = exprs.into_iter().collect();
 
         // Validate all names up-front before doing any GPU work.

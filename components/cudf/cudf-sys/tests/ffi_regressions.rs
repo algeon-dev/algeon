@@ -5,6 +5,114 @@ use std::{
     ptr,
 };
 
+// Re-declare selected FFI functions with `i32` parameters so that tests can
+// pass deliberately invalid enum discriminants to the C shim without
+// constructing invalid Rust enum values (which is instant UB).
+#[allow(dead_code)]
+extern "C" {
+    #[link_name = "cudf_sort"]
+    fn cudf_sort_raw(
+        input: *mut c_void,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_key_columns: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_distinct"]
+    fn cudf_distinct_raw(
+        input: *mut c_void,
+        keys: *const i32,
+        num_keys: i32,
+        keep: i32,
+        null_equality: i32,
+        nan_equality: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_gather"]
+    fn cudf_gather_raw(input: *mut c_void, gather_map: *mut c_void, bounds_policy: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_aggregation_create_count"]
+    fn cudf_aggregation_create_count_raw(null_policy: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_groupby_aggregate"]
+    fn cudf_groupby_aggregate_raw(
+        keys: *mut c_void,
+        values: *const *mut c_void,
+        aggregations: *const *mut c_void,
+        agg_counts: *const i32,
+        num_requests: i32,
+        num_aggregations: i32,
+        keys_null_policy: i32,
+        out_keys: *mut *mut c_void,
+        out_values: *mut *mut *mut c_void,
+        out_total_columns: *mut i32,
+    ) -> i32;
+    #[link_name = "cudf_inner_join"]
+    fn cudf_inner_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_left_join"]
+    fn cudf_left_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_full_join"]
+    fn cudf_full_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_scan_aggregation_create"]
+    fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_scan"]
+    fn cudf_scan_raw(
+        input: *mut c_void,
+        agg: *mut c_void,
+        scan_type: i32,
+        null_policy: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_unary_operation"]
+    fn cudf_unary_operation_raw(input: *mut c_void, op: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_binary_operation_vv"]
+    fn cudf_binary_operation_vv_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_binary_operation_vs"]
+    fn cudf_binary_operation_vs_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_binary_operation_sv"]
+    fn cudf_binary_operation_sv_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+}
+
 use support::{
     NO_SYNC_RECORDED, current_device_resource_raw, default_stream_value, last_error_message, last_exec_mr_raw,
     last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
@@ -763,6 +871,47 @@ fn test_column_view_null_mask_to_host_sync_contract() {
 }
 
 #[test]
+fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count() {
+    let col = make_i32_column_nullable(&[10, 20, 30, 40, 50], &[true, false, true, false, true]);
+    let base_view = make_column_view(col);
+
+    let mut first_slice: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(base_view, 1, 3, &mut first_slice) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!first_slice.is_null());
+
+    let mut first_offset = -1i32;
+    let mut first_null_count = -1i32;
+    let st = unsafe { cudf_sys::cudf_column_view_offset(first_slice, &mut first_offset) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_sys::cudf_column_view_null_count(first_slice, &mut first_null_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(first_offset, 1);
+    assert_eq!(first_null_count, 2);
+
+    let mut second_slice: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(first_slice, 1, 1, &mut second_slice) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!second_slice.is_null());
+
+    let mut second_offset = -1i32;
+    let mut second_null_count = -1i32;
+    let st = unsafe { cudf_sys::cudf_column_view_offset(second_slice, &mut second_offset) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_sys::cudf_column_view_null_count(second_slice, &mut second_null_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(second_offset, 2);
+    assert_eq!(second_null_count, 0);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(second_slice);
+        cudf_sys::cudf_column_view_destroy(first_slice);
+        cudf_sys::cudf_column_view_destroy(base_view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
 fn test_column_view_strings_to_host_sync_contract() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
@@ -1108,7 +1257,7 @@ fn test_sort_invalid_order_enum_rejected() {
 
     let column_order = [99i32];
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_sort(tv, column_order.as_ptr(), ptr::null(), 1, &mut out) };
+    let status = unsafe { cudf_sort_raw(tv, column_order.as_ptr(), ptr::null(), 1, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1127,7 +1276,7 @@ fn test_sort_invalid_null_order_enum_rejected() {
 
     let null_order = [99i32];
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_sort(tv, ptr::null(), null_order.as_ptr(), 1, &mut out) };
+    let status = unsafe { cudf_sort_raw(tv, ptr::null(), null_order.as_ptr(), 1, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1183,7 +1332,7 @@ fn test_distinct_negative_num_keys_rejected() {
 
     let keys = [0i32];
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), -1, 0, 0, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), -1, 0, 0, 0, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1204,7 +1353,7 @@ fn test_gather_invalid_bounds_policy_rejected() {
     let map_view = make_column_view(map_col);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_gather(tv, map_view, 99, &mut out) };
+    let status = unsafe { cudf_gather_raw(tv, map_view, 99, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1227,17 +1376,17 @@ fn test_distinct_invalid_policy_values_rejected() {
     let mut out: *mut c_void = ptr::null_mut();
 
     // Invalid keep policy
-    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 99, 0, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 99, 0, 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
     // Invalid null equality policy
-    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 0, 99, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 99, 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
     // Invalid nan equality policy
-    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 0, 0, 99, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 0, 99, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
@@ -1378,7 +1527,17 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
     let tv = make_table_view(tbl);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_distinct(tv, ptr::null(), 0, 0, 0, 0, &mut out) };
+    let status = unsafe {
+        cudf_sys::cudf_distinct(
+            tv,
+            ptr::null(),
+            0,
+            cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY,
+            cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL,
+            cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL,
+            &mut out,
+        )
+    };
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -1408,7 +1567,7 @@ fn test_groupby_negative_num_requests_rejected() {
             ptr::null(),
             -1,
             0,
-            0,
+            cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
@@ -1437,7 +1596,7 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
     let values = [val_view];
     let agg_counts = [1i32];
     let mut agg: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_aggregation_create(0, &mut agg) };
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_SUM, &mut agg) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
     let aggregations = [agg];
@@ -1454,7 +1613,7 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
             agg_counts.as_ptr(),
             1,
             0,
-            0,
+            cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
@@ -1479,7 +1638,7 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
 fn test_aggregation_create_count_invalid_null_policy_rejected() {
     let _shim_state = lock_shim_state();
     let mut agg: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_aggregation_create_count(99, &mut agg) };
+    let status = unsafe { cudf_aggregation_create_count_raw(99, &mut agg) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(agg.is_null());
@@ -1498,7 +1657,7 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
     let agg_counts = [1i32];
 
     let mut agg: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_aggregation_create(0, &mut agg) };
+    let st = unsafe { cudf_sys::cudf_aggregation_create(cudf_sys::cudf_aggregation_kind_t::CUDF_AGG_SUM, &mut agg) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
     let aggregations = [agg];
@@ -1507,7 +1666,7 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
     let mut out_vals: *mut *mut c_void = ptr::null_mut();
     let mut out_total: i32 = -1;
     let status = unsafe {
-        cudf_sys::cudf_groupby_aggregate(
+        cudf_groupby_aggregate_raw(
             keys_view,
             values.as_ptr(),
             aggregations.as_ptr(),
@@ -1554,7 +1713,7 @@ fn test_groupby_zero_aggregations_returns_null_output_array() {
             ptr::null(),
             0,
             0,
-            0,
+            cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
@@ -1629,19 +1788,19 @@ fn assert_join_invalid_null_equality_rejected(
 #[test]
 fn test_inner_join_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
-    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_inner_join);
+    assert_join_invalid_null_equality_rejected(cudf_inner_join_raw);
 }
 
 #[test]
 fn test_left_join_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
-    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_left_join);
+    assert_join_invalid_null_equality_rejected(cudf_left_join_raw);
 }
 
 #[test]
 fn test_full_join_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
-    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_full_join);
+    assert_join_invalid_null_equality_rejected(cudf_full_join_raw);
 }
 
 #[test]
@@ -1650,12 +1809,14 @@ fn test_scan_invalid_scan_type_rejected() {
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
     let mut agg: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_scan_aggregation_create(0, &mut agg) };
+    let st = unsafe {
+        cudf_sys::cudf_scan_aggregation_create(cudf_sys::cudf_reduce_aggregation_kind_t::CUDF_REDUCE_AGG_SUM, &mut agg)
+    };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_scan(view, agg, 99, 0, &mut out) };
+    let status = unsafe { cudf_scan_raw(view, agg, 99, 0, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1674,12 +1835,15 @@ fn test_scan_invalid_null_policy_rejected() {
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
     let mut agg: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_scan_aggregation_create(0, &mut agg) };
+    let st = unsafe {
+        cudf_sys::cudf_scan_aggregation_create(cudf_sys::cudf_reduce_aggregation_kind_t::CUDF_REDUCE_AGG_SUM, &mut agg)
+    };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_scan(view, agg, 0, 99, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_scan(view, agg, cudf_sys::cudf_scan_type_t::CUDF_SCAN_INCLUSIVE, 99, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1699,7 +1863,7 @@ fn test_unary_operation_invalid_operator_rejected() {
     let view = make_column_view(col);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_unary_operation(view, 99, &mut out) };
+    let status = unsafe { cudf_unary_operation_raw(view, 99, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1721,7 +1885,7 @@ fn test_binary_operation_vv_invalid_operator_rejected() {
     let dtype = make_i32_data_type();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_binary_operation_vv(lhs_view, rhs_view, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_vv_raw(lhs_view, rhs_view, 99, dtype, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1745,7 +1909,7 @@ fn test_binary_operation_vs_invalid_operator_rejected() {
     let dtype = make_i32_data_type();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_binary_operation_vs(lhs_view, rhs_scalar, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_vs_raw(lhs_view, rhs_scalar, 99, dtype, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1768,7 +1932,7 @@ fn test_binary_operation_sv_invalid_operator_rejected() {
     let dtype = make_i32_data_type();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_binary_operation_sv(lhs_scalar, rhs_view, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_sv_raw(lhs_scalar, rhs_view, 99, dtype, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());

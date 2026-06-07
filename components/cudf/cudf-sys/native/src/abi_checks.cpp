@@ -10,10 +10,12 @@
 #include "reduction.h"
 #include "sorting.h"
 #include "stream_compaction.h"
+#include "strings.h"
 #include "types.h"
 #include "unary.h"
 
 #include <cudf/binaryop.hpp>
+#include <cudf/strings/side_type.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/reduction.hpp>
 #include <cudf/stream_compaction.hpp>
@@ -49,6 +51,8 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_null_equality_t must be 32-bit");
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
+static_assert(sizeof(cudf_strip_side_t) == sizeof(int32_t),
+              "cudf_strip_side_t must be 32-bit");
 static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
@@ -205,3 +209,7 @@ static_assert(CUDF_BINARY_NULL_EQUALS == static_cast<int>(cudf::binary_operator:
 static_assert(CUDF_BINARY_NULL_NOT_EQUALS == static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
 static_assert(CUDF_BINARY_NULL_MAX == static_cast<int>(cudf::binary_operator::NULL_MAX));
 static_assert(CUDF_BINARY_NULL_MIN == static_cast<int>(cudf::binary_operator::NULL_MIN));
+
+static_assert(CUDF_STRIP_LEFT == static_cast<int>(cudf::strings::side_type::LEFT));
+static_assert(CUDF_STRIP_RIGHT == static_cast<int>(cudf::strings::side_type::RIGHT));
+static_assert(CUDF_STRIP_BOTH == static_cast<int>(cudf::strings::side_type::BOTH));

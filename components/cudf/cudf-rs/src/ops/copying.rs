@@ -11,7 +11,7 @@ use crate::core::{
 fn gather_impl(
     input: &TableView<'_>,
     gather_map: &ColumnView<'_>,
-    bounds_policy: i32,
+    bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
     bounds_policy_label: &'static str,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -58,8 +58,15 @@ fn gather_impl(
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    gather_impl(input, gather_map, 0, "nullify", exec_options.as_ref(), "copying::gather")
-        .map(|table| table.with_execution_domain(output_domain))
+    gather_impl(
+        input,
+        gather_map,
+        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+        "nullify",
+        exec_options.as_ref(),
+        "copying::gather",
+    )
+    .map(|table| table.with_execution_domain(output_domain))
 }
 
 pub(crate) fn gather_with_exec_options(
@@ -68,7 +75,14 @@ pub(crate) fn gather_with_exec_options(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
-    gather_impl(input, gather_map, 0, "nullify", exec_options, operation)
+    gather_impl(
+        input,
+        gather_map,
+        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+        "nullify",
+        exec_options,
+        operation,
+    )
 }
 
 /// Gather (select) rows from a table by index, without bounds checking.
@@ -101,8 +115,15 @@ pub(crate) fn gather_with_exec_options(
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    gather_impl(input, gather_map, 1, "dont_check", exec_options.as_ref(), "copying::gather_unchecked")
-        .map(|table| table.with_execution_domain(output_domain))
+    gather_impl(
+        input,
+        gather_map,
+        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+        "dont_check",
+        exec_options.as_ref(),
+        "copying::gather_unchecked",
+    )
+    .map(|table| table.with_execution_domain(output_domain))
 }
 
 pub(crate) unsafe fn gather_unchecked_with_exec_options(
@@ -111,5 +132,12 @@ pub(crate) unsafe fn gather_unchecked_with_exec_options(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
-    gather_impl(input, gather_map, 1, "dont_check", exec_options, operation)
+    gather_impl(
+        input,
+        gather_map,
+        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+        "dont_check",
+        exec_options,
+        operation,
+    )
 }

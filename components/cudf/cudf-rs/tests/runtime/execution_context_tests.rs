@@ -561,7 +561,15 @@ fn gather_ex_uses_explicit_stream_and_mr() {
 
     obs_reset();
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_gather_ex(table_view, gather_map_view, 0, &mut out_table, ctx.as_raw()) };
+    let status = unsafe {
+        cudf_sys::cudf_gather_ex(
+            table_view,
+            gather_map_view,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            &mut out_table,
+            ctx.as_raw(),
+        )
+    };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_gather_ex failed");
     assert!(!out_table.is_null());
 

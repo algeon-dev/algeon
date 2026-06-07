@@ -78,6 +78,208 @@ pub enum cudf_type_id_t {
 }
 
 // ---------------------------------------------------------------------------
+// Sorting enums (mirrors cudf::order, cudf::null_order)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_order_t {
+    CUDF_ORDER_ASCENDING = 0,
+    CUDF_ORDER_DESCENDING = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_null_order_t {
+    CUDF_NULL_ORDER_AFTER = 0,
+    CUDF_NULL_ORDER_BEFORE = 1,
+}
+
+// ---------------------------------------------------------------------------
+// Groupby enums (mirrors cudf::aggregation::Kind, cudf::null_policy)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_aggregation_kind_t {
+    CUDF_AGG_SUM = 0,
+    CUDF_AGG_MIN = 1,
+    CUDF_AGG_MAX = 2,
+    CUDF_AGG_COUNT_VALID = 3,
+    CUDF_AGG_COUNT_ALL = 4,
+    CUDF_AGG_MEAN = 5,
+    CUDF_AGG_MEDIAN = 6,
+    CUDF_AGG_NUNIQUE = 7,
+    CUDF_AGG_STD = 8,
+    CUDF_AGG_VARIANCE = 9,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_null_policy_t {
+    CUDF_NULL_POLICY_EXCLUDE = 0,
+    CUDF_NULL_POLICY_INCLUDE = 1,
+}
+
+// ---------------------------------------------------------------------------
+// Join enums (mirrors cudf::null_equality)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_null_equality_t {
+    CUDF_NULL_EQUALITY_EQUAL = 0,
+    CUDF_NULL_EQUALITY_UNEQUAL = 1,
+}
+
+// ---------------------------------------------------------------------------
+// Unary enums (mirrors cudf::unary_operator)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_unary_operator_t {
+    CUDF_UNARY_SIN = 0,
+    CUDF_UNARY_COS = 1,
+    CUDF_UNARY_TAN = 2,
+    CUDF_UNARY_ARCSIN = 3,
+    CUDF_UNARY_ARCCOS = 4,
+    CUDF_UNARY_ARCTAN = 5,
+    CUDF_UNARY_SINH = 6,
+    CUDF_UNARY_COSH = 7,
+    CUDF_UNARY_TANH = 8,
+    CUDF_UNARY_ARCSINH = 9,
+    CUDF_UNARY_ARCCOSH = 10,
+    CUDF_UNARY_ARCTANH = 11,
+    CUDF_UNARY_EXP = 12,
+    CUDF_UNARY_LOG = 13,
+    CUDF_UNARY_SQRT = 14,
+    CUDF_UNARY_CBRT = 15,
+    CUDF_UNARY_CEIL = 16,
+    CUDF_UNARY_FLOOR = 17,
+    CUDF_UNARY_ABS = 18,
+    CUDF_UNARY_RINT = 19,
+    CUDF_UNARY_BIT_COUNT = 20,
+    CUDF_UNARY_BIT_INVERT = 21,
+    CUDF_UNARY_NOT = 22,
+    CUDF_UNARY_NEGATE = 23,
+}
+
+// ---------------------------------------------------------------------------
+// Binary enums (mirrors cudf::binary_operator)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_binary_operator_t {
+    CUDF_BINARY_ADD = 0,
+    CUDF_BINARY_SUB = 1,
+    CUDF_BINARY_MUL = 2,
+    CUDF_BINARY_DIV = 3,
+    CUDF_BINARY_TRUE_DIV = 4,
+    CUDF_BINARY_FLOOR_DIV = 5,
+    CUDF_BINARY_MOD = 6,
+    CUDF_BINARY_PMOD = 7,
+    CUDF_BINARY_PYMOD = 8,
+    CUDF_BINARY_POW = 9,
+    CUDF_BINARY_INT_POW = 10,
+    CUDF_BINARY_LOG_BASE = 11,
+    CUDF_BINARY_ATAN2 = 12,
+    CUDF_BINARY_SHIFT_LEFT = 13,
+    CUDF_BINARY_SHIFT_RIGHT = 14,
+    CUDF_BINARY_SHIFT_RIGHT_UNSIGNED = 15,
+    CUDF_BINARY_BITWISE_AND = 16,
+    CUDF_BINARY_BITWISE_OR = 17,
+    CUDF_BINARY_BITWISE_XOR = 18,
+    CUDF_BINARY_LOGICAL_AND = 19,
+    CUDF_BINARY_LOGICAL_OR = 20,
+    CUDF_BINARY_EQUAL = 21,
+    CUDF_BINARY_NOT_EQUAL = 22,
+    CUDF_BINARY_LESS = 23,
+    CUDF_BINARY_GREATER = 24,
+    CUDF_BINARY_LESS_EQUAL = 25,
+    CUDF_BINARY_GREATER_EQUAL = 26,
+    CUDF_BINARY_NULL_EQUALS = 27,
+    CUDF_BINARY_NULL_NOT_EQUALS = 28,
+    CUDF_BINARY_NULL_MAX = 29,
+    CUDF_BINARY_NULL_MIN = 30,
+}
+
+// ---------------------------------------------------------------------------
+// Reduction enums (mirrors cudf::scan_type, reduction aggregation kind)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_reduce_aggregation_kind_t {
+    CUDF_REDUCE_AGG_SUM = 0,
+    CUDF_REDUCE_AGG_MIN = 1,
+    CUDF_REDUCE_AGG_MAX = 2,
+    CUDF_REDUCE_AGG_PRODUCT = 3,
+    CUDF_REDUCE_AGG_MEAN = 4,
+    CUDF_REDUCE_AGG_MEDIAN = 5,
+    CUDF_REDUCE_AGG_ANY = 6,
+    CUDF_REDUCE_AGG_ALL = 7,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_scan_type_t {
+    CUDF_SCAN_INCLUSIVE = 0,
+    CUDF_SCAN_EXCLUSIVE = 1,
+}
+
+// ---------------------------------------------------------------------------
+// Copying enums (mirrors cudf::out_of_bounds_policy)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_out_of_bounds_policy_t {
+    CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY = 0,
+    CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK = 1,
+}
+
+// ---------------------------------------------------------------------------
+// Stream compaction enums
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_duplicate_keep_option_t {
+    CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY = 0,
+    CUDF_DUPLICATE_KEEP_OPTION_KEEP_FIRST = 1,
+    CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST = 2,
+    CUDF_DUPLICATE_KEEP_OPTION_KEEP_NONE = 3,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_stream_compaction_null_equality_t {
+    CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL = 0,
+    CUDF_STREAM_COMPACTION_NULL_EQUALITY_UNEQUAL = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_stream_compaction_nan_equality_t {
+    CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL = 0,
+    CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL = 1,
+}
+
+// ---------------------------------------------------------------------------
+// String enums (mirrors cudf::strings::side_type)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_strip_side_t {
+    CUDF_STRIP_LEFT = 0,
+    CUDF_STRIP_RIGHT = 1,
+    CUDF_STRIP_BOTH = 2,
+}
+
+// ---------------------------------------------------------------------------
 // Opaque handle types
 // ---------------------------------------------------------------------------
 
@@ -1032,8 +1234,8 @@ extern "C" {
 
     pub fn cudf_sort(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1043,8 +1245,8 @@ extern "C" {
     /// When `options->mr` is non-null, it must outlive the returned table.
     pub fn cudf_sort_ex(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1052,8 +1254,8 @@ extern "C" {
 
     pub fn cudf_stable_sort(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1063,8 +1265,8 @@ extern "C" {
     /// When `options->mr` is non-null, it must outlive the returned table.
     pub fn cudf_stable_sort_ex(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1073,8 +1275,8 @@ extern "C" {
     pub fn cudf_sort_by_key(
         values: cudf_table_view_handle,
         keys: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_key_columns: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1085,8 +1287,8 @@ extern "C" {
     pub fn cudf_sort_by_key_ex(
         values: cudf_table_view_handle,
         keys: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_key_columns: i32,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1095,8 +1297,8 @@ extern "C" {
     pub fn cudf_stable_sort_by_key(
         values: cudf_table_view_handle,
         keys: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_key_columns: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1107,8 +1309,8 @@ extern "C" {
     pub fn cudf_stable_sort_by_key_ex(
         values: cudf_table_view_handle,
         keys: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_key_columns: i32,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1116,8 +1318,8 @@ extern "C" {
 
     pub fn cudf_sorted_order(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1127,8 +1329,8 @@ extern "C" {
     /// When `options->mr` is non-null, it must outlive the returned column.
     pub fn cudf_sorted_order_ex(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -1136,8 +1338,8 @@ extern "C" {
 
     pub fn cudf_is_sorted(
         input: cudf_table_view_handle,
-        column_order: *const i32,
-        null_precedence: *const i32,
+        column_order: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
         num_keys: i32,
         out: *mut i32,
     ) -> cudf_status_t;
@@ -1162,9 +1364,9 @@ extern "C" {
 
     // -- GroupBy --------------------------------------------------------------
 
-    pub fn cudf_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
+    pub fn cudf_aggregation_create(kind: cudf_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_aggregation_create_count(null_policy: i32, out: *mut *mut c_void) -> cudf_status_t;
+    pub fn cudf_aggregation_create_count(null_policy: cudf_null_policy_t, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_aggregation_create_std(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
@@ -1184,7 +1386,7 @@ extern "C" {
         agg_counts: *const i32,
         num_requests: i32,
         num_aggregations: i32,
-        keys_null_policy: i32,
+        keys_null_policy: cudf_null_policy_t,
         out_keys: *mut cudf_table_handle,
         out_values: *mut *mut cudf_column_handle,
         out_total_columns: *mut i32,
@@ -1201,7 +1403,7 @@ extern "C" {
         agg_counts: *const i32,
         num_requests: i32,
         num_aggregations: i32,
-        keys_null_policy: i32,
+        keys_null_policy: cudf_null_policy_t,
         out_keys: *mut cudf_table_handle,
         out_values: *mut *mut cudf_column_handle,
         out_total_columns: *mut i32,
@@ -1214,13 +1416,16 @@ extern "C" {
 
     // -- Unary ---------------------------------------------------------------
 
-    pub fn cudf_unary_operation(input: cudf_column_view_handle, op: i32, out: *mut cudf_column_handle)
-    -> cudf_status_t;
+    pub fn cudf_unary_operation(
+        input: cudf_column_view_handle,
+        op: cudf_unary_operator_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
 
     /// When `options->mr` is non-NULL, it must outlive the returned column.
     pub fn cudf_unary_operation_ex(
         input: cudf_column_view_handle,
-        op: i32,
+        op: cudf_unary_operator_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
@@ -1286,7 +1491,7 @@ extern "C" {
     pub fn cudf_binary_operation_vv(
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1295,7 +1500,7 @@ extern "C" {
     pub fn cudf_binary_operation_vv_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -1304,7 +1509,7 @@ extern "C" {
     pub fn cudf_binary_operation_vs(
         lhs: cudf_column_view_handle,
         rhs: cudf_scalar_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1313,7 +1518,7 @@ extern "C" {
     pub fn cudf_binary_operation_vs_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_scalar_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -1322,7 +1527,7 @@ extern "C" {
     pub fn cudf_binary_operation_sv(
         lhs: cudf_scalar_handle,
         rhs: cudf_column_view_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1331,7 +1536,7 @@ extern "C" {
     pub fn cudf_binary_operation_sv_ex(
         lhs: cudf_scalar_handle,
         rhs: cudf_column_view_handle,
-        op: i32,
+        op: cudf_binary_operator_t,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -1339,7 +1544,8 @@ extern "C" {
 
     // -- Reduction -----------------------------------------------------------
 
-    pub fn cudf_reduce_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
+    pub fn cudf_reduce_aggregation_create(kind: cudf_reduce_aggregation_kind_t, out: *mut *mut c_void)
+    -> cudf_status_t;
 
     pub fn cudf_reduce_aggregation_create_variance(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
@@ -1347,7 +1553,7 @@ extern "C" {
 
     pub fn cudf_reduce_aggregation_destroy(handle: *mut c_void);
 
-    pub fn cudf_scan_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
+    pub fn cudf_scan_aggregation_create(kind: cudf_reduce_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;
 
     pub fn cudf_scan_aggregation_destroy(handle: *mut c_void);
 
@@ -1370,7 +1576,7 @@ extern "C" {
     pub fn cudf_scan(
         input: cudf_column_view_handle,
         agg: *mut c_void,
-        scan_type: i32,
+        scan_type: cudf_scan_type_t,
         null_policy: i32,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1379,7 +1585,7 @@ extern "C" {
     pub fn cudf_scan_ex(
         input: cudf_column_view_handle,
         agg: *mut c_void,
-        scan_type: i32,
+        scan_type: cudf_scan_type_t,
         null_policy: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -1535,7 +1741,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1548,7 +1754,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1559,7 +1765,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1572,7 +1778,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1583,7 +1789,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
@@ -1596,7 +1802,7 @@ extern "C" {
         right_keys: cudf_table_view_handle,
         left_payload: cudf_table_view_handle,
         right_payload: cudf_table_view_handle,
-        null_equality: i32,
+        null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
@@ -1668,7 +1874,7 @@ extern "C" {
     pub fn cudf_gather(
         input: cudf_table_view_handle,
         gather_map: cudf_column_view_handle,
-        bounds_policy: i32,
+        bounds_policy: cudf_out_of_bounds_policy_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
@@ -1678,7 +1884,7 @@ extern "C" {
     pub fn cudf_gather_ex(
         input: cudf_table_view_handle,
         gather_map: cudf_column_view_handle,
-        bounds_policy: i32,
+        bounds_policy: cudf_out_of_bounds_policy_t,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
@@ -1706,9 +1912,9 @@ extern "C" {
         input: cudf_table_view_handle,
         keys: *const i32,
         num_keys: i32,
-        keep: i32,
-        null_equality: i32,
-        nan_equality: i32,
+        keep: cudf_duplicate_keep_option_t,
+        null_equality: cudf_stream_compaction_null_equality_t,
+        nan_equality: cudf_stream_compaction_nan_equality_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
@@ -1716,9 +1922,9 @@ extern "C" {
         input: cudf_table_view_handle,
         keys: *const i32,
         num_keys: i32,
-        keep: i32,
-        null_equality: i32,
-        nan_equality: i32,
+        keep: cudf_duplicate_keep_option_t,
+        null_equality: cudf_stream_compaction_null_equality_t,
+        nan_equality: cudf_stream_compaction_nan_equality_t,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
@@ -1805,10 +2011,9 @@ extern "C" {
     ) -> cudf_status_t;
 
     /// Strip characters from one or both sides of each string.
-    /// `side`: 0=LEFT, 1=RIGHT, 2=BOTH.
     pub fn cudf_strings_strip(
         input: cudf_column_view_handle,
-        side: i32,
+        side: cudf_strip_side_t,
         to_strip: cudf_scalar_handle,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1816,7 +2021,7 @@ extern "C" {
     /// Strip with explicit execution context.
     pub fn cudf_strings_strip_ex(
         input: cudf_column_view_handle,
-        side: i32,
+        side: cudf_strip_side_t,
         to_strip: cudf_scalar_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
