@@ -73,6 +73,33 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
     cudf_exec_options_t const* options,
     cudf_table_handle* out);
 
+/// Deep-copy a table from a prepared-host export semantic graph.
+///
+/// The semantic graph and bindings must describe one valid prepared-host table
+/// root. The host-visible bytes are uploaded into one owning table on the
+/// destination execution context.
+cudf_status_t cudf_table_copy_from_prepared_host_export(
+    cudf_interop_semantic_table_t const* table,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_table_handle* out);
+
+/// Deep-copy a table from a prepared-host export semantic graph with explicit
+/// execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
+    cudf_interop_semantic_table_t const* table,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_exec_options_t const* options,
+    cudf_table_handle* out);
+
 /// Return payload bytes for this owning table.
 ///
 /// This sums payload accounting for each owning column.
