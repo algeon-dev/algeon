@@ -29,7 +29,7 @@ use std::{
     },
 };
 
-use super::{device::DeviceId, stream::CudaStream};
+use super::{device::DeviceId, device_guard::DeviceGuard, stream::CudaStream};
 use crate::core::{
     error::{Error, ErrorKind, Result},
     memory::DeviceMemoryResource,
@@ -135,6 +135,21 @@ impl ExecutionDomain {
         });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
+    }
+
+    pub(crate) fn debug_explicit_for_device(device: i32) -> Result<Arc<Self>> {
+        let device = DeviceId::new(usize::try_from(device).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "debug explicit retained-provenance device must be >= 0")
+                .with_operation("execution_domain::debug_explicit_for_device")
+                .with_context("device", device.to_string())
+        })?)?;
+        let _guard = DeviceGuard::new(device)?;
+        // Foreign owned-transfer imports currently synthesize an explicit
+        // domain per import. Consolidating these debug-only stream/MR pairs
+        // behind a shared per-device cache is a follow-up slice.
+        let stream = Arc::new(CudaStream::new()?);
+        let mr = Arc::new(DeviceMemoryResource::cuda()?);
+        Ok(Arc::new(Self { kind: DomainKind::Explicit { device, stream, mr, identity: Self::next_identity()? } }))
     }
 
     pub(crate) fn debug_kind(&self) -> &'static str {

@@ -1,7 +1,7 @@
 //! Consumer-side import adapters for reconstructing owned `Column`, `Table`,
 //! `Series`, and `DataFrame` values from shared interop roots.
 
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use rapids_interop::{
     BorrowedColumnView, BorrowedTableView, BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile,
@@ -55,6 +55,23 @@ fn prepared_device_export_producer_device(
         .with_context("operation", operation)
         .with_context("readiness", "host_visible")
         .with_context("profile", "prepared_device_export")),
+    }
+}
+
+fn owned_transfer_producer_device(
+    readiness: &ProducerReadiness<'_>,
+    operation: &'static str,
+) -> Result<i32, InteropError> {
+    match readiness {
+        ProducerReadiness::DeviceStreamOrdered { stream } => Ok(stream.device()),
+        ProducerReadiness::DeviceEventOrdered { event } => Ok(event.device()),
+        ProducerReadiness::HostVisible => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "owned device transfer import requires device-backed readiness",
+        )
+        .with_context("operation", operation)
+        .with_context("readiness", "host_visible")
+        .with_context("profile", "owned_device_transfer")),
     }
 }
 
@@ -199,6 +216,34 @@ fn prepared_device_import_table_graph(
         export.table().columns().iter().map(|column| column.get()).collect::<Vec<_>>().into();
     let ffi_table = cudf_sys::cudf_interop_semantic_table_t {
         num_rows: checked_i32_from_usize("num_rows", export.table().num_rows(), operation)?,
+        column_ids: table_column_ids.as_ptr(),
+        num_columns: checked_i32_from_usize("num_columns", table_column_ids.len(), operation)?,
+    };
+
+    Ok(PreparedDeviceImportTableGraph {
+        ffi_table,
+        ffi_columns,
+        ffi_bindings,
+        _child_id_buffers: child_id_buffers,
+        _table_column_ids: table_column_ids,
+    })
+}
+
+fn owned_device_import_table_graph(
+    transfer: &OwnedTableTransfer,
+    operation: &'static str,
+) -> Result<PreparedDeviceImportTableGraph, InteropError> {
+    let mut child_id_buffers = Vec::new();
+    let ffi_columns = transfer
+        .semantic_columns()
+        .iter()
+        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ffi_bindings = transfer.bindings().iter().map(interop_binding_from_prepared_binding).collect::<Vec<_>>();
+    let table_column_ids: Box<[u32]> =
+        transfer.table().columns().iter().map(|column| column.get()).collect::<Vec<_>>().into();
+    let ffi_table = cudf_sys::cudf_interop_semantic_table_t {
+        num_rows: checked_i32_from_usize("num_rows", transfer.table().num_rows(), operation)?,
         column_ids: table_column_ids.as_ptr(),
         num_columns: checked_i32_from_usize("num_columns", table_column_ids.len(), operation)?,
     };
@@ -358,15 +403,41 @@ pub(super) fn import_column_from_owned_transfer(
     transfer: OwnedColumnTransfer,
     operation: &'static str,
 ) -> Result<Column, InteropError> {
-    transfer.try_into_owner::<OwnedColumnTransferState>().map(OwnedColumnTransferState::into_column).map_err(|_| {
-        InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "cudf-rs owned column import requires a cudf-rs-produced owned device transfer root",
-        )
-        .with_context("operation", operation)
-        .with_context("consumer", "cudf-rs")
-        .with_context("profile", "owned_device_transfer")
-    })
+    match transfer.try_into_owner::<OwnedColumnTransferState>() {
+        Ok(state) => Ok(state.into_column()),
+        Err(transfer) => {
+            let graph = prepared_device_import_column_graph_from_parts(
+                transfer.semantic_columns(),
+                transfer.bindings(),
+                operation,
+            )?;
+            let num_semantic_columns =
+                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+            let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
+            let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+            let root_column_id = transfer.column().id().get();
+            let domain = crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
+                .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))?;
+            let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+            let mut handle = std::ptr::null_mut();
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_create_from_owned_device_transfer(
+                        root_column_id,
+                        graph.ffi_columns.as_ptr(),
+                        num_semantic_columns,
+                        graph.ffi_bindings.as_ptr(),
+                        num_bindings,
+                        &mut handle,
+                    )
+                },
+                operation,
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+            Ok(unsafe { Column::from_raw_with_domain_and_owner(handle, domain, retained_owner) })
+        },
+    }
 }
 
 pub(super) fn import_table_from_owned_transfer(
@@ -374,16 +445,6 @@ pub(super) fn import_table_from_owned_transfer(
     operation: &'static str,
 ) -> Result<Table, InteropError> {
     const MAX_OWNED_TABLE_TRANSFER_NESTING: usize = 32;
-
-    fn unsupported_owned_table_root(operation: &'static str) -> InteropError {
-        InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
-        )
-        .with_context("operation", operation)
-        .with_context("consumer", "cudf-rs")
-        .with_context("profile", "owned_device_transfer")
-    }
 
     let mut nesting = 0usize;
     let mut current = transfer;
@@ -406,7 +467,37 @@ pub(super) fn import_table_from_owned_transfer(
                     }
                     current = inner_transfer;
                 },
-                Err(_) => return Err(unsupported_owned_table_root(operation)),
+                Err(transfer) => {
+                    let graph = owned_device_import_table_graph(&transfer, operation)?;
+                    let num_semantic_columns =
+                        checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+                    let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
+                    let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+                    let owner_count = transfer.table().columns().len();
+                    let domain =
+                        crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
+                            .map_err(|error| {
+                            map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
+                        })?;
+                    let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+                    let retained_owners = (0..owner_count).map(|_| Some(Arc::clone(&shared_owner))).collect();
+                    let mut handle = std::ptr::null_mut();
+                    error::check_status_in(
+                        unsafe {
+                            cudf_sys::cudf_table_create_from_owned_device_transfer(
+                                &graph.ffi_table,
+                                graph.ffi_columns.as_ptr(),
+                                num_semantic_columns,
+                                graph.ffi_bindings.as_ptr(),
+                                num_bindings,
+                                &mut handle,
+                            )
+                        },
+                        operation,
+                    )
+                    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+                    return Ok(unsafe { Table::from_raw_with_domain_and_owners(handle, domain, retained_owners) });
+                },
             },
         }
     }

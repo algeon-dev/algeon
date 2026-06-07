@@ -68,4 +68,3 @@ pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<C
     contains_impl(haystack, needles, exec_options.as_ref(), "search::contains")
         .map(|column| column.with_execution_domain(output_domain))
 }
-

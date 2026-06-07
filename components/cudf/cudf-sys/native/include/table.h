@@ -100,6 +100,20 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
     cudf_exec_options_t const* options,
     cudf_table_handle* out);
 
+/// Create a zero-copy owning table handle from an owned device transfer
+/// semantic graph.
+///
+/// The resulting handle retains only shim-owned semantic metadata. Higher
+/// layers remain responsible for retaining the transfer root owner for the
+/// lifetime of the returned handle.
+cudf_status_t cudf_table_create_from_owned_device_transfer(
+    cudf_interop_semantic_table_t const* table,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_table_handle* out);
+
 /// Return payload bytes for this owning table.
 ///
 /// This sums payload accounting for each owning column.

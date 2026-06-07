@@ -33,7 +33,7 @@ cudf_status_t cudf_hashing_murmurhash3_x86_32_ex(
       return exec_status;
     }
     auto result = cudf::hashing::murmurhash3_x86_32(*view, seed, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -63,7 +63,7 @@ cudf_status_t cudf_hashing_xxhash_64_ex(
       return exec_status;
     }
     auto result = cudf::hashing::xxhash_64(*view, seed, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

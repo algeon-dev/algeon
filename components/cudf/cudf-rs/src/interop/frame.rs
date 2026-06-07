@@ -181,13 +181,13 @@ impl Series {
         wrap_imported_series(column, operation)
     }
 
-    /// Convenience consumer that zero-copy imports a `cudf-rs`-produced shared
-    /// owned device transfer root into an unnamed high-level `Series`.
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into an unnamed high-level `Series`.
     ///
-    /// This inherits the same limitation as
-    /// [`Column::try_from_owned_device_column_transfer`]: roots produced by
-    /// other libraries are currently rejected with
-    /// [`InteropErrorKind::ProfileUnsupported`].
+    /// This inherits the current `Column` consumer slice: `cudf-rs`
+    /// round-trips stay zero-copy, and foreign roots in the supported layout
+    /// set are accepted
+    /// without deep-copying into a destination runtime.
     pub fn try_from_owned_device_column_transfer(transfer: OwnedColumnTransfer) -> Result<Self, InteropError> {
         let operation = "interop::Series::try_from_owned_device_column_transfer";
         let column = Column::try_from_owned_device_column_transfer(transfer)?;
@@ -318,14 +318,14 @@ impl DataFrame {
         wrap_imported_dataframe(table, names, operation)
     }
 
-    /// Convenience consumer that zero-copy imports a `cudf-rs`-produced shared
-    /// owned device transfer root into a high-level `DataFrame` using schema
-    /// names carried on the shared root.
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into a high-level `DataFrame` using schema names carried
+    /// on the shared root.
     ///
-    /// This inherits the same limitation as
-    /// [`Table::try_from_owned_device_table_transfer`]: roots produced by
-    /// other libraries are currently rejected with
-    /// [`InteropErrorKind::ProfileUnsupported`].
+    /// This inherits the current `Table` consumer slice: `cudf-rs`
+    /// round-trips stay zero-copy, and foreign roots in the supported layout
+    /// set are accepted
+    /// without deep-copying into a destination runtime.
     pub fn try_from_owned_device_table_transfer(transfer: OwnedTableTransfer) -> Result<Self, InteropError> {
         let operation = "interop::DataFrame::try_from_owned_device_table_transfer";
         let names = required_dataframe_import_names(
@@ -337,14 +337,14 @@ impl DataFrame {
         wrap_imported_dataframe(table, names, operation)
     }
 
-    /// Convenience consumer that zero-copy imports a `cudf-rs`-produced shared
-    /// owned device transfer root into a high-level `DataFrame` using
-    /// explicit caller-provided schema names.
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into a high-level `DataFrame` using explicit
+    /// caller-provided schema names.
     ///
-    /// This inherits the same limitation as
-    /// [`Table::try_from_owned_device_table_transfer`]: roots produced by
-    /// other libraries are currently rejected with
-    /// [`InteropErrorKind::ProfileUnsupported`].
+    /// This inherits the current `Table` consumer slice: `cudf-rs`
+    /// round-trips stay zero-copy, and foreign roots in the supported layout
+    /// set are accepted
+    /// without deep-copying into a destination runtime.
     pub fn try_from_owned_device_table_transfer_and_names(
         transfer: OwnedTableTransfer,
         names: Vec<String>,

@@ -63,7 +63,7 @@ cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
 
     auto result = cudf::binary_operation(*lhs_view, *rhs_view, cudf_op,
                                          *dtype, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -106,7 +106,7 @@ cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
 
     auto result = cudf::binary_operation(*lhs_view, *rhs_scalar, cudf_op,
                                          *dtype, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -149,7 +149,7 @@ cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
 
     auto result = cudf::binary_operation(*lhs_scalar, *rhs_view, cudf_op,
                                          *dtype, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

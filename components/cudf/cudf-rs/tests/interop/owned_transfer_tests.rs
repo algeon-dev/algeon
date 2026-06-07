@@ -1,5 +1,10 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use cudf::{
-    DataFrame, Runtime, Series,
+    DataFrame, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::{
         BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
@@ -7,9 +12,11 @@ use cudf::{
         ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId,
         TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
     },
+    ops::dictionary,
 };
 use rapids_interop::{DataType as InteropDataType, TypeId as InteropTypeId};
 use static_assertions::assert_impl_all;
+use tempfile::TempDir;
 
 assert_impl_all!(Series: TryIntoOwnedDeviceColumnTransfer);
 assert_impl_all!(DataFrame: TryIntoOwnedDeviceTableTransfer);
@@ -72,6 +79,325 @@ fn wrap_owned_table_transfer(transfer: OwnedTableTransfer) -> OwnedTableTransfer
         transfer,
     )
     .unwrap()
+}
+
+struct DropFlag {
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct ForeignColumnOwner {
+    _column: Column,
+    _drop_flag: DropFlag,
+}
+
+struct ForeignTableOwner {
+    _table: Table,
+    _drop_flag: DropFlag,
+}
+
+fn fixed_width_binding_len<T>(len: usize) -> usize {
+    len * std::mem::size_of::<T>()
+}
+
+fn foreign_owned_column_transfer(
+    column: Column,
+    device: i32,
+    drops: Arc<AtomicUsize>,
+) -> (OwnedColumnTransfer, *const std::ffi::c_void) {
+    let (len, values_ptr) = {
+        let view = column.view().unwrap();
+        (view.len().unwrap(), view.device_data_ptr().unwrap())
+    };
+
+    let transfer = OwnedColumnTransfer::try_new(
+        fixed_width_column_semantics(1, 11, len),
+        vec![device_binding(11, values_ptr as usize, fixed_width_binding_len::<i32>(len), device)],
+        manual_readiness(device),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(device),
+        ForeignColumnOwner { _column: column, _drop_flag: DropFlag { drops } },
+    )
+    .unwrap();
+
+    (transfer, values_ptr)
+}
+
+fn foreign_owned_table_transfer(
+    table: Table,
+    device: i32,
+    drops: Arc<AtomicUsize>,
+) -> (OwnedTableTransfer, [*const std::ffi::c_void; 2]) {
+    let (num_rows, first_ptr, second_ptr) = {
+        let view = table.view().unwrap();
+        (
+            view.num_rows().unwrap() as usize,
+            view.column(0).unwrap().device_data_ptr().unwrap(),
+            view.column(1).unwrap().device_data_ptr().unwrap(),
+        )
+    };
+
+    let transfer = OwnedTableTransfer::try_new(
+        SemanticTable::new(TableId::new(7), num_rows, vec![ColumnId::new(1), ColumnId::new(2)], None),
+        vec![fixed_width_column_semantics(1, 11, num_rows), fixed_width_column_semantics(2, 12, num_rows)],
+        vec![
+            device_binding(11, first_ptr as usize, fixed_width_binding_len::<i32>(num_rows), device),
+            device_binding(12, second_ptr as usize, fixed_width_binding_len::<i32>(num_rows), device),
+        ],
+        manual_readiness(device),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(device),
+        ForeignTableOwner { _table: table, _drop_flag: DropFlag { drops } },
+    )
+    .unwrap();
+
+    (transfer, [first_ptr, second_ptr])
+}
+
+#[derive(Clone)]
+struct ColumnSemanticSnapshot {
+    root: SemanticColumn,
+    semantic_columns: Vec<SemanticColumn>,
+    bindings: Vec<BufferBinding<'static>>,
+}
+
+#[derive(Clone)]
+struct TableSemanticSnapshot {
+    table: SemanticTable,
+    columns: Vec<SemanticColumn>,
+    semantic_columns: Vec<SemanticColumn>,
+    bindings: Vec<BufferBinding<'static>>,
+}
+
+fn clone_binding_as_static(binding: &BufferBinding<'_>) -> BufferBinding<'static> {
+    // SAFETY: These tests keep the original export snapshot and retained owner
+    // alive for the full lifetime of the cloned bindings, so widening the
+    // binding borrow here does not outlive the underlying bytes.
+    BufferBinding::new(
+        binding.id(),
+        BoundBytes::from_raw_parts(binding.bytes().base_ptr() as *mut std::ffi::c_void, binding.bytes().byte_len())
+            .unwrap(),
+        *binding.placement(),
+    )
+}
+
+fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(filename);
+    std::fs::write(&path, rows).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
+        .unwrap()
+}
+
+fn snapshot_foreign_owned_column_transfer(
+    column: Column,
+    drops: Arc<AtomicUsize>,
+) -> (OwnedColumnTransfer, ColumnSemanticSnapshot) {
+    let (device, snapshot) = {
+        let export = column.try_prepare_device_column_export().unwrap();
+        let device = match export.readiness() {
+            ProducerReadiness::DeviceStreamOrdered { stream } => stream.device(),
+            ProducerReadiness::DeviceEventOrdered { event } => event.device(),
+            ProducerReadiness::HostVisible => panic!("owned device transfer tests require device-backed readiness"),
+        };
+        let snapshot = ColumnSemanticSnapshot {
+            root: export.column().clone(),
+            semantic_columns: export.semantic_columns().to_vec(),
+            bindings: export.bindings().iter().map(clone_binding_as_static).collect(),
+        };
+        (device, snapshot)
+    };
+    let transfer = OwnedColumnTransfer::try_new_with_semantic_columns(
+        snapshot.root.clone(),
+        snapshot.semantic_columns.clone(),
+        snapshot.bindings.clone(),
+        manual_readiness(device),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(device),
+        ForeignColumnOwner { _column: column, _drop_flag: DropFlag { drops } },
+    )
+    .unwrap();
+    (transfer, snapshot)
+}
+
+fn snapshot_foreign_owned_table_transfer(
+    table: Table,
+    drops: Arc<AtomicUsize>,
+) -> (OwnedTableTransfer, TableSemanticSnapshot) {
+    let (device, snapshot) = {
+        let export = table.try_prepare_device_table_export().unwrap();
+        let device = match export.readiness() {
+            ProducerReadiness::DeviceStreamOrdered { stream } => stream.device(),
+            ProducerReadiness::DeviceEventOrdered { event } => event.device(),
+            ProducerReadiness::HostVisible => panic!("owned device transfer tests require device-backed readiness"),
+        };
+        let snapshot = TableSemanticSnapshot {
+            table: export.table().clone(),
+            columns: export.columns().to_vec(),
+            semantic_columns: export.semantic_columns().to_vec(),
+            bindings: export.bindings().iter().map(clone_binding_as_static).collect(),
+        };
+        (device, snapshot)
+    };
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(
+        snapshot.table.clone(),
+        snapshot.columns.clone(),
+        snapshot.semantic_columns.clone(),
+        snapshot.bindings.clone(),
+        manual_readiness(device),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(device),
+        ForeignTableOwner { _table: table, _drop_flag: DropFlag { drops } },
+    )
+    .unwrap();
+    (transfer, snapshot)
+}
+
+fn binding_ptr_map<'a>(bindings: &'a [BufferBinding<'a>]) -> std::collections::HashMap<u32, &'a BufferBinding<'a>> {
+    bindings.iter().map(|binding| (binding.id().get(), binding)).collect()
+}
+
+fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> std::collections::HashMap<u32, &'a SemanticColumn> {
+    columns.iter().map(|column| (column.id().get(), column)).collect()
+}
+
+fn assert_binding_preserves_zero_copy(source: &BufferBinding<'_>, imported: &BufferBinding<'_>) {
+    assert_eq!(source.placement(), imported.placement());
+    assert_eq!(source.bytes().base_ptr(), imported.bytes().base_ptr());
+    assert_eq!(source.bytes().byte_len(), imported.bytes().byte_len());
+}
+
+fn assert_semantic_column_matches_snapshot(
+    expected: &SemanticColumn,
+    actual: &SemanticColumn,
+    expected_columns: &std::collections::HashMap<u32, &SemanticColumn>,
+    actual_columns: &std::collections::HashMap<u32, &SemanticColumn>,
+    expected_bindings: &std::collections::HashMap<u32, &BufferBinding<'_>>,
+    actual_bindings: &std::collections::HashMap<u32, &BufferBinding<'_>>,
+) {
+    assert_eq!(expected.data_type(), actual.data_type());
+    assert_eq!(expected.len(), actual.len());
+    assert_eq!(expected.offset(), actual.offset());
+    assert_eq!(expected.validity(), actual.validity());
+    assert_eq!(expected.schema_nullability(), actual.schema_nullability());
+
+    match (expected.layout(), actual.layout()) {
+        (ColumnLayout::FixedWidth { values: expected_values }, ColumnLayout::FixedWidth { values: actual_values }) => {
+            assert_binding_preserves_zero_copy(
+                expected_bindings.get(&expected_values.get()).expect("missing expected fixed-width binding"),
+                actual_bindings.get(&actual_values.get()).expect("missing imported fixed-width binding"),
+            );
+        },
+        (
+            ColumnLayout::BinaryLike { offsets: expected_offsets, data: expected_data },
+            ColumnLayout::BinaryLike { offsets: actual_offsets, data: actual_data },
+        ) => {
+            assert_binding_preserves_zero_copy(
+                expected_bindings.get(&expected_offsets.get()).expect("missing expected string offsets binding"),
+                actual_bindings.get(&actual_offsets.get()).expect("missing imported string offsets binding"),
+            );
+            assert_binding_preserves_zero_copy(
+                expected_bindings.get(&expected_data.get()).expect("missing expected string chars binding"),
+                actual_bindings.get(&actual_data.get()).expect("missing imported string chars binding"),
+            );
+        },
+        (
+            ColumnLayout::List { offsets: expected_offsets, child: expected_child },
+            ColumnLayout::List { offsets: actual_offsets, child: actual_child },
+        ) => {
+            assert_binding_preserves_zero_copy(
+                expected_bindings.get(&expected_offsets.get()).expect("missing expected list offsets binding"),
+                actual_bindings.get(&actual_offsets.get()).expect("missing imported list offsets binding"),
+            );
+            assert_semantic_column_matches_snapshot(
+                expected_columns.get(&expected_child.get()).expect("missing expected list child"),
+                actual_columns.get(&actual_child.get()).expect("missing imported list child"),
+                expected_columns,
+                actual_columns,
+                expected_bindings,
+                actual_bindings,
+            );
+        },
+        (ColumnLayout::Struct { children: expected_children }, ColumnLayout::Struct { children: actual_children }) => {
+            assert_eq!(expected_children.len(), actual_children.len());
+            for (expected_child, actual_child) in expected_children.iter().zip(actual_children.iter()) {
+                assert_semantic_column_matches_snapshot(
+                    expected_columns.get(&expected_child.get()).expect("missing expected struct child"),
+                    actual_columns.get(&actual_child.get()).expect("missing imported struct child"),
+                    expected_columns,
+                    actual_columns,
+                    expected_bindings,
+                    actual_bindings,
+                );
+            }
+        },
+        (
+            ColumnLayout::Dictionary { indices: expected_indices, keys: expected_keys },
+            ColumnLayout::Dictionary { indices: actual_indices, keys: actual_keys },
+        ) => {
+            assert_binding_preserves_zero_copy(
+                expected_bindings.get(&expected_indices.get()).expect("missing expected dictionary indices binding"),
+                actual_bindings.get(&actual_indices.get()).expect("missing imported dictionary indices binding"),
+            );
+            assert_semantic_column_matches_snapshot(
+                expected_columns.get(&expected_keys.get()).expect("missing expected dictionary keys"),
+                actual_columns.get(&actual_keys.get()).expect("missing imported dictionary keys"),
+                expected_columns,
+                actual_columns,
+                expected_bindings,
+                actual_bindings,
+            );
+        },
+        _ => panic!("layout mismatch: expected={:?} actual={:?}", expected.layout(), actual.layout()),
+    }
+}
+
+fn assert_column_export_matches_snapshot(snapshot: &ColumnSemanticSnapshot, imported: &Column) {
+    let export = imported.try_prepare_device_column_export().unwrap();
+    let expected_columns = semantic_column_map(&snapshot.semantic_columns);
+    let actual_columns = semantic_column_map(export.semantic_columns());
+    let expected_bindings = binding_ptr_map(&snapshot.bindings);
+    let actual_bindings = binding_ptr_map(export.bindings());
+
+    assert_semantic_column_matches_snapshot(
+        &snapshot.root,
+        export.column(),
+        &expected_columns,
+        &actual_columns,
+        &expected_bindings,
+        &actual_bindings,
+    );
+}
+
+fn assert_table_export_matches_snapshot(snapshot: &TableSemanticSnapshot, imported: &Table) {
+    let export = imported.try_prepare_device_table_export().unwrap();
+    let expected_columns = semantic_column_map(&snapshot.semantic_columns);
+    let actual_columns = semantic_column_map(export.semantic_columns());
+    let expected_bindings = binding_ptr_map(&snapshot.bindings);
+    let actual_bindings = binding_ptr_map(export.bindings());
+
+    assert_eq!(snapshot.table.num_rows(), export.table().num_rows());
+    assert_eq!(snapshot.table.columns().len(), export.table().columns().len());
+
+    for (expected_column, actual_column) in snapshot.columns.iter().zip(export.columns().iter()) {
+        let expected_root =
+            expected_columns.get(&expected_column.id().get()).expect("missing expected table root column");
+        let actual_root = actual_columns.get(&actual_column.id().get()).expect("missing imported table root column");
+        assert_semantic_column_matches_snapshot(
+            expected_root,
+            actual_root,
+            &expected_columns,
+            &actual_columns,
+            &expected_bindings,
+            &actual_bindings,
+        );
+    }
 }
 
 #[test]
@@ -257,44 +583,209 @@ fn owned_table_transfer_import_round_trips_original_table_without_copy() {
 }
 
 #[test]
-fn owned_column_transfer_import_rejects_non_cudf_owner_state() {
-    let transfer = OwnedColumnTransfer::try_new(
-        fixed_width_column_semantics(1, 11, 3),
-        vec![device_binding(11, 0x1000, 12, 0)],
-        manual_readiness(0),
-        manual_owned_transfer_diagnostics(),
-        manual_release_contract(0),
-        String::from("not-a-cudf-column"),
-    )
-    .unwrap();
+fn owned_column_transfer_import_accepts_foreign_owner_state_zero_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let device = runtime.device().ordinal() as i32;
+    let source = Column::from_slice_with_runtime(&runtime, &[11i32, 22, 33]).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, expected_ptr) = foreign_owned_column_transfer(source, device, Arc::clone(&drops));
 
-    let err = match Column::try_from_owned_device_column_transfer(transfer) {
-        Ok(_) => panic!("expected non-cudf owner state to be rejected"),
-        Err(err) => err,
-    };
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    let imported_view = imported.view().unwrap();
+    let reexport = imported.try_prepare_device_column_export().unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    assert_eq!(imported_view.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(imported_view.device_data_ptr().unwrap(), expected_ptr);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert!(
+        reexport.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr),
+        "prepared export must preserve the foreign device address",
+    );
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn owned_table_transfer_import_rejects_non_cudf_owner_state() {
-    let transfer = OwnedTableTransfer::try_new(
-        SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None),
-        vec![fixed_width_column_semantics(1, 11, 3)],
-        vec![device_binding(11, 0x1000, 12, 0)],
-        manual_readiness(0),
-        manual_owned_transfer_diagnostics(),
-        manual_release_contract(0),
-        String::from("not-a-cudf-table"),
-    )
-    .unwrap();
+fn owned_column_transfer_import_retains_foreign_owner_until_drop() {
+    let runtime = Runtime::builder().build().unwrap();
+    let device = runtime.device().ordinal() as i32;
+    let source = Column::from_slice_with_runtime(&runtime, &[5i32, 6, 7]).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, _) = foreign_owned_column_transfer(source, device, Arc::clone(&drops));
 
-    let err = match Table::try_from_owned_device_table_transfer(transfer) {
-        Ok(_) => panic!("expected non-cudf owner state to be rejected"),
-        Err(err) => err,
-    };
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
 
-    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    let _ = imported.view().unwrap();
+    let _ = imported.try_prepare_device_column_export().unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_columns_zero_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let device = runtime.device().ordinal() as i32;
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, expected_ptrs) = foreign_owned_table_transfer(table, device, Arc::clone(&drops));
+
+    let imported = Table::try_from_owned_device_table_transfer(transfer).unwrap();
+    let reexport = imported.try_prepare_device_table_export().unwrap();
+    {
+        let imported_view = imported.view().unwrap();
+        assert_eq!(imported_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+        assert_eq!(imported_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+        assert_eq!(imported_view.column(0).unwrap().device_data_ptr().unwrap(), expected_ptrs[0]);
+        assert_eq!(imported_view.column(1).unwrap().device_data_ptr().unwrap(), expected_ptrs[1]);
+    }
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert!(
+        reexport.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptrs[0]),
+        "prepared export must preserve the first foreign device address",
+    );
+    assert!(
+        reexport.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptrs[1]),
+        "prepared export must preserve the second foreign device address",
+    );
+
+    let released = imported.into_columns().unwrap();
+    assert_eq!(released.len(), 2);
+    assert_eq!(released[0].view().unwrap().device_data_ptr().unwrap(), expected_ptrs[0]);
+    assert_eq!(released[1].view().unwrap().device_data_ptr().unwrap(), expected_ptrs[1]);
+
+    let rebuilt = Table::from_columns(released).unwrap();
+    let rebuilt_view = rebuilt.view().unwrap();
+    assert_eq!(rebuilt_view.column(0).unwrap().device_data_ptr().unwrap(), expected_ptrs[0]);
+    assert_eq!(rebuilt_view.column(1).unwrap().device_data_ptr().unwrap(), expected_ptrs[1]);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn owned_table_transfer_into_columns_preserves_foreign_owner_liveness() {
+    let runtime = Runtime::builder().build().unwrap();
+    let device = runtime.device().ordinal() as i32;
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[4i32, 5, 6]).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, _) = foreign_owned_table_transfer(table, device, Arc::clone(&drops));
+
+    let imported = Table::try_from_owned_device_table_transfer(transfer).unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    let mut columns = imported.into_columns().unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(columns.pop().unwrap());
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(columns);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_with_runtime(&runtime, &["alpha", "beta", "gamma"]).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
+
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+
+    assert_eq!(imported.view().unwrap().to_strings().unwrap(), vec!["alpha", "beta", "gamma"]);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_column_export_matches_snapshot(&snapshot, &imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy() {
+    let frame = read_json_dataframe(
+        "owned_transfer_list.jsonl",
+        "{\"lists\":[1,2]}\n{\"lists\":[3]}\n{\"lists\":[]}\n{\"lists\":[4,5,6]}\n",
+    );
+    let source = frame.series("lists").unwrap().as_column().copy().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
+
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+
+    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::List);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_column_export_matches_snapshot(&snapshot, &imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy() {
+    let frame = read_json_dataframe(
+        "owned_transfer_struct.jsonl",
+        "{\"point\":{\"coords\":[1,2],\"label\":\"one\"}}\n\
+         {\"point\":{\"coords\":[],\"label\":\"two\"}}\n\
+         {\"point\":{\"coords\":[3],\"label\":\"three\"}}\n",
+    );
+    let source = frame.series("point").unwrap().as_column().copy().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
+
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+
+    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Struct);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_column_export_matches_snapshot(&snapshot, &imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_with_runtime(&runtime, &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let dictionary = dictionary::encode(&source.view().unwrap(), TypeId::Int32).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(dictionary, Arc::clone(&drops));
+
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    let decoded = dictionary::decode(&imported.view().unwrap()).unwrap();
+
+    assert_eq!(decoded.view().unwrap().to_strings().unwrap(), vec!["beta", "alpha", "beta", "gamma"]);
+    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Dictionary32);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_column_export_matches_snapshot(&snapshot, &imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
+    let frame = read_json_dataframe(
+        "owned_transfer_nested_table.jsonl",
+        "{\"name\":\"alice\",\"lists\":[1,2],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"category\":\"beta\"}\n\
+         {\"name\":\"bob\",\"lists\":[3],\"point\":{\"coords\":[],\"label\":\"two\"},\"category\":\"alpha\"}\n\
+         {\"name\":\"cara\",\"lists\":[],\"point\":{\"coords\":[3],\"label\":\"three\"},\"category\":\"beta\"}\n",
+    );
+    let name = frame.series("name").unwrap();
+    let lists = frame.series("lists").unwrap();
+    let point = frame.series("point").unwrap();
+    let category_source = frame.series("category").unwrap().as_column().copy().unwrap();
+    let category = Series::from_column(dictionary::encode(&category_source.view().unwrap(), TypeId::Int32).unwrap())
+        .unwrap()
+        .rename("category");
+    let frame =
+        DataFrame::from_series([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap();
+    let (source, _names) = frame.try_into_table().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (transfer, snapshot) = snapshot_foreign_owned_table_transfer(source, Arc::clone(&drops));
+
+    let imported = Table::try_from_owned_device_table_transfer(transfer).unwrap();
+    let released = imported.into_columns().unwrap();
+    let rebuilt = Table::from_columns(released).unwrap();
+
+    assert_eq!(rebuilt.__debug_execution_domain_kind(), "explicit");
+    assert_table_export_matches_snapshot(&snapshot, &rebuilt);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
 #[test]

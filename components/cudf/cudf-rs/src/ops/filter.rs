@@ -71,4 +71,3 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
     apply_boolean_mask_impl(input, mask, exec_options.as_ref(), "filter::apply_boolean_mask")
         .map(|table| table.with_execution_domain(output_domain))
 }
-

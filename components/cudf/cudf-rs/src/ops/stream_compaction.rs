@@ -220,4 +220,3 @@ pub fn distinct(
     distinct_impl(input, keys, keep, null_equality, nan_equality, exec_options.as_ref(), "stream_compaction::distinct")
         .map(|table| table.with_execution_domain(output_domain))
 }
-

@@ -1,5 +1,6 @@
 #include "column.h"
 #include "execution_context_internal.hpp"
+#include "owning_handle.hpp"
 #include "scalar.h"
 #include "shim_common.h"
 
@@ -24,47 +25,6 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-
-namespace {
-
-bool column_parent_stores_direct_element_buffer(cudf::type_id id) {
-  switch (id) {
-    case cudf::type_id::EMPTY:
-    case cudf::type_id::STRING:
-    case cudf::type_id::LIST:
-    case cudf::type_id::STRUCT:
-    case cudf::type_id::DICTIONARY32:
-      return false;
-    default:
-      return true;
-  }
-}
-
-std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
-                                                rmm::cuda_stream_view stream) {
-  std::size_t total = 0;
-
-  if (column.type().id() == cudf::type_id::STRING) {
-    cudf::strings_column_view const strings{column};
-    total += static_cast<std::size_t>(strings.chars_size(stream));
-  } else if (column_parent_stores_direct_element_buffer(column.type().id())) {
-    total += static_cast<std::size_t>(column.size()) *
-             static_cast<std::size_t>(cudf::size_of(column.type()));
-  }
-
-  if (column.nullable()) {
-    total += static_cast<std::size_t>(cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))) *
-             sizeof(cudf::bitmask_type);
-  }
-
-  for (cudf::size_type child_index = 0; child_index < column.num_children(); ++child_index) {
-    total += cudf_column_view_payload_size_bytes(column.child(child_index), stream);
-  }
-
-  return total;
-}
-
-}  // namespace
 
 static cudf_status_t create_column_from_device_data_impl(
     cudf_type_id_t type_id,
@@ -92,7 +52,7 @@ static cudf_status_t create_column_from_device_data_impl(
 
     if (size == 0) {
       auto col = cudf::make_empty_column(dtype);
-      *out = static_cast<cudf_column_handle>(col.release());
+      *out = cudf_release_column_handle(std::move(col));
       return CUDF_SUCCESS;
     }
 
@@ -111,7 +71,7 @@ static cudf_status_t create_column_from_device_data_impl(
         dtype, static_cast<cudf::size_type>(size), std::move(dev_data),
         rmm::device_buffer{}, 0);
 
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -126,7 +86,7 @@ cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
   CUDF_RUST_TRY {
     cudf::data_type dtype(to_cudf_type_id(type_id));
     auto col = cudf::make_empty_column(dtype);
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -196,7 +156,7 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     exec.stream.synchronize();
     cudf_record_synchronized_stream(exec.stream);
 
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -220,9 +180,8 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* col = static_cast<cudf::column*>(src);
-    auto copy = std::make_unique<cudf::column>(*col, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(copy.release());
+    auto copy = cudf_column_state_from_handle(src).deep_copy(exec.stream, exec.mr);
+    *out = cudf_release_column_handle(std::move(copy));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -248,7 +207,7 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(copy.release());
+    *out = cudf_release_column_handle(std::move(copy));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -324,7 +283,26 @@ cudf_status_t cudf_column_copy_from_borrowed_view_ex(
         static_cast<cudf::size_type>(null_count),
         static_cast<cudf::size_type>(offset)};
     auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(copy.release());
+    *out = cudf_release_column_handle(std::move(copy));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_from_owned_device_transfer(
+    uint32_t root_column_id,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    auto state = cudf_make_foreign_column_handle_state(
+        root_column_id, semantic_columns, num_semantic_columns, bindings,
+        num_bindings);
+    *out = cudf_release_column_handle(std::move(state));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -348,8 +326,7 @@ cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* col = static_cast<cudf::column*>(handle);
-    *out = cudf_column_view_payload_size_bytes(col->view(), exec.stream);
+    *out = cudf_column_state_from_handle(handle).payload_size(exec.stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -361,15 +338,14 @@ cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle,
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
-    auto* col = static_cast<cudf::column*>(handle);
-    *out = col->alloc_size();
+    *out = cudf_column_state_from_handle(handle).device_allocated_size();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
 void cudf_column_destroy(cudf_column_handle handle) {
-  delete static_cast<cudf::column*>(handle);
+  delete static_cast<cudf_column_handle_state*>(handle);
 }
 
 cudf_status_t cudf_column_view(cudf_column_handle handle,
@@ -378,8 +354,8 @@ cudf_status_t cudf_column_view(cudf_column_handle handle,
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
-    auto* col = static_cast<cudf::column*>(handle);
-    auto* view = new cudf::column_view(col->view());
+    auto* view =
+        new cudf::column_view(cudf_column_state_from_handle(handle).view());
     *out = static_cast<cudf_column_view_handle>(view);
     return CUDF_SUCCESS;
   }
@@ -822,7 +798,7 @@ cudf_status_t cudf_column_create_strings_ex(
 
     if (num_strings == 0) {
       auto col = cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));
-      *out = static_cast<cudf_column_handle>(col.release());
+      *out = cudf_release_column_handle(std::move(col));
       return CUDF_SUCCESS;
     }
 
@@ -887,7 +863,7 @@ cudf_status_t cudf_column_create_strings_ex(
     exec.stream.synchronize();
     cudf_record_synchronized_stream(exec.stream);
 
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -1030,7 +1006,7 @@ cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     auto col = cudf::make_column_from_scalar(
         sc, static_cast<cudf::size_type>(size), exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

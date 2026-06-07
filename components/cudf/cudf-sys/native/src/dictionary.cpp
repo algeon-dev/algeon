@@ -39,7 +39,7 @@ cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
       return exec_status;
     }
     auto result = cudf::dictionary::encode(*view, indices_type, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -67,7 +67,7 @@ cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
       return exec_status;
     }
     auto result = cudf::dictionary::decode(dict_view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -129,7 +129,7 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
       return exec_status;
     }
     auto result = cudf::dictionary::set_keys(dict_view, *keys_view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -183,7 +183,7 @@ cudf_status_t cudf_dictionary_match_dictionaries_ex(
     }
 
     for (int32_t i = 0; i < num_columns; ++i) {
-      columns[i] = static_cast<cudf_column_handle>(results[i].release());
+      columns[i] = cudf_release_column_handle(std::move(results[i]));
     }
 
     *out_columns = columns;

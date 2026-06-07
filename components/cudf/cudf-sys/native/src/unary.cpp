@@ -53,7 +53,7 @@ cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     auto result = cudf::unary_operation(*view, cudf_op, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -80,7 +80,7 @@ cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     auto result = cudf::is_null(*view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -107,7 +107,7 @@ cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     auto result = cudf::is_valid(*view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -138,7 +138,7 @@ cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
     auto* dtype = static_cast<cudf::data_type*>(output_type);
 
     auto result = cudf::cast(*view, *dtype, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -182,7 +182,7 @@ cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     auto result = cudf::is_nan(*view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -209,7 +209,7 @@ cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     auto result = cudf::is_not_nan(*view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

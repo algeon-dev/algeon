@@ -91,6 +91,7 @@ add_library(
   cudf_rust SHARED
   src/error.cpp
   src/types.cpp
+  src/owning_handle.cpp
   src/column.cpp
   src/prepared_import.cpp
   src/device_buffer.cpp

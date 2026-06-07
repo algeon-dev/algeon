@@ -21,6 +21,7 @@ fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> 
     })
 }
 use std::{
+    any::Any,
     marker::PhantomData,
     os::raw::{c_char, c_void},
     ptr::{self, NonNull},
@@ -33,6 +34,7 @@ use std::{
 pub struct Column {
     handle: NonNull<c_void>,
     domain: Arc<ExecutionDomain>,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 // SAFETY: Column owns a GPU device buffer via an opaque C++ handle. The handle
@@ -44,7 +46,15 @@ unsafe impl Sync for Column {}
 
 impl Column {
     fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
-        Self { handle: NonNull::new(handle).expect("null column handle"), domain }
+        Self::from_handle_with_domain_and_owner(handle, domain, None)
+    }
+
+    fn from_handle_with_domain_and_owner(
+        handle: *mut c_void,
+        domain: Arc<ExecutionDomain>,
+        retained_owner: Option<Arc<dyn Any + Send + Sync>>,
+    ) -> Self {
+        Self { handle: NonNull::new(handle).expect("null column handle"), domain, retained_owner }
     }
 
     pub(crate) fn copy_into_domain(&self, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
@@ -268,11 +278,12 @@ impl Column {
         Ok(out)
     }
 
-    /// Returns the raw FFI handle. For internal use by `Table::from_columns`.
-    pub(crate) fn into_raw(self) -> *mut c_void {
-        let handle = self.handle.as_ptr();
-        std::mem::forget(self); // Don't drop — ownership transferred.
-        handle
+    pub(crate) fn into_raw_parts(self) -> (*mut c_void, Option<Arc<dyn Any + Send + Sync>>) {
+        let this = std::mem::ManuallyDrop::new(self);
+        let handle = this.handle.as_ptr();
+        let retained_owner = unsafe { std::ptr::read(&this.retained_owner) };
+        let _domain = unsafe { std::ptr::read(&this.domain) };
+        (handle, retained_owner)
     }
 
     /// Construct a `Column` from a raw FFI handle, taking ownership.
@@ -291,6 +302,14 @@ impl Column {
     /// transfer ownership.
     pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
         Self::from_handle_with_domain(handle, domain)
+    }
+
+    pub(crate) unsafe fn from_raw_with_domain_and_owner(
+        handle: *mut c_void,
+        domain: Arc<ExecutionDomain>,
+        retained_owner: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
+        Self::from_handle_with_domain_and_owner(handle, domain, Some(retained_owner))
     }
 
     /// Create a column by copying data from an existing device (GPU) pointer.

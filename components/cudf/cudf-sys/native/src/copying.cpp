@@ -53,7 +53,7 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
     }
 
     auto result = cudf::gather(*view, *map_view, policy, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

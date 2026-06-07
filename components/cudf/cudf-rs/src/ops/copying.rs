@@ -134,4 +134,3 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
     )
     .map(|table| table.with_execution_domain(output_domain))
 }
-

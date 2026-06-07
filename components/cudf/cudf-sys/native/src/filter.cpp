@@ -37,7 +37,7 @@ cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
     }
 
     auto result = cudf::apply_boolean_mask(*view, *mask_view, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

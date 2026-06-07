@@ -257,12 +257,12 @@ cudf_status_t cudf_groupby_aggregate_ex(
     int32_t idx = 0;
     for (auto& rv : result_values) {
       for (auto& col : rv.results) {
-        col_array[idx++] = static_cast<cudf_column_handle>(col.release());
+        col_array[idx++] = cudf_release_column_handle(std::move(col));
       }
     }
 
     // Publish outputs only after all work succeeds.
-    *out_keys = static_cast<cudf_table_handle>(result_keys.release());
+    *out_keys = cudf_release_table_handle(std::move(result_keys));
     *out_total_columns = total;
     *out_values = col_array;
 

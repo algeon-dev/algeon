@@ -280,7 +280,6 @@ pub fn stable_sort_by_key(
     .map(|table| table.with_execution_domain(output_domain))
 }
 
-
 /// Return the row indices that would sort the table.
 ///
 /// The result is a single INT32 column.

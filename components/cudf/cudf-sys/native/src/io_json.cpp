@@ -40,7 +40,7 @@ cudf_status_t cudf_io_read_json_ex(const char* filepath, int32_t lines,
     auto options = builder.build();
     auto result = cudf::io::read_json(options, exec.stream, exec.mr);
 
-    *out = static_cast<cudf_table_handle>(result.tbl.release());
+    *out = cudf_release_table_handle(std::move(result.tbl));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -109,7 +109,7 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(
       *out_num_names = n;
     }
 
-    *out_table = static_cast<cudf_table_handle>(result.tbl.release());
+    *out_table = cudf_release_table_handle(std::move(result.tbl));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH

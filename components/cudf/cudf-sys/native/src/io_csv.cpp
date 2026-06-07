@@ -40,7 +40,7 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath, char delimiter,
     auto options = builder.build();
     auto result = cudf::io::read_csv(options, exec.stream, exec.mr);
 
-    *out = static_cast<cudf_table_handle>(result.tbl.release());
+    *out = cudf_release_table_handle(std::move(result.tbl));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
