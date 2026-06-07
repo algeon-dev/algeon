@@ -11,6 +11,7 @@
 //! - [`resolve`] — Column-name resolution and validation helpers.
 //! - [`reassemble`] — DataFrame reassembly from raw `Table` + names.
 
+pub(crate) mod hash;
 pub(crate) mod reassemble;
 pub(crate) mod resolve;
 pub(crate) mod temp_table;

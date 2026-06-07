@@ -113,6 +113,13 @@ fn test_to_optional_vec_bool_with_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
+#[test]
+fn test_to_optional_vec_bool_preserves_false_and_skips_nulls() {
+    let s = Series::new_nullable::<bool>("f", &[false, true, false, true], &[true, true, false, true]).unwrap();
+    let vals = s.to_optional_vec::<bool>().unwrap();
+    assert_eq!(vals, vec![Some(false), Some(true), None, Some(true)]);
+}
+
 // ===========================================================================
 // to_strings — convenience on Series (mirrors ColumnView::to_strings)
 // ===========================================================================

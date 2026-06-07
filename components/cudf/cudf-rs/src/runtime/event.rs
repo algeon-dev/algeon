@@ -14,7 +14,8 @@ use crate::core::error::{self, Result};
 /// An owned CUDA event.
 ///
 /// The event is created on the calling thread's current device and destroyed
-/// when the last clone drops.
+/// when the last clone drops. Use events to express completion, readiness,
+/// and cross-stream ordering without forcing immediate host synchronization.
 #[derive(Clone)]
 pub struct CudaEvent {
     handle: Arc<CudaEventHandle>,
@@ -25,6 +26,11 @@ struct CudaEventHandle {
     device: DeviceId,
 }
 
+// SAFETY: CUDA events are thread-safe synchronization objects. The handle is
+// an opaque pointer to a CUDA runtime event that may be recorded, queried, and
+// synchronized from any thread. Shared access does not permit host-side
+// mutation of Rust memory, and the handle is destroyed exactly once when the
+// last Arc clone drops.
 unsafe impl Send for CudaEventHandle {}
 unsafe impl Sync for CudaEventHandle {}
 

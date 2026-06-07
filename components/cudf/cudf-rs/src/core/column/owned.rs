@@ -352,8 +352,12 @@ impl Column {
     ///
     /// - `device_ptr` must point to a valid device allocation containing at
     ///   least `len` elements of the type identified by `type_id`.
+    /// - Any prior GPU writes to `device_ptr` must be ordered before the
+    ///   runtime's stream used by this API. If the data was produced on a
+    ///   different stream, establish stream or event ordering before calling.
     /// - The pointer must remain valid until the runtime's stream has
-    ///   completed the copy.
+    ///   completed the copy, because this `_with_runtime` variant does not
+    ///   synchronize before returning.
     pub unsafe fn from_device_ptr_with_runtime(
         runtime: &Runtime,
         device_ptr: *const c_void,

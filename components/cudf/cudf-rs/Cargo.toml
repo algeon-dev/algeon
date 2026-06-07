@@ -11,6 +11,7 @@ repository.workspace = true
 strict-multi-gpu = []
 
 [dependencies]
+ahash = "0.8"
 anyhow = "1"
 arrow = { version = "58" }
 bitflags = "2"

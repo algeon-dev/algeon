@@ -1,10 +1,9 @@
 //! Integration tests for DataFrame metadata snapshots via `info()`.
 
-use cudf::{
-    DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Runtime, Series, TypeId,
-    core::memory::DeviceMemoryResource, ops::dictionary, runtime::CudaStream,
-};
+use cudf::{DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Series, TypeId, ops::dictionary};
 use cudf_sys::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
+
+use crate::common::sample_runtime;
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -15,12 +14,6 @@ fn obs_last_stream() -> usize {
     let status = unsafe { cudf_test_exec_last_stream_value(&mut out) };
     assert_eq!(status, 0, "cudf_test_exec_last_stream_value failed");
     out
-}
-
-fn sample_runtime() -> Runtime {
-    let stream = CudaStream::new().unwrap();
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
-    Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
 
 fn nullable_bitmask_payload_bytes(len: usize) -> usize {

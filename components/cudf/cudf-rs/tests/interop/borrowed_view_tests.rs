@@ -144,7 +144,7 @@ fn dictionary_columns_fail_clearly_as_unsupported_v1_types() {
 }
 
 #[test]
-fn nested_list_columns_are_rejected_before_interop_projection() {
+fn nested_list_column_construction_is_rejected() {
     let err = match Column::empty(cudf::TypeId::List) {
         Ok(_) => panic!("expected nested list column construction to fail"),
         Err(err) => err,
@@ -155,7 +155,7 @@ fn nested_list_columns_are_rejected_before_interop_projection() {
 }
 
 #[test]
-fn nested_struct_series_are_rejected_before_interop_projection() {
+fn nested_struct_series_construction_is_rejected() {
     let err = match Series::empty("nested", cudf::TypeId::Struct) {
         Ok(_) => panic!("expected nested struct series construction to fail"),
         Err(err) => err,

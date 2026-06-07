@@ -35,6 +35,8 @@ mod dictionary_tests;
 mod expr_tests;
 #[path = "ops/misc/factorize_tests.rs"]
 mod factorize_tests;
+#[path = "ops/misc/ffi_enum_contract_tests.rs"]
+mod ffi_enum_contract_tests;
 #[path = "ops/misc/hashing_tests.rs"]
 mod hashing_tests;
 #[path = "ops/misc/replace_tests.rs"]
@@ -55,7 +57,7 @@ mod dataframe_sort_values_tests;
 #[path = "ops/sorting/sorting_tests.rs"]
 mod sorting_tests;
 
-#[path = "ops/unary/binary_tests.rs"]
+#[path = "ops/binary/binary_tests.rs"]
 mod binary_tests;
 #[path = "ops/unary/cast_spec_tests.rs"]
 mod cast_spec_tests;

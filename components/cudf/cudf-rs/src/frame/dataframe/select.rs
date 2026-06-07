@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
     frame::series::Series,
+    internal::hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
 };
 
 impl DataFrame {
@@ -110,7 +109,7 @@ impl DataFrame {
         let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
 
         // Reject duplicates to keep schema (name -> index) consistent.
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut seen: FastHashSet<&str> = fast_hash_set_with_capacity(columns.len());
         for name in &columns {
             if !seen.insert(name.as_str()) {
                 return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
@@ -120,7 +119,7 @@ impl DataFrame {
             }
         }
 
-        let mut new_columns = IndexMap::with_capacity(columns.len());
+        let mut new_columns = fast_index_map_with_capacity(columns.len());
         for name in &columns {
             let col = self.columns.get(name.as_str()).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
@@ -152,7 +151,7 @@ impl DataFrame {
         I: IntoIterator,
         I::Item: AsRef<str>,
     {
-        let to_drop: std::collections::HashSet<String> = columns.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let to_drop: FastHashSet<String> = columns.into_iter().map(|s| s.as_ref().to_string()).collect();
 
         for name in &to_drop {
             if !self.columns.contains_key(name.as_str()) {
@@ -162,7 +161,7 @@ impl DataFrame {
             }
         }
 
-        let mut new_columns = IndexMap::with_capacity(self.columns.len().saturating_sub(to_drop.len()));
+        let mut new_columns = fast_index_map_with_capacity(self.columns.len().saturating_sub(to_drop.len()));
         for (name, col) in &self.columns {
             if !to_drop.contains(name.as_str()) {
                 new_columns.insert(name.clone(), Arc::clone(col));

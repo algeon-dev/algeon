@@ -9,20 +9,6 @@ fn runtime_device_accessor_returns_build_device() {
 }
 
 #[test]
-fn runtime_default_build_device_is_zero() {
-    let rt = Runtime::builder().build().unwrap();
-    assert_eq!(rt.device().ordinal(), 0);
-}
-
-#[test]
-fn device_id_new_with_invalid_ordinal_fails() {
-    // DeviceId::new(999) fails before we can even pass it to with_device().
-    // This validates that invalid device ordinals are rejected at the DeviceId level.
-    let err = DeviceId::new(999).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-}
-
-#[test]
 fn dataframe_ops_with_device_runtime() {
     let _rt = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
 

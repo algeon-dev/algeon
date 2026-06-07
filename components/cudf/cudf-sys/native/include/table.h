@@ -39,6 +39,40 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
                                  const cudf_exec_options_t* options,
                                  cudf_table_handle* out);
 
+typedef struct cudf_interop_semantic_table_t {
+  int32_t num_rows;
+  uint32_t const* column_ids;
+  int32_t num_columns;
+} cudf_interop_semantic_table_t;
+
+/// Deep-copy a table from a prepared-device export semantic graph.
+///
+/// The semantic graph and bindings must describe one valid single-device
+/// prepared-device export root. Readiness, activation, and completion are
+/// handled by higher layers; this helper only reconstructs a temporary
+/// `cudf::table_view` and deep-copies it into one owning table.
+cudf_status_t cudf_table_copy_from_prepared_device_export(
+    cudf_interop_semantic_table_t const* table,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_table_handle* out);
+
+/// Deep-copy a table from a prepared-device export semantic graph with
+/// explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
+    cudf_interop_semantic_table_t const* table,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_exec_options_t const* options,
+    cudf_table_handle* out);
+
 /// Return payload bytes for this owning table.
 ///
 /// This sums payload accounting for each owning column.

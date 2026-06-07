@@ -7,14 +7,13 @@
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use crate::{
     core::{
         error::{Error, ErrorKind, Result},
         table::Table,
     },
     frame::dataframe::{DataFrame, resolve_frame_domain_from_authoritative_source},
+    internal::hash::{FastIndexMap, fast_index_map_with_capacity},
 };
 
 /// Create a `DataFrame` from a `Table` and a vector of column names.
@@ -41,7 +40,7 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
             .with_context("names_count", names.len().to_string()));
     }
 
-    let mut map = IndexMap::with_capacity(names.len());
+    let mut map: FastIndexMap<String, Arc<crate::Column>> = fast_index_map_with_capacity(names.len());
     for (name, col) in names.into_iter().zip(cols) {
         map.insert(name, Arc::new(col));
     }

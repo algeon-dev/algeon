@@ -2,7 +2,7 @@ use std::{ffi::c_void, ptr};
 
 use cudf::{Column, DataFrame, DeviceId, Runtime, Series, core::memory::DeviceMemoryResource, runtime::CudaStream};
 use cudf_sys::{
-    CUDF_SUCCESS, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
+    CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
 };
 
@@ -51,6 +51,30 @@ pub fn last_exec_device() -> i32 {
 pub fn set_current_device(device: DeviceId) {
     let status = unsafe { cudf_cuda_set_device(device.ordinal() as i32) };
     assert_eq!(status, CUDF_SUCCESS, "failed to set current device to {}", device.ordinal());
+}
+
+/// RAII guard that saves the current CUDA device on construction and restores
+/// it on drop. Use at the top of any test that calls `set_current_device` to
+/// prevent device-state leakage between tests in the same binary.
+#[allow(dead_code)]
+pub struct DeviceRestoreGuard {
+    previous: i32,
+}
+
+#[allow(dead_code)]
+impl DeviceRestoreGuard {
+    pub fn new() -> Self {
+        let mut device: i32 = 0;
+        let status = unsafe { cudf_cuda_get_device(&mut device) };
+        assert_eq!(status, CUDF_SUCCESS, "failed to query current CUDA device");
+        Self { previous: device }
+    }
+}
+
+impl Drop for DeviceRestoreGuard {
+    fn drop(&mut self) {
+        unsafe { cudf_cuda_set_device(self.previous) };
+    }
 }
 
 #[allow(dead_code)]

@@ -1,11 +1,16 @@
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use cudf::{
     Column, DataFrame, DeviceId, Runtime, TypeId,
     interop::{
-        BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitnessKind, CudaStreamHandle, ExportProfile,
-        IncompleteDropBehavior, InteropErrorKind, InteropTypeId, LeaseCompletionResult, PhysicalValidity, Placement,
-        ProducerReadiness, RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, TryActivateRuntimeColumnReadLease,
+        ActiveLeaseBackend, BufferBinding, ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitnessKind,
+        CudaEventHandle, CudaStreamHandle, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind,
+        InteropTypeId, LeaseBackend, LeaseCompletionResult, LeaseExportContext, PhysicalValidity, Placement,
+        ProducerReadiness, ReadStartAuthority, RuntimeCompletionAuthority, RuntimeLeaseCompletionResult,
+        RuntimeReadStartAuthority, SchemaNullability, TryActivateRuntimeColumnReadLease,
         TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
     },
     io::json::JsonReaderOptions,
@@ -82,6 +87,26 @@ fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'st
     }
 }
 
+fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'static> {
+    ReadStartAuthority::ConsumerStream {
+        stream: CudaStreamHandle::from_raw_on_device(
+            stream.__debug_raw_handle_value() as *mut std::ffi::c_void,
+            stream.device().ordinal() as i32,
+        )
+        .unwrap(),
+    }
+}
+
+fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'static> {
+    CompletionAuthority::CrossDeviceEvent {
+        event: CudaEventHandle::from_raw_on_device(
+            event.__debug_interop_raw_handle_value() as *mut std::ffi::c_void,
+            event.device().ordinal() as i32,
+        )
+        .unwrap(),
+    }
+}
+
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr().as_ptr() as *const u8, binding.bytes().byte_len()) }
         .to_vec()
@@ -118,7 +143,9 @@ fn series_prepare_device_export_can_activate_synchronous_read_lease() {
     let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
 
     let export = series.try_prepare_device_column_export().unwrap();
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
 
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
@@ -134,12 +161,15 @@ fn dataframe_prepare_device_export_can_activate_stream_read_lease() {
     // Test-only shortcut: reusing the producer's stream as the consumer's
     // completion stream. Real consumers should supply their own stream to keep
     // producer readiness and consumer completion authority separate.
-    let completion = match export.readiness() {
-        ProducerReadiness::DeviceStreamOrdered { stream } => CompletionAuthority::SameDeviceStream { stream: *stream },
+    let (read_start, completion) = match export.readiness() {
+        ProducerReadiness::DeviceStreamOrdered { stream } => (
+            ReadStartAuthority::ConsumerStream { stream: *stream },
+            CompletionAuthority::SameDeviceStream { stream: *stream },
+        ),
         readiness => panic!("expected device-stream readiness, got {readiness:?}"),
     };
 
-    let lease = export.try_activate_read_lease(completion).unwrap();
+    let lease = export.try_activate_read_lease(read_start, completion).unwrap();
 
     let witness = match lease.complete().unwrap() {
         LeaseCompletionResult::Completed(witness) => witness,
@@ -170,7 +200,12 @@ fn shared_table_read_lease_orders_consumer_stream_after_stream_ordered_producer_
     reset_event_observation();
     let baseline_producer_record = observed_raw_record_call_count_for_stream_raw(producer_stream_raw);
     let baseline_consumer_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
-    let lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
+    let lease = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_same_device_completion(&consumer_stream),
+        )
+        .unwrap();
 
     assert!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw) > baseline_producer_record);
     assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_consumer_wait);
@@ -205,7 +240,12 @@ fn shared_column_read_lease_with_event_readiness_orders_consumer_stream_after_pr
     let baseline_producer_event_wait = observed_stream_wait_call_count_for_event_raw(producer_event_raw);
     let baseline_producer_record = observed_raw_record_call_count_for_stream_raw(producer_stream_raw);
     let baseline_consumer_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
-    let lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
+    let lease = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_same_device_completion(&consumer_stream),
+        )
+        .unwrap();
 
     assert!(observed_stream_wait_call_count_for_event_raw(producer_event_raw) > baseline_producer_event_wait);
     assert_eq!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw), baseline_producer_record);
@@ -232,12 +272,22 @@ fn shared_stream_read_lease_drop_synchronizes_consumer_stream() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
     let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[10i32, 20, 30]).unwrap();
     let consumer_done = CudaEvent::new().unwrap();
-    consumer_done.record(&consumer_stream).unwrap();
 
     {
-        let _lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
-    }
+        let _lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
+            )
+            .unwrap();
 
+        // Record the event *after* lease activation so it captures stream-ordering
+        // work enqueued by the lease. Before the lease is dropped (and its fallback
+        // synchronization runs), the event must still be pending.
+        consumer_done.record(&consumer_stream).unwrap();
+    }
+    // The lease drop performed fallback synchronization on the consumer stream,
+    // which must have completed all prior work including the recorded event.
     assert!(consumer_done.is_ready().unwrap());
 }
 
@@ -252,7 +302,10 @@ fn series_prepare_device_export_can_activate_runtime_stream_read_lease() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     let result = lease.complete().unwrap();
@@ -270,6 +323,52 @@ fn series_prepare_device_export_can_activate_runtime_stream_read_lease() {
 }
 
 #[test]
+fn runtime_column_read_lease_preserves_accessor_and_debug_surface() {
+    let producer_runtime = Runtime::builder().build().unwrap();
+    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let export = series.try_prepare_device_column_export().unwrap();
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let _consumer_runtime =
+        Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
+
+    let lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+
+    assert!(std::ptr::eq(lease.export(), &export));
+    match lease.read_start() {
+        RuntimeReadStartAuthority::ConsumerStream { stream } => {
+            assert!(std::ptr::eq(*stream, &consumer_stream));
+        },
+        read_start => panic!("expected consumer-stream read_start, got {read_start:?}"),
+    }
+    match lease.completion() {
+        RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+            assert!(std::ptr::eq(*stream, &consumer_stream));
+        },
+        completion => panic!("expected same-device-stream completion, got {completion:?}"),
+    }
+
+    let debug = format!("{lease:?}");
+    assert!(debug.contains("RuntimeActiveColumnReadLease"));
+    assert!(debug.contains("read_start"));
+    assert!(debug.contains("completion"));
+    assert!(debug.contains("producer_device"));
+
+    let witness = match lease.complete().unwrap() {
+        RuntimeLeaseCompletionResult::Completed(witness) => witness,
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected producer-owned completion witness for same-device stream completion")
+        },
+    };
+    witness.synchronize().unwrap();
+}
+
+#[test]
 fn runtime_stream_read_lease_complete_does_not_fallback_synchronize_consumer_stream() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
@@ -282,7 +381,10 @@ fn runtime_stream_read_lease_complete_does_not_fallback_synchronize_consumer_str
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
 
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     reset_event_observation();
@@ -297,12 +399,12 @@ fn runtime_stream_read_lease_complete_does_not_fallback_synchronize_consumer_str
 
     assert_eq!(
         observed_raw_record_call_count_for_stream_raw(consumer_stream_raw),
-        baseline_consumer_record,
-        "runtime complete() must not trigger shared incomplete-drop fallback recording on the consumer stream",
+        baseline_consumer_record + 1,
+        "runtime complete() should record exactly one shared completion event on the consumer stream",
     );
 
     witness.synchronize().unwrap();
-    assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record,);
+    assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1,);
 }
 
 #[test]
@@ -316,7 +418,12 @@ fn series_prepare_device_export_defaults_to_cuda_guaranteed_fallback_backend() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     assert_eq!(export.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
-    let lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
+    let lease = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_same_device_completion(&consumer_stream),
+        )
+        .unwrap();
     assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
 }
 
@@ -335,11 +442,18 @@ fn shared_cuda_explicit_backend_reports_behavior_and_releases_guard_on_drop() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     {
-        let lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
+        let lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
+            )
+            .unwrap();
         assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
     }
 
-    let reacquired = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let reacquired = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(reacquired.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -357,7 +471,12 @@ fn shared_cuda_explicit_stream_read_lease_drop_does_not_hidden_fallback_synchron
     let _consumer_runtime =
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
-    let lease = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap();
+    let lease = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_same_device_completion(&consumer_stream),
+        )
+        .unwrap();
 
     reset_event_observation();
     let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
@@ -371,7 +490,55 @@ fn shared_cuda_explicit_stream_read_lease_drop_does_not_hidden_fallback_synchron
 }
 
 #[test]
-fn runtime_stream_read_lease_with_explicit_backend_complete_returns_witness_without_hidden_fallback() {
+fn runtime_table_read_lease_preserves_accessor_and_debug_surface() {
+    let producer_runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let export = frame.try_prepare_device_table_export().unwrap();
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let _consumer_runtime =
+        Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
+
+    let lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+
+    assert!(std::ptr::eq(lease.export(), &export));
+    match lease.read_start() {
+        RuntimeReadStartAuthority::ConsumerStream { stream } => {
+            assert!(std::ptr::eq(*stream, &consumer_stream));
+        },
+        read_start => panic!("expected consumer-stream read_start, got {read_start:?}"),
+    }
+    match lease.completion() {
+        RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+            assert!(std::ptr::eq(*stream, &consumer_stream));
+        },
+        completion => panic!("expected same-device-stream completion, got {completion:?}"),
+    }
+
+    let debug = format!("{lease:?}");
+    assert!(debug.contains("RuntimeActiveTableReadLease"));
+    assert!(debug.contains("read_start"));
+    assert!(debug.contains("completion"));
+    assert!(debug.contains("producer_device"));
+
+    let witness = match lease.complete().unwrap() {
+        RuntimeLeaseCompletionResult::Completed(witness) => witness,
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected producer-owned completion witness for same-device stream completion")
+        },
+    };
+    witness.synchronize().unwrap();
+}
+
+#[test]
+fn runtime_stream_read_lease_with_explicit_backend_complete_returns_witness_via_shared_backend() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
     let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
@@ -386,7 +553,10 @@ fn runtime_stream_read_lease_with_explicit_backend_complete_returns_witness_with
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
 
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     reset_event_observation();
@@ -402,12 +572,64 @@ fn runtime_stream_read_lease_with_explicit_backend_complete_returns_witness_with
     assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);
     assert_eq!(
         observed_raw_record_call_count_for_stream_raw(consumer_stream_raw),
-        baseline_consumer_record,
-        "runtime complete() with explicit backend must not trigger shared incomplete-drop fallback on the consumer stream",
+        baseline_consumer_record + 1,
+        "runtime complete() with explicit backend should record exactly one shared completion event on the consumer stream",
     );
 
     witness.synchronize().unwrap();
-    assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record,);
+    assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1,);
+}
+
+#[test]
+fn runtime_complete_invokes_custom_shared_backend_complete_path() {
+    struct CountingFallbackBackend {
+        complete_calls: Arc<AtomicUsize>,
+    }
+
+    impl ActiveLeaseBackend for CountingFallbackBackend {
+        fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+            IncompleteDropBehavior::ExplicitCompletionRequired
+        }
+
+        fn complete(
+            &self,
+            _export: &LeaseExportContext,
+            _completion: CompletionBinding,
+        ) -> std::result::Result<LeaseCompletionResult, InteropError> {
+            self.complete_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(LeaseCompletionResult::FallbackSynchronized)
+        }
+
+        fn drop_incomplete(
+            &self,
+            _export: &LeaseExportContext,
+            _completion: CompletionBinding,
+        ) -> std::result::Result<(), InteropError> {
+            Ok(())
+        }
+    }
+
+    let producer_runtime = Runtime::builder().build().unwrap();
+    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let complete_calls = Arc::new(AtomicUsize::new(0));
+    let export = series
+        .try_prepare_device_column_export()
+        .unwrap()
+        .with_lease_backend(LeaseBackend::new(CountingFallbackBackend { complete_calls: complete_calls.clone() }));
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let _consumer_runtime =
+        Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
+
+    let lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+
+    assert!(matches!(lease.complete().unwrap(), RuntimeLeaseCompletionResult::FallbackSynchronized));
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -427,7 +649,10 @@ fn runtime_stream_read_lease_with_explicit_backend_drop_does_not_synchronize_and
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
 
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
     assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
 
@@ -442,7 +667,10 @@ fn runtime_stream_read_lease_with_explicit_backend_drop_does_not_synchronize_and
     );
 
     let reacquired = cloned
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
     let witness = match reacquired.complete().unwrap() {
         RuntimeLeaseCompletionResult::Completed(witness) => witness,
@@ -455,11 +683,64 @@ fn runtime_stream_read_lease_with_explicit_backend_drop_does_not_synchronize_and
 }
 
 #[test]
+fn runtime_table_read_lease_with_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
+    let _observation_lock = lock_event_observation();
+    let producer_runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let export = frame
+        .try_prepare_device_table_export()
+        .unwrap()
+        .with_lease_backend(cuda_explicit_completion_required_lease_backend());
+    let cloned = export.clone();
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let _consumer_runtime =
+        Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
+    let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+
+    let lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+    assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
+
+    reset_event_observation();
+    let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
+    drop(lease);
+
+    assert_eq!(
+        observed_raw_record_call_count_for_stream_raw(consumer_stream_raw),
+        baseline_consumer_record,
+        "runtime table drop with explicit backend must not hidden-fallback synchronize the consumer stream",
+    );
+
+    let reacquired = cloned
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+    let witness = match reacquired.complete().unwrap() {
+        RuntimeLeaseCompletionResult::Completed(witness) => witness,
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected producer-owned completion witness after reacquiring explicit runtime table lease")
+        },
+    };
+    assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);
+    witness.synchronize().unwrap();
+}
+
+#[test]
 fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_witness_without_extra_wait() {
     let _observation_lock = lock_event_observation();
     if !should_run_multi_gpu_test() {
         return;
     }
+    let _device_guard = common::DeviceRestoreGuard::new();
 
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -483,7 +764,10 @@ fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_
 
     common::set_current_device(device0);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::cross_device_event(&consumer_event))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+        )
         .unwrap();
 
     reset_event_observation();
@@ -519,14 +803,22 @@ fn runtime_stream_read_lease_drop_synchronizes_consumer_stream() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
     let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[10i32, 20, 30]).unwrap();
     let consumer_done = CudaEvent::new().unwrap();
-    consumer_done.record(&consumer_stream).unwrap();
 
     {
         let _lease = export
-            .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+            .try_activate_runtime_read_lease(
+                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+            )
             .unwrap();
-    }
 
+        // Record the event *after* lease activation so it captures stream-ordering
+        // work enqueued by the lease. Before the lease is dropped (and its fallback
+        // synchronization runs), the event must still be pending.
+        consumer_done.record(&consumer_stream).unwrap();
+    }
+    // The lease drop performed fallback synchronization on the consumer stream,
+    // which must have completed all prior work including the recorded event.
     assert!(consumer_done.is_ready().unwrap());
 }
 
@@ -547,7 +839,10 @@ fn runtime_stream_read_lease_orders_consumer_stream_after_stream_ordered_produce
     let baseline_producer_record = observed_raw_record_call_count_for_stream_raw(producer_stream_raw);
     let baseline_consumer_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     assert!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw) > baseline_producer_record);
@@ -584,7 +879,10 @@ fn runtime_table_read_lease_orders_consumer_stream_after_stream_ordered_producer
     let baseline_producer_record = observed_raw_record_call_count_for_stream_raw(producer_stream_raw);
     let baseline_consumer_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     assert!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw) > baseline_producer_record);
@@ -614,15 +912,22 @@ fn runtime_and_shared_read_leases_share_one_export_root_state() {
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     let runtime_lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
-    let err = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap_err();
+    let err = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap_err();
     assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
 
     drop(runtime_lease);
 
-    let shared_lease = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let shared_lease = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -636,16 +941,24 @@ fn shared_read_lease_blocks_runtime_activation_until_completion() {
     let _consumer_runtime =
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
-    let shared_lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let shared_lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     let err = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap_err();
     assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
 
     assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 
     let runtime_lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
     let result = runtime_lease.complete().unwrap();
     match result {
@@ -664,6 +977,7 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
     if !should_run_multi_gpu_test() {
         return;
     }
+    let _device_guard = common::DeviceRestoreGuard::new();
 
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -683,7 +997,10 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
 
     common::set_current_device(device0);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::cross_device_event(&consumer_event))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+        )
         .unwrap();
 
     let result = lease.complete().unwrap();
@@ -701,11 +1018,75 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
 }
 
 #[test]
+fn shared_cross_device_read_lease_orders_consumer_stream_on_activation_then_waits_consumer_event_on_complete() {
+    let _observation_lock = lock_event_observation();
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let _device_guard = common::DeviceRestoreGuard::new();
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+    let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let export = frame
+        .try_prepare_device_table_export()
+        .unwrap()
+        .with_lease_backend(cuda_explicit_completion_required_lease_backend());
+
+    common::set_current_device(device1);
+    let consumer_stream = CudaStream::new().unwrap();
+    let consumer_runtime =
+        Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
+    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let consumer_event = CudaEvent::new().unwrap();
+    consumer_event.record(&consumer_stream).unwrap();
+    let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+    let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
+
+    common::set_current_device(device0);
+    reset_event_observation();
+    let baseline_activation_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
+    let baseline_completion_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
+
+    let lease = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_cross_device_completion(&consumer_event),
+        )
+        .unwrap();
+
+    assert!(
+        observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_activation_wait,
+        "activation must order the consumer stream after producer readiness for cross-device reads",
+    );
+    assert_eq!(
+        observed_stream_wait_call_count_for_event_raw(consumer_event_raw),
+        baseline_completion_wait,
+        "activation must not wait on the consumer completion event",
+    );
+
+    let witness = match lease.complete().unwrap() {
+        LeaseCompletionResult::Completed(witness) => witness,
+        LeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected producer-owned completion witness for cross-device event completion")
+        },
+    };
+
+    assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerEvent);
+    assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
+    witness.synchronize().unwrap();
+}
+
+#[test]
 fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_consumer_event() {
     let _observation_lock = lock_event_observation();
     if !should_run_multi_gpu_test() {
         return;
     }
+    let _device_guard = common::DeviceRestoreGuard::new();
 
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -726,7 +1107,10 @@ fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_
 
     common::set_current_device(device0);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::cross_device_event(&consumer_event))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+        )
         .unwrap();
 
     reset_event_observation();
@@ -747,6 +1131,69 @@ fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_
 
     witness.synchronize().unwrap();
     assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_consumer_event_wait + 1,);
+}
+
+#[test]
+fn runtime_cross_device_read_lease_orders_consumer_stream_on_activation_then_waits_consumer_event_on_complete() {
+    let _observation_lock = lock_event_observation();
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let _device_guard = common::DeviceRestoreGuard::new();
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+    let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let export = frame
+        .try_prepare_device_table_export()
+        .unwrap()
+        .with_lease_backend(cuda_explicit_completion_required_lease_backend());
+
+    common::set_current_device(device1);
+    let consumer_stream = CudaStream::new().unwrap();
+    let consumer_runtime =
+        Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
+    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let consumer_event = CudaEvent::new().unwrap();
+    consumer_event.record(&consumer_stream).unwrap();
+    let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+    let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
+
+    common::set_current_device(device0);
+    reset_event_observation();
+    let baseline_activation_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
+    let baseline_completion_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
+
+    let lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+        )
+        .unwrap();
+
+    assert!(
+        observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_activation_wait,
+        "runtime activation must order the consumer stream after producer readiness for cross-device reads",
+    );
+    assert_eq!(
+        observed_stream_wait_call_count_for_event_raw(consumer_event_raw),
+        baseline_completion_wait,
+        "runtime activation must not wait on the consumer completion event",
+    );
+
+    let witness = match lease.complete().unwrap() {
+        RuntimeLeaseCompletionResult::Completed(witness) => witness,
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected producer-owned completion witness for cross-device event completion")
+        },
+    };
+
+    assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerEvent);
+    assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
+    witness.synchronize().unwrap();
 }
 
 #[test]
@@ -780,7 +1227,10 @@ fn series_prepare_device_export_with_event_can_activate_runtime_stream_read_leas
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
         .unwrap();
 
     let result = lease.complete().unwrap();
@@ -802,6 +1252,7 @@ fn dataframe_prepare_device_export_with_event_can_activate_runtime_cross_device_
     if !should_run_multi_gpu_test() {
         return;
     }
+    let _device_guard = common::DeviceRestoreGuard::new();
 
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -823,7 +1274,10 @@ fn dataframe_prepare_device_export_with_event_can_activate_runtime_cross_device_
 
     common::set_current_device(device0);
     let lease = export
-        .try_activate_runtime_read_lease(RuntimeCompletionAuthority::cross_device_event(&consumer_event))
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+        )
         .unwrap();
 
     let result = lease.complete().unwrap();
@@ -845,6 +1299,7 @@ fn series_prepare_device_export_with_event_rejects_mismatched_event_device() {
     if !should_run_multi_gpu_test() {
         return;
     }
+    let _device_guard = common::DeviceRestoreGuard::new();
 
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -968,12 +1423,28 @@ fn table_view_prepare_device_export_preserves_num_rows_names_and_uniform_readine
 }
 
 #[test]
+fn table_view_prepare_device_export_preserves_schema_nullability_metadata() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals =
+        cudf::Series::new_nullable_with_runtime(&runtime, "value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+
+    let export = frame.try_prepare_device_table_export().unwrap();
+
+    assert_eq!(export.columns()[0].schema_nullability(), SchemaNullability::NonNullable);
+    assert_eq!(export.columns()[1].schema_nullability(), SchemaNullability::Nullable);
+}
+
+#[test]
 fn series_prepare_host_export_can_activate_synchronous_read_lease() {
     let runtime = Runtime::builder().build().unwrap();
     let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
 
     let export = series.try_prepare_host_column_export().unwrap();
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
 
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
@@ -1062,6 +1533,20 @@ fn dataframe_prepare_host_export_preserves_names_and_host_profile() {
 }
 
 #[test]
+fn dataframe_prepare_host_export_preserves_schema_nullability_metadata() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let vals =
+        cudf::Series::new_nullable_with_runtime(&runtime, "value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+
+    let export = frame.try_prepare_host_table_export().unwrap();
+
+    assert_eq!(export.columns()[0].schema_nullability(), SchemaNullability::NonNullable);
+    assert_eq!(export.columns()[1].schema_nullability(), SchemaNullability::Nullable);
+}
+
+#[test]
 fn series_prepare_host_export_rejects_cuda_completion_authority() {
     let runtime = Runtime::builder().build().unwrap();
     let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
@@ -1070,7 +1555,12 @@ fn series_prepare_host_export_rejects_cuda_completion_authority() {
         Runtime::builder().with_device(runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
 
     let export = series.try_prepare_host_column_export().unwrap();
-    let err = export.try_activate_read_lease(shared_same_device_completion(&consumer_stream)).unwrap_err();
+    let err = export
+        .try_activate_read_lease(
+            shared_stream_read_start(&consumer_stream),
+            shared_same_device_completion(&consumer_stream),
+        )
+        .unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
 }
@@ -1160,7 +1650,9 @@ fn struct_column_prepare_host_export_materializes_supported_child_projections() 
     };
     assert_eq!(binding_bytes(coords_values_binding), expected_i64_bytes(&[1, 2, 3]));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1288,7 +1780,9 @@ fn dictionary_column_prepare_host_export_materializes_indices_and_string_keys() 
     let key_data_binding = export.bindings().iter().find(|binding| binding.id() == key_data).unwrap();
     assert_eq!(binding_bytes(key_data_binding), b"alphabetagamma".to_vec());
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1374,7 +1868,9 @@ fn list_of_lists_prepare_host_export_materializes_recursive_child_projection() {
     assert_eq!(values_binding.placement(), &Placement::Host);
     assert_eq!(binding_bytes(values_binding), expected_i64_bytes(&[1, 2, 3, 4, 5, 6]));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1492,7 +1988,9 @@ fn host_export_accepts_broader_recursive_nested_columns() {
     assert_eq!(dictionary_keys_column.data_type().id(), InteropTypeId::String);
     assert!(matches!(dictionary_keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1523,7 +2021,9 @@ fn string_column_prepare_host_export_materializes_binary_like_bytes() {
     assert_eq!(data_binding.placement(), &Placement::Host);
     assert_eq!(binding_bytes(data_binding), b"alicebob".to_vec());
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1596,7 +2096,9 @@ fn dataframe_prepare_host_export_accepts_string_columns() {
     assert!(matches!(export.columns()[1].layout(), ColumnLayout::FixedWidth { .. }));
     assert!(export.bindings().iter().all(|binding| binding.placement() == &Placement::Host));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1635,7 +2137,9 @@ fn list_column_prepare_host_export_materializes_offsets_and_fixed_width_child_by
     assert_eq!(values_binding.placement(), &Placement::Host);
     assert_eq!(binding_bytes(values_binding), expected_i64_bytes(&[1, 2, 3, 4, 5, 6]));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1725,7 +2229,9 @@ fn dataframe_prepare_host_export_accepts_list_columns_with_supported_child_proje
     assert!(matches!(export.columns()[1].layout(), ColumnLayout::FixedWidth { .. }));
     assert!(export.bindings().iter().all(|binding| binding.placement() == &Placement::Host));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1757,7 +2263,9 @@ fn dataframe_prepare_host_export_accepts_struct_and_dictionary_columns_with_supp
     assert!(matches!(export.columns()[2].layout(), ColumnLayout::FixedWidth { .. }));
     assert!(export.bindings().iter().all(|binding| binding.placement() == &Placement::Host));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1892,7 +2400,9 @@ fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span(
         readiness => panic!("expected device-stream readiness, got {readiness:?}"),
     }
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1910,7 +2420,9 @@ fn dataframe_prepare_device_export_accepts_string_columns() {
     assert!(matches!(export.columns()[0].layout(), ColumnLayout::BinaryLike { .. }));
     assert!(matches!(export.columns()[1].layout(), ColumnLayout::FixedWidth { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1946,7 +2458,9 @@ fn struct_column_prepare_device_export_preserves_child_metadata() {
     assert_eq!(string_child.len(), string_view.len().unwrap());
     assert_eq!(string_child.offset(), usize::try_from(string_view.offset().unwrap()).unwrap());
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -1994,7 +2508,9 @@ fn dataframe_prepare_device_export_accepts_struct_columns() {
     assert!(matches!(export.columns()[0].layout(), ColumnLayout::Struct { .. }));
     assert!(matches!(export.columns()[1].layout(), ColumnLayout::FixedWidth { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -2026,7 +2542,9 @@ fn list_column_prepare_device_export_preserves_offsets_and_child_metadata() {
     assert_eq!(offsets_binding.bytes().byte_len(), 5 * std::mem::size_of::<i32>());
     assert!(matches!(offsets_binding.placement(), Placement::CudaDevice { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -2126,7 +2644,9 @@ fn sliced_list_of_strings_prepare_device_export_preserves_binary_like_child_slic
     assert_eq!(child_data_binding.bytes().base_ptr(), base_child_data_binding.bytes().base_ptr());
     assert_eq!(child_data_binding.bytes().byte_len(), usize::try_from(host_child_offsets[expected_child_end]).unwrap());
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -2160,7 +2680,9 @@ fn dictionary_column_prepare_device_export_preserves_indices_and_keys_metadata()
     assert_eq!(indices_binding.bytes().byte_len(), dict_view.len().unwrap() * std::mem::size_of::<i32>());
     assert!(matches!(indices_binding.placement(), Placement::CudaDevice { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -2222,7 +2744,9 @@ fn dataframe_prepare_device_export_accepts_dictionary_columns() {
     assert!(matches!(keys_column.layout(), ColumnLayout::BinaryLike { .. }));
     assert_eq!(keys_column.data_type().id(), InteropTypeId::String);
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -2392,7 +2916,9 @@ fn dataframe_prepare_device_export_accepts_dictionary_and_recursive_nested_colum
     assert_eq!(dictionary_keys_column.data_type().id(), InteropTypeId::String);
     assert!(matches!(dictionary_keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 

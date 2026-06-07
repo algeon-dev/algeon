@@ -1,10 +1,13 @@
 use cudf::{
     Column, DataFrame, Runtime, Series, Table,
     interop::{
-        ExportProfile, InteropErrorKind, OwnedColumnTransfer, ReleaseSynchronization, TransferCompletionRule,
-        TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
+        BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
+        InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness,
+        ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId,
+        TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
     },
 };
+use rapids_interop::{DataType as InteropDataType, TypeId as InteropTypeId};
 use static_assertions::assert_not_impl_any;
 
 assert_not_impl_any!(Series: TryIntoOwnedDeviceColumnTransfer);
@@ -12,6 +15,48 @@ assert_not_impl_any!(DataFrame: TryIntoOwnedDeviceTableTransfer);
 
 fn binding_ptr_eq(transfer: &OwnedColumnTransfer, expected_ptr: *const std::ffi::c_void) -> bool {
     transfer.bindings().iter().any(|binding| binding.bytes().base_ptr().as_ptr() as *const _ == expected_ptr)
+}
+
+fn fake_ptr(addr: usize) -> *const std::ffi::c_void {
+    addr as *const std::ffi::c_void
+}
+
+fn device_binding(id: u32, addr: usize, byte_len: usize, device: i32) -> BufferBinding<'static> {
+    BufferBinding::new(
+        BufferId::new(id),
+        BoundBytes::from_raw_parts(fake_ptr(addr) as *mut std::ffi::c_void, byte_len).unwrap(),
+        Placement::CudaDevice { device },
+    )
+}
+
+fn fixed_width_column_semantics(id: u32, values: u32, len: usize) -> SemanticColumn {
+    SemanticColumn::new(
+        ColumnId::new(id),
+        InteropDataType::new(InteropTypeId::Int32),
+        len,
+        0,
+        PhysicalValidity::NoValidityBuffer,
+        SchemaNullability::Unknown,
+        ColumnLayout::FixedWidth { values: BufferId::new(values) },
+    )
+}
+
+fn manual_owned_transfer_diagnostics() -> ExportDiagnostics {
+    ExportDiagnostics::new(ExportProfile::OwnedDeviceTransfer)
+}
+
+fn manual_release_contract(device: i32) -> ReleaseContract {
+    ReleaseContract::new(
+        device,
+        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+        ReleaseSynchronization::MaySynchronizeInternally,
+    )
+}
+
+fn manual_readiness(device: i32) -> ProducerReadiness<'static> {
+    ProducerReadiness::DeviceStreamOrdered {
+        stream: cudf::interop::CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut _, device).unwrap(),
+    }
 }
 
 #[test]
@@ -62,6 +107,87 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
         TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
     );
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+}
+
+#[test]
+fn owned_column_transfer_import_round_trips_original_column_without_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[7i32, 8, 9]).unwrap();
+    let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
+    let expected_stream = column.__debug_execution_domain_stream_value();
+    let expected_mr = column.__debug_execution_domain_mr_value();
+
+    let transfer = column.try_into_owned_device_column_transfer().unwrap();
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+
+    assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(imported.view().unwrap().device_data_ptr().unwrap(), expected_ptr);
+    assert_eq!(imported.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(imported.__debug_execution_domain_mr_value(), expected_mr);
+}
+
+#[test]
+fn owned_table_transfer_import_round_trips_original_table_without_copy() {
+    let runtime = Runtime::builder().build().unwrap();
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let expected_first_ptr = first.view().unwrap().device_data_ptr().unwrap();
+    let expected_second_ptr = second.view().unwrap().device_data_ptr().unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
+
+    let transfer = table.try_into_owned_device_table_transfer().unwrap();
+    let imported = Table::try_from_owned_device_table_transfer(transfer).unwrap();
+    let imported_view = imported.view().unwrap();
+
+    assert_eq!(imported_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(imported_view.column(0).unwrap().device_data_ptr().unwrap(), expected_first_ptr);
+    assert_eq!(imported_view.column(1).unwrap().device_data_ptr().unwrap(), expected_second_ptr);
+    assert_eq!(imported.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(imported.__debug_execution_domain_mr_value(), expected_mr);
+}
+
+#[test]
+fn owned_column_transfer_import_rejects_non_cudf_owner_state() {
+    let transfer = OwnedColumnTransfer::try_new(
+        fixed_width_column_semantics(1, 11, 3),
+        vec![device_binding(11, 0x1000, 12, 0)],
+        manual_readiness(0),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(0),
+        String::from("not-a-cudf-column"),
+    )
+    .unwrap();
+
+    let err = match Column::try_from_owned_device_column_transfer(transfer) {
+        Ok(_) => panic!("expected non-cudf owner state to be rejected"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+}
+
+#[test]
+fn owned_table_transfer_import_rejects_non_cudf_owner_state() {
+    let transfer = OwnedTableTransfer::try_new(
+        SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None),
+        vec![fixed_width_column_semantics(1, 11, 3)],
+        vec![device_binding(11, 0x1000, 12, 0)],
+        manual_readiness(0),
+        manual_owned_transfer_diagnostics(),
+        manual_release_contract(0),
+        String::from("not-a-cudf-table"),
+    )
+    .unwrap();
+
+    let err = match Table::try_from_owned_device_table_transfer(transfer) {
+        Ok(_) => panic!("expected non-cudf owner state to be rejected"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
 }
 
 #[test]

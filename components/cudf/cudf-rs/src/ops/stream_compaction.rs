@@ -21,6 +21,23 @@ pub enum DuplicateKeepOption {
     KeepNone = 3,
 }
 
+impl DuplicateKeepOption {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_duplicate_keep_option_t {
+        match self {
+            DuplicateKeepOption::KeepAny => cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY,
+            DuplicateKeepOption::KeepFirst => {
+                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_FIRST
+            },
+            DuplicateKeepOption::KeepLast => {
+                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST
+            },
+            DuplicateKeepOption::KeepNone => {
+                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_NONE
+            },
+        }
+    }
+}
+
 pub use crate::core::types::NullEquality;
 
 /// Whether NaN elements should be considered equal.
@@ -31,6 +48,19 @@ pub enum NanEquality {
     AllEqual = 0,
     /// NaN values compare unequal (IEEE 754 behavior).
     Unequal = 1,
+}
+
+impl NanEquality {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_stream_compaction_nan_equality_t {
+        match self {
+            NanEquality::AllEqual => {
+                cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL
+            },
+            NanEquality::Unequal => {
+                cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL
+            },
+        }
+    }
 }
 
 fn drop_nulls_impl(
@@ -83,11 +113,9 @@ fn distinct_impl(
     })?;
 
     let mut out = ptr::null_mut();
-    // Safety: DuplicateKeepOption, NullEquality, NanEquality and their cudf_sys counterparts
-    // are all #[repr(i32)] with identical discriminant values.
-    let keep_ffi: cudf_sys::cudf_duplicate_keep_option_t = unsafe { std::mem::transmute(keep) };
-    let null_eq_ffi: cudf_sys::cudf_stream_compaction_null_equality_t = unsafe { std::mem::transmute(null_equality) };
-    let nan_eq_ffi: cudf_sys::cudf_stream_compaction_nan_equality_t = unsafe { std::mem::transmute(nan_equality) };
+    let keep_ffi = keep.to_raw();
+    let null_eq_ffi = null_equality.to_stream_compaction_raw();
+    let nan_eq_ffi = nan_equality.to_raw();
     let status = match exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_distinct_ex(
@@ -152,7 +180,6 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> R
 }
 
 /// Create a new table with distinct rows based on key columns.
-///
 ///
 /// This is the GPU equivalent of `drop_duplicates(subset=[...])`.
 /// The order of rows in the output is **not** specified.

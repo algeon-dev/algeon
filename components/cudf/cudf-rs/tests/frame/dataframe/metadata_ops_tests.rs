@@ -201,6 +201,23 @@ fn test_select_empty_preserves_row_count() {
     assert_eq!(result.num_rows(), 3);
 }
 
+#[test]
+fn test_select_wide_projection_reorders_columns_without_copying() {
+    let pairs: Vec<(String, Series)> = (0..16)
+        .map(|idx| (format!("c{idx}"), Series::new::<i32>(format!("source_{idx}"), &[idx, idx + 100]).unwrap()))
+        .collect();
+    let df = DataFrame::from_series(pairs).unwrap();
+
+    let selected = df.select(["c15", "c0", "c7", "c3"]).unwrap();
+
+    assert_eq!(selected.column_names(), &["c15", "c0", "c7", "c3"]);
+    assert_eq!(selected.num_rows(), 2);
+    assert_eq!(device_ptr(&df, "c15"), device_ptr(&selected, "c15"));
+    assert_eq!(device_ptr(&df, "c0"), device_ptr(&selected, "c0"));
+    assert_eq!(device_ptr(&df, "c7"), device_ptr(&selected, "c7"));
+    assert_eq!(device_ptr(&df, "c3"), device_ptr(&selected, "c3"));
+}
+
 // ===========================================================================
 // with_column: accepts both Column and Series via Into<Series>
 // ===========================================================================

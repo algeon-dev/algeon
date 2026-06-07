@@ -4,7 +4,7 @@ use rapids_interop::{
     ActiveLeaseActivation, ActiveLeaseBackend, CompletionAuthority, CompletionBinding, CompletionWitness,
     CompletionWitnessBackend, CompletionWitnessKind, CudaEventHandle, CudaStreamHandle, IncompleteDropBehavior,
     InteropError, InteropErrorKind, LeaseActivation, LeaseBackend, LeaseExportContext, LeaseReadiness,
-    PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
 };
 
 use crate::{
@@ -26,6 +26,44 @@ const SHARED_DROP_LEASE_OP: &str = "interop::ActiveReadLease::drop";
 const SHARED_COMPLETION_WITNESS_READY_OP: &str = "interop::CompletionWitness::is_ready";
 const SHARED_COMPLETION_WITNESS_SYNC_OP: &str = "interop::CompletionWitness::synchronize";
 
+/// CUDA-specific compatibility wrapper for shared consumer read-start
+/// authority.
+///
+/// This surface exists for callers that already traffic in
+/// [`crate::runtime::CudaStream`] handles. It maps onto the shared
+/// [`ReadStartAuthority`] contract rather than defining a separate lease model.
+#[derive(Clone, Copy)]
+pub enum RuntimeReadStartAuthority<'a> {
+    /// The producer guarantees read-start completion before activation
+    /// returns, so the consumer does not need an explicit stream wait.
+    SynchronousByReturn,
+    /// The consumer will begin reading on the supplied CUDA stream.
+    ConsumerStream { stream: &'a CudaStream },
+}
+
+impl<'a> RuntimeReadStartAuthority<'a> {
+    /// Use a synchronous-by-return read-start contract.
+    pub const fn synchronous_by_return() -> Self {
+        Self::SynchronousByReturn
+    }
+
+    /// Use a consumer-stream read-start contract.
+    pub const fn consumer_stream(stream: &'a CudaStream) -> Self {
+        Self::ConsumerStream { stream }
+    }
+}
+
+impl fmt::Debug for RuntimeReadStartAuthority<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SynchronousByReturn => f.write_str("RuntimeReadStartAuthority::SynchronousByReturn"),
+            Self::ConsumerStream { stream } => {
+                f.debug_struct("RuntimeReadStartAuthority::ConsumerStream").field("device", &stream.device()).finish()
+            },
+        }
+    }
+}
+
 /// CUDA-specific compatibility wrapper for shared consumer completion
 /// authority.
 ///
@@ -35,20 +73,26 @@ const SHARED_COMPLETION_WITNESS_SYNC_OP: &str = "interop::CompletionWitness::syn
 /// defining a separate lease model.
 #[derive(Clone, Copy)]
 pub enum RuntimeCompletionAuthority<'a> {
+    /// Completion is guaranteed before the lease-completion call returns.
     SynchronousByReturn,
+    /// Completion will be observed on the supplied CUDA stream.
     SameDeviceStream { stream: &'a CudaStream },
+    /// Completion will be observed through the supplied CUDA event.
     CrossDeviceEvent { event: &'a CudaEvent },
 }
 
 impl<'a> RuntimeCompletionAuthority<'a> {
+    /// Use a synchronous-by-return completion contract.
     pub const fn synchronous_by_return() -> Self {
         Self::SynchronousByReturn
     }
 
+    /// Use a same-device stream completion contract.
     pub const fn same_device_stream(stream: &'a CudaStream) -> Self {
         Self::SameDeviceStream { stream }
     }
 
+    /// Use a cross-device event completion contract.
     pub const fn cross_device_event(event: &'a CudaEvent) -> Self {
         Self::CrossDeviceEvent { event }
     }
@@ -86,23 +130,28 @@ impl RuntimeCompletionWitness {
         Self { kind, event }
     }
 
+    /// Return the shared completion-witness kind this runtime wrapper carries.
     pub fn kind(&self) -> CompletionWitnessKind {
         self.kind
     }
 
+    /// Return the CUDA device that owns the producer completion event.
     pub fn device(&self) -> DeviceId {
         self.event.device()
     }
 
+    /// Borrow the producer-owned CUDA event behind this witness.
     pub fn event(&self) -> &CudaEvent {
         &self.event
     }
 
+    /// Check whether the producer-owned completion event has completed.
     pub fn is_ready(&self) -> Result<bool> {
         let _guard = DeviceGuard::new(self.device())?;
         self.event.is_ready().map_err(|error| error.with_operation(RUNTIME_COMPLETION_WITNESS_READY_OP))
     }
 
+    /// Synchronize the calling thread with the producer-owned completion event.
     pub fn synchronize(&self) -> Result<()> {
         let _guard = DeviceGuard::new(self.device())?;
         self.event.synchronize().map_err(|error| error.with_operation(RUNTIME_COMPLETION_WITNESS_SYNC_OP))
@@ -147,6 +196,10 @@ impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
             super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_SYNC_OP, error)
         })
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// CUDA-specific compatibility wrapper for [`rapids_interop::LeaseCompletionResult`].
@@ -154,7 +207,9 @@ impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
 /// This keeps the shared completion outcome vocabulary but swaps the shared
 /// witness object for [`RuntimeCompletionWitness`].
 pub enum RuntimeLeaseCompletionResult {
+    /// Completion produced a runtime-owned witness that can be queried or synchronized later.
     Completed(RuntimeCompletionWitness),
+    /// Completion fell back to an immediate synchronization path instead of returning a witness.
     FallbackSynchronized,
 }
 
@@ -256,13 +311,21 @@ fn runtime_completion_as_shared<'a>(
     }
 }
 
-fn create_producer_owned_witness(
-    producer_device: DeviceId,
-    completion_kind: CompletionWitnessKind,
-) -> Result<RuntimeCompletionWitness> {
-    let _guard = DeviceGuard::new(producer_device)?;
-    let event = CudaEvent::new()?;
-    Ok(RuntimeCompletionWitness::new(completion_kind, event))
+fn runtime_read_start_as_shared<'a>(
+    read_start: RuntimeReadStartAuthority<'a>,
+    operation: &'static str,
+) -> std::result::Result<ReadStartAuthority<'a>, InteropError> {
+    match read_start {
+        RuntimeReadStartAuthority::SynchronousByReturn => Ok(ReadStartAuthority::SynchronousByReturn),
+        RuntimeReadStartAuthority::ConsumerStream { stream } => {
+            let raw = stream
+                .interop_raw_handle()
+                .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            Ok(ReadStartAuthority::ConsumerStream {
+                stream: CudaStreamHandle::from_raw_on_device(raw, stream.device().ordinal_raw())?,
+            })
+        },
+    }
 }
 
 fn create_producer_owned_event(producer_device: DeviceId) -> Result<CudaEvent> {
@@ -270,95 +333,30 @@ fn create_producer_owned_event(producer_device: DeviceId) -> Result<CudaEvent> {
     CudaEvent::new()
 }
 
-fn complete_same_device_stream(
-    producer_device: DeviceId,
-    stream: &CudaStream,
-    operation: &'static str,
-) -> Result<RuntimeCompletionWitness> {
-    let witness = create_producer_owned_witness(producer_device, CompletionWitnessKind::ConsumerStream)
-        .map_err(|error| error.with_operation(operation))?;
-    let _guard = DeviceGuard::new(producer_device)?;
-    witness
-        .event()
-        .record(stream)
-        .map_err(|error| error.with_operation(operation).with_context("completion", "same_device_stream"))?;
-    Ok(witness)
+fn map_runtime_completion_interop_error(operation: &'static str, error: InteropError) -> error::Error {
+    error::Error::new(error::ErrorKind::InvalidOperation, error.to_string()).with_operation(operation).set_source(error)
 }
 
-fn complete_cross_device_event(
-    producer_readiness: ProducerReadinessBinding,
-    event: &CudaEvent,
+fn runtime_completion_result_from_shared(
+    result: rapids_interop::LeaseCompletionResult,
     operation: &'static str,
-) -> Result<RuntimeCompletionWitness> {
-    let producer_device = producer_readiness.device();
-    let witness = create_producer_owned_witness(producer_device, CompletionWitnessKind::ConsumerEvent)
-        .map_err(|error| error.with_operation(operation))?;
-    let consumer_event_raw = event
-        .interop_raw_handle()
-        .map_err(|error| error.with_operation(operation).with_context("completion", "cross_device_event"))?;
-    let witness_event_raw = witness
-        .event()
-        .interop_raw_handle()
-        .map_err(|error| error.with_operation(operation).with_context("completion", "cross_device_event"))?;
-
-    let _guard = DeviceGuard::new(producer_device)?;
-    match producer_readiness {
-        ProducerReadinessBinding::Stream { raw: producer_stream_raw, .. } => {
-            error::check_status_in_with(
-                unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(producer_stream_raw, consumer_event_raw) },
-                operation,
-                [
-                    ("completion", "cross_device_event".to_string()),
-                    ("producer_device", producer_device.ordinal().to_string()),
-                    ("consumer_device", event.device().ordinal().to_string()),
-                ],
-            )?;
-            error::check_status_in_with(
-                unsafe { cudf_sys::cudf_raw_cuda_event_record(witness_event_raw, producer_stream_raw) },
-                operation,
-                [
-                    ("completion", "cross_device_event".to_string()),
-                    ("producer_device", producer_device.ordinal().to_string()),
-                    ("consumer_device", event.device().ordinal().to_string()),
-                ],
-            )?;
+) -> Result<RuntimeLeaseCompletionResult> {
+    match result {
+        rapids_interop::LeaseCompletionResult::FallbackSynchronized => {
+            Ok(RuntimeLeaseCompletionResult::FallbackSynchronized)
         },
-        ProducerReadinessBinding::Event { raw: producer_event_raw, .. } => {
-            let producer_stream = CudaStream::new().map_err(|error| error.with_operation(operation))?;
-            let producer_stream_raw = producer_stream
-                .interop_raw_handle()
-                .map_err(|error| error.with_operation(operation).with_context("readiness", "device_event_ordered"))?;
-            error::check_status_in_with(
-                unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(producer_stream_raw, producer_event_raw) },
-                operation,
-                [
-                    ("readiness", "device_event_ordered".to_string()),
-                    ("producer_device", producer_device.ordinal().to_string()),
-                ],
-            )?;
-            error::check_status_in_with(
-                unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(producer_stream_raw, consumer_event_raw) },
-                operation,
-                [
-                    ("completion", "cross_device_event".to_string()),
-                    ("readiness", "device_event_ordered".to_string()),
-                    ("producer_device", producer_device.ordinal().to_string()),
-                    ("consumer_device", event.device().ordinal().to_string()),
-                ],
-            )?;
-            error::check_status_in_with(
-                unsafe { cudf_sys::cudf_raw_cuda_event_record(witness_event_raw, producer_stream_raw) },
-                operation,
-                [
-                    ("completion", "cross_device_event".to_string()),
-                    ("readiness", "device_event_ordered".to_string()),
-                    ("producer_device", producer_device.ordinal().to_string()),
-                    ("consumer_device", event.device().ordinal().to_string()),
-                ],
-            )?;
+        rapids_interop::LeaseCompletionResult::Completed(shared_witness) => {
+            if let Some(state) = shared_witness.downcast_backend_ref::<SharedCudaCompletionWitnessState>() {
+                return Ok(RuntimeLeaseCompletionResult::Completed(RuntimeCompletionWitness::new(
+                    shared_witness.kind(),
+                    state.event.clone(),
+                )));
+            }
+
+            shared_witness.synchronize().map_err(|error| map_runtime_completion_interop_error(operation, error))?;
+            Ok(RuntimeLeaseCompletionResult::FallbackSynchronized)
         },
     }
-    Ok(witness)
 }
 
 fn complete_same_device_stream_shared(
@@ -532,7 +530,7 @@ fn order_consumer_stream_after_producer_event_raw(
         operation,
         [
             ("readiness", "device_event_ordered".to_string()),
-            ("completion", "same_device_stream".to_string()),
+            ("read_start", "consumer_stream".to_string()),
             ("producer_device", producer_device.ordinal().to_string()),
             ("consumer_device", consumer_device.ordinal().to_string()),
         ],
@@ -552,19 +550,19 @@ fn order_consumer_stream_after_producer_stream_raw(
     let barrier = CudaEvent::new().map_err(|error| {
         super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
             .with_context("readiness", "device_stream_ordered")
-            .with_context("completion", "same_device_stream")
+            .with_context("read_start", "consumer_stream")
     })?;
     let barrier_raw = barrier.interop_raw_handle().map_err(|error| {
         super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
             .with_context("readiness", "device_stream_ordered")
-            .with_context("completion", "same_device_stream")
+            .with_context("read_start", "consumer_stream")
     })?;
     error::check_status_in_with(
         unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, producer_stream_raw) },
         operation,
         [
             ("readiness", "device_stream_ordered".to_string()),
-            ("completion", "same_device_stream".to_string()),
+            ("read_start", "consumer_stream".to_string()),
             ("producer_device", producer_device.ordinal().to_string()),
         ],
     )
@@ -574,7 +572,7 @@ fn order_consumer_stream_after_producer_stream_raw(
         operation,
         [
             ("readiness", "device_stream_ordered".to_string()),
-            ("completion", "same_device_stream".to_string()),
+            ("read_start", "consumer_stream".to_string()),
             ("producer_device", producer_device.ordinal().to_string()),
             ("consumer_device", consumer_device.ordinal().to_string()),
         ],
@@ -607,6 +605,89 @@ fn order_consumer_stream_after_producer_readiness_raw(
                 operation,
             )?;
             Ok(None)
+        },
+    }
+}
+
+fn synchronize_producer_stream_readiness_raw(
+    producer_stream_raw: *mut c_void,
+    producer_device: DeviceId,
+    operation: &'static str,
+) -> std::result::Result<(), InteropError> {
+    let _guard = DeviceGuard::new(producer_device)
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let barrier = CudaEvent::new()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let barrier_raw = barrier
+        .interop_raw_handle()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    error::check_status_in_with(
+        unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, producer_stream_raw) },
+        operation,
+        [
+            ("readiness", "device_stream_ordered".to_string()),
+            ("read_start", "synchronous_by_return".to_string()),
+            ("producer_device", producer_device.ordinal().to_string()),
+        ],
+    )
+    .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    barrier
+        .synchronize()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+}
+
+fn synchronize_producer_event_readiness_raw(
+    producer_event_raw: *mut c_void,
+    producer_device: DeviceId,
+    operation: &'static str,
+) -> std::result::Result<(), InteropError> {
+    let _guard = DeviceGuard::new(producer_device)
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let stream = CudaStream::new()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let stream_raw = stream
+        .interop_raw_handle()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let barrier = CudaEvent::new()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let barrier_raw = barrier
+        .interop_raw_handle()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    error::check_status_in_with(
+        unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(stream_raw, producer_event_raw) },
+        operation,
+        [
+            ("readiness", "device_event_ordered".to_string()),
+            ("read_start", "synchronous_by_return".to_string()),
+            ("producer_device", producer_device.ordinal().to_string()),
+        ],
+    )
+    .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    error::check_status_in_with(
+        unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, stream_raw) },
+        operation,
+        [
+            ("readiness", "device_event_ordered".to_string()),
+            ("read_start", "synchronous_by_return".to_string()),
+            ("producer_device", producer_device.ordinal().to_string()),
+        ],
+    )
+    .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    barrier
+        .synchronize()
+        .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+}
+
+fn synchronize_producer_readiness(
+    producer_readiness: ProducerReadinessBinding,
+    operation: &'static str,
+) -> std::result::Result<(), InteropError> {
+    match producer_readiness {
+        ProducerReadinessBinding::Stream { raw, device } => {
+            synchronize_producer_stream_readiness_raw(raw, device, operation)
+        },
+        ProducerReadinessBinding::Event { raw, device } => {
+            synchronize_producer_event_readiness_raw(raw, device, operation)
         },
     }
 }
@@ -644,29 +725,36 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
     fn activate(
         &self,
         export: &LeaseExportContext,
+        read_start: ReadStartBinding,
         completion: CompletionBinding,
     ) -> rapids_interop::Result<LeaseActivation> {
-        let CompletionBinding::SameDeviceStream { raw, device } = completion else {
-            return Ok(LeaseActivation::noop());
-        };
-
         let producer_readiness = producer_readiness_binding_from_export(export, SHARED_ACTIVATE_LEASE_OP)?;
-        let consumer_device = DeviceId::new(device as usize).map_err(|error| {
-            super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_ACTIVATE_LEASE_OP, error)
-        })?;
-        let barrier = order_consumer_stream_after_producer_readiness_raw(
-            producer_readiness,
-            raw,
-            consumer_device,
-            SHARED_ACTIVATE_LEASE_OP,
-        )?;
+        let _ = completion;
 
-        Ok(match barrier {
-            Some(barrier) => {
-                LeaseActivation::with_state(Arc::new(SharedCudaLeaseActivation { _barrier: Some(barrier) }))
+        match read_start {
+            ReadStartBinding::SynchronousByReturn => {
+                synchronize_producer_readiness(producer_readiness, SHARED_ACTIVATE_LEASE_OP)?;
+                Ok(LeaseActivation::noop())
             },
-            None => LeaseActivation::noop(),
-        })
+            ReadStartBinding::ConsumerStream { raw, device } => {
+                let consumer_device = DeviceId::new(device as usize).map_err(|error| {
+                    super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_ACTIVATE_LEASE_OP, error)
+                })?;
+                let barrier = order_consumer_stream_after_producer_readiness_raw(
+                    producer_readiness,
+                    raw,
+                    consumer_device,
+                    SHARED_ACTIVATE_LEASE_OP,
+                )?;
+
+                Ok(match barrier {
+                    Some(barrier) => {
+                        LeaseActivation::with_state(Arc::new(SharedCudaLeaseActivation { _barrier: Some(barrier) }))
+                    },
+                    None => LeaseActivation::noop(),
+                })
+            },
+        }
     }
 
     fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
@@ -749,8 +837,238 @@ pub(crate) fn shared_cuda_lease_backend() -> LeaseBackend {
 /// This is an opt-in backend for callers that want the real CUDA runtime
 /// activation and witness path but do not want abandoned leases to
 /// conservatively synchronize during `drop`.
+///
+/// Callers must ensure that every activated lease is completed explicitly via
+/// `.complete()` before the producer's underlying buffers are invalidated.
+/// Dropping an incomplete lease with this backend does not synchronize, which
+/// can cause GPU use-after-free if the consumer is still accessing producer
+/// memory.
 pub fn cuda_explicit_completion_required_lease_backend() -> LeaseBackend {
     shared_cuda_lease_backend_with_behavior(IncompleteDropBehavior::ExplicitCompletionRequired)
+}
+
+trait RuntimeSharedLease {
+    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior;
+    fn complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult>;
+}
+
+impl RuntimeSharedLease for super::ActiveColumnReadLease<'_, '_, '_> {
+    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+        super::ActiveColumnReadLease::incomplete_drop_behavior(self)
+    }
+
+    fn complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult> {
+        super::ActiveColumnReadLease::complete(self)
+    }
+}
+
+impl RuntimeSharedLease for super::ActiveTableReadLease<'_, '_, '_> {
+    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+        super::ActiveTableReadLease::incomplete_drop_behavior(self)
+    }
+
+    fn complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult> {
+        super::ActiveTableReadLease::complete(self)
+    }
+}
+
+struct RuntimeActiveLeaseState<'export, 'consumer, Export, SharedLease: RuntimeSharedLease> {
+    export: &'export Export,
+    read_start: RuntimeReadStartAuthority<'consumer>,
+    completion: RuntimeCompletionAuthority<'consumer>,
+    producer_readiness: ProducerReadinessBinding,
+    incomplete_drop_behavior: IncompleteDropBehavior,
+    shared_lease: Option<SharedLease>,
+    complete_operation: &'static str,
+    drop_operation: &'static str,
+    completed: bool,
+}
+
+impl<'export, 'consumer, Export, SharedLease: RuntimeSharedLease>
+    RuntimeActiveLeaseState<'export, 'consumer, Export, SharedLease>
+{
+    fn new(
+        export: &'export Export,
+        read_start: RuntimeReadStartAuthority<'consumer>,
+        completion: RuntimeCompletionAuthority<'consumer>,
+        producer_readiness: ProducerReadinessBinding,
+        shared_lease: SharedLease,
+        complete_operation: &'static str,
+        drop_operation: &'static str,
+    ) -> Self {
+        let incomplete_drop_behavior = shared_lease.incomplete_drop_behavior();
+        Self {
+            export,
+            read_start,
+            completion,
+            producer_readiness,
+            incomplete_drop_behavior,
+            shared_lease: Some(shared_lease),
+            complete_operation,
+            drop_operation,
+            completed: false,
+        }
+    }
+
+    fn export(&self) -> &'export Export {
+        self.export
+    }
+
+    fn read_start(&self) -> &RuntimeReadStartAuthority<'consumer> {
+        &self.read_start
+    }
+
+    fn completion(&self) -> &RuntimeCompletionAuthority<'consumer> {
+        &self.completion
+    }
+
+    fn producer_device(&self) -> DeviceId {
+        self.producer_readiness.device()
+    }
+
+    fn complete(mut self) -> Result<RuntimeLeaseCompletionResult> {
+        let shared_lease = self.shared_lease.take().expect("runtime lease missing shared lease state");
+        let shared_result = shared_lease
+            .complete()
+            .map_err(|error| map_runtime_completion_interop_error(self.complete_operation, error))?;
+        let result = runtime_completion_result_from_shared(shared_result, self.complete_operation)?;
+        self.completed = true;
+        Ok(result)
+    }
+}
+
+impl<Export, SharedLease: RuntimeSharedLease> Drop for RuntimeActiveLeaseState<'_, '_, Export, SharedLease> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if matches!(self.incomplete_drop_behavior, IncompleteDropBehavior::GuaranteedFallback) {
+            let _ = synchronize_completion_fallback(self.completion, self.drop_operation);
+        }
+    }
+}
+
+struct RuntimeActiveReadLease<'export, 'consumer, Export, SharedLease>
+where SharedLease: RuntimeSharedLease
+{
+    inner: RuntimeActiveLeaseState<'export, 'consumer, Export, SharedLease>,
+}
+
+impl<'export, 'consumer, Export, SharedLease> RuntimeActiveReadLease<'export, 'consumer, Export, SharedLease>
+where SharedLease: RuntimeSharedLease
+{
+    fn new(inner: RuntimeActiveLeaseState<'export, 'consumer, Export, SharedLease>) -> Self {
+        Self { inner }
+    }
+
+    fn export(&self) -> &'export Export {
+        self.inner.export()
+    }
+
+    fn read_start(&self) -> &RuntimeReadStartAuthority<'consumer> {
+        self.inner.read_start()
+    }
+
+    fn completion(&self) -> &RuntimeCompletionAuthority<'consumer> {
+        self.inner.completion()
+    }
+
+    fn complete(self) -> Result<RuntimeLeaseCompletionResult> {
+        self.inner.complete()
+    }
+
+    fn fmt_debug(&self, name: &'static str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct(name)
+            .field("read_start", &self.read_start())
+            .field("completion", &self.completion())
+            .field("producer_device", &self.inner.producer_device())
+            .finish()
+    }
+}
+
+fn activate_runtime_read_lease<'export, 'consumer, Export, SharedLease>(
+    export: &'export Export,
+    read_start: RuntimeReadStartAuthority<'consumer>,
+    completion: RuntimeCompletionAuthority<'consumer>,
+    readiness: &ProducerReadiness<'_>,
+    activate_operation: &'static str,
+    complete_operation: &'static str,
+    drop_operation: &'static str,
+    activate_shared: impl FnOnce(
+        ReadStartAuthority<'consumer>,
+        CompletionAuthority<'consumer>,
+    ) -> std::result::Result<SharedLease, InteropError>,
+) -> std::result::Result<RuntimeActiveReadLease<'export, 'consumer, Export, SharedLease>, InteropError>
+where
+    SharedLease: RuntimeSharedLease,
+{
+    let shared_read_start = runtime_read_start_as_shared(read_start, activate_operation)?;
+    let shared_completion = runtime_completion_as_shared(completion, activate_operation)?;
+    let shared_lease = activate_shared(shared_read_start, shared_completion)?;
+    let producer_readiness = producer_readiness_binding(readiness, activate_operation)?;
+    Ok(RuntimeActiveReadLease::new(RuntimeActiveLeaseState::new(
+        export,
+        read_start,
+        completion,
+        producer_readiness,
+        shared_lease,
+        complete_operation,
+        drop_operation,
+    )))
+}
+
+macro_rules! impl_runtime_active_read_lease_surface {
+    ($lease:ident, $export_ty:ty, $debug_name:literal) => {
+        impl<'export, 'producer, 'consumer> $lease<'export, 'producer, 'consumer> {
+            pub fn export(&self) -> &'export $export_ty {
+                self.inner.export()
+            }
+
+            pub fn read_start(&self) -> &RuntimeReadStartAuthority<'consumer> {
+                self.inner.read_start()
+            }
+
+            pub fn completion(&self) -> &RuntimeCompletionAuthority<'consumer> {
+                self.inner.completion()
+            }
+
+            pub fn complete(self) -> Result<RuntimeLeaseCompletionResult> {
+                self.inner.complete()
+            }
+        }
+
+        impl fmt::Debug for $lease<'_, '_, '_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.inner.fmt_debug($debug_name, f)
+            }
+        }
+    };
+}
+
+macro_rules! impl_try_activate_runtime_read_lease {
+    ($trait_name:ident, $export_ty:ty, $lease:ident, $activate_op:expr, $complete_op:expr, $drop_op:expr) => {
+        impl<'producer> $trait_name for $export_ty {
+            fn try_activate_runtime_read_lease<'consumer>(
+                &self,
+                read_start: RuntimeReadStartAuthority<'consumer>,
+                completion: RuntimeCompletionAuthority<'consumer>,
+            ) -> std::result::Result<$lease<'_, '_, 'consumer>, InteropError> {
+                let inner = activate_runtime_read_lease(
+                    self,
+                    read_start,
+                    completion,
+                    self.readiness(),
+                    $activate_op,
+                    $complete_op,
+                    $drop_op,
+                    |shared_read_start, shared_completion| {
+                        self.try_activate_read_lease(shared_read_start, shared_completion)
+                    },
+                )?;
+                Ok($lease { inner })
+            }
+        }
+    };
 }
 
 /// CUDA-specific compatibility wrapper over a shared active column read lease.
@@ -762,64 +1080,18 @@ pub fn cuda_explicit_completion_required_lease_backend() -> LeaseBackend {
 /// surface exposed to CUDA-runtime-oriented callers.
 #[must_use = "lease must be completed explicitly via .complete(); dropping without completion falls back to conservative synchronization"]
 pub struct RuntimeActiveColumnReadLease<'export, 'producer, 'consumer> {
-    export: &'export PreparedColumnExport<'producer>,
-    completion: RuntimeCompletionAuthority<'consumer>,
-    producer_readiness: ProducerReadinessBinding,
-    incomplete_drop_behavior: IncompleteDropBehavior,
-    shared_lease: Option<super::ActiveColumnReadLease<'export, 'producer, 'consumer>>,
-    completed: bool,
+    inner: RuntimeActiveReadLease<
+        'export,
+        'consumer,
+        PreparedColumnExport<'producer>,
+        super::ActiveColumnReadLease<'export, 'producer, 'consumer>,
+    >,
 }
-
-impl<'export, 'producer, 'consumer> RuntimeActiveColumnReadLease<'export, 'producer, 'consumer> {
-    pub fn export(&self) -> &'export PreparedColumnExport<'producer> {
-        self.export
-    }
-
-    pub fn completion(&self) -> &RuntimeCompletionAuthority<'consumer> {
-        &self.completion
-    }
-
-    pub fn complete(mut self) -> Result<RuntimeLeaseCompletionResult> {
-        let result = match self.completion {
-            RuntimeCompletionAuthority::SynchronousByReturn => RuntimeLeaseCompletionResult::FallbackSynchronized,
-            RuntimeCompletionAuthority::SameDeviceStream { stream } => {
-                RuntimeLeaseCompletionResult::Completed(complete_same_device_stream(
-                    self.producer_readiness.device(),
-                    stream,
-                    COMPLETE_RUNTIME_COLUMN_LEASE_OP,
-                )?)
-            },
-            RuntimeCompletionAuthority::CrossDeviceEvent { event } => RuntimeLeaseCompletionResult::Completed(
-                complete_cross_device_event(self.producer_readiness, event, COMPLETE_RUNTIME_COLUMN_LEASE_OP)?,
-            ),
-        };
-        if let Some(shared_lease) = self.shared_lease.take() {
-            shared_lease.release_after_external_completion();
-        }
-        self.completed = true;
-        Ok(result)
-    }
-}
-
-impl Drop for RuntimeActiveColumnReadLease<'_, '_, '_> {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        if matches!(self.incomplete_drop_behavior, IncompleteDropBehavior::GuaranteedFallback) {
-            let _ = synchronize_completion_fallback(self.completion, DROP_RUNTIME_COLUMN_LEASE_OP);
-        }
-    }
-}
-
-impl fmt::Debug for RuntimeActiveColumnReadLease<'_, '_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RuntimeActiveColumnReadLease")
-            .field("completion", &self.completion)
-            .field("producer_device", &self.producer_readiness.device())
-            .finish()
-    }
-}
+impl_runtime_active_read_lease_surface!(
+    RuntimeActiveColumnReadLease,
+    PreparedColumnExport<'producer>,
+    "RuntimeActiveColumnReadLease"
+);
 
 /// CUDA-specific compatibility wrapper over a shared active table read lease.
 ///
@@ -830,60 +1102,18 @@ impl fmt::Debug for RuntimeActiveColumnReadLease<'_, '_, '_> {
 /// surface exposed to CUDA-runtime-oriented callers.
 #[must_use = "lease must be completed explicitly via .complete(); dropping without completion falls back to conservative synchronization"]
 pub struct RuntimeActiveTableReadLease<'export, 'producer, 'consumer> {
-    export: &'export PreparedTableExport<'producer>,
-    completion: RuntimeCompletionAuthority<'consumer>,
-    producer_readiness: ProducerReadinessBinding,
-    incomplete_drop_behavior: IncompleteDropBehavior,
-    shared_lease: Option<super::ActiveTableReadLease<'export, 'producer, 'consumer>>,
-    completed: bool,
+    inner: RuntimeActiveReadLease<
+        'export,
+        'consumer,
+        PreparedTableExport<'producer>,
+        super::ActiveTableReadLease<'export, 'producer, 'consumer>,
+    >,
 }
-
-impl<'export, 'producer, 'consumer> RuntimeActiveTableReadLease<'export, 'producer, 'consumer> {
-    pub fn export(&self) -> &'export PreparedTableExport<'producer> {
-        self.export
-    }
-
-    pub fn completion(&self) -> &RuntimeCompletionAuthority<'consumer> {
-        &self.completion
-    }
-
-    pub fn complete(mut self) -> Result<RuntimeLeaseCompletionResult> {
-        let result = match self.completion {
-            RuntimeCompletionAuthority::SynchronousByReturn => RuntimeLeaseCompletionResult::FallbackSynchronized,
-            RuntimeCompletionAuthority::SameDeviceStream { stream } => RuntimeLeaseCompletionResult::Completed(
-                complete_same_device_stream(self.producer_readiness.device(), stream, COMPLETE_RUNTIME_TABLE_LEASE_OP)?,
-            ),
-            RuntimeCompletionAuthority::CrossDeviceEvent { event } => RuntimeLeaseCompletionResult::Completed(
-                complete_cross_device_event(self.producer_readiness, event, COMPLETE_RUNTIME_TABLE_LEASE_OP)?,
-            ),
-        };
-        if let Some(shared_lease) = self.shared_lease.take() {
-            shared_lease.release_after_external_completion();
-        }
-        self.completed = true;
-        Ok(result)
-    }
-}
-
-impl Drop for RuntimeActiveTableReadLease<'_, '_, '_> {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        if matches!(self.incomplete_drop_behavior, IncompleteDropBehavior::GuaranteedFallback) {
-            let _ = synchronize_completion_fallback(self.completion, DROP_RUNTIME_TABLE_LEASE_OP);
-        }
-    }
-}
-
-impl fmt::Debug for RuntimeActiveTableReadLease<'_, '_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RuntimeActiveTableReadLease")
-            .field("completion", &self.completion)
-            .field("producer_device", &self.producer_readiness.device())
-            .finish()
-    }
-}
+impl_runtime_active_read_lease_surface!(
+    RuntimeActiveTableReadLease,
+    PreparedTableExport<'producer>,
+    "RuntimeActiveTableReadLease"
+);
 
 /// CUDA-specific compatibility activation over a prepared column export.
 ///
@@ -893,29 +1123,19 @@ impl fmt::Debug for RuntimeActiveTableReadLease<'_, '_, '_> {
 pub trait TryActivateRuntimeColumnReadLease {
     fn try_activate_runtime_read_lease<'consumer>(
         &self,
+        read_start: RuntimeReadStartAuthority<'consumer>,
         completion: RuntimeCompletionAuthority<'consumer>,
     ) -> std::result::Result<RuntimeActiveColumnReadLease<'_, '_, 'consumer>, InteropError>;
 }
 
-impl<'producer> TryActivateRuntimeColumnReadLease for PreparedColumnExport<'producer> {
-    fn try_activate_runtime_read_lease<'consumer>(
-        &self,
-        completion: RuntimeCompletionAuthority<'consumer>,
-    ) -> std::result::Result<RuntimeActiveColumnReadLease<'_, '_, 'consumer>, InteropError> {
-        let shared_completion = runtime_completion_as_shared(completion, ACTIVATE_RUNTIME_COLUMN_LEASE_OP)?;
-        let shared_lease = self.try_activate_read_lease(shared_completion)?;
-        let incomplete_drop_behavior = shared_lease.incomplete_drop_behavior();
-        let producer_readiness = producer_readiness_binding(self.readiness(), ACTIVATE_RUNTIME_COLUMN_LEASE_OP)?;
-        Ok(RuntimeActiveColumnReadLease {
-            export: self,
-            completion,
-            producer_readiness,
-            incomplete_drop_behavior,
-            shared_lease: Some(shared_lease),
-            completed: false,
-        })
-    }
-}
+impl_try_activate_runtime_read_lease!(
+    TryActivateRuntimeColumnReadLease,
+    PreparedColumnExport<'producer>,
+    RuntimeActiveColumnReadLease,
+    ACTIVATE_RUNTIME_COLUMN_LEASE_OP,
+    COMPLETE_RUNTIME_COLUMN_LEASE_OP,
+    DROP_RUNTIME_COLUMN_LEASE_OP
+);
 
 /// CUDA-specific compatibility activation over a prepared table export.
 ///
@@ -925,26 +1145,16 @@ impl<'producer> TryActivateRuntimeColumnReadLease for PreparedColumnExport<'prod
 pub trait TryActivateRuntimeTableReadLease {
     fn try_activate_runtime_read_lease<'consumer>(
         &self,
+        read_start: RuntimeReadStartAuthority<'consumer>,
         completion: RuntimeCompletionAuthority<'consumer>,
     ) -> std::result::Result<RuntimeActiveTableReadLease<'_, '_, 'consumer>, InteropError>;
 }
 
-impl<'producer> TryActivateRuntimeTableReadLease for PreparedTableExport<'producer> {
-    fn try_activate_runtime_read_lease<'consumer>(
-        &self,
-        completion: RuntimeCompletionAuthority<'consumer>,
-    ) -> std::result::Result<RuntimeActiveTableReadLease<'_, '_, 'consumer>, InteropError> {
-        let shared_completion = runtime_completion_as_shared(completion, ACTIVATE_RUNTIME_TABLE_LEASE_OP)?;
-        let shared_lease = self.try_activate_read_lease(shared_completion)?;
-        let incomplete_drop_behavior = shared_lease.incomplete_drop_behavior();
-        let producer_readiness = producer_readiness_binding(self.readiness(), ACTIVATE_RUNTIME_TABLE_LEASE_OP)?;
-        Ok(RuntimeActiveTableReadLease {
-            export: self,
-            completion,
-            producer_readiness,
-            incomplete_drop_behavior,
-            shared_lease: Some(shared_lease),
-            completed: false,
-        })
-    }
-}
+impl_try_activate_runtime_read_lease!(
+    TryActivateRuntimeTableReadLease,
+    PreparedTableExport<'producer>,
+    RuntimeActiveTableReadLease,
+    ACTIVATE_RUNTIME_TABLE_LEASE_OP,
+    COMPLETE_RUNTIME_TABLE_LEASE_OP,
+    DROP_RUNTIME_TABLE_LEASE_OP
+);

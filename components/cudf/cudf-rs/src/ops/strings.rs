@@ -27,6 +27,16 @@ pub enum StripSide {
     Both = 2,
 }
 
+impl StripSide {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_strip_side_t {
+        match self {
+            StripSide::Left => cudf_sys::cudf_strip_side_t::CUDF_STRIP_LEFT,
+            StripSide::Right => cudf_sys::cudf_strip_side_t::CUDF_STRIP_RIGHT,
+            StripSide::Both => cudf_sys::cudf_strip_side_t::CUDF_STRIP_BOTH,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Case conversion
 // ---------------------------------------------------------------------------
@@ -179,9 +189,7 @@ fn strip_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // Safety: StripSide and cudf_sys::cudf_strip_side_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let side_ffi: cudf_sys::cudf_strip_side_t = unsafe { std::mem::transmute(side) };
+    let side_ffi = side.to_raw();
     let status = match exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_strings_strip_ex(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out, options)

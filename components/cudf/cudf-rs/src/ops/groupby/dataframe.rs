@@ -195,9 +195,10 @@ impl<'a> GroupBy<'a> {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<DataFrame> {
-        use indexmap::IndexMap;
-
-        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
+        use crate::internal::{
+            hash::{FastHashMap, fast_hash_map_with_capacity},
+            resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
+        };
 
         if specs.is_empty() {
             return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")
@@ -229,8 +230,8 @@ impl<'a> GroupBy<'a> {
             SmallVec::new();
         let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
 
-        let mut col_name_to_view_idx: IndexMap<String, usize> = IndexMap::new();
-        let mut view_idx_to_group_idx: IndexMap<usize, usize> = IndexMap::new();
+        let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
+        let mut view_idx_to_group_idx: FastHashMap<usize, usize> = fast_hash_map_with_capacity(specs.len());
         let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
 
         for spec in specs {

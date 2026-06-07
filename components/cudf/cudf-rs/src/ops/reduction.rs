@@ -63,9 +63,13 @@ pub enum ReduceAggregation {
 /// Only a subset of aggregations are supported for scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanAggregation {
+    /// Inclusive or exclusive cumulative sum.
     Sum,
+    /// Inclusive or exclusive cumulative minimum.
     Min,
+    /// Inclusive or exclusive cumulative maximum.
     Max,
+    /// Inclusive or exclusive cumulative product.
     Product,
 }
 
@@ -75,6 +79,15 @@ pub enum ScanAggregation {
 pub enum ScanType {
     Inclusive = 0,
     Exclusive = 1,
+}
+
+impl ScanType {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_scan_type_t {
+        match self {
+            ScanType::Inclusive => cudf_sys::cudf_scan_type_t::CUDF_SCAN_INCLUSIVE,
+            ScanType::Exclusive => cudf_sys::cudf_scan_type_t::CUDF_SCAN_EXCLUSIVE,
+        }
+    }
 }
 
 pub use crate::core::types::NullPolicy;
@@ -276,9 +289,7 @@ fn scan_impl(
     let agg_handle = unsafe { create_scan_agg_handle(agg)? };
 
     let mut out = ptr::null_mut();
-    // Safety: ScanType and cudf_sys::cudf_scan_type_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let scan_type_ffi: cudf_sys::cudf_scan_type_t = unsafe { std::mem::transmute(scan_type) };
+    let scan_type_ffi = scan_type.to_raw();
     // SAFETY: input handle is valid (NonNull). agg_handle was returned by a
     // successful FFI call.
     let status = match exec_options {

@@ -333,6 +333,70 @@ impl Default for cudf_exec_options_t {
     }
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_interop_placement_kind_t {
+    CUDF_INTEROP_PLACEMENT_HOST = 0,
+    CUDF_INTEROP_PLACEMENT_CUDA_DEVICE = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_interop_validity_kind_t {
+    CUDF_INTEROP_VALIDITY_NONE = 0,
+    CUDF_INTEROP_VALIDITY_MASK = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_interop_layout_kind_t {
+    CUDF_INTEROP_LAYOUT_FIXED_WIDTH = 0,
+    CUDF_INTEROP_LAYOUT_BINARY_LIKE = 1,
+    CUDF_INTEROP_LAYOUT_LIST = 2,
+    CUDF_INTEROP_LAYOUT_STRUCT = 3,
+    CUDF_INTEROP_LAYOUT_DICTIONARY = 4,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_interop_buffer_binding_t {
+    pub buffer_id: u32,
+    pub data: *const c_void,
+    pub byte_len: usize,
+    pub placement_kind: cudf_interop_placement_kind_t,
+    pub device: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_interop_semantic_column_t {
+    pub column_id: u32,
+    pub type_id: cudf_type_id_t,
+    pub scale: i32,
+    pub len: i32,
+    pub offset: i32,
+    pub validity_kind: cudf_interop_validity_kind_t,
+    pub validity_buffer_id: u32,
+    pub null_count: i32,
+    pub layout_kind: cudf_interop_layout_kind_t,
+    pub values_buffer_id: u32,
+    pub offsets_buffer_id: u32,
+    pub data_buffer_id: u32,
+    pub indices_buffer_id: u32,
+    pub child_column_id: u32,
+    pub child_column_ids: *const u32,
+    pub num_child_column_ids: i32,
+    pub keys_column_id: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_interop_semantic_table_t {
+    pub num_rows: i32,
+    pub column_ids: *const u32,
+    pub num_columns: i32,
+}
+
 fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
     if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
 }
@@ -367,6 +431,10 @@ impl Stream {
     ///
     /// The returned pointer does not transfer ownership and is valid only while
     /// this owning handle remains alive.
+    ///
+    /// Do not wrap the returned pointer in another owning RAII handle. Mixing
+    /// multiple owners for the same raw stream, including higher-level cudf
+    /// wrappers, can double-destroy the underlying CUDA object.
     pub fn raw_cuda_stream(&self) -> Result<*mut c_void, cudf_status_t> {
         let mut out = std::ptr::null_mut();
         status_to_result(unsafe { cudf_stream_raw(self.handle, &mut out) })?;
@@ -419,6 +487,8 @@ impl Event {
 
     pub fn raw_cuda_event(&self) -> Result<*mut c_void, cudf_status_t> {
         let mut out = std::ptr::null_mut();
+        // The returned pointer is borrowed-only. Creating a second owning
+        // wrapper for the same event handle can double-destroy it.
         status_to_result(unsafe { cudf_event_raw(self.handle, &mut out) })?;
         Ok(out)
     }
@@ -475,6 +545,10 @@ impl MemoryResource {
     ///
     /// The returned pointer does not transfer ownership and is valid only while
     /// this owning handle remains alive.
+    ///
+    /// Do not promote this borrowed pointer into another owning wrapper unless
+    /// ownership has been explicitly transferred. Two owners for the same raw
+    /// memory-resource handle will double-destroy it.
     pub fn raw_device_resource(&self) -> Result<*mut c_void, cudf_status_t> {
         let mut out = std::ptr::null_mut();
         status_to_result(unsafe { cudf_memory_resource_raw(self.handle, &mut out) })?;
@@ -585,7 +659,7 @@ extern "C" {
 
     /// Create a fixed-width column by copying from borrowed host buffers.
     ///
-    /// This legacy helper synchronizes cuDF's default stream before return on
+    /// This function synchronizes cuDF's default stream before return on
     /// success so `data` and `null_mask` are no longer in use.
     pub fn cudf_column_create_numeric(
         type_id: cudf_type_id_t,
@@ -624,6 +698,48 @@ extern "C" {
 
     pub fn cudf_column_copy_from_view_ex(
         src: cudf_column_view_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_copy_from_borrowed_view(
+        type_id: cudf_type_id_t,
+        scale: i32,
+        size: i32,
+        offset: i32,
+        data: *const c_void,
+        null_mask: *const c_void,
+        null_count: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_copy_from_borrowed_view_ex(
+        type_id: cudf_type_id_t,
+        scale: i32,
+        size: i32,
+        offset: i32,
+        data: *const c_void,
+        null_mask: *const c_void,
+        null_count: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_copy_from_prepared_device_export(
+        root_column_id: u32,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_copy_from_prepared_device_export_ex(
+        root_column_id: u32,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -745,7 +861,7 @@ extern "C" {
 
     /// Create a column by copying from a borrowed device pointer.
     ///
-    /// This legacy helper synchronizes cuDF's default stream before return so
+    /// This function synchronizes cuDF's default stream before return so
     /// the borrowed `device_data` pointer is no longer in use on success.
     pub fn cudf_column_create_from_device_data(
         type_id: cudf_type_id_t,
@@ -791,7 +907,7 @@ extern "C" {
 
     /// Create a STRING column by copying from borrowed host buffers.
     ///
-    /// This legacy helper synchronizes cuDF's default stream before return on
+    /// This function synchronizes cuDF's default stream before return on
     /// success so the borrowed host buffers are no longer in use.
     pub fn cudf_column_create_strings(
         strings: *const *const c_char,
@@ -926,6 +1042,25 @@ extern "C" {
 
     pub fn cudf_table_copy_ex(
         src: cudf_table_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_table_copy_from_prepared_device_export(
+        table: *const cudf_interop_semantic_table_t,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_table_copy_from_prepared_device_export_ex(
+        table: *const cudf_interop_semantic_table_t,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;

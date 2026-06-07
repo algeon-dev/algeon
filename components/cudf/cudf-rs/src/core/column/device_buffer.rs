@@ -41,10 +41,10 @@ fn current_device_snapshot() -> i32 {
 /// ```no_run
 /// use cudf::{Column, DeviceBuffer, TypeId};
 ///
-/// // Upload host data to a device buffer.
+/// // Upload host data to a device buffer (this copies from host to GPU).
 /// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
 ///
-/// // Zero-copy adopt into a Column (no memcpy).
+/// // Adopt the existing device allocation into a Column without another copy.
 /// let col = Column::from_device_buffer(buf, 3, TypeId::Int32).unwrap();
 /// ```
 pub struct DeviceBuffer {
@@ -81,7 +81,7 @@ impl DeviceBuffer {
     /// The buffer size is `data.len() * size_of::<T>()` bytes. For an empty
     /// slice the buffer is valid but empty.
     pub fn from_host_data<T: CudfType>(data: &[T]) -> Result<Self> {
-        let byte_len = data.len() * mem::size_of::<T>();
+        let byte_len = mem::size_of_val(data);
         let buf = Self::new(byte_len)?;
         if byte_len > 0 {
             error::check_status_in(

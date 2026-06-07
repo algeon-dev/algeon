@@ -34,8 +34,21 @@ pub struct DeviceSlice<'a> {
 }
 
 // SAFETY: Device pointers are not dereferenceable from host code, so sharing
-// across threads is safe — no host-side data race is possible. The lifetime
-// parameter ensures the underlying GPU memory remains valid.
+// across threads cannot create a host-side race on device memory. The host-side
+// metadata (ptr, len, type_id, elem_size) is immutable after construction, and
+// the lifetime parameter ensures the underlying GPU memory remains valid.
+//
+// NOTE: Unlike `ColumnView` and `TableView`, which are `!Send + !Sync`,
+// `DeviceSlice` opts _in_ to Send + Sync. This is an intentional design choice:
+// `DeviceSlice` is a thin descriptor (pointer + length + type tag) with no FFI
+// methods that perform device operations, so there is no risk of CUDA-context or
+// stream misuse from another thread. It exists solely to pass device pointers to
+// external GPU libraries (e.g., cugraph).
+//
+// If `DeviceSlice` ever gains methods that launch kernels, enqueue copies, or
+// interact with a CUDA stream, the Send + Sync impls must be re-evaluated —
+// those operations may require stream synchronization or CUDA-context affinity
+// that a cross-thread send would violate.
 unsafe impl Send for DeviceSlice<'_> {}
 unsafe impl Sync for DeviceSlice<'_> {}
 
