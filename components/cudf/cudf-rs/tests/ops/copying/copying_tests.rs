@@ -1,4 +1,4 @@
-//! Tests for CU-7: gather (take).
+//! Tests for CU-7: gather (take) and conditional copy.
 
 use cudf::{
     core::{Column, Table},
@@ -6,8 +6,8 @@ use cudf::{
 };
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
@@ -142,5 +142,46 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
 
     reset_sync_observation();
     assert_eq!(result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_copy_if_else_basic() {
+    let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let mask = Column::from_slice(&[true, false, true]).unwrap();
+
+    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
+}
+
+#[test]
+fn test_copy_if_else_treats_null_mask_as_false() {
+    let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let mask = Column::from_slice_nullable(&[true, false, false], &[true, false, true]).unwrap();
+
+    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 3]);
+}
+
+#[test]
+fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
+    let lhs = explicit_i32_column(&[10, 20, 30], 940);
+    let rhs = explicit_i32_column(&[1, 2, 3], 941);
+    let mask = explicit_bool_column(&[true, false, true], 942);
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    let expected_mr = lhs.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }

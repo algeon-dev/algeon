@@ -2,13 +2,14 @@
 //!
 //! Tests cover: `col()` / `lit()`, arithmetic operators, comparisons,
 //! unary ops (`is_null`, `is_not_null`, `cast`, `Not`), `.alias()`,
-//! `DataFrame::with_columns`, null fill, cumulative, aggregation, and string ops.
+//! `DataFrame::with_columns`, null fill, cumulative, aggregation, string ops,
+//! and conditional (`when`/`then`/`otherwise`).
 //!
 //! All tests require a GPU.
 
 use cudf::{
     DataFrame, ErrorKind, Series, TypeId,
-    ops::expr::{col, lit},
+    ops::expr::{col, lit, when},
 };
 
 // ===========================================================================
@@ -721,4 +722,86 @@ fn with_columns_str_lower_no_alias() {
     let df = DataFrame::from_series([s]).unwrap();
     let df2 = df.with_columns([col("s").str_lower()]).unwrap();
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);
+}
+
+// ===========================================================================
+// Phase 4b: Conditional (when / then / otherwise)
+// ===========================================================================
+
+#[test]
+fn when_then_otherwise_basic() {
+    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let df = DataFrame::from_series([x]).unwrap();
+    let result = when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("out").eval(&df).unwrap();
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
+}
+
+#[test]
+fn when_then_otherwise_column_branches() {
+    let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
+    let flag = Series::new::<bool>("f", &[true, false, true]).unwrap();
+    let df = DataFrame::from_series([x, y, flag]).unwrap();
+    let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
+}
+
+#[test]
+fn when_then_otherwise_with_nulls_in_condition() {
+    // libcudf copy_if_else: null mask positions produce the false_val
+    let cond = Series::new_nullable::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
+    let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
+    let df = DataFrame::from_series([cond, x, y]).unwrap();
+    let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
+    // row 0: cond valid & true  → x[0]=10
+    // row 1: cond null          → y[1]=2
+    // row 2: cond valid & false → y[2]=3
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 3]);
+}
+
+#[test]
+fn when_then_otherwise_string_branches() {
+    let age = Series::new::<i32>("age", &[20, 10, 30]).unwrap();
+    let df = DataFrame::from_series([age]).unwrap();
+    let result =
+        when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category").eval(&df).unwrap();
+    assert_eq!(result.dtype().unwrap().id(), TypeId::String);
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
+}
+
+#[test]
+fn if_else_output_name_is_none() {
+    let expr = when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32));
+    assert_eq!(expr.output_name(), None);
+}
+
+#[test]
+fn if_else_requires_alias_in_with_columns() {
+    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let df = DataFrame::from_series([x]).unwrap();
+    let err = df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32))]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn if_else_with_alias_in_with_columns() {
+    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let df = DataFrame::from_series([x]).unwrap();
+    let df2 =
+        df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("big")]).unwrap();
+    assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
+}
+
+#[test]
+fn when_then_otherwise_composite() {
+    let age = Series::new::<i32>("age", &[25, 12, 18]).unwrap();
+    let df = DataFrame::from_series([age]).unwrap();
+    let df2 = df
+        .with_columns([when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category")])
+        .unwrap();
+    assert_eq!(df2.series("category").unwrap().dtype().unwrap().id(), TypeId::String);
+    assert_eq!(df2.series("category").unwrap().len(), 3);
+    assert_eq!(df2.series("category").unwrap().to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
 }

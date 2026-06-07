@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use super::{
     binary::{self, BinaryOperator},
+    copying,
     reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
     replace::{self, FillPolicy},
     strings::{self, StripSide},
@@ -141,6 +142,11 @@ pub enum Expr {
     Reduce { input: Box<Expr>, agg: ReduceAggregation },
     /// String operation.
     StringOp { input: Box<Expr>, op: StringOperator },
+    /// Conditional: row-wise `if cond then true_val else false_val`.
+    ///
+    /// Construct via [`when()`] builder chain. Output name is `None` — an
+    /// explicit `.alias()` is required for use in `with_columns`.
+    IfElse { condition: Box<Expr>, true_val: Box<Expr>, false_val: Box<Expr> },
 }
 
 impl Expr {
@@ -410,7 +416,7 @@ impl Expr {
             | Expr::Reduce { input, .. }
             | Expr::StringOp { input, .. } => input.output_name(),
             // Multi-input or no-source nodes.
-            Expr::BinaryOp { .. } | Expr::Literal(_) => None,
+            Expr::BinaryOp { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
         }
     }
 
@@ -419,7 +425,7 @@ impl Expr {
     /// Evaluate this expression against a DataFrame.
     ///
     /// When the expression has a determinable output name, the returned
-    /// Series is renamed accordingly.
+    /// [`Series`] is renamed accordingly.
     pub fn eval(&self, df: &DataFrame) -> Result<Series> {
         let series = match self {
             Expr::Column(name) => df.series(name),
@@ -544,6 +550,17 @@ impl Expr {
                 };
                 Series::from_column(col)
             },
+
+            Expr::IfElse { condition, true_val, false_val } => {
+                let cond_series = condition.eval(df)?;
+                let true_series = true_val.eval(df)?;
+                let false_series = false_val.eval(df)?;
+                let cond_cv = cond_series.as_column_view()?;
+                let true_cv = true_series.as_column_view()?;
+                let false_cv = false_series.as_column_view()?;
+                let col = copying::copy_if_else(&true_cv, &false_cv, &cond_cv)?;
+                Series::from_column(col)
+            },
         }?;
 
         Ok(match self.output_name() {
@@ -554,7 +571,7 @@ impl Expr {
 }
 
 // ===========================================================================
-// Free functions: col(), lit()
+// Free functions: col(), lit(), when()
 // ===========================================================================
 
 /// Create an expression referencing a named column.
@@ -567,6 +584,58 @@ pub fn col(name: impl Into<String>) -> Expr {
 /// Supports all [`CudfType`] numeric types, `&str`, and `String`.
 pub fn lit<L: IntoLit>(value: L) -> Expr {
     value.into_expr()
+}
+
+/// Begin a conditional expression: `when(cond).then(x).otherwise(y)`.
+///
+/// The result is a row-aligned column — not a scalar branch selector.
+/// `IfElse` does not inherit an output name, so `.alias()` is required
+/// when used inside [`DataFrame::with_columns`].
+///
+/// # Example
+///
+/// ```no_run
+/// use cudf::ops::expr::{col, lit, when};
+///
+/// let expr = when(col("age").ge(lit(18i32)))
+///     .then(lit("adult"))
+///     .otherwise(lit("minor"))
+///     .alias("category");
+/// ```
+pub fn when(condition: Expr) -> WhenBuilder {
+    WhenBuilder(condition)
+}
+
+// ===========================================================================
+// when / then / otherwise builder types
+// ===========================================================================
+
+/// Intermediate builder: holds the condition, awaiting `.then()`.
+pub struct WhenBuilder(Expr);
+
+impl WhenBuilder {
+    /// Provide the value to produce when the condition is `true`.
+    pub fn then(self, value: Expr) -> ThenBuilder {
+        ThenBuilder { condition: self.0, true_val: value }
+    }
+}
+
+/// Intermediate builder: holds condition + true-branch, awaiting `.otherwise()`.
+pub struct ThenBuilder {
+    condition: Expr,
+    true_val: Expr,
+}
+
+impl ThenBuilder {
+    /// Provide the value to produce when the condition is `false` (or null),
+    /// completing the conditional expression.
+    pub fn otherwise(self, value: Expr) -> Expr {
+        Expr::IfElse {
+            condition: Box::new(self.condition),
+            true_val: Box::new(self.true_val),
+            false_val: Box::new(value),
+        }
+    }
 }
 
 // ===========================================================================

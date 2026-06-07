@@ -34,6 +34,24 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
                              cudf_table_handle* out,
                              const cudf_exec_options_t* options);
 
+/// Conditionally select elements from two columns based on a boolean mask.
+///
+/// `output[i] = (boolean_mask.valid(i) && boolean_mask[i]) ? lhs[i] : rhs[i]`
+///
+/// `lhs` and `rhs` must have the same type and length as `boolean_mask`.
+/// `boolean_mask` must be of type BOOL8.
+cudf_status_t cudf_copy_if_else_vv(cudf_column_view_handle lhs,
+                                    cudf_column_view_handle rhs,
+                                    cudf_column_view_handle boolean_mask,
+                                    cudf_column_handle* out);
+
+/// Conditionally select elements with explicit execution options.
+cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
+                                       cudf_column_view_handle rhs,
+                                       cudf_column_view_handle boolean_mask,
+                                       cudf_column_handle* out,
+                                       const cudf_exec_options_t* options);
+
 #ifdef __cplusplus
 }
 #endif
