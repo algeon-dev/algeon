@@ -401,6 +401,66 @@ fn borrowed_sliced_nullable_column_import_preserves_active_range() {
 }
 
 #[test]
+fn borrowed_sliced_string_column_import_preserves_active_range() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_nullable_with_runtime(
+        &source_runtime,
+        &["zero", "one", "two", "three"],
+        &[true, false, true, true],
+    )
+    .unwrap();
+    let sliced = source.slice_view(1, 2).unwrap();
+    let borrowed = sliced.try_borrow_column_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Column::try_from_borrowed_column_view_with_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    let normalized =
+        Column::from_strings_nullable_with_runtime(&source_runtime, &["one", "two"], &[false, true]).unwrap();
+    assert_host_column_exports_equivalent(&normalized, &imported);
+}
+
+#[test]
+fn borrowed_dictionary_column_import_round_trips_string_keys() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_with_runtime(&source_runtime, &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let dictionary = dictionary::encode(&source.view().unwrap(), TypeId::Int32).unwrap();
+    let dictionary_view = dictionary.view().unwrap();
+    let borrowed = dictionary_view.try_borrow_column_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Column::try_from_borrowed_column_view_with_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    assert_host_column_exports_equivalent(&dictionary, &imported);
+}
+
+#[test]
 fn prepared_sliced_string_column_export_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
     let source = Column::from_strings_nullable_with_runtime(
@@ -495,6 +555,34 @@ fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() 
     assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+}
+
+#[test]
+fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let strings = Column::from_strings_with_runtime(&source_runtime, &["beta", "alpha", "beta"]).unwrap();
+    let dictionary = dictionary::encode(&strings.view().unwrap(), TypeId::Int32).unwrap();
+    let source = Table::from_columns(vec![strings, dictionary]).unwrap();
+    let source_view = source.view().unwrap();
+    let borrowed = source_view.try_borrow_table_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Table::try_from_borrowed_table_view_with_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    assert_host_table_exports_equivalent(&source, &imported);
 }
 
 #[test]

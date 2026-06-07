@@ -187,8 +187,8 @@ impl Table {
     ///
     /// `Table` is a convenience adapter, not the ABI itself. The returned
     /// descriptor remains borrowed-only, does not transfer ownership, and is
-    /// limited to the current borrowed compatibility profile's fixed-width type
-    /// support.
+    /// limited to the current borrowed compatibility profile's fixed-width,
+    /// `STRING`, and `DICTIONARY32` support.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         <Self as TryBorrowTableView>::try_borrow_table_view(self)
     }

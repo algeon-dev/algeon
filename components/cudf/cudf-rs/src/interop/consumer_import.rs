@@ -163,18 +163,25 @@ fn interop_semantic_column_from_prepared_column(
     Ok(ffi)
 }
 
+fn prepared_device_import_column_graph_from_parts(
+    semantic_columns: &[SemanticColumn],
+    bindings: &[BufferBinding<'_>],
+    operation: &'static str,
+) -> Result<PreparedDeviceImportColumnGraph, InteropError> {
+    let mut child_id_buffers = Vec::new();
+    let ffi_columns = semantic_columns
+        .iter()
+        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ffi_bindings = bindings.iter().map(interop_binding_from_prepared_binding).collect();
+    Ok(PreparedDeviceImportColumnGraph { ffi_columns, ffi_bindings, _child_id_buffers: child_id_buffers })
+}
+
 fn prepared_device_import_column_graph(
     export: &PreparedColumnExport<'_>,
     operation: &'static str,
 ) -> Result<PreparedDeviceImportColumnGraph, InteropError> {
-    let mut child_id_buffers = Vec::new();
-    let ffi_columns = export
-        .semantic_columns()
-        .iter()
-        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ffi_bindings = export.bindings().iter().map(interop_binding_from_prepared_binding).collect();
-    Ok(PreparedDeviceImportColumnGraph { ffi_columns, ffi_bindings, _child_id_buffers: child_id_buffers })
+    prepared_device_import_column_graph_from_parts(export.semantic_columns(), export.bindings(), operation)
 }
 
 fn prepared_device_import_table_graph(
@@ -253,34 +260,60 @@ pub(super) fn import_column_from_borrowed_view(
         borrowed.execution().device(),
         runtime,
     )?;
-    let len = checked_i32_from_usize("len", borrowed.len(), operation)?;
-    let offset = checked_i32_from_usize("offset", borrowed.offset(), operation)?;
-    let (null_mask, null_count) = borrowed_null_mask_parts(borrowed, operation)?;
     let exec_options = runtime
         .execution_domain()
         .explicit_exec_options_raw()
         .expect("runtime always provides explicit execution options");
-    let type_id = map_interop_type_id(borrowed.data_type().id());
-    let scale = borrowed.data_type().scale();
     let mut handle = std::ptr::null_mut();
 
-    error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_column_copy_from_borrowed_view_ex(
-                type_id.to_raw(),
-                scale,
-                len,
-                offset,
-                borrowed.data_ptr(),
-                null_mask,
-                null_count,
-                &exec_options,
-                &mut handle,
+    match borrowed.column() {
+        Some(root_column) => {
+            let graph = prepared_device_import_column_graph_from_parts(
+                borrowed.semantic_columns(),
+                borrowed.bindings(),
+                operation,
+            )?;
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_copy_from_prepared_device_export_ex(
+                        root_column.id().get(),
+                        graph.ffi_columns.as_ptr(),
+                        checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
+                        graph.ffi_bindings.as_ptr(),
+                        checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
             )
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         },
-        operation,
-    )
-    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        None => {
+            let len = checked_i32_from_usize("len", borrowed.len(), operation)?;
+            let offset = checked_i32_from_usize("offset", borrowed.offset(), operation)?;
+            let (null_mask, null_count) = borrowed_null_mask_parts(borrowed, operation)?;
+            let type_id = map_interop_type_id(borrowed.data_type().id());
+            let scale = borrowed.data_type().scale();
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_copy_from_borrowed_view_ex(
+                        type_id.to_raw(),
+                        scale,
+                        len,
+                        offset,
+                        borrowed.data_ptr(),
+                        null_mask,
+                        null_count,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        },
+    }
 
     Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) })
 }

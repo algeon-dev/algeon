@@ -29,6 +29,9 @@
 //!   [`PreparedTableExport`] or one [`OwnedTableTransfer`].
 //! - Current device-export support covers fixed-width layouts, the binary-like
 //!   string layout slice, `List`, `Struct`, and `Dictionary`.
+//! - Current borrowed-compatibility support covers fixed-width layouts plus
+//!   the current `STRING` binary-like slice and `DICTIONARY32` with supported
+//!   recursive keys projections.
 //! - Nested-layout support is still intentionally narrow in this slice:
 //!   current coverage is the recursive semantic-column graph that can be
 //!   expressed by the existing fixed-width, binary-like string, list, struct,

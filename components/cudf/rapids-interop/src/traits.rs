@@ -62,14 +62,22 @@ pub trait TryIntoOwnedDevicePartitionedTableTransfer: Sized {
 
 impl<'a> TryBorrowColumnView for BorrowedColumnView<'a> {
     fn try_borrow_column_view<'b>(&'b self) -> Result<BorrowedColumnView<'b>> {
-        BorrowedColumnView::try_new(
-            self.data_type(),
-            self.len(),
-            self.offset(),
-            self.data_ptr(),
-            *self.null_mask(),
-            self.execution(),
-        )
+        match self.column() {
+            Some(column) => BorrowedColumnView::try_new_with_semantic_columns(
+                column.clone(),
+                self.semantic_columns().to_vec(),
+                self.bindings().to_vec(),
+                self.execution(),
+            ),
+            None => BorrowedColumnView::try_new(
+                self.data_type(),
+                self.len(),
+                self.offset(),
+                self.data_ptr(),
+                *self.null_mask(),
+                self.execution(),
+            ),
+        }
     }
 }
 

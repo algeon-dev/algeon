@@ -1,6 +1,6 @@
 use cudf::{
     Column, DataFrame, Runtime, Series, Table, TypeId,
-    interop::{TryBorrowColumnView, TryBorrowTableView},
+    interop::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
 };
 use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};
@@ -158,23 +158,53 @@ fn ambient_dataframe_borrow_is_rejected() {
 }
 
 #[test]
-fn unsupported_string_columns_fail_clearly() {
+fn string_columns_borrow_as_binary_like_layouts() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_strings_with_runtime(&runtime, &["alice", "bob"]).unwrap();
-    let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
+    let column =
+        Column::from_strings_nullable_with_runtime(&runtime, &["zero", "one", "two"], &[true, false, true]).unwrap();
+    let sliced = column.slice_view(1, 2).unwrap();
+    let borrowed = sliced.try_borrow_column_view().unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
+    assert_eq!(borrowed.type_id(), InteropTypeId::String);
+    assert_eq!(borrowed.len(), 2);
+    assert_eq!(borrowed.offset(), 1);
+    assert_eq!(borrowed.data_ptr(), std::ptr::null());
+    assert_eq!(borrowed.semantic_columns().len(), 1);
+    assert!(matches!(borrowed.column().unwrap().layout(), ColumnLayout::BinaryLike { .. }));
+
+    match borrowed.null_mask().kind() {
+        NullMaskKind::Present { ptr, bit_len, null_count } => {
+            let _ = ptr.as_ptr();
+            assert_eq!(*null_count, 1);
+            assert!(*bit_len >= borrowed.offset() + borrowed.len());
+        },
+        NullMaskKind::Absent => panic!("expected a present null mask for nullable string column"),
+    }
 }
 
 #[test]
-fn dictionary_columns_fail_clearly_as_unsupported_v1_types() {
+fn dictionary_columns_borrow_with_recursive_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = Column::from_slice_with_runtime(&runtime, &[3i32, 1, 3, 2]).unwrap();
+    let base = Column::from_strings_with_runtime(&runtime, &["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
-    let err = dict.view().unwrap().try_borrow_column_view().unwrap_err();
+    let dict_view = dict.view().unwrap();
+    let borrowed = dict_view.try_borrow_column_view().unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
-    assert!(err.context().iter().any(|(key, value)| *key == "type_id" && value == "dictionary32"));
+    assert_eq!(borrowed.type_id(), InteropTypeId::Dictionary32);
+    assert!(matches!(borrowed.column().unwrap().layout(), ColumnLayout::Dictionary { .. }));
+    assert_eq!(borrowed.semantic_columns().len(), 2);
+
+    let keys_id = match borrowed.column().unwrap().layout() {
+        ColumnLayout::Dictionary { keys, .. } => keys,
+        layout => panic!("expected dictionary layout, got {layout:?}"),
+    };
+    let keys_column = borrowed
+        .semantic_columns()
+        .iter()
+        .find(|column| column.id() == *keys_id)
+        .expect("dictionary keys semantic column should be present");
+    assert_eq!(keys_column.data_type().id(), InteropTypeId::String);
+    assert!(matches!(keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 }
 
 // ---------------------------------------------------------------------------
