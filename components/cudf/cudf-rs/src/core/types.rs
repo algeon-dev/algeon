@@ -151,7 +151,10 @@ impl TypeId {
         if out == 0 { Ok(None) } else { Ok(Some(out)) }
     }
 
-    /// Returns `true` if this is a fixed-width numeric type.
+    /// Returns `true` if this is a fixed-width numeric type (integers and floats).
+    ///
+    /// `Bool8` is **not** considered numeric — use [`is_boolean`](Self::is_boolean)
+    /// instead, or combine with `|| is_boolean()` when both are acceptable.
     pub fn is_numeric(self) -> bool {
         matches!(
             self,
@@ -165,8 +168,12 @@ impl TypeId {
                 | TypeId::UInt64
                 | TypeId::Float32
                 | TypeId::Float64
-                | TypeId::Bool8
         )
+    }
+
+    /// Returns `true` if this is a boolean type (`Bool8`).
+    pub fn is_boolean(self) -> bool {
+        self == TypeId::Bool8
     }
 
     /// Returns `true` if this is a timestamp type.

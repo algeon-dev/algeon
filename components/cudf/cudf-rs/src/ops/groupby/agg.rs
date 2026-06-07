@@ -10,6 +10,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
+    ops::reduction::checked_ddof_to_i32,
     runtime::execution_domain::ExecutionDomain,
 };
 
@@ -279,7 +280,7 @@ unsafe fn create_agg_handle(agg: &Agg) -> Result<*mut c_void> {
         Agg::Std { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_std(
-                    i32::try_from(*ddof).expect("validated ddof fits i32"),
+                    checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(std)")?,
                     &mut handle,
                 ),
                 "groupby::create_agg_handle(std)",
@@ -288,7 +289,7 @@ unsafe fn create_agg_handle(agg: &Agg) -> Result<*mut c_void> {
         Agg::Variance { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_variance(
-                    i32::try_from(*ddof).expect("validated ddof fits i32"),
+                    checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(variance)")?,
                     &mut handle,
                 ),
                 "groupby::create_agg_handle(variance)",

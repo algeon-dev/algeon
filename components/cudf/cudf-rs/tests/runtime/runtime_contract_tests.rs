@@ -129,7 +129,7 @@ async fn dataframe_sort_survives_spawn_blocking() {
         .expect("sort_values failed");
 
     assert_eq!(result.num_rows(), 5);
-    let ids: Vec<i32> = result.series("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = result.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(ids, vec![1, 1, 3, 4, 5]);
 }
 
@@ -153,7 +153,7 @@ async fn arc_dataframe_shared_across_workers() {
         handles.push(tokio::task::spawn_blocking(move || {
             // Read-only: each worker creates its own views internally.
             let series = df.series("id").unwrap();
-            series.to_vec::<i32>()
+            series.to_vec_strict::<i32>()
         }));
     }
 
@@ -204,7 +204,7 @@ async fn series_sort_survives_spawn_blocking() {
         .expect("blocking task panicked")
         .expect("sort_values failed");
 
-    let vals: Vec<i64> = sorted.to_vec::<i64>().unwrap();
+    let vals: Vec<i64> = sorted.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![10, 20, 30, 40, 50]);
 }
 
@@ -216,7 +216,7 @@ async fn series_arithmetic_in_spawn_blocking() {
     let result =
         tokio::task::spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
 
-    let vals: Vec<f64> = result.to_vec::<f64>().unwrap();
+    let vals: Vec<f64> = result.to_vec_strict::<f64>().unwrap();
     assert_eq!(vals, vec![11.0, 22.0, 33.0]);
 }
 
@@ -268,7 +268,7 @@ async fn host_materialization_to_vec_in_spawn_blocking() {
     let df = sample_df();
     let ids = tokio::task::spawn_blocking(move || {
         let col = df.series("id").unwrap();
-        col.to_vec::<i32>()
+        col.to_vec_strict::<i32>()
     })
     .await
     .expect("blocking task panicked")
@@ -309,7 +309,7 @@ async fn arrow_round_trip_across_spawn_blocking() {
         .expect("from_record_batch failed");
 
     assert_eq!(df2.num_rows(), 5);
-    let ids: Vec<i32> = df2.series("id").unwrap().to_vec::<i32>().unwrap();
+    let ids: Vec<i32> = df2.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(ids, vec![3, 1, 4, 1, 5]);
 }
 
@@ -336,8 +336,8 @@ async fn chained_pipeline_in_spawn_blocking() {
         let agg_result = top.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
 
         // Materialize to host.
-        let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec::<i32>()?;
-        let sum_data: Vec<i64> = agg_result.series("value_sum").unwrap().to_vec::<i64>()?;
+        let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec_strict::<i32>()?;
+        let sum_data: Vec<i64> = agg_result.series("value_sum").unwrap().to_vec_strict::<i64>()?;
 
         let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
         pairs.sort_by_key(|&(k, _)| k);
@@ -391,7 +391,7 @@ async fn dataframe_filter_in_spawn_blocking() {
         let filtered = df.filter(&mask_series)?;
 
         // Materialize filtered ids to host.
-        let ids = filtered.series("id").unwrap().to_vec::<i32>()?;
+        let ids = filtered.series("id").unwrap().to_vec_strict::<i32>()?;
         Ok(ids)
     })
     .await
@@ -427,8 +427,8 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let asc = sorted_asc.expect("asc task panicked").expect("asc sort failed");
     let desc = sorted_desc.expect("desc task panicked").expect("desc sort failed");
 
-    let asc_ids: Vec<i32> = asc.series("id").unwrap().to_vec::<i32>().unwrap();
-    let desc_ids: Vec<i32> = desc.series("id").unwrap().to_vec::<i32>().unwrap();
+    let asc_ids: Vec<i32> = asc.series("id").unwrap().to_vec_strict::<i32>().unwrap();
+    let desc_ids: Vec<i32> = desc.series("id").unwrap().to_vec_strict::<i32>().unwrap();
 
     assert_eq!(asc_ids, vec![1, 1, 3, 4, 5]);
     assert_eq!(desc_ids, vec![5, 4, 3, 1, 1]);
@@ -460,7 +460,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
             for _ in 0..16 {
                 let df = sample_df();
                 let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
-                let _ids: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
+                let _ids: Vec<i32> = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
             }
         }));
     }

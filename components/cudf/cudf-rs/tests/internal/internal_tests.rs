@@ -20,7 +20,7 @@ fn filter_preserves_row_and_column_counts() {
     // filter internally uses build_table_view / TempTableView infrastructure.
     let ids = Series::new::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
     let vals = Series::new::<f64>("vals", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
-    let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
+    let df = DataFrame::from_named_pairs([("id", ids), ("val", vals)]).unwrap();
 
     // Boolean mask: keep rows 0, 2, 4.
     let mask = Series::new::<bool>("mask", &[true, false, true, false, true]).unwrap();
@@ -36,7 +36,7 @@ fn sort_preserves_schema_names_and_lengths() {
     // sort internally resolves column names and builds table views.
     let names_col = Series::new::<i32>("a", &[3, 1, 2]).unwrap();
     let vals_col = Series::new::<i64>("b", &[30, 10, 20]).unwrap();
-    let df = DataFrame::from_series([("a", names_col), ("b", vals_col)]).unwrap();
+    let df = DataFrame::from_series([names_col, vals_col]).unwrap();
 
     let sorted = df.sort_values(["a"], cudf::SortOptions::new()).unwrap();
 
@@ -46,7 +46,7 @@ fn sort_preserves_schema_names_and_lengths() {
 
     // Verify sorted order.
     let a_view = sorted.series("a").unwrap();
-    let a_vals = a_view.to_vec::<i32>().unwrap();
+    let a_vals = a_view.to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 }
 
@@ -55,7 +55,7 @@ fn reassembly_after_distinct_preserves_schema() {
     // distinct internally uses resolve + reassemble helpers.
     let a = Series::new::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
     let b = Series::new::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
-    let df = DataFrame::from_series([("x", a), ("y", b)]).unwrap();
+    let df = DataFrame::from_series([a, b]).unwrap();
 
     let distinct = df
         .drop_duplicates(DistinctOptions::builder().subset(&["x", "y"]).keep(DuplicateKeepOption::KeepFirst).build())
@@ -74,7 +74,7 @@ fn reassembly_after_distinct_preserves_schema() {
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
     let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([("a", a)]).unwrap();
+    let df = DataFrame::from_series([a]).unwrap();
 
     let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
@@ -89,11 +89,11 @@ fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
     let left_key = Series::new::<i32>("key", &[1, 2, 3]).unwrap();
     let left_val = Series::new::<f64>("lval", &[10.0, 20.0, 30.0]).unwrap();
-    let left = DataFrame::from_series([("key", left_key), ("lval", left_val)]).unwrap();
+    let left = DataFrame::from_series([left_key, left_val]).unwrap();
 
     let right_key = Series::new::<i32>("key", &[2, 3, 4]).unwrap();
     let right_val = Series::new::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
-    let right = DataFrame::from_series([("key", right_key), ("rval", right_val)]).unwrap();
+    let right = DataFrame::from_series([right_key, right_val]).unwrap();
 
     let opts = cudf::MergeOptions::new().on(["key"]).how_inner();
     let joined = left.merge(&right, opts).unwrap();
@@ -109,11 +109,11 @@ fn join_reassembly_preserves_schema_names() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn from_series_rejects_duplicate_names() {
+fn from_named_pairs_rejects_duplicate_names() {
     let a = Series::new::<i32>("a", &[1]).unwrap();
     let b = Series::new::<i32>("b", &[2]).unwrap();
 
-    let err = DataFrame::from_series(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
+    let err = DataFrame::from_named_pairs(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
     assert_duplicate_name_error(&err, "x");
 }
 

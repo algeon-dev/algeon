@@ -12,8 +12,8 @@
 //! };
 //!
 //! let df = DataFrame::from_series([
-//!     ("x", Series::new::<i32>("x", &[1, 2, 3]).unwrap()),
-//!     ("y", Series::new::<i32>("y", &[10, 20, 30]).unwrap()),
+//!     Series::new::<i32>("x", &[1, 2, 3]).unwrap(),
+//!     Series::new::<i32>("y", &[10, 20, 30]).unwrap(),
 //! ])
 //! .unwrap();
 //!

@@ -28,10 +28,10 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     assert_eq!(df.column_names(), vec!["id", "value"]);
 
     let col = df.series("id").unwrap();
-    assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 
     let col = df.series("value").unwrap();
-    assert_eq!(col.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(col.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn test_read_parquet_with_options() {
     assert_eq!(df.column_names(), vec!["b"]);
 
     let col = df.series("b").unwrap();
-    assert_eq!(col.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -76,10 +76,10 @@ fn test_write_parquet_preserves_schema() {
     assert_eq!(df2.num_rows(), 2);
 
     let col = df2.series("x").unwrap();
-    assert_eq!(col.to_vec::<i32>().unwrap(), vec![100, 200]);
+    assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![100, 200]);
 
     let col = df2.series("y").unwrap();
-    assert_eq!(col.to_vec::<f64>().unwrap(), vec![1.5, 2.5]);
+    assert_eq!(col.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5]);
 }
 
 #[test]
@@ -101,9 +101,9 @@ fn test_roundtrip_create_write_read() {
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.num_rows(), 3);
 
-    assert_eq!(df2.series("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(df2.series("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
-    assert_eq!(df2.series("gamma").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(df2.series("alpha").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(df2.series("beta").unwrap().to_vec_strict::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+    assert_eq!(df2.series("gamma").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
 #[test]
@@ -118,8 +118,9 @@ fn test_read_csv_returns_dataframe_with_schema() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
-    assert_eq!(df.series("id").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series("value").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    // CSV read produces nullable columns; use to_vec_optional.
+    assert_eq!(df.series("id").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(df.series("value").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
 }
 
 #[test]
@@ -140,8 +141,9 @@ fn test_read_csv_with_options_supports_delimiter_and_explicit_names() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["left", "right"]);
-    assert_eq!(df.series("left").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    // CSV read produces nullable columns; use to_vec_optional.
+    assert_eq!(df.series("left").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(df.series("right").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
 }
 
 #[test]
@@ -155,8 +157,9 @@ fn test_read_csv_without_header_uses_generated_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
-    assert_eq!(df.series("column_0").unwrap().to_vec::<i64>().unwrap(), vec![4, 5]);
-    assert_eq!(df.series("column_1").unwrap().to_vec::<i64>().unwrap(), vec![40, 50]);
+    // CSV read produces nullable columns; use to_vec_optional.
+    assert_eq!(df.series("column_0").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(4), Some(5)]);
+    assert_eq!(df.series("column_1").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(40), Some(50)]);
 }
 
 #[test]
@@ -166,18 +169,18 @@ fn test_read_csv_without_header_generates_fallback_names_only_at_dataframe_layer
 
     std::fs::write(&path, "11,110\n12,120\n").unwrap();
 
-    let table_result = cudf::io::csv::read_csv(
-        &cudf::io::csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build(),
-    )
-    .unwrap();
+    let table_result =
+        cudf::io::csv::read_csv(&cudf::io::csv::CsvReadOptions::builder().filepath(&path).has_header(false).build())
+            .unwrap();
     assert_eq!(table_result.column_names, None);
 
     let df =
         DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&path).has_header(false).build()).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
-    assert_eq!(df.series("column_0").unwrap().to_vec::<i64>().unwrap(), vec![11, 12]);
-    assert_eq!(df.series("column_1").unwrap().to_vec::<i64>().unwrap(), vec![110, 120]);
+    // CSV read produces nullable columns; use to_vec_optional.
+    assert_eq!(df.series("column_0").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(11), Some(12)]);
+    assert_eq!(df.series("column_1").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(110), Some(120)]);
 }
 
 #[test]
@@ -191,8 +194,9 @@ fn test_read_csv_explicit_names_override_header_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["new_a", "new_b"]);
-    assert_eq!(df.series("new_a").unwrap().to_vec::<i64>().unwrap(), vec![7, 8]);
-    assert_eq!(df.series("new_b").unwrap().to_vec::<i64>().unwrap(), vec![70, 80]);
+    // CSV read produces nullable columns; use to_vec_optional.
+    assert_eq!(df.series("new_a").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(7), Some(8)]);
+    assert_eq!(df.series("new_b").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(70), Some(80)]);
 }
 
 #[test]
@@ -202,7 +206,7 @@ fn test_write_csv_preserves_dataframe_schema() {
 
     let ids = Series::new::<i32>("source_ids", &[100, 200]).unwrap();
     let values = Series::new::<i32>("source_values", &[1, 2]).unwrap();
-    let df = DataFrame::from_series([("x", ids), ("y", values)]).unwrap();
+    let df = DataFrame::from_named_pairs([("x", ids), ("y", values)]).unwrap();
 
     df.write_csv(&path).unwrap();
 
@@ -211,8 +215,9 @@ fn test_write_csv_preserves_dataframe_schema() {
 
     let df2 = DataFrame::read_csv(&path).unwrap();
     assert_eq!(df2.column_names(), vec!["x", "y"]);
-    assert_eq!(df2.series("x").unwrap().to_vec::<i64>().unwrap(), vec![100, 200]);
-    assert_eq!(df2.series("y").unwrap().to_vec::<i64>().unwrap(), vec![1, 2]);
+    // CSV read-back produces nullable columns; use to_vec_optional.
+    assert_eq!(df2.series("x").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(100), Some(200)]);
+    assert_eq!(df2.series("y").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2)]);
 }
 
 #[test]
@@ -222,7 +227,7 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
 
     let left = Series::new::<i32>("left_src", &[9, 8]).unwrap();
     let right = Series::new::<i32>("right_src", &[90, 80]).unwrap();
-    let df = DataFrame::from_series([("left", left), ("right", right)]).unwrap();
+    let df = DataFrame::from_named_pairs([("left", left), ("right", right)]).unwrap();
 
     let opts = CsvWriteOptions::builder().filepath(&path).delimiter(b'\t').include_header(false).build();
     df.write_csv_with_options(opts).unwrap();
@@ -239,6 +244,7 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
     let df2 = DataFrame::read_csv_with_options(read_opts).unwrap();
 
     assert_eq!(df2.column_names(), vec!["left", "right"]);
-    assert_eq!(df2.series("left").unwrap().to_vec::<i64>().unwrap(), vec![9, 8]);
-    assert_eq!(df2.series("right").unwrap().to_vec::<i64>().unwrap(), vec![90, 80]);
+    // CSV read-back produces nullable columns; use to_vec_optional.
+    assert_eq!(df2.series("left").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(9), Some(8)]);
+    assert_eq!(df2.series("right").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(90), Some(80)]);
 }

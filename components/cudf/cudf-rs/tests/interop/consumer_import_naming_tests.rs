@@ -114,7 +114,7 @@ fn series_import_into_runtime_round_trips_data() {
 
     let imported = Series::try_import_from_borrowed_column_view_into_runtime(&borrowed, &dest).unwrap();
 
-    assert_eq!(imported.to_vec::<i32>().unwrap(), vec![5, 6]);
+    assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![5, 6]);
 }
 
 #[test]
@@ -134,5 +134,5 @@ fn dataframe_import_into_runtime_round_trips_data() {
     .unwrap();
 
     assert_eq!(imported.column_names(), vec!["value"]);
-    assert_eq!(imported.series("value").unwrap().to_vec::<i32>().unwrap(), vec![7, 8]);
+    assert_eq!(imported.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8]);
 }

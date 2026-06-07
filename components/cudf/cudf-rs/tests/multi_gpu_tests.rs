@@ -70,8 +70,8 @@ fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
     let target_rt = Runtime::builder().with_device(device1).build().unwrap();
     let df = DataFrame::from_series([
-        ("id", data_rt.series("id", &[4i32, 5, 6]).unwrap()),
-        ("value", data_rt.series("value", &[40i32, 50, 60]).unwrap()),
+        data_rt.series("id", &[4i32, 5, 6]).unwrap(),
+        data_rt.series("value", &[40i32, 50, 60]).unwrap(),
     ])
     .unwrap();
     (data_rt, target_rt, df)
@@ -111,7 +111,7 @@ fn runtimes_execute_on_every_visible_device() {
             device.ordinal()
         );
 
-        let values: Vec<i32> = series.to_vec::<i32>().unwrap();
+        let values: Vec<i32> = series.to_vec_strict::<i32>().unwrap();
         assert_eq!(values, vec![device.ordinal() as i32, 99]);
     }
 }
@@ -126,7 +126,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let s0 = rt0.series("id", &[3, 1, 4]).unwrap();
-    let df0 = DataFrame::from_series([("id", s0)]).unwrap();
+    let df0 = DataFrame::from_series([s0]).unwrap();
     common::reset_exec_observation();
     let sorted0 = df0.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -135,12 +135,12 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
         "sort should execute on device {}",
         device0.ordinal()
     );
-    let result0: Vec<i32> = sorted0.series("id").unwrap().to_vec::<i32>().unwrap();
+    let result0: Vec<i32> = sorted0.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(result0, vec![1, 3, 4]);
 
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let s1 = rt1.series("id", &[8, 2, 5]).unwrap();
-    let df1 = DataFrame::from_series([("id", s1)]).unwrap();
+    let df1 = DataFrame::from_series([s1]).unwrap();
     common::reset_exec_observation();
     let sorted1 = df1.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -149,7 +149,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
         "sort should execute on device {}",
         device1.ordinal()
     );
-    let result1: Vec<i32> = sorted1.series("id").unwrap().to_vec::<i32>().unwrap();
+    let result1: Vec<i32> = sorted1.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(result1, vec![2, 5, 8]);
 }
 
@@ -205,7 +205,7 @@ fn columns_from_different_devices_have_different_domains() {
     );
 
     // Mixing columns from different devices into one DataFrame must fail.
-    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([s0, s1]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -314,7 +314,7 @@ fn runtime_device_flows_through_sort() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
-    let df = DataFrame::from_series([("id", ids)]).unwrap();
+    let df = DataFrame::from_series([ids]).unwrap();
 
     common::reset_exec_observation();
     let _sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -342,7 +342,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
     let mask = rt1.series("mask", &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([ids, scores]).unwrap();
 
     common::reset_exec_observation();
     let filtered = df.filter(&mask).unwrap();
@@ -353,7 +353,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
         device1.ordinal(),
         common::last_exec_device()
     );
-    let filtered_ids: Vec<i32> = filtered.series("id").unwrap().to_vec::<i32>().unwrap();
+    let filtered_ids: Vec<i32> = filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(filtered_ids, vec![3, 4]);
 
     let ctx = ExecutionContext::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
@@ -366,7 +366,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
         device1.ordinal(),
         common::last_exec_device()
     );
-    let filtered_ctx_ids: Vec<i32> = filtered_with_ctx.series("id").unwrap().to_vec::<i32>().unwrap();
+    let filtered_ctx_ids: Vec<i32> = filtered_with_ctx.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(filtered_ctx_ids, vec![3, 4]);
 
     let ambient_after = DeviceId::current().unwrap();
@@ -386,7 +386,7 @@ fn runtime_gt_scalar_mask_filter_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
-    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([ids, scores]).unwrap();
 
     common::reset_exec_observation();
     let mask = df.series("score").unwrap().gt_scalar(20.0f64).unwrap();
@@ -417,7 +417,7 @@ fn runtime_device_flows_through_host_materialization() {
     let series = rt1.series("x", &[10, 20]).unwrap();
 
     common::reset_exec_observation();
-    let _vals: Vec<i32> = series.to_vec::<i32>().unwrap();
+    let _vals: Vec<i32> = series.to_vec_strict::<i32>().unwrap();
 
     let observed = common::last_exec_device();
     assert_eq!(
@@ -646,7 +646,7 @@ fn same_provenance_differs_by_device() {
     let s1 = rt1.series("y", &[3, 4]).unwrap();
 
     // Attempting to build a DataFrame from columns on different devices should fail.
-    let result = DataFrame::from_series([("x", s0), ("y", s1)]);
+    let result = DataFrame::from_series([s0, s1]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -661,13 +661,13 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
     let left = DataFrame::from_series([
-        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("val", left_rt.series("val", &[10i32, 20, 30]).unwrap()),
+        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        left_rt.series("val", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
-        ("score", right_rt.series("score", &[200i32, 300, 400]).unwrap()),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+        right_rt.series("score", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
 
@@ -689,8 +689,8 @@ fn concat_without_relocation_rejects_cross_device_runtime_inputs() {
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let left = DataFrame::from_series([("id", left_rt.series("id", &[1i32, 2, 3]).unwrap())]).unwrap();
-    let right = DataFrame::from_series([("id", right_rt.series("id", &[4i32, 5, 6]).unwrap())]).unwrap();
+    let left = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
+    let right = DataFrame::from_series([right_rt.series("id", &[4i32, 5, 6]).unwrap()]).unwrap();
 
     let err = left.concat(&right).unwrap_err();
     assert_cross_device_relocation_error(err, "dataframe::concat");
@@ -707,13 +707,13 @@ fn merge_split_without_relocation_rejects_cross_device_runtime_inputs() {
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
     let left = DataFrame::from_series([
-        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("left", left_rt.series("left", &[10i32, 20, 30]).unwrap()),
+        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        left_rt.series("left", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
-        ("right", right_rt.series("right", &[200i32, 300, 400]).unwrap()),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+        right_rt.series("right", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
 
@@ -731,7 +731,7 @@ fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
     let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([("id", data_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
     let indices = indices_rt.series("idx", &[2i32, 0]).unwrap();
 
     let err = df.gather(&indices).unwrap_err();
@@ -748,7 +748,7 @@ fn with_column_without_relocation_rejects_cross_device_runtime_inputs() {
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([("id", left_rt.series("id", &[1i32, 2, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
     let extra = right_rt.series("extra", &[10i32, 20, 30]).unwrap();
 
     let err = df.with_column("extra", extra).unwrap_err();
@@ -765,7 +765,7 @@ fn assign_without_relocation_rejects_cross_device_runtime_inputs() {
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([("id", left_rt.series("id", &[1i32, 2, 3]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
     let extra = right_rt.series("extra", &[10i32, 20, 30]).unwrap();
 
     let err = df.assign([("extra", extra)]).unwrap_err();
@@ -782,7 +782,7 @@ fn filter_without_relocation_rejects_cross_device_runtime_inputs() {
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
     let mask_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([("id", data_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
     let mask = mask_rt.series("mask", &[true, false, true]).unwrap();
 
     let err = df.filter(&mask).unwrap_err();
@@ -799,7 +799,7 @@ fn filter_isin_without_relocation_rejects_cross_device_runtime_inputs() {
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
     let values_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([("id", data_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
     let values = values_rt.series("values", &[20i32, 30]).unwrap();
 
     let err = df.filter_isin("id", &values).unwrap_err();
@@ -816,11 +816,9 @@ fn dataframe_fillna_with_series_without_relocation_rejects_cross_device_runtime_
     let input_rt = Runtime::builder().with_device(device0).build().unwrap();
     let fill_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([(
-        "value",
-        input_rt.nullable_series("value", &[10i32, 0, 30], &[true, false, true]).unwrap(),
-    )])
-    .unwrap();
+    let df =
+        DataFrame::from_series([input_rt.nullable_series("value", &[10i32, 0, 30], &[true, false, true]).unwrap()])
+            .unwrap();
     let fill = fill_rt.series("fill", &[99i32, 99, 99]).unwrap();
 
     let err = df.fillna_with_series("value", &fill).unwrap_err();
@@ -892,7 +890,7 @@ fn series_eq_without_relocation_rejects_cross_device_runtime_inputs() {
     let right = right_rt.series("right", &[1i32, 0, 3]).unwrap();
 
     let err = left.eq(&right).unwrap_err();
-    assert_cross_device_relocation_error(err, "column::eq_col");
+    assert_cross_device_relocation_error(err, "column::eq");
 }
 
 #[test]
@@ -983,11 +981,8 @@ fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_
     let df_rt = Runtime::builder().with_device(device0).build().unwrap();
     let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let df = DataFrame::from_series([(
-        "value",
-        df_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap(),
-    )])
-    .unwrap();
+    let df =
+        DataFrame::from_series([df_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap()]).unwrap();
     let scalar = scalar_rt.series("seed", &[99i32]).unwrap().sum().unwrap();
 
     let err = df.fillna_with_scalar("value", &scalar).unwrap_err();
@@ -1004,19 +999,20 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let left_keys =
-        cudf::core::Table::from_columns(vec![left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
+    let left_keys = cudf::core::Table::from_columns(vec![
+        left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
     let left_payload = cudf::core::Table::from_columns(vec![
-        left_rt.series("val", &[10i32, 20, 30]).unwrap().as_column().copy().unwrap(),
+        left_rt.series("val", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap(),
     ])
     .unwrap();
     let right_keys = cudf::core::Table::from_columns(vec![
-        right_rt.series("id", &[2i32, 3, 4]).unwrap().as_column().copy().unwrap(),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap(),
     ])
     .unwrap();
     let right_payload = cudf::core::Table::from_columns(vec![
-        right_rt.series("val", &[200i32, 300, 400]).unwrap().as_column().copy().unwrap(),
+        right_rt.series("val", &[200i32, 300, 400]).unwrap().as_column().deep_copy().unwrap(),
     ])
     .unwrap();
 
@@ -1043,12 +1039,14 @@ fn low_level_left_join_without_relocation_rejects_cross_device_runtime_inputs() 
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let left_keys =
-        cudf::core::Table::from_columns(vec![left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
-    let right_keys =
-        cudf::core::Table::from_columns(vec![right_rt.series("id", &[2i32, 4]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
+    let left_keys = cudf::core::Table::from_columns(vec![
+        left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
+    let right_keys = cudf::core::Table::from_columns(vec![
+        right_rt.series("id", &[2i32, 4]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
     let left_payload = cudf::core::Table::from_columns(vec![]).unwrap();
     let right_payload = cudf::core::Table::from_columns(vec![]).unwrap();
 
@@ -1075,12 +1073,14 @@ fn low_level_full_join_without_relocation_rejects_cross_device_runtime_inputs() 
     let left_rt = Runtime::builder().with_device(device0).build().unwrap();
     let right_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let left_keys =
-        cudf::core::Table::from_columns(vec![left_rt.series("id", &[1i32, 2]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
-    let right_keys =
-        cudf::core::Table::from_columns(vec![right_rt.series("id", &[2i32, 3]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
+    let left_keys = cudf::core::Table::from_columns(vec![
+        left_rt.series("id", &[1i32, 2]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
+    let right_keys = cudf::core::Table::from_columns(vec![
+        right_rt.series("id", &[2i32, 3]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
     let left_payload = cudf::core::Table::from_columns(vec![]).unwrap();
     let right_payload = cudf::core::Table::from_columns(vec![]).unwrap();
 
@@ -1129,11 +1129,13 @@ fn sorting_sort_by_key_without_relocation_rejects_cross_device_runtime_inputs() 
     let values_rt = Runtime::builder().with_device(device0).build().unwrap();
     let keys_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let values =
-        Table::from_columns(vec![values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
+    let values = Table::from_columns(vec![
+        values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
     let keys =
-        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().copy().unwrap()]).unwrap();
+        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
 
     let err = match sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None) {
         Ok(_) => panic!("cross-device sort_by_key should fail until inputs are explicitly relocated"),
@@ -1152,11 +1154,13 @@ fn sorting_stable_sort_by_key_without_relocation_rejects_cross_device_runtime_in
     let values_rt = Runtime::builder().with_device(device0).build().unwrap();
     let keys_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let values =
-        Table::from_columns(vec![values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().copy().unwrap()])
-            .unwrap();
+    let values = Table::from_columns(vec![
+        values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().deep_copy().unwrap(),
+    ])
+    .unwrap();
     let keys =
-        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().copy().unwrap()]).unwrap();
+        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
 
     let err = match sorting::stable_sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None) {
         Ok(_) => panic!("cross-device stable_sort_by_key should fail until inputs are explicitly relocated"),
@@ -1176,7 +1180,8 @@ fn low_level_filter_without_relocation_rejects_cross_device_runtime_inputs() {
     let mask_rt = Runtime::builder().with_device(device1).build().unwrap();
 
     let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().copy().unwrap()]).unwrap();
+        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
     let mask = mask_rt.series("mask", &[true, false, true]).unwrap();
 
     let err = match filter::apply_boolean_mask(&table.view().unwrap(), &mask.as_column_view().unwrap()) {
@@ -1197,7 +1202,8 @@ fn low_level_gather_without_relocation_rejects_cross_device_runtime_inputs() {
     let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
 
     let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().copy().unwrap()]).unwrap();
+        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
     let gather_map = indices_rt.series("idx", &[2i32, 0]).unwrap();
 
     let err = match copying::gather(&table.view().unwrap(), &gather_map.as_column_view().unwrap()) {
@@ -1218,7 +1224,8 @@ fn low_level_gather_unchecked_without_relocation_rejects_cross_device_runtime_in
     let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
 
     let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().copy().unwrap()]).unwrap();
+        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
     let gather_map = indices_rt.series("idx", &[2i32, 0]).unwrap();
 
     let err = match unsafe { copying::gather_unchecked(&table.view().unwrap(), &gather_map.as_column_view().unwrap()) }
@@ -1284,8 +1291,9 @@ fn groupby_aggregate_without_relocation_rejects_cross_device_runtime_inputs() {
     let keys_rt = Runtime::builder().with_device(device0).build().unwrap();
     let values_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let keys = Table::from_columns(vec![keys_rt.series("key", &[1i32, 1, 2, 2]).unwrap().as_column().copy().unwrap()])
-        .unwrap();
+    let keys =
+        Table::from_columns(vec![keys_rt.series("key", &[1i32, 1, 2, 2]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
     let values = values_rt.series("value", &[10i32, 20, 30, 40]).unwrap();
     let values_view = values.as_column_view().unwrap();
     let aggregations = [Agg::Sum];
@@ -1445,7 +1453,7 @@ fn runtime_expr_literal_with_columns_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let x = rt1.series("x", &[10, 20, 30]).unwrap();
     let y = rt1.series("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([("x", x), ("y", y)]).unwrap();
+    let df = DataFrame::from_series([x, y]).unwrap();
 
     common::reset_exec_observation();
     let result = match df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]) {
@@ -1459,8 +1467,8 @@ fn runtime_expr_literal_with_columns_regression() {
         device1.ordinal(),
         common::last_exec_device()
     );
-    assert_eq!(result.series("x1").unwrap().to_vec::<i32>().unwrap(), vec![11, 21, 31]);
-    assert_eq!(result.series("y10").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(result.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
+    assert_eq!(result.series("y10").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -1476,7 +1484,7 @@ fn runtime_head_tail_slice_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[10, 20, 30, 40]).unwrap();
     let scores = rt1.series("score", &[1, 2, 3, 4]).unwrap();
-    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([ids, scores]).unwrap();
 
     common::reset_exec_observation();
     let head = match df.head(2) {
@@ -1485,7 +1493,7 @@ fn runtime_head_tail_slice_regression() {
             panic!("head() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
         },
     };
-    assert_eq!(head.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20]);
+    assert_eq!(head.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
 
     common::reset_exec_observation();
     let tail = match df.tail(2) {
@@ -1494,7 +1502,7 @@ fn runtime_head_tail_slice_regression() {
             panic!("tail() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
         },
     };
-    assert_eq!(tail.series("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 40]);
+    assert_eq!(tail.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
 
     common::reset_exec_observation();
     let slice = match df.slice(1, 2) {
@@ -1503,7 +1511,7 @@ fn runtime_head_tail_slice_regression() {
             panic!("slice() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
         },
     };
-    assert_eq!(slice.series("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(slice.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
 }
 
 #[test]
@@ -1520,7 +1528,7 @@ fn runtime_melt_regression() {
     let a = rt1.string_series("A", &["a", "b", "c"]).unwrap();
     let b = rt1.series("B", &[1, 3, 5]).unwrap();
     let c = rt1.series("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     common::reset_exec_observation();
@@ -1530,9 +1538,9 @@ fn runtime_melt_regression() {
             panic!("melt() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
         },
     };
-    assert_eq!(result.series("A").unwrap().to_strings().unwrap(), vec!["a", "b", "c", "a", "b", "c"]);
-    assert_eq!(result.series("variable").unwrap().to_strings().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
-    assert_eq!(result.series("value").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
+    assert_eq!(result.series("A").unwrap().to_strings_strict().unwrap(), vec!["a", "b", "c", "a", "b", "c"]);
+    assert_eq!(result.series("variable").unwrap().to_strings_strict().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
+    assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
 }
 
 #[test]
@@ -1655,7 +1663,7 @@ fn runtime_series_from_scalar_executes_on_target_device() {
     common::reset_exec_observation();
     let series = rt1.series_from_scalar("x", &scalar, 4).unwrap();
 
-    assert_eq!(series.to_vec::<i32>().unwrap(), vec![7, 7, 7, 7]);
+    assert_eq!(series.to_vec_strict::<i32>().unwrap(), vec![7, 7, 7, 7]);
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,

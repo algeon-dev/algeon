@@ -22,7 +22,7 @@ use crate::common::assert_missing_column_error;
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([ids, scores]).unwrap()
 }
 
 // ===========================================================================
@@ -38,7 +38,7 @@ fn test_dataframe_series_hit() {
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -88,7 +88,7 @@ fn test_dataframe_get_hit() {
     let df = sample_df();
     let s = df.get("id").unwrap();
     assert_eq!(s.name(), Some("id"));
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -125,9 +125,9 @@ fn test_dataframe_iter_series_assigns_column_names() {
     let items: Vec<_> = df.iter_series().collect::<Vec<_>>();
 
     assert_eq!(items[0].name(), Some("id"));
-    assert_eq!(items[0].to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(items[0].to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(items[1].name(), Some("score"));
-    assert_eq!(items[1].to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(items[1].to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 /// `iter_series()` shares the underlying device buffer (Arc-sharing, no GPU copy).
@@ -187,5 +187,5 @@ fn test_series_access_works() {
     assert_eq!(s.name(), Some("score"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(s.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }

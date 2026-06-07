@@ -118,7 +118,8 @@ fn test_median_i32() {
 #[test]
 fn test_std_f64() {
     let s = Series::new::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
-    let std_val = s.std(0).unwrap();
+    let ddof: u32 = 0;
+    let std_val = s.std(ddof).unwrap();
 
     assert_eq!(std_val.data_type().unwrap().id(), TypeId::Float64);
     let v = std_val.value::<f64>().unwrap();
@@ -128,7 +129,8 @@ fn test_std_f64() {
 #[test]
 fn test_var_f64() {
     let s = Series::new::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
-    let var_val = s.var(0).unwrap();
+    let ddof: u32 = 0;
+    let var_val = s.var(ddof).unwrap();
 
     assert_eq!(var_val.data_type().unwrap().id(), TypeId::Float64);
     let v = var_val.value::<f64>().unwrap();
@@ -226,7 +228,7 @@ fn test_cumsum_i32() {
     let cs = s.cumsum().unwrap();
 
     assert_eq!(cs.name(), Some("x"));
-    assert_eq!(cs.to_vec::<i32>().unwrap(), vec![10, 30, 60]);
+    assert_eq!(cs.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 }
 
 #[test]
@@ -234,7 +236,7 @@ fn test_cumsum_f64() {
     let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
     let cs = s.cumsum().unwrap();
 
-    assert_eq!(cs.to_vec::<f64>().unwrap(), vec![1.0, 3.0, 6.0]);
+    assert_eq!(cs.to_vec_strict::<f64>().unwrap(), vec![1.0, 3.0, 6.0]);
 }
 
 #[test]
@@ -243,7 +245,7 @@ fn test_cummin_i32() {
     let cm = s.cummin().unwrap();
 
     assert_eq!(cm.name(), Some("x"));
-    assert_eq!(cm.to_vec::<i32>().unwrap(), vec![3, 1, 1]);
+    assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![3, 1, 1]);
 }
 
 #[test]
@@ -252,7 +254,7 @@ fn test_cummax_i32() {
     let cm = s.cummax().unwrap();
 
     assert_eq!(cm.name(), Some("x"));
-    assert_eq!(cm.to_vec::<i32>().unwrap(), vec![1, 3, 3]);
+    assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![1, 3, 3]);
 }
 
 #[test]
@@ -261,7 +263,7 @@ fn test_cumprod_i32() {
     let cp = s.cumprod().unwrap();
 
     assert_eq!(cp.name(), Some("x"));
-    assert_eq!(cp.to_vec::<i32>().unwrap(), vec![2, 6, 24]);
+    assert_eq!(cp.to_vec_strict::<i32>().unwrap(), vec![2, 6, 24]);
 }
 
 // ===========================================================================
@@ -275,7 +277,7 @@ fn test_is_nan_f64() {
 
     assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -284,7 +286,7 @@ fn test_is_not_nan_f64() {
     let mask = s.is_not_nan().unwrap();
 
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 // ===========================================================================
@@ -297,7 +299,7 @@ fn test_abs_i32() {
     let result = s.abs().unwrap();
 
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![3, 1, 0, 2]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 1, 0, 2]);
 }
 
 #[test]
@@ -305,7 +307,7 @@ fn test_abs_f64() {
     let s = Series::new::<f64>("x", &[-3.0, -1.5, 0.0, 2.5]).unwrap();
     let result = s.abs().unwrap();
 
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![3.0, 1.5, 0.0, 2.5]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.0, 1.5, 0.0, 2.5]);
 }
 
 // ===========================================================================
@@ -318,7 +320,7 @@ fn test_neg_i32() {
     let result = s.neg().unwrap();
 
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![-1, 2, -3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
 #[test]
@@ -326,7 +328,7 @@ fn test_neg_f64() {
     let s = Series::new::<f64>("x", &[1.5, -2.5]).unwrap();
     let result = s.neg().unwrap();
 
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![-1.5, 2.5]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
 
 // ===========================================================================
@@ -340,5 +342,5 @@ fn test_logical_not_bool() {
 
     assert_eq!(result.name(), Some("x"));
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(result.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }

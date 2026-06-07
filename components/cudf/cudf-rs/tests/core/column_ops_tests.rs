@@ -147,86 +147,86 @@ fn test_column_floor_div_f64() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_column_eq_col_i32() {
+fn test_column_eq_i32() {
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let b = Column::from_slice(&[1i32, 5, 3]).unwrap();
-    let result = a.eq_col(&b).unwrap();
+    let result = a.eq(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
-fn test_column_ne_col_i32() {
+fn test_column_ne_i32() {
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let b = Column::from_slice(&[1i32, 5, 3]).unwrap();
-    let result = a.ne_col(&b).unwrap();
+    let result = a.ne(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
-fn test_column_lt_col_i32() {
+fn test_column_lt_i32() {
     let a = Column::from_slice(&[1i32, 5, 3]).unwrap();
     let b = Column::from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.lt_col(&b).unwrap();
+    let result = a.lt(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
 #[test]
-fn test_column_gt_col_i32() {
+fn test_column_gt_i32() {
     let a = Column::from_slice(&[1i32, 5, 3]).unwrap();
     let b = Column::from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.gt_col(&b).unwrap();
+    let result = a.gt(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
-fn test_column_le_col_i32() {
+fn test_column_le_i32() {
     let a = Column::from_slice(&[1i32, 5, 3]).unwrap();
     let b = Column::from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.le_col(&b).unwrap();
+    let result = a.le(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
-fn test_column_ge_col_i32() {
+fn test_column_ge_i32() {
     let a = Column::from_slice(&[1i32, 5, 3]).unwrap();
     let b = Column::from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.ge_col(&b).unwrap();
+    let result = a.ge(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
 #[test]
-fn test_column_eq_col_string() {
+fn test_column_eq_string() {
     let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
     let b = Column::from_strings(&["foo", "qux", "baz"]).unwrap();
-    let result = a.eq_col(&b).unwrap();
+    let result = a.eq(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
-fn test_column_lt_col_string() {
+fn test_column_lt_string() {
     let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
     let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
-    let result = a.lt_col(&b).unwrap();
+    let result = a.lt(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
 #[test]
-fn test_column_lt_col_mixed_numeric() {
+fn test_column_lt_mixed_numeric() {
     // Int32 < Float64 → Bool8
     let a = Column::from_slice(&[1i32, 5, 3]).unwrap();
     let b = Column::from_slice(&[2.0f64, 2.0, 3.0]).unwrap();
-    let result = a.lt_col(&b).unwrap();
+    let result = a.lt(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -236,7 +236,7 @@ fn test_column_lt_col_mixed_numeric() {
 fn test_column_comparison_nullable() {
     let a = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let b = Column::from_slice(&[1i32, 2, 4]).unwrap();
-    let result = a.eq_col(&b).unwrap();
+    let result = a.eq(&b).unwrap();
     let rv = result.view().unwrap();
     let validity = rv.validity().unwrap().unwrap();
     assert!(validity[0]); // non-null: 1 == 1 → true

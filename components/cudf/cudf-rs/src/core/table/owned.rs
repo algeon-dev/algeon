@@ -102,7 +102,7 @@ impl Table {
     }
 
     /// Deep-copy this table.
-    pub fn copy(&self) -> Result<Self> {
+    pub fn deep_copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
         let exec_options = self.domain.explicit_exec_options_raw();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
@@ -111,7 +111,7 @@ impl Table {
                 Some(options) => unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), options, &mut handle) },
                 None => unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) },
             },
-            "table::copy",
+            "table::deep_copy",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
     }

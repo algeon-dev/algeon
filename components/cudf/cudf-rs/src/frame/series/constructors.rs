@@ -59,7 +59,7 @@ impl Series {
     /// Panics if column metadata cannot be read via FFI. This should never
     /// happen for a well-formed `Column` (e.g. one already stored in a
     /// `DataFrame`).
-    pub fn from_column_arc(column: Arc<Column>) -> Self {
+    pub(crate) fn from_column_arc(column: Arc<Column>) -> Self {
         let (cached_len, cached_null_count) = {
             let cv = column.view().expect("Column must have a valid view");
             (

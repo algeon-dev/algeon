@@ -61,10 +61,10 @@ fn test_nullable_column() {
 }
 
 #[test]
-fn test_column_copy() {
+fn test_column_deep_copy() {
     let data = vec![100i64, 200, 300];
     let col = Column::from_slice(&data).unwrap();
-    let copy = col.copy().unwrap();
+    let copy = col.deep_copy().unwrap();
     let view = copy.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);

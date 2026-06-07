@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use cudf::{
     JsonReadOptions, Runtime, Series,
     core::{DataType, Scalar, TypeId},
-    interop::{BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, SemanticColumn},
+    interop::{BufferBinding, ColumnLayout, ExportProfile, InteropTypeId, PhysicalValidity, SemanticColumn},
 };
 use tempfile::TempDir;
 
@@ -35,6 +35,73 @@ fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> HashMap<u32, &'a Se
 fn assert_binding_equivalent(source: &BufferBinding<'_>, copied: &BufferBinding<'_>) {
     assert_eq!(source.placement(), copied.placement());
     assert_eq!(binding_bytes(source), binding_bytes(copied));
+}
+
+fn validity_bits(
+    column: &SemanticColumn,
+    bindings: &HashMap<u32, &BufferBinding<'_>>,
+) -> Option<Vec<bool>> {
+    match column.validity() {
+        PhysicalValidity::NoValidityBuffer => None,
+        PhysicalValidity::ValidityMask { mask, .. } => {
+            let bytes = binding_bytes(bindings.get(&mask.get()).expect("missing validity binding"));
+            Some((0..column.len()).map(|i| (bytes[i / 8] >> (i % 8)) & 1 != 0).collect())
+        },
+    }
+}
+
+fn assert_fixed_width_binding_equivalent(
+    source: &SemanticColumn,
+    copied: &SemanticColumn,
+    source_values: &BufferBinding<'_>,
+    copied_values: &BufferBinding<'_>,
+    source_bindings: &HashMap<u32, &BufferBinding<'_>>,
+    copied_bindings: &HashMap<u32, &BufferBinding<'_>>,
+) {
+    assert_eq!(source_values.placement(), copied_values.placement());
+
+    let source_bytes = binding_bytes(source_values);
+    let copied_bytes = binding_bytes(copied_values);
+    assert_eq!(source_bytes.len(), copied_bytes.len());
+
+    let elem_size = match source.data_type().id() {
+        InteropTypeId::Int8 | InteropTypeId::UInt8 | InteropTypeId::Bool8 => 1,
+        InteropTypeId::Int16 | InteropTypeId::UInt16 => 2,
+        InteropTypeId::Int32
+        | InteropTypeId::UInt32
+        | InteropTypeId::Float32
+        | InteropTypeId::TimestampDays
+        | InteropTypeId::DurationDays
+        | InteropTypeId::Decimal32 => 4,
+        InteropTypeId::Int64
+        | InteropTypeId::UInt64
+        | InteropTypeId::Float64
+        | InteropTypeId::TimestampSeconds
+        | InteropTypeId::TimestampMilliseconds
+        | InteropTypeId::TimestampMicroseconds
+        | InteropTypeId::TimestampNanoseconds
+        | InteropTypeId::DurationSeconds
+        | InteropTypeId::DurationMilliseconds
+        | InteropTypeId::DurationMicroseconds
+        | InteropTypeId::DurationNanoseconds
+        | InteropTypeId::Decimal64 => 8,
+        InteropTypeId::Decimal128 => 16,
+        other => panic!("fixed-width layout requires a fixed-width type, got {other:?}"),
+    };
+    assert_eq!(source_bytes.len(), source.len() * elem_size);
+
+    let validity = validity_bits(source, source_bindings)
+        .or_else(|| validity_bits(copied, copied_bindings))
+        .unwrap_or_else(|| vec![true; source.len()]);
+
+    for (index, valid) in validity.into_iter().enumerate() {
+        if !valid {
+            continue;
+        }
+        let start = index * elem_size;
+        let end = start + elem_size;
+        assert_eq!(source_bytes[start..end], copied_bytes[start..end], "fixed-width bytes differ at valid row {index}");
+    }
 }
 
 fn validity_mask_is_elidable(validity: &PhysicalValidity) -> bool {
@@ -103,9 +170,13 @@ fn assert_semantic_column_equivalent(
 
     match (source.layout(), copied.layout()) {
         (ColumnLayout::FixedWidth { values: source_values }, ColumnLayout::FixedWidth { values: copied_values }) => {
-            assert_binding_equivalent(
+            assert_fixed_width_binding_equivalent(
+                source,
+                copied,
                 source_bindings.get(&source_values.get()).expect("missing source fixed-width binding"),
                 copied_bindings.get(&copied_values.get()).expect("missing copied fixed-width binding"),
+                source_bindings,
+                copied_bindings,
             );
         },
         (
@@ -292,7 +363,7 @@ fn copy_into_domain_numeric_i32_regression() {
     let scalar = Scalar::from_value(42i32).unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 1).unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![42]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
 #[test]
@@ -302,7 +373,7 @@ fn copy_into_domain_string_regression() {
 
     // count=2 so an offsets-buffer replication bug (e.g. [0,5,0,5] vs [0,5,10]) is caught.
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    assert_eq!(result.to_strings().unwrap(), vec!["hello".to_string(), "hello".to_string()]);
+    assert_eq!(result.to_strings_strict().unwrap(), vec!["hello".to_string(), "hello".to_string()]);
 }
 
 // ── End-to-end: scalar copy → DataFrame round-trip ──────────────────
@@ -315,7 +386,7 @@ fn scalar_copy_dataframe_round_trip() {
     let scalar = ts.min().unwrap();
 
     let series = rt.series_from_scalar("ts_col", &scalar, 3).unwrap();
-    let df = cudf::DataFrame::from_series([("ts_col", series)]).unwrap();
+    let df = cudf::DataFrame::from_series([series]).unwrap();
     let retrieved = df.series("ts_col").unwrap();
 
     let expected = Series::new::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])

@@ -12,8 +12,8 @@ use cudf::Series;
 fn test_series_ffill_basic() {
     let s = Series::new_nullable::<i32>("x", &[1, 0, 0, 4], &[true, false, false, true]).unwrap();
     let result = s.ffill().unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 1, 1, 4]);
     assert_eq!(result.null_count(), 0);
+    assert_eq!(result.to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(1), Some(1), Some(4)]);
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn test_series_ffill_leading_nulls_remain() {
     let s = Series::new_nullable::<i32>("x", &[0, 0, 3], &[false, false, true]).unwrap();
     let result = s.ffill().unwrap();
     assert_eq!(result.null_count(), 2);
-    let vals = result.to_optional_vec::<i32>().unwrap();
+    let vals = result.to_vec_optional::<i32>().unwrap();
     assert_eq!(vals, vec![None, None, Some(3)]);
 }
 
@@ -36,7 +36,7 @@ fn test_series_ffill_leading_nulls_remain() {
 fn test_series_ffill_no_nulls() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.ffill().unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn test_series_ffill_empty() {
 fn test_series_ffill_float64() {
     let s = Series::new_nullable::<f64>("x", &[1.5, 0.0, 3.5], &[true, false, true]).unwrap();
     let result = s.ffill().unwrap();
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![1.5, 1.5, 3.5]);
+    assert_eq!(result.to_vec_optional::<f64>().unwrap(), vec![Some(1.5), Some(1.5), Some(3.5)]);
 }
 
 // ===========================================================================
@@ -68,8 +68,8 @@ fn test_series_ffill_float64() {
 fn test_series_bfill_basic() {
     let s = Series::new_nullable::<i32>("x", &[1, 0, 0, 4], &[true, false, false, true]).unwrap();
     let result = s.bfill().unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 4, 4, 4]);
     assert_eq!(result.null_count(), 0);
+    assert_eq!(result.to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(4), Some(4), Some(4)]);
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_series_bfill_trailing_nulls_remain() {
     let s = Series::new_nullable::<i32>("x", &[1, 0, 0], &[true, false, false]).unwrap();
     let result = s.bfill().unwrap();
     assert_eq!(result.null_count(), 2);
-    let vals = result.to_optional_vec::<i32>().unwrap();
+    let vals = result.to_vec_optional::<i32>().unwrap();
     assert_eq!(vals, vec![Some(1), None, None]);
 }
 
@@ -92,7 +92,7 @@ fn test_series_bfill_trailing_nulls_remain() {
 fn test_series_bfill_no_nulls() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.bfill().unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn test_series_bfill_single_element() {
     // Single non-null
     let s = Series::new::<i32>("x", &[42]).unwrap();
     let result = s.bfill().unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![42]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 
     // Single null
     let s = Series::new_nullable::<i32>("x", &[0], &[false]).unwrap();
@@ -133,5 +133,5 @@ fn test_series_ffill_then_bfill_fills_all_interior() {
     let after_ffill = s.ffill().unwrap();
     let after_both = after_ffill.bfill().unwrap();
     assert_eq!(after_both.null_count(), 0);
-    assert_eq!(after_both.to_vec::<i32>().unwrap(), vec![2, 2, 2, 4, 4]);
+    assert_eq!(after_both.to_vec_optional::<i32>().unwrap(), vec![Some(2), Some(2), Some(2), Some(4), Some(4)]);
 }

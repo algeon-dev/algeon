@@ -27,7 +27,7 @@ use crate::{
 ///
 /// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonTableReadOptions {
+pub struct JsonReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     /// If `true` (default), read as JSON Lines (one JSON object per line).
@@ -39,7 +39,7 @@ pub struct JsonTableReadOptions {
 }
 
 /// Read a JSON file into a low-level table result.
-pub fn read_json(options: &JsonTableReadOptions) -> Result<IoTableResult> {
+pub fn read_json(options: &JsonReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::json::read_json")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());

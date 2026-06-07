@@ -33,10 +33,10 @@ fn test_table_column_access() {
 }
 
 #[test]
-fn test_table_copy() {
+fn test_table_deep_copy() {
     let c1 = Column::from_slice(&[1i64, 2]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let copy = table.copy().unwrap();
+    let copy = table.deep_copy().unwrap();
 
     let view = copy.view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 1);

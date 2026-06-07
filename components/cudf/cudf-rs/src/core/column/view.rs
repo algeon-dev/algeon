@@ -422,12 +422,26 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_view_null_mask_to_host(self.handle.as_ptr(), mask.as_mut_ptr(), alloc_bytes)
-            },
-            "column_view::validity",
-        )?;
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_null_mask_to_host_ex(
+                        self.handle.as_ptr(),
+                        mask.as_mut_ptr(),
+                        alloc_bytes,
+                        &exec_options,
+                    )
+                },
+                "column_view::validity",
+            )?;
+        } else {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_null_mask_to_host(self.handle.as_ptr(), mask.as_mut_ptr(), alloc_bytes)
+                },
+                "column_view::validity",
+            )?;
+        }
 
         // Unpack bitmask to bool vec.
         let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();

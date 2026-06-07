@@ -4,7 +4,7 @@
 
 use cudf::{
     core::{Column, Table},
-    io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
+    io::json::{self, JsonReadOptions, JsonTableWriteOptions},
 };
 use tempfile::TempDir;
 
@@ -27,7 +27,7 @@ fn test_json_lines_roundtrip_i32() {
     json::write_json(&view, &write_opts).unwrap();
 
     // Read back through the shared low-level result envelope.
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -47,7 +47,7 @@ fn test_json_lines_roundtrip_strings() {
     // Write a NDJSON file manually
     std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
 
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -68,7 +68,7 @@ fn test_json_lines_empty_file() {
 
     std::fs::write(&path, "").unwrap();
 
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
 
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 0);
@@ -116,7 +116,7 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
 
 #[test]
 fn test_json_read_nonexistent_file() {
-    let read_opts = JsonTableReadOptions::builder().filepath("/nonexistent/file.jsonl").build();
+    let read_opts = JsonReadOptions::builder().filepath("/nonexistent/file.jsonl").build();
     let result = json::read_json(&read_opts);
     assert!(result.is_err());
 }

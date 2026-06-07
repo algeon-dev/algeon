@@ -25,7 +25,7 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
         assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);
         assert_eq!(result.num_rows(), 2);
-        let _ = result.series("key").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
         result
     });
 

@@ -193,7 +193,7 @@ impl Series {
     ///
     /// `ddof = 1` gives the sample standard deviation (default in cuDF Python).
     /// Always returns `Float64`. Nulls are excluded.
-    pub fn std(&self, ddof: i32) -> Result<Scalar> {
+    pub fn std(&self, ddof: u32) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
         reduction::reduce(&cv, &ReduceAggregation::Std { ddof }, &out_type)
@@ -202,7 +202,7 @@ impl Series {
     /// Reduce the series to a host standard deviation value.
     ///
     /// Returns `None` when the reduction has no valid element to aggregate.
-    pub fn std_value(&self, ddof: i32) -> Result<Option<f64>> {
+    pub fn std_value(&self, ddof: u32) -> Result<Option<f64>> {
         scalar_to_optional_value(self.std(ddof)?)
     }
 
@@ -210,7 +210,7 @@ impl Series {
     ///
     /// `ddof = 1` gives the sample variance. Always returns `Float64`.
     /// Nulls are excluded.
-    pub fn var(&self, ddof: i32) -> Result<Scalar> {
+    pub fn var(&self, ddof: u32) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
         reduction::reduce(&cv, &ReduceAggregation::Variance { ddof }, &out_type)
@@ -219,7 +219,7 @@ impl Series {
     /// Reduce the series to a host variance value.
     ///
     /// Returns `None` when the reduction has no valid element to aggregate.
-    pub fn var_value(&self, ddof: i32) -> Result<Option<f64>> {
+    pub fn var_value(&self, ddof: u32) -> Result<Option<f64>> {
         scalar_to_optional_value(self.var(ddof)?)
     }
 

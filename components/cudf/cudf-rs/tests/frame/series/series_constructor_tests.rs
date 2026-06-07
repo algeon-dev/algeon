@@ -67,7 +67,7 @@ fn test_from_scalar_i32() {
     assert_eq!(s.len(), 4);
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![42, 42, 42, 42]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42, 42]);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_from_scalar_f64() {
     let s = Series::from_scalar("val", &scalar, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(s.to_vec::<f64>().unwrap(), vec![2.5, 2.5, 2.5]);
+    assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![2.5, 2.5, 2.5]);
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn test_from_scalar_string() {
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
     assert_eq!(s.len(), 2);
-    assert_eq!(s.to_strings().unwrap(), vec!["hello", "hello"]);
+    assert_eq!(s.to_strings_strict().unwrap(), vec!["hello", "hello"]);
 }
 
 #[test]

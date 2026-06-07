@@ -20,7 +20,7 @@ use cudf::{DataFrame, Series, TypeId, core::Column};
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([ids, scores]).unwrap()
 }
 
 /// Get device data pointer for a named column in a DataFrame.
@@ -43,7 +43,7 @@ fn df_series_returns_owned_with_name() {
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.len(), 3);
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 /// Two `series()` calls return Series backed by the same GPU buffer.
@@ -96,7 +96,7 @@ fn df_get_probe_access() {
 
     let s = df.get("id").unwrap();
     assert_eq!(s.name(), Some("id"));
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 /// `contains()` returns `true` for existing columns, `false` otherwise.
@@ -139,8 +139,8 @@ fn df_to_table_source_still_usable() {
     let _table = df.to_table_copy().unwrap();
 
     // DataFrame is still fully readable
-    assert_eq!(df.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -227,8 +227,8 @@ fn sort_values_consistent_results() {
     let result2 = df2.sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(
-        result1.series("id").unwrap().to_vec::<i32>().unwrap(),
-        result2.series("id").unwrap().to_vec::<i32>().unwrap(),
+        result1.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
+        result2.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
     );
 }
 
@@ -337,7 +337,7 @@ fn df_filter_gpu_allocates() {
 
     let filtered = df.filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 
     // New allocation — different device pointer
     assert_ne!(device_ptr(&df, "id"), device_ptr(&filtered, "id"));

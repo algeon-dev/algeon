@@ -25,19 +25,27 @@ use crate::{
 /// This type controls CSV parsing only. Truthful schema names, when available
 /// from a header row, are returned through [`IoTableResult`].
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct CsvTableReadOptions {
+pub struct CsvReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default = b',')]
     delimiter: u8,
     #[builder(default = true)]
     has_header: bool,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    column_names: Option<Vec<String>>,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
 
+impl CsvReadOptions {
+    pub(crate) fn column_names(&self) -> Option<&[String]> {
+        self.column_names.as_deref()
+    }
+}
+
 /// Read a CSV file into a low-level table result.
-pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
+pub fn read_csv(options: &CsvReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());

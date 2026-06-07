@@ -60,7 +60,7 @@ fn test_round_trip_i32() {
 
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["a"]);
-    let vals: Vec<i32> = df2.series("a").unwrap().to_vec::<i32>().unwrap();
+    let vals: Vec<i32> = df2.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
@@ -72,7 +72,7 @@ fn test_round_trip_i64() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int64);
 
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
-    let vals: Vec<i64> = df2.series("x").unwrap().to_vec::<i64>().unwrap();
+    let vals: Vec<i64> = df2.series("x").unwrap().to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![100, 200, 300]);
 }
 
@@ -89,10 +89,10 @@ fn test_round_trip_f32_f64() {
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Float64);
 
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
-    let f32_vals: Vec<f32> = df2.series("f32_col").unwrap().to_vec::<f32>().unwrap();
+    let f32_vals: Vec<f32> = df2.series("f32_col").unwrap().to_vec_strict::<f32>().unwrap();
     assert_eq!(f32_vals, vec![1.5, 2.5, 3.5]);
 
-    let f64_vals: Vec<f64> = df2.series("f64_col").unwrap().to_vec::<f64>().unwrap();
+    let f64_vals: Vec<f64> = df2.series("f64_col").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(f64_vals, vec![10.0, 20.0, 30.0]);
 }
 
@@ -122,9 +122,11 @@ fn test_round_trip_nullable_i32() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    let vals: Vec<i32> = cv.to_vec::<i32>().unwrap();
-    assert_eq!(vals[0], 1);
-    assert_eq!(vals[2], 3);
+    // Nullable column: use to_vec_optional to access values alongside nulls.
+    let vals = cv.to_vec_optional::<i32>().unwrap();
+    assert_eq!(vals[0], Some(1));
+    assert_eq!(vals[1], None);
+    assert_eq!(vals[2], Some(3));
 }
 
 #[test]
@@ -147,9 +149,12 @@ fn test_round_trip_nullable_f64() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
 
-    let vals: Vec<f64> = cv.to_vec::<f64>().unwrap();
-    assert!((vals[0] - 1.1).abs() < 1e-10);
-    assert!((vals[2] - 3.3).abs() < 1e-10);
+    // Nullable column: use to_vec_optional to access values alongside nulls.
+    let vals = cv.to_vec_optional::<f64>().unwrap();
+    assert!((vals[0].unwrap() - 1.1).abs() < 1e-10);
+    assert_eq!(vals[1], None);
+    assert!((vals[2].unwrap() - 3.3).abs() < 1e-10);
+    assert_eq!(vals[3], None);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +174,7 @@ fn test_round_trip_bool8() {
     assert!(arr.value(2));
 
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
-    let vals: Vec<bool> = df2.series("flag").unwrap().to_vec::<bool>().unwrap();
+    let vals: Vec<bool> = df2.series("flag").unwrap().to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, false, true]);
 }
 
@@ -200,7 +205,7 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = cudf::Series::new_nullable("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = cudf::Series::new_nullable("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap().rename("flag");
-    let df = DataFrame::from_series([("flag", flag)]).unwrap();
+    let df = DataFrame::from_series([flag]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -263,10 +268,10 @@ fn test_from_record_batch_creates_dataframe() {
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["x", "y"]);
 
-    let x_vals: Vec<i32> = df.series("x").unwrap().to_vec::<i32>().unwrap();
+    let x_vals: Vec<i32> = df.series("x").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(x_vals, vec![10, 20, 30]);
 
-    let y_vals: Vec<f64> = df.series("y").unwrap().to_vec::<f64>().unwrap();
+    let y_vals: Vec<f64> = df.series("y").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(y_vals, vec![1.1, 2.2, 3.3]);
 }
 
@@ -281,9 +286,11 @@ fn test_from_record_batch_with_nulls() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    let vals: Vec<i32> = cv.to_vec::<i32>().unwrap();
-    assert_eq!(vals[0], 1);
-    assert_eq!(vals[2], 3);
+    // Nullable column: use to_vec_optional to access values alongside nulls.
+    let vals = cv.to_vec_optional::<i32>().unwrap();
+    assert_eq!(vals[0], Some(1));
+    assert_eq!(vals[1], None);
+    assert_eq!(vals[2], Some(3));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +317,7 @@ fn test_round_trip_string_only() {
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["name"]);
     assert_eq!(df2.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
-    let strs = df2.series("name").unwrap().to_strings().unwrap();
+    let strs = df2.series("name").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["alice", "bob", "charlie"]);
 }
 
@@ -333,10 +340,10 @@ fn test_round_trip_mixed_string_and_numeric() {
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["city", "pop"]);
 
-    let cities = df2.series("city").unwrap().to_strings().unwrap();
+    let cities = df2.series("city").unwrap().to_strings_strict().unwrap();
     assert_eq!(cities, vec!["tokyo", "london", "paris"]);
 
-    let pops: Vec<i64> = df2.series("pop").unwrap().to_vec::<i64>().unwrap();
+    let pops: Vec<i64> = df2.series("pop").unwrap().to_vec_strict::<i64>().unwrap();
     assert_eq!(pops, vec![14_000_000, 9_000_000, 2_000_000]);
 }
 
@@ -362,9 +369,11 @@ fn test_round_trip_nullable_string() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    let strs = cv.to_strings().unwrap();
-    assert_eq!(strs[0], "hello");
-    assert_eq!(strs[2], "world");
+    // Nullable column: use to_strings_optional to access values alongside nulls.
+    let strs = cv.to_strings_optional().unwrap();
+    assert_eq!(strs[0], Some("hello".to_string()));
+    assert_eq!(strs[1], None);
+    assert_eq!(strs[2], Some("world".to_string()));
 }
 
 #[test]
@@ -373,7 +382,7 @@ fn test_round_trip_string_with_empty_values() {
 
     let batch = df.to_record_batch().unwrap();
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
-    let strs = df2.series("s").unwrap().to_strings().unwrap();
+    let strs = df2.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["", "data", ""]);
 }
 
@@ -390,7 +399,7 @@ fn test_round_trip_string_unicode() {
     assert_eq!(arr.value(2), "🚀🎉");
 
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
-    let strs = df2.series("text").unwrap().to_strings().unwrap();
+    let strs = df2.series("text").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["héllo", "日本語", "🚀🎉"]);
 }
 
@@ -404,7 +413,7 @@ fn test_from_record_batch_string_array() {
     let df = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
-    let strs = df.series("name").unwrap().to_strings().unwrap();
+    let strs = df.series("name").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["alpha", "beta", "gamma"]);
 }
 
@@ -420,9 +429,11 @@ fn test_from_record_batch_nullable_string_array() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    let strs = cv.to_strings().unwrap();
-    assert_eq!(strs[0], "a");
-    assert_eq!(strs[2], "c");
+    // Nullable column: use to_strings_optional to access values alongside nulls.
+    let strs = cv.to_strings_optional().unwrap();
+    assert_eq!(strs[0], Some("a".to_string()));
+    assert_eq!(strs[1], None);
+    assert_eq!(strs[2], Some("c".to_string()));
 }
 
 #[test]
@@ -432,7 +443,7 @@ fn test_from_record_batch_large_string_array() {
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(LargeStringArray::from(vec!["x", "y", "z"]))]).unwrap();
 
     let df = DataFrame::from_record_batch(&batch).unwrap();
-    let strs = df.series("s").unwrap().to_strings().unwrap();
+    let strs = df.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["x", "y", "z"]);
 }
 
@@ -452,6 +463,6 @@ fn test_round_trip_empty_string_schema() {
     assert_eq!(df2.column_names(), vec!["s"]);
     assert_eq!(df2.num_rows(), 0);
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);
-    let strs = df2.series("s").unwrap().to_strings().unwrap();
+    let strs = df2.series("s").unwrap().to_strings_strict().unwrap();
     assert!(strs.is_empty());
 }

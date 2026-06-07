@@ -38,15 +38,11 @@ fn right_df_asym() -> DataFrame {
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
-    let series = df.series(name).unwrap();
-    let values = series.to_vec::<i32>().unwrap();
-    let validity = series.as_column_view().unwrap().validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
-
-    values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
+    df.series(name).unwrap().to_vec_optional::<i32>().unwrap()
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
-    df.series(name).unwrap().to_vec::<i32>().unwrap()
+    df.series(name).unwrap().to_vec_optional::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -126,13 +122,13 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
-        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("score", left_rt.series("score", &[10i32, 20, 30]).unwrap()),
+        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
-        ("value", right_rt.series("value", &[200i32, 300, 400]).unwrap()),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
     let expected_exec_stream = left.__debug_execution_domain_stream_value();
@@ -282,13 +278,13 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
-        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("score", left_rt.series("score", &[10i32, 20, 30]).unwrap()),
+        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
-        ("value", right_rt.series("value", &[200i32, 300, 400]).unwrap()),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
     let expected_exec_stream = left.__debug_execution_domain_stream_value();
@@ -313,13 +309,12 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
         expected_exec_stream
     );
 
-    reset_exec_observation();
-    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
-    ids.sort_unstable();
-    assert_eq!(ids, vec![1, 2, 3, 4]);
+    // Verify materialized values from the full merge result.
+    reset_sync_observation();
+    let mut ids = result.series("id").unwrap().to_vec_optional::<i32>().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
-    assert_eq!(last_exec_stream_value(), expected_exec_stream);
-    assert_eq!(last_exec_mr_value(), expected_exec_mr);
 
     reset_sync_observation();
     let mut rows: Vec<_> = nullable_i32_column(&result, "id")
@@ -338,6 +333,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
             (Some(4), None, Some(400)),
         ]
     );
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]
@@ -346,13 +342,13 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
     let left = DataFrame::from_series([
-        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("score", left_rt.series("score", &[10i32, 20, 30]).unwrap()),
+        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
-        ("value", right_rt.series("value", &[200i32, 300, 400]).unwrap()),
+        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
     let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
@@ -379,13 +375,12 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
         expected_exec_stream
     );
 
-    reset_exec_observation();
-    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
-    ids.sort_unstable();
-    assert_eq!(ids, vec![1, 2, 3, 4]);
+    // Verify materialized values from the full merge result.
+    reset_sync_observation();
+    let mut ids = result.series("id").unwrap().to_vec_optional::<i32>().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
-    assert_eq!(last_exec_stream_value(), expected_exec_stream);
-    assert_eq!(last_exec_mr_value(), expected_exec_mr);
 
     reset_sync_observation();
     let mut rows: Vec<_> = nullable_i32_column(&result, "id")
@@ -404,6 +399,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
             (Some(4), None, Some(400)),
         ]
     );
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]

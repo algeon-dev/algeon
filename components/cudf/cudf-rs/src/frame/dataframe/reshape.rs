@@ -405,7 +405,7 @@ impl DataFrame {
     /// use cudf::{DataFrame, Series, SortOptions};
     ///
     /// let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    /// let df = DataFrame::from_series([("id", ids)]).unwrap();
+    /// let df = DataFrame::from_named_pairs([("id", ids)]).unwrap();
     ///
     /// let sorted = df
     ///     .sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
@@ -517,10 +517,9 @@ impl DataFrame {
     /// External callers should use `drop_duplicates` with [`DistinctOptions`] instead.
     pub(crate) fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::distinct")?;
-        let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
         let result_table =
-            stream_compaction::distinct(tv.table(), &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?
+            stream_compaction::distinct(tv.table(), &key_indices, keep, NullEquality::Equal, NanEquality::AllEqual)?
                 .with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -536,9 +535,8 @@ impl DataFrame {
     /// Returns an error if any name in `subset` is not in the schema.
     pub(crate) fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
-        let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
-        let result_table = stream_compaction::drop_nulls(tv.table(), &key_i32, keep_threshold)?
+        let result_table = stream_compaction::drop_nulls(tv.table(), &key_indices, keep_threshold)?
             .with_execution_domain(Arc::clone(&self.domain));
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1200,6 +1198,6 @@ impl DataFrame {
             result_columns.push((&opts.value_name, concat_values));
         }
 
-        DataFrame::from_series(result_columns)
+        DataFrame::from_named_pairs(result_columns)
     }
 }

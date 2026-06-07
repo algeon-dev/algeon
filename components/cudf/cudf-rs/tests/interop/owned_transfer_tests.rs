@@ -436,7 +436,7 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
+    let (table, _names) = DataFrame::from_series([ids, vals]).unwrap().try_into_table().unwrap();
 
     let transfer = table.try_into_owned_device_table_transfer().unwrap();
 
@@ -490,7 +490,7 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
 
     assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_ne!(imported_ptr, original_ptr);
-    assert_eq!(shared.to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(shared.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(shared.as_column_view().unwrap().device_data_ptr().unwrap(), original_ptr);
 }
 
@@ -499,7 +499,7 @@ fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract()
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([ids, values]).unwrap();
     let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
 
     let transfer = frame.try_into_owned_device_table_transfer().unwrap();
@@ -520,7 +520,7 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([ids, values]).unwrap();
     let shared = frame.clone();
     let original_id_ptr = shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
     let original_value_ptr = shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
@@ -531,8 +531,8 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     let imported_value_ptr = imported.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
 
     assert_eq!(imported.column_names(), vec!["id", "value"]);
-    assert_eq!(imported.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(imported.series("value").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
     assert_ne!(imported_id_ptr, original_id_ptr);
     assert_ne!(imported_value_ptr, original_value_ptr);
     assert_eq!(shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap(), original_id_ptr);
@@ -708,7 +708,7 @@ fn owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy() {
         "owned_transfer_list.jsonl",
         "{\"lists\":[1,2]}\n{\"lists\":[3]}\n{\"lists\":[]}\n{\"lists\":[4,5,6]}\n",
     );
-    let source = frame.series("lists").unwrap().as_column().copy().unwrap();
+    let source = frame.series("lists").unwrap().as_column().deep_copy().unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
 
@@ -728,7 +728,7 @@ fn owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy() {
          {\"point\":{\"coords\":[],\"label\":\"two\"}}\n\
          {\"point\":{\"coords\":[3],\"label\":\"three\"}}\n",
     );
-    let source = frame.series("point").unwrap().as_column().copy().unwrap();
+    let source = frame.series("point").unwrap().as_column().deep_copy().unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
 
@@ -769,12 +769,11 @@ fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
     let name = frame.series("name").unwrap();
     let lists = frame.series("lists").unwrap();
     let point = frame.series("point").unwrap();
-    let category_source = frame.series("category").unwrap().as_column().copy().unwrap();
+    let category_source = frame.series("category").unwrap().as_column().deep_copy().unwrap();
     let category = Series::from_column(dictionary::encode(&category_source.view().unwrap(), TypeId::Int32).unwrap())
         .unwrap()
         .rename("category");
-    let frame =
-        DataFrame::from_series([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap();
+    let frame = DataFrame::from_series([name, lists, point, category]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_table_transfer(source, Arc::clone(&drops));
@@ -840,7 +839,7 @@ fn ambient_default_table_owned_transfer_is_rejected() {
 fn ambient_default_dataframe_owned_transfer_is_rejected() {
     let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
     let values = Series::new("value", &[10i32, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([ids, values]).unwrap();
 
     let err = frame.try_into_owned_device_table_transfer().unwrap_err();
 

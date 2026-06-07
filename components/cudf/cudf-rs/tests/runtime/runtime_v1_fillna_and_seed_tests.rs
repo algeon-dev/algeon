@@ -58,8 +58,8 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
 
     // Build a DataFrame with a nullable column in domain A.
     let df = DataFrame::from_series([
-        ("id", rt_a.series("id", &[1i32, 2, 3]).unwrap()),
-        ("val", rt_a.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap()),
+        rt_a.series("id", &[1i32, 2, 3]).unwrap(),
+        rt_a.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
     ])
     .unwrap();
 
@@ -76,7 +76,7 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
     assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_mr_value(), target_rt.memory_resource().__debug_raw_handle_value());
-    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// v2 semantics: mixed-domain fillna_with_series succeeds via the default
@@ -88,8 +88,8 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_b = sample_runtime();
 
     let df = DataFrame::from_series([
-        ("id", rt_a.series("id", &[1i32, 2, 3]).unwrap()),
-        ("val", rt_a.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap()),
+        rt_a.series("id", &[1i32, 2, 3]).unwrap(),
+        rt_a.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
     ])
     .unwrap();
 
@@ -105,7 +105,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// Both inputs already in the same runtime — no copy needed.
@@ -113,8 +113,8 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([
-        ("id", rt.series("id", &[1i32, 2, 3]).unwrap()),
-        ("val", rt.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap()),
+        rt.series("id", &[1i32, 2, 3]).unwrap(),
+        rt.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
     ])
     .unwrap();
     let fill = rt.series("fill", &[99i32, 99, 99]).unwrap();
@@ -124,7 +124,7 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
         df.copy_into_runtime(&rt).unwrap().fillna_with_series("val", &fill.copy_into_runtime(&rt).unwrap()).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
         result.as_column().__debug_execution_domain_mr_value(),
         target_rt.memory_resource().__debug_raw_handle_value()
     );
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 /// v2 semantics: mixed-domain Series::fillna_with_series succeeds via the
@@ -179,7 +179,7 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(result.as_column().__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ fn column_empty_with_runtime_retains_explicit_domain() {
 #[test]
 fn empty_with_runtime_column_in_dataframe_no_mixed_domain_error() {
     let rt = sample_runtime();
-    let df = DataFrame::from_series([("id", rt.series("id", &[1i32; 0]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([rt.series("id", &[1i32; 0]).unwrap()]).unwrap();
     let empty_col = Column::empty_with_runtime(&rt, TypeId::Int64).unwrap();
 
     // Adding an empty column in the same domain should succeed without
