@@ -172,14 +172,37 @@ impl<'a> ColumnView<'a> {
         })
     }
 
+    /// Returns the logical child column view for a LIST column after applying
+    /// the root list offset to the child range.
+    pub(crate) fn list_sliced_child(&self) -> Result<ColumnView<'a>> {
+        let mut child_handle = ptr::null_mut();
+        let exec_options = self.domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_column_view_list_sliced_child_ex(self.handle.as_ptr(), options, &mut child_handle)
+                },
+                None => unsafe {
+                    cudf_sys::cudf_column_view_list_sliced_child(self.handle.as_ptr(), &mut child_handle)
+                },
+            },
+            "column_view::list_sliced_child",
+        )?;
+        Ok(ColumnView {
+            handle: NonNull::new(child_handle).expect("null handle on success"),
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
+    }
+
     /// Returns the raw device (GPU) data pointer of this column view.
     ///
     /// This is a zero-copy operation — no data moves between GPU and host.
     /// The returned pointer points to device memory containing `len()` elements
     /// of `data_type()`.
     ///
-    /// For `STRING` columns the data pointer is null — use [`child()`](Self::child)
-    /// to access the offsets (child 0) and character data (child 1) instead.
+    /// For `STRING` columns the data pointer is null. String raw-buffer access
+    /// uses a separate offsets child plus string-specific chars helpers.
     ///
     /// # Note
     ///
@@ -194,6 +217,28 @@ impl<'a> ColumnView<'a> {
             "column_view::device_data_ptr",
         )?;
         Ok(out)
+    }
+
+    pub(crate) fn string_chars_ptr_and_size(&self) -> Result<(*const c_void, usize)> {
+        let mut out_ptr: *const c_void = std::ptr::null();
+        let mut out_size: usize = 0;
+        let exec_options = self.domain.explicit_exec_options_raw();
+        let status = if let Some(exec_options) = exec_options.as_ref() {
+            unsafe {
+                cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
+                    self.handle.as_ptr(),
+                    exec_options,
+                    &mut out_ptr,
+                    &mut out_size,
+                )
+            }
+        } else {
+            unsafe {
+                cudf_sys::cudf_column_view_string_chars_ptr_and_size(self.handle.as_ptr(), &mut out_ptr, &mut out_size)
+            }
+        };
+        error::check_status_in(status, "column_view::string_chars_ptr_and_size")?;
+        Ok((out_ptr, out_size))
     }
 
     pub(crate) fn null_mask_ptr(&self) -> Result<Option<*const c_void>> {
@@ -308,6 +353,64 @@ impl<'a> ColumnView<'a> {
         Ok(buf)
     }
 
+    /// Copy any fixed-width column view to raw host bytes.
+    ///
+    /// The returned buffer covers only the active logical range of this view.
+    pub(crate) fn to_fixed_width_host_bytes(&self) -> Result<Vec<u8>> {
+        let dt = self.data_type()?;
+        if self.offset()? != 0 {
+            // Normalize sliced views to a zero-offset owned column first so the
+            // resulting host bytes cover only the active logical range.
+            let normalized = super::convert::copy_view_to_owned(self)?;
+            return normalized.view()?.to_fixed_width_host_bytes();
+        }
+
+        let elem_size = usize::try_from(dt.id().size_in_bytes()?.ok_or_else(|| {
+            Error::new(ErrorKind::TypeError, "to_fixed_width_host_bytes requires a fixed-width type")
+                .with_operation("column_view::to_fixed_width_host_bytes")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+        })?)
+        .map_err(|_| {
+            Error::new(ErrorKind::TypeError, "fixed-width element size must be >= 0")
+                .with_operation("column_view::to_fixed_width_host_bytes")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+        })?;
+
+        let size = self.len()?;
+        let buf_size = size.checked_mul(elem_size).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "host byte range overflowed")
+                .with_operation("column_view::to_fixed_width_host_bytes")
+                .with_context("len", size.to_string())
+                .with_context("elem_size", elem_size.to_string())
+        })?;
+        let mut buf = vec![0u8; buf_size];
+
+        self.synchronize_host_visibility("column_view::to_fixed_width_host_bytes")?;
+
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host_ex(
+                        self.handle.as_ptr(),
+                        buf.as_mut_ptr() as *mut c_void,
+                        buf_size,
+                        &exec_options,
+                    )
+                },
+                "column_view::to_fixed_width_host_bytes",
+            )?;
+        } else {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
+                },
+                "column_view::to_fixed_width_host_bytes",
+            )?;
+        }
+
+        Ok(buf)
+    }
+
     /// Copy the null mask to a host `Vec<bool>`.
     ///
     /// Returns `None` if the column has no null mask (all elements valid).
@@ -352,6 +455,13 @@ impl<'a> ColumnView<'a> {
             return Err(Error::new(ErrorKind::TypeError, "column type is not STRING")
                 .with_operation("column_view::to_strings")
                 .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
+        }
+
+        if self.offset()? != 0 {
+            // Normalize sliced views to a zero-offset owned column first so
+            // host string materialization only covers the active logical range.
+            let normalized = copy_view_to_owned(self)?;
+            return normalized.view()?.to_strings();
         }
 
         let size = self.len()?;

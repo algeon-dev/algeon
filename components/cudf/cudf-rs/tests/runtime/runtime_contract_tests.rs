@@ -22,8 +22,9 @@ use std::{
 };
 
 use cudf::{
-    Agg, AggSpec, Column, DataFrame, Scalar, Series, SortOptions, Table, core::memory::DeviceMemoryResource,
-    runtime::CudaStream,
+    Agg, AggSpec, Column, DataFrame, Scalar, Series, SortOptions, Table,
+    core::memory::DeviceMemoryResource,
+    runtime::{CudaEvent, CudaStream},
 };
 use static_assertions::assert_not_impl_any;
 
@@ -66,8 +67,24 @@ fn cuda_stream_is_send_sync() {
 }
 
 #[test]
+fn cuda_event_is_send_sync() {
+    assert_send_sync::<CudaEvent>();
+}
+
+#[test]
 fn device_memory_resource_is_send_sync() {
     assert_send_sync::<DeviceMemoryResource>();
+}
+
+#[test]
+fn cuda_event_can_record_wait_and_synchronize() {
+    let stream = CudaStream::new().unwrap();
+    let event = CudaEvent::new().unwrap();
+
+    event.record(&stream).unwrap();
+    stream.wait_event(&event).unwrap();
+    event.synchronize().unwrap();
+    assert!(event.is_ready().unwrap());
 }
 
 // ===========================================================================

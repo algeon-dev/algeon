@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use super::device::DeviceId;
+use super::{device::DeviceId, event::CudaEvent};
 use crate::core::error::{self, Result};
 
 /// An owned CUDA stream.
@@ -83,6 +83,15 @@ impl CudaStream {
             "stream::is_ready",
         )?;
         Ok(out != 0)
+    }
+
+    /// Make this stream wait for `event` before subsequently enqueued work
+    /// proceeds.
+    pub fn wait_event(&self, event: &CudaEvent) -> Result<()> {
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_stream_wait_event(self.handle.raw.as_ptr(), event.as_raw()) },
+            "stream::wait_event",
+        )
     }
 
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {

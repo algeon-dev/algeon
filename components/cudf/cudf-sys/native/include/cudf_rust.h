@@ -11,6 +11,7 @@
 #include "table.h"
 #include "scalar.h"
 #include "stream.h"
+#include "event.h"
 #include "memory_resource.h"
 #include "io.h"
 #include "sorting.h"

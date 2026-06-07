@@ -83,6 +83,7 @@ add_library(
   src/table.cpp
   src/scalar.cpp
   src/stream.cpp
+  src/event.cpp
   src/rmm.cpp
   src/execution_context.cpp
   src/io_parquet.cpp

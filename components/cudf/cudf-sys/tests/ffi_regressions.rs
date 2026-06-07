@@ -541,6 +541,78 @@ fn test_stream_create_is_ready_and_synchronize_smoke() {
 }
 
 #[test]
+fn test_event_create_null_out_rejected() {
+    let status = unsafe { cudf_sys::cudf_event_create(ptr::null_mut()) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+}
+
+#[test]
+fn test_event_create_record_wait_and_synchronize_smoke() {
+    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+
+    let mut stream: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!stream.is_null());
+
+    let mut event: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_event_create(&mut event) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!event.is_null());
+
+    let status = unsafe { cudf_sys::cudf_event_record(event, stream) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    let mut ready = 0;
+    let status = unsafe { cudf_sys::cudf_event_is_ready(event, &mut ready) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(ready == 0 || ready == 1);
+
+    let status = unsafe { cudf_sys::cudf_stream_wait_event(stream, event) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    let status = unsafe { cudf_sys::cudf_event_synchronize(event) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    let mut synchronize_calls = -1;
+    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut synchronize_calls) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(synchronize_calls, 1);
+
+    let status = unsafe { cudf_sys::cudf_event_is_ready(event, &mut ready) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(ready, 1);
+
+    let mut raw: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_event_raw(event, &mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!raw.is_null());
+
+    unsafe {
+        cudf_sys::cudf_event_destroy(event);
+        cudf_sys::cudf_stream_destroy(stream);
+    }
+}
+
+#[test]
+fn test_raw_cuda_event_record_and_wait_smoke() {
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let event = cudf_sys::Event::new().expect("failed to create event");
+
+    let raw_stream = stream.raw_cuda_stream().expect("failed to resolve raw CUDA stream");
+    let raw_event = event.raw_cuda_event().expect("failed to resolve raw CUDA event");
+
+    let status = unsafe { cudf_sys::cudf_raw_cuda_event_record(raw_event, raw_stream) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    let status = unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(raw_stream, raw_event) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+
+    let status = unsafe { cudf_sys::cudf_event_synchronize(event.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+}
+
+#[test]
 fn test_execution_context_defaults_match_legacy_column_copy() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3, 4]);
@@ -1021,6 +1093,43 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
 
     unsafe {
         cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_span() {
+    let col = make_string_column(&["zero", "one", "two", "three"]);
+    let full_view = make_column_view(col);
+    let sliced_view = make_sliced_column_view(col, 1, 2);
+
+    let mut full_ptr: *const c_void = ptr::null();
+    let mut full_size: usize = 0;
+    let st = unsafe {
+        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(full_view, ptr::null(), &mut full_ptr, &mut full_size)
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!full_ptr.is_null());
+    assert_eq!(full_size, "zeroonetwothree".len());
+
+    let mut sliced_ptr: *const c_void = ptr::null();
+    let mut sliced_size: usize = 0;
+    let st = unsafe {
+        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
+            sliced_view,
+            ptr::null(),
+            &mut sliced_ptr,
+            &mut sliced_size,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!sliced_ptr.is_null());
+    assert_eq!(sliced_ptr, full_ptr);
+    assert_eq!(sliced_size, "zeroonetwo".len());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(sliced_view);
+        cudf_sys::cudf_column_view_destroy(full_view);
         cudf_sys::cudf_column_destroy(col);
     }
 }

@@ -20,6 +20,7 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     let execution = borrowed.execution();
     assert_eq!(execution.device(), runtime.device().ordinal() as i32);
     assert_eq!(execution.cuda_stream().as_raw() as usize, expected_stream);
+    assert_eq!(execution.cuda_stream().device(), runtime.device().ordinal() as i32);
     assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 
@@ -73,6 +74,7 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     let execution = borrowed.execution();
     assert_eq!(execution.device(), runtime.device().ordinal() as i32);
     assert_eq!(execution.cuda_stream().as_raw() as usize, expected_stream);
+    assert_eq!(execution.cuda_stream().device(), runtime.device().ordinal() as i32);
     assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 

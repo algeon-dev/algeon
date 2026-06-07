@@ -11,6 +11,7 @@ mod device_slice;
 mod owned;
 mod view;
 
+pub(crate) use convert::copy_view_to_owned;
 pub use device_buffer::DeviceBuffer;
 pub use device_slice::DeviceSlice;
 pub use owned::Column;

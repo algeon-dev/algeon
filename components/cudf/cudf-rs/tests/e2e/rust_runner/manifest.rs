@@ -21,7 +21,16 @@ pub struct Fixture {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Dataset {
     pub id: String,
+    #[serde(default)]
     pub columns: Vec<DatasetColumn>,
+    /// Optional JSONL rows used for nested or mixed-shape datasets that are
+    /// easier to express row-wise than as column-wise scalar arrays.
+    #[serde(default)]
+    pub json_lines: Vec<String>,
+    /// Optional columns that should be dictionary-encoded after the base
+    /// DataFrame is loaded.
+    #[serde(default)]
+    pub dictionary_columns: Vec<String>,
 }
 
 /// A single column in a dataset with explicit dtype and values.
@@ -102,12 +111,14 @@ pub struct FloatTol {
 
 /// Maps a language-native dtype string to its manifest-canonical name.
 ///
-/// Manifest-canonical names: int32, int64, uint32, uint64, float32, float64, bool8, string.
+/// Manifest-canonical names: int32, int64, uint32, uint64, float32, float64,
+/// bool8, string, dictionary32, list, struct.
 /// Both Python cuDF and cudf-rs may use different names for the same types.
 pub fn canonical_dtype(native: &str) -> &str {
     match native {
         // Manifest-canonical names pass through
-        "int32" | "int64" | "uint32" | "uint64" | "float32" | "float64" | "bool8" | "string" => native,
+        "int32" | "int64" | "uint32" | "uint64" | "float32" | "float64" | "bool8" | "string" | "dictionary32"
+        | "list" | "struct" => native,
         // Rust cudf-rs DataType display names
         "INT32" => "int32",
         "INT64" => "int64",
@@ -117,6 +128,9 @@ pub fn canonical_dtype(native: &str) -> &str {
         "FLOAT64" => "float64",
         "BOOL8" => "bool8",
         "STRING" => "string",
+        "DICTIONARY32" => "dictionary32",
+        "LIST" => "list",
+        "STRUCT" => "struct",
         // Python cuDF dtype names
         "int" => "int32",
         "long" => "int64",
@@ -124,6 +138,7 @@ pub fn canonical_dtype(native: &str) -> &str {
         "float" => "float32",
         "double" => "float64",
         "str" | "object" => "string",
+        "category" | "categorical" => "dictionary32",
         // Fallback: return as-is (executor should handle unknown)
         other => other,
     }
@@ -142,6 +157,14 @@ impl Fixture {
         for ds in &self.datasets {
             if !seen.insert(&ds.id) {
                 return Err(format!("duplicate dataset ID: {}", ds.id));
+            }
+            let has_columns = !ds.columns.is_empty();
+            let has_json_lines = !ds.json_lines.is_empty();
+            if has_columns == has_json_lines {
+                return Err(format!(
+                    "dataset '{}' must define exactly one input source: either non-empty 'columns' or non-empty 'json_lines'",
+                    ds.id
+                ));
             }
         }
 
@@ -338,17 +361,24 @@ mod tests {
         assert_eq!(canonical_dtype("float64"), "float64");
         assert_eq!(canonical_dtype("bool8"), "bool8");
         assert_eq!(canonical_dtype("string"), "string");
+        assert_eq!(canonical_dtype("dictionary32"), "dictionary32");
+        assert_eq!(canonical_dtype("list"), "list");
+        assert_eq!(canonical_dtype("struct"), "struct");
 
         // Rust cudf-rs uppercase names
         assert_eq!(canonical_dtype("INT32"), "int32");
         assert_eq!(canonical_dtype("FLOAT64"), "float64");
         assert_eq!(canonical_dtype("BOOL8"), "bool8");
         assert_eq!(canonical_dtype("STRING"), "string");
+        assert_eq!(canonical_dtype("DICTIONARY32"), "dictionary32");
+        assert_eq!(canonical_dtype("LIST"), "list");
+        assert_eq!(canonical_dtype("STRUCT"), "struct");
 
         // Python cuDF names
         assert_eq!(canonical_dtype("bool"), "bool8");
         assert_eq!(canonical_dtype("boolean"), "bool8");
         assert_eq!(canonical_dtype("object"), "string");
+        assert_eq!(canonical_dtype("category"), "dictionary32");
 
         // Unknown passes through
         assert_eq!(canonical_dtype("datetime64[ns]"), "datetime64[ns]");
@@ -359,8 +389,26 @@ mod tests {
         let fixture = Fixture {
             schema_version: 1,
             datasets: vec![
-                Dataset { id: "ds1".into(), columns: vec![] },
-                Dataset { id: "ds1".into(), columns: vec![] },
+                Dataset {
+                    id: "ds1".into(),
+                    columns: vec![DatasetColumn {
+                        name: "a".into(),
+                        dtype: "int32".into(),
+                        values: vec![serde_json::json!(1)],
+                    }],
+                    json_lines: vec![],
+                    dictionary_columns: vec![],
+                },
+                Dataset {
+                    id: "ds1".into(),
+                    columns: vec![DatasetColumn {
+                        name: "a".into(),
+                        dtype: "int32".into(),
+                        values: vec![serde_json::json!(2)],
+                    }],
+                    json_lines: vec![],
+                    dictionary_columns: vec![],
+                },
             ],
             cases: vec![],
         };
@@ -372,7 +420,16 @@ mod tests {
     fn validate_catches_missing_dataset_ref() {
         let fixture = Fixture {
             schema_version: 1,
-            datasets: vec![Dataset { id: "ds1".into(), columns: vec![] }],
+            datasets: vec![Dataset {
+                id: "ds1".into(),
+                columns: vec![DatasetColumn {
+                    name: "a".into(),
+                    dtype: "int32".into(),
+                    values: vec![serde_json::json!(1)],
+                }],
+                json_lines: vec![],
+                dictionary_columns: vec![],
+            }],
             cases: vec![Case {
                 id: "case1".into(),
                 dataset: "nonexistent".into(),
@@ -389,7 +446,16 @@ mod tests {
     fn validate_catches_duplicate_case_id() {
         let fixture = Fixture {
             schema_version: 1,
-            datasets: vec![Dataset { id: "ds1".into(), columns: vec![] }],
+            datasets: vec![Dataset {
+                id: "ds1".into(),
+                columns: vec![DatasetColumn {
+                    name: "a".into(),
+                    dtype: "int32".into(),
+                    values: vec![serde_json::json!(1)],
+                }],
+                json_lines: vec![],
+                dictionary_columns: vec![],
+            }],
             cases: vec![
                 Case {
                     id: "case1".into(),
@@ -409,5 +475,60 @@ mod tests {
         };
         assert!(fixture.validate().is_err());
         assert!(fixture.validate().unwrap_err().contains("duplicate case ID"));
+    }
+
+    #[test]
+    fn parse_json_lines_dataset_with_dictionary_columns() {
+        let json = r#"{
+            "schema_version": 1,
+            "datasets": [
+                {
+                    "id": "dictionary_nested",
+                    "json_lines": [
+                        "{\"category\":\"beta\",\"nested\":[[1,2]],\"point\":{\"coords\":[1,2],\"label\":\"one\"}}",
+                        "{\"category\":\"alpha\",\"nested\":[[],[3]],\"point\":{\"coords\":[],\"label\":\"two\"}}"
+                    ],
+                    "dictionary_columns": ["category"]
+                }
+            ],
+            "cases": [
+                {
+                    "id": "schema_dictionary_nested",
+                    "dataset": "dictionary_nested",
+                    "operation": { "kind": "schema" },
+                    "expect": { "result_kind": "column_list" },
+                    "compare": { "mode": "strict" }
+                }
+            ]
+        }"#;
+
+        let fixture: Fixture = serde_json::from_str(json).expect("parse fixture JSON");
+        fixture.validate().expect("fixture should be internally consistent");
+
+        let dataset = &fixture.datasets[0];
+        assert!(dataset.columns.is_empty());
+        assert_eq!(dataset.json_lines.len(), 2);
+        assert_eq!(dataset.dictionary_columns, vec!["category"]);
+    }
+
+    #[test]
+    fn validate_rejects_dataset_with_both_columns_and_json_lines() {
+        let fixture = Fixture {
+            schema_version: 1,
+            datasets: vec![Dataset {
+                id: "invalid".into(),
+                columns: vec![DatasetColumn {
+                    name: "a".into(),
+                    dtype: "int32".into(),
+                    values: vec![serde_json::json!(1)],
+                }],
+                json_lines: vec!["{\"a\":1}".into()],
+                dictionary_columns: vec![],
+            }],
+            cases: vec![],
+        };
+
+        assert!(fixture.validate().is_err());
+        assert!(fixture.validate().unwrap_err().contains("must define exactly one input source"));
     }
 }
