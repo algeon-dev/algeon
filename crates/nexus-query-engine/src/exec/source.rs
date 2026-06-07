@@ -941,7 +941,7 @@ fn record_source_chunk_read_runtime(
         host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
         host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
         host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
         batch_index: chunk.chunk_index as u64,
         chunk_count: 1,
         first_chunk_index: chunk.chunk_index as u64,
@@ -1009,7 +1009,10 @@ fn record_source_chunk_batch_read_runtime(
         host_buffer_requested_range_bytes: 0,
         host_buffer_original_file_bytes: 0,
         host_buffer_mini_parquet_footer_bytes: 0,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(
+            read_evidence,
+            &HostBufferFetchRuntimeMetrics::default(),
+        ),
         batch_index: batch.batch_index as u64,
         chunk_count: batch.chunk_count() as u64,
         first_chunk_index: first_chunk.chunk_index as u64,
@@ -1080,7 +1083,7 @@ fn record_source_file_read_runtime(
         host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
         host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
         host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
         batch_index: chunk_index as u64,
         chunk_count: 1,
         first_chunk_index: chunk_index as u64,
@@ -1122,10 +1125,18 @@ fn record_source_file_read_runtime(
 
 fn source_read_parquet_evidence_metrics(
     evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
 ) -> SourceReadParquetEvidenceMetrics {
+    let ranged_mini_parquet_bloom_status =
+        (host_buffer_fetch.fetch_mode == "ranged_parquet").then_some("bloom_ineligible_ranged_mini_parquet");
     let Some(evidence) = evidence else {
-        return SourceReadParquetEvidenceMetrics::default();
+        let mut metrics = SourceReadParquetEvidenceMetrics::default();
+        if let Some(status) = ranged_mini_parquet_bloom_status {
+            metrics.bloom_pruning_status = status.to_string();
+        }
+        return metrics;
     };
+    let pruning = evidence.pruning;
     SourceReadParquetEvidenceMetrics {
         input_kind: evidence.input_kind.to_string(),
         remote_read_mode: evidence
@@ -1139,6 +1150,24 @@ fn source_read_parquet_evidence_metrics(
         remote_bytes: evidence.remote_bytes,
         remote_range_count: evidence.remote_range_count,
         device_read_support: evidence.device_read_support.to_string(),
+        pruning_input_row_groups: pruning.map(|pruning| pruning.input_row_groups),
+        row_groups_after_stats_filter: pruning.and_then(|pruning| pruning.row_groups_after_stats_filter),
+        row_groups_after_bloom_filter: pruning.and_then(|pruning| pruning.row_groups_after_bloom_filter),
+        bloom_pruning_status: ranged_mini_parquet_bloom_status
+            .or_else(|| bloom_pruning_status(pruning))
+            .unwrap_or("not_reported")
+            .to_string(),
+    }
+}
+
+fn bloom_pruning_status(pruning: Option<cudf::io::parquet::ParquetPruningEvidence>) -> Option<&'static str> {
+    let pruning = pruning?;
+    match (pruning.row_groups_after_stats_filter, pruning.row_groups_after_bloom_filter) {
+        (Some(after_stats), Some(after_bloom)) if after_bloom < after_stats => Some("bloom_pruned"),
+        (None, Some(after_bloom)) if after_bloom < pruning.input_row_groups => Some("bloom_pruned"),
+        (_, Some(_)) => Some("bloom_not_pruned"),
+        (Some(_), None) => Some("bloom_not_reported"),
+        (None, None) => Some("no_reader_predicate"),
     }
 }
 
@@ -1528,5 +1557,60 @@ mod tests {
         assert_eq!(metrics.source_read_runtime_rows[0].read_kind, "background_cache_fill_file");
         assert_eq!(metrics.source_read_runtime_rows[0].source_batching_reason, "fill_concurrency_saturated");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parquet_evidence_metrics_report_ranged_mini_parquet_bloom_ineligible() {
+        let read_evidence = cudf::io::parquet::ParquetReadEvidence {
+            requested_remote_read_mode: None,
+            input_kind: "host_buffer",
+            backend: "host_buffer",
+            fallback_reason: "not_applicable",
+            remote_bytes: None,
+            remote_range_count: None,
+            device_read_support: "not_applicable",
+            backend_build_status: cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown,
+            pruning: Some(cudf::io::parquet::ParquetPruningEvidence {
+                input_row_groups: 3,
+                row_groups_after_stats_filter: None,
+                row_groups_after_bloom_filter: None,
+            }),
+        };
+        let host_buffer_fetch =
+            HostBufferFetchRuntimeMetrics { fetch_mode: "ranged_parquet".to_string(), ..Default::default() };
+
+        let metrics = source_read_parquet_evidence_metrics(Some(&read_evidence), &host_buffer_fetch);
+
+        assert_eq!(metrics.pruning_input_row_groups, Some(3));
+        assert_eq!(metrics.row_groups_after_stats_filter, None);
+        assert_eq!(metrics.row_groups_after_bloom_filter, None);
+        assert_eq!(metrics.bloom_pruning_status, "bloom_ineligible_ranged_mini_parquet");
+    }
+
+    #[test]
+    fn parquet_evidence_metrics_compare_bloom_pruning_after_stats_pruning() {
+        let read_evidence = cudf::io::parquet::ParquetReadEvidence {
+            requested_remote_read_mode: None,
+            input_kind: "local_path",
+            backend: "libcudf_path_reader",
+            fallback_reason: "not_applicable",
+            remote_bytes: None,
+            remote_range_count: None,
+            device_read_support: "not_applicable",
+            backend_build_status: cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown,
+            pruning: Some(cudf::io::parquet::ParquetPruningEvidence {
+                input_row_groups: 9,
+                row_groups_after_stats_filter: Some(6),
+                row_groups_after_bloom_filter: Some(6),
+            }),
+        };
+
+        let metrics =
+            source_read_parquet_evidence_metrics(Some(&read_evidence), &HostBufferFetchRuntimeMetrics::default());
+
+        assert_eq!(metrics.pruning_input_row_groups, Some(9));
+        assert_eq!(metrics.row_groups_after_stats_filter, Some(6));
+        assert_eq!(metrics.row_groups_after_bloom_filter, Some(6));
+        assert_eq!(metrics.bloom_pruning_status, "bloom_not_pruned");
     }
 }

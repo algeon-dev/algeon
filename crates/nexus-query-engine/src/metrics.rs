@@ -1810,7 +1810,7 @@ impl SourceReadRuntimeMetrics {
     /// Serializes this row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={}",
+            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={},parquet_pruning_input_row_groups={},parquet_row_groups_after_stats_filter={},parquet_row_groups_after_bloom_filter={},parquet_bloom_pruning_status={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
@@ -1852,6 +1852,10 @@ impl SourceReadRuntimeMetrics {
             optional_u64(self.parquet_read_evidence.remote_bytes),
             optional_u64(self.parquet_read_evidence.remote_range_count),
             self.parquet_read_evidence.device_read_support,
+            optional_u64(self.parquet_read_evidence.pruning_input_row_groups),
+            optional_u64(self.parquet_read_evidence.row_groups_after_stats_filter),
+            optional_u64(self.parquet_read_evidence.row_groups_after_bloom_filter),
+            self.parquet_read_evidence.bloom_pruning_status,
         )
     }
 }
@@ -1875,6 +1879,14 @@ pub struct SourceReadParquetEvidenceMetrics {
     pub remote_range_count: Option<u64>,
     /// Direct device-read support evidence reported by the lower layer.
     pub device_read_support: String,
+    /// Row groups participating in this read after any caller row-group selection.
+    pub pruning_input_row_groups: Option<u64>,
+    /// Row groups surviving libcudf statistics pruning, when a predicate was present.
+    pub row_groups_after_stats_filter: Option<u64>,
+    /// Row groups surviving libcudf Bloom-filter pruning, when a predicate was present.
+    pub row_groups_after_bloom_filter: Option<u64>,
+    /// Stable status explaining Bloom-pruning evidence or known ineligibility.
+    pub bloom_pruning_status: String,
 }
 
 impl Default for SourceReadParquetEvidenceMetrics {
@@ -1888,6 +1900,10 @@ impl Default for SourceReadParquetEvidenceMetrics {
             remote_bytes: None,
             remote_range_count: None,
             device_read_support: "none".to_string(),
+            pruning_input_row_groups: None,
+            row_groups_after_stats_filter: None,
+            row_groups_after_bloom_filter: None,
+            bloom_pruning_status: "not_reported".to_string(),
         }
     }
 }
