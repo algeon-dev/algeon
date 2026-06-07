@@ -1,3 +1,5 @@
+use std::{collections::HashMap, path::PathBuf};
+
 use super::*;
 
 /// A source-schema column referenced by a local Parquet reader predicate.
@@ -148,7 +150,8 @@ pub fn build_local_parquet_reader_predicate(
     predicate: &SourceReaderPredicate,
 ) -> Result<AstExpression> {
     source.validate_chunk_partition_values(chunk, OP_SOURCE_READER_PREDICATE)?;
-    lower_source_reader_predicate(runtime, source, chunk, predicate)
+    let mut type_cache = SourceReaderPredicateTypeCache::default();
+    lower_source_reader_predicate(runtime, source, chunk, predicate, &mut type_cache)
 }
 
 /// Build a libcudf reader predicate that is valid for every chunk in a
@@ -173,10 +176,11 @@ pub fn build_local_parquet_reader_batch_predicate(
         .with_detail("reason", "empty_batch"));
     };
     source.validate_chunk_partition_values(first, OP_SOURCE_READER_PREDICATE)?;
-    let first_types = source_reader_predicate_target_types(source, first, predicate)?;
+    let mut type_cache = SourceReaderPredicateTypeCache::default();
+    let first_types = source_reader_predicate_target_types(source, first, predicate, &mut type_cache)?;
     for chunk in chunks.iter().skip(1) {
         source.validate_chunk_partition_values(chunk, OP_SOURCE_READER_PREDICATE)?;
-        let chunk_types = source_reader_predicate_target_types(source, chunk, predicate)?;
+        let chunk_types = source_reader_predicate_target_types(source, chunk, predicate, &mut type_cache)?;
         if chunk_types != first_types {
             return Err(Error::new_with(
                 ErrorCode::TypeMismatch,
@@ -192,7 +196,7 @@ pub fn build_local_parquet_reader_batch_predicate(
             .with_detail("chunk_types", format!("{chunk_types:?}")));
         }
     }
-    lower_source_reader_predicate(runtime, source, first, predicate)
+    lower_source_reader_predicate(runtime, source, first, predicate, &mut type_cache)
 }
 
 fn lower_source_reader_predicate(
@@ -200,10 +204,11 @@ fn lower_source_reader_predicate(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     predicate: &SourceReaderPredicate,
+    type_cache: &mut SourceReaderPredicateTypeCache,
 ) -> Result<AstExpression> {
     match predicate {
         SourceReaderPredicate::Comparison { column, op, literal } => {
-            let (read_index, target_type) = resolve_source_reader_column(source, chunk, column)?;
+            let (read_index, target_type) = resolve_source_reader_column(source, chunk, column, type_cache)?;
             let left = source_reader_column_ast(read_index)?;
             let right = source_reader_literal_ast(runtime, literal, target_type)?;
             AstExpression::binary(op.ast_operator(), left, right).map_err(|error| {
@@ -222,7 +227,7 @@ fn lower_source_reader_predicate(
                 )
                 .with_detail("reason", "empty_in_list"));
             }
-            let (read_index, target_type) = resolve_source_reader_column(source, chunk, column)?;
+            let (read_index, target_type) = resolve_source_reader_column(source, chunk, column, type_cache)?;
             let input = source_reader_column_ast(read_index)?;
             let values = literals
                 .iter()
@@ -242,19 +247,19 @@ fn lower_source_reader_predicate(
             })
         },
         SourceReaderPredicate::And(left, right) => {
-            let left = lower_source_reader_predicate(runtime, source, chunk, left)?;
-            let right = lower_source_reader_predicate(runtime, source, chunk, right)?;
+            let left = lower_source_reader_predicate(runtime, source, chunk, left, type_cache)?;
+            let right = lower_source_reader_predicate(runtime, source, chunk, right, type_cache)?;
             AstExpression::binary(AstOperator::NullLogicalAnd, left, right)
                 .map_err(|error| error.reanchor(OP_SOURCE_READER_PREDICATE).with_detail("reason", "ast_and_failed"))
         },
         SourceReaderPredicate::Or(left, right) => {
-            let left = lower_source_reader_predicate(runtime, source, chunk, left)?;
-            let right = lower_source_reader_predicate(runtime, source, chunk, right)?;
+            let left = lower_source_reader_predicate(runtime, source, chunk, left, type_cache)?;
+            let right = lower_source_reader_predicate(runtime, source, chunk, right, type_cache)?;
             AstExpression::binary(AstOperator::NullLogicalOr, left, right)
                 .map_err(|error| error.reanchor(OP_SOURCE_READER_PREDICATE).with_detail("reason", "ast_or_failed"))
         },
         SourceReaderPredicate::Not(input) => {
-            let input = lower_source_reader_predicate(runtime, source, chunk, input)?;
+            let input = lower_source_reader_predicate(runtime, source, chunk, input, type_cache)?;
             AstExpression::unary(AstOperator::Not, input)
                 .map_err(|error| error.reanchor(OP_SOURCE_READER_PREDICATE).with_detail("reason", "ast_not_failed"))
         },
@@ -265,9 +270,10 @@ fn source_reader_predicate_target_types(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     predicate: &SourceReaderPredicate,
+    type_cache: &mut SourceReaderPredicateTypeCache,
 ) -> Result<Vec<(usize, DataType)>> {
     let mut types = Vec::new();
-    collect_source_reader_predicate_target_types(source, chunk, predicate, &mut types)?;
+    collect_source_reader_predicate_target_types(source, chunk, predicate, &mut types, type_cache)?;
     Ok(types)
 }
 
@@ -276,17 +282,18 @@ fn collect_source_reader_predicate_target_types(
     chunk: &SourceChunk,
     predicate: &SourceReaderPredicate,
     types: &mut Vec<(usize, DataType)>,
+    type_cache: &mut SourceReaderPredicateTypeCache,
 ) -> Result<()> {
     match predicate {
         SourceReaderPredicate::Comparison { column, .. } | SourceReaderPredicate::InList { column, .. } => {
-            types.push(resolve_source_reader_column(source, chunk, column)?);
+            types.push(resolve_source_reader_column(source, chunk, column, type_cache)?);
         },
         SourceReaderPredicate::And(left, right) | SourceReaderPredicate::Or(left, right) => {
-            collect_source_reader_predicate_target_types(source, chunk, left, types)?;
-            collect_source_reader_predicate_target_types(source, chunk, right, types)?;
+            collect_source_reader_predicate_target_types(source, chunk, left, types, type_cache)?;
+            collect_source_reader_predicate_target_types(source, chunk, right, types, type_cache)?;
         },
         SourceReaderPredicate::Not(input) => {
-            collect_source_reader_predicate_target_types(source, chunk, input, types)?;
+            collect_source_reader_predicate_target_types(source, chunk, input, types, type_cache)?;
         },
     }
     Ok(())
@@ -393,6 +400,7 @@ fn resolve_source_reader_column(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     column: &SourceReaderPredicateColumn,
+    type_cache: &mut SourceReaderPredicateTypeCache,
 ) -> Result<(usize, DataType)> {
     let read_index = match column.source {
         SourceColumnRef::ReadColumn(index) => index,
@@ -422,7 +430,21 @@ fn resolve_source_reader_column(
     })?;
     let logical_type = schema_column.data_type();
     let target_type = if logical_type.id().is_decimal() {
-        let reader_type = parquet_reader_decimal_dtype(chunk.path(), read_column, read_index)?;
+        let reader_type = if let Some(reader_type) = chunk.reader_decimal_type(read_column) {
+            reader_type
+        } else if matches!(chunk.location(), ParquetSourceLocation::ObjectStoreUri(_)) {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                OP_SOURCE_READER_PREDICATE,
+                "object-store decimal reader predicates require Parquet footer reader type metadata",
+            )
+            .with_column(column.name.clone())
+            .with_detail("reason", "reader_decimal_type_metadata_unavailable")
+            .with_detail("read_column", read_column.clone())
+            .with_detail("read_index", read_index.to_string()));
+        } else {
+            type_cache.decimal_dtype(chunk.path(), read_column, read_index)?
+        };
         if logical_type.scale() != reader_type.scale() {
             return Err(Error::new_with(
                 ErrorCode::TypeMismatch,
@@ -440,6 +462,34 @@ fn resolve_source_reader_column(
         logical_type
     };
     Ok((read_index, target_type))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SourceReaderPredicateTypeCacheKey {
+    path: PathBuf,
+    read_column: String,
+    read_index: usize,
+}
+
+#[derive(Debug, Default)]
+struct SourceReaderPredicateTypeCache {
+    decimal_types: HashMap<SourceReaderPredicateTypeCacheKey, DataType>,
+}
+
+impl SourceReaderPredicateTypeCache {
+    fn decimal_dtype(&mut self, path: &Path, read_column: &str, read_index: usize) -> Result<DataType> {
+        let key = SourceReaderPredicateTypeCacheKey {
+            path: path.to_path_buf(),
+            read_column: read_column.to_string(),
+            read_index,
+        };
+        if let Some(dtype) = self.decimal_types.get(&key) {
+            return Ok(*dtype);
+        }
+        let dtype = parquet_reader_decimal_dtype(path, read_column, read_index)?;
+        self.decimal_types.insert(key, dtype);
+        Ok(dtype)
+    }
 }
 
 fn parquet_reader_decimal_dtype(path: &Path, read_column: &str, read_index: usize) -> Result<DataType> {

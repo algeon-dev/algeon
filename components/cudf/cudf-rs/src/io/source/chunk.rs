@@ -129,6 +129,7 @@ pub struct SourceChunk {
     pub(super) source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
     pub(super) source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     pub(super) source_file_row_group_rows: Option<Vec<u64>>,
+    pub(super) reader_decimal_types: Vec<ParquetReaderDecimalType>,
     pub(super) read_columns: Vec<String>,
     pub(super) partition_values: Vec<PartitionValue>,
     pub(super) zero_column_count: bool,
@@ -249,6 +250,7 @@ impl SourceChunk {
             source_file_pure_filter_compressed_bytes: source_file.pure_filter_row_group_compressed_bytes.clone(),
             source_file_pure_filter_uncompressed_bytes: source_file.pure_filter_row_group_uncompressed_bytes.clone(),
             source_file_row_group_rows: source_file.row_group_rows.clone(),
+            reader_decimal_types: source_file.reader_decimal_types.clone(),
             read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
                 Vec::new()
             } else {
@@ -289,6 +291,11 @@ impl SourceChunk {
     /// Explicit source location for this chunk's file.
     pub fn location(&self) -> &ParquetSourceLocation {
         &self.location
+    }
+
+    /// Typed remote Parquet source when this chunk reads an object-store URI.
+    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+        self.location.remote_source()
     }
 
     /// Stable caller-provided file identity.
@@ -389,6 +396,18 @@ impl SourceChunk {
         &self.read_columns
     }
 
+    /// Per-read-column decimal storage types proven from Parquet metadata.
+    pub fn reader_decimal_types(&self) -> &[ParquetReaderDecimalType] {
+        &self.reader_decimal_types
+    }
+
+    pub(super) fn reader_decimal_type(&self, column_name: &str) -> Option<DataType> {
+        self.reader_decimal_types
+            .iter()
+            .find(|dtype| dtype.column_name() == column_name)
+            .map(ParquetReaderDecimalType::data_type)
+    }
+
     /// Partition values carried from the source file.
     pub fn partition_values(&self) -> &[PartitionValue] {
         &self.partition_values
@@ -475,6 +494,7 @@ pub fn plan_local_parquet_source_chunks(
                 source_file_pure_filter_compressed_bytes: file.pure_filter_row_group_compressed_bytes.clone(),
                 source_file_pure_filter_uncompressed_bytes: file.pure_filter_row_group_uncompressed_bytes.clone(),
                 source_file_row_group_rows: file.row_group_rows.clone(),
+                reader_decimal_types: file.reader_decimal_types.clone(),
                 read_columns: source.read_columns.clone(),
                 partition_values: file.partition_values.clone(),
                 zero_column_count: false,
@@ -545,6 +565,7 @@ pub fn plan_local_parquet_source_chunks(
                 source_file_pure_filter_compressed_bytes: file.pure_filter_row_group_compressed_bytes.clone(),
                 source_file_pure_filter_uncompressed_bytes: file.pure_filter_row_group_uncompressed_bytes.clone(),
                 source_file_row_group_rows: Some(row_group_rows.to_vec()),
+                reader_decimal_types: file.reader_decimal_types.clone(),
                 read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
                     Vec::new()
                 } else {

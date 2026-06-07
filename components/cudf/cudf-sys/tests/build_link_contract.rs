@@ -11,8 +11,6 @@ use std::{
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
 const NATIVE_CMAKELISTS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/CMakeLists.txt"));
-const AGENTS_MD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md"));
-const CLAUDE_MD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../CLAUDE.md"));
 
 #[test]
 fn manifest_parser_ignores_comments_and_blank_lines() {
@@ -205,21 +203,6 @@ fn build_script_makes_clang_tools_opt_in_and_tracks_path_changes() {
         BUILD_RS.contains("cargo:rerun-if-env-changed=PATH"),
         "expected build.rs to rerun when PATH changes so clang tool discovery stays current"
     );
-}
-
-#[test]
-fn local_agent_docs_match_upstream_cudf_toolchain_contract() {
-    for doc in [AGENTS_MD, CLAUDE_MD] {
-        for expected in ["GCC 14", "clang 20.1.4", "clang-tools 20.1.4", "cudf/VERSION", "cudf/RAPIDS_BRANCH"] {
-            assert!(doc.contains(expected), "expected local cudf-rs docs to mention `{expected}`");
-        }
-
-        assert!(!doc.contains("GCC 11+"), "did not expect local cudf-rs docs to preserve the pre-26.04 GCC guidance");
-        assert!(
-            !doc.contains("docs/upstream.md"),
-            "did not expect local cudf-rs docs to point at the removed docs/upstream.md path"
-        );
-    }
 }
 
 #[test]

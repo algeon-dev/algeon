@@ -247,6 +247,7 @@ fn slice9_multi_file_parquet_surface_is_publicly_importable() {
 fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     use cudf::{
         DataType, TypeId,
+        frame::dataframe::ParquetSourceChunkReadOutput,
         io::source::{
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetSourceLocation,
             PartitionColumn, PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
@@ -268,6 +269,15 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     }
     fn assert_source_chunk_reader(
         _: fn(&cudf::Runtime, &LocalParquetSource, &SourceChunk, SourceReadMode) -> cudf::Result<cudf::DataFrame>,
+    ) {
+    }
+    fn assert_source_chunk_reader_with_evidence(
+        _: fn(
+            &cudf::Runtime,
+            &LocalParquetSource,
+            &SourceChunk,
+            SourceReadMode,
+        ) -> cudf::Result<ParquetSourceChunkReadOutput>,
     ) {
     }
 
@@ -323,6 +333,7 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     assert_source_reader(cudf::DataFrame::read_parquet_source);
     assert_source_mode_reader(cudf::DataFrame::read_parquet_source_with_mode);
     assert_source_chunk_reader(cudf::DataFrame::read_parquet_source_chunk);
+    assert_source_chunk_reader_with_evidence(cudf::DataFrame::read_parquet_source_chunk_with_evidence);
     assert_eq!(SourceReadMode::FinalOutput, SourceReadMode::FinalOutput);
 }
 

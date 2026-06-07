@@ -21,8 +21,8 @@ use crate::{
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
         json::{self, JsonTableReadOptions, JsonTableWriteOptions},
         parquet::{
-            self, ParquetDictionaryPolicy, ParquetMultiTableReadOptions, ParquetTableReadOptions,
-            ParquetTableWriteOptions,
+            self, ParquetDictionaryPolicy, ParquetMultiTableInput, ParquetMultiTableReadOptions, ParquetReadEvidence,
+            ParquetTableReadOptions, ParquetTableWriteOptions,
         },
         source::{
             LocalParquetSource, LocalParquetSourceKind, PartitionValue, SourceChunk, SourceColumnRef, SourceReadMode,
@@ -68,6 +68,39 @@ impl ParquetSourceReadPreflight {
     /// Minimum execution budget cudf-rs recommends for this source read.
     pub fn required_budget_bytes(&self) -> usize {
         self.required_budget_bytes
+    }
+}
+
+/// Output envelope for a planned Parquet source-chunk read.
+#[derive(Debug)]
+pub struct ParquetSourceChunkReadOutput {
+    frame: DataFrame,
+    read_evidence: Option<ParquetReadEvidence>,
+}
+
+impl ParquetSourceChunkReadOutput {
+    fn new(frame: DataFrame, read_evidence: Option<ParquetReadEvidence>) -> Self {
+        Self { frame, read_evidence }
+    }
+
+    /// Decoded DataFrame.
+    pub fn frame(&self) -> &DataFrame {
+        &self.frame
+    }
+
+    /// Per-read Parquet evidence reported by the lower-level reader.
+    pub fn read_evidence(&self) -> Option<&ParquetReadEvidence> {
+        self.read_evidence.as_ref()
+    }
+
+    /// Consume the output and return only the decoded DataFrame.
+    pub fn into_frame(self) -> DataFrame {
+        self.frame
+    }
+
+    /// Consume the output and return the decoded DataFrame plus read evidence.
+    pub fn into_parts(self) -> (DataFrame, Option<ParquetReadEvidence>) {
+        (self.frame, self.read_evidence)
     }
 }
 
@@ -187,7 +220,7 @@ fn parquet_source_budget_context(
     let mut facts = BTreeMap::new();
     facts.insert("source_kind".to_string(), local_parquet_source_kind_str(source.kind()).to_string());
     facts.insert("source_read_mode".to_string(), source_read_mode_str(mode).to_string());
-    facts.insert("path".to_string(), chunk.path().display().to_string());
+    facts.insert("path".to_string(), source_chunk_diagnostic_path(chunk));
     facts.insert("stable_id".to_string(), chunk.stable_id().to_string());
     facts.insert("chunk_index".to_string(), chunk.chunk_index().to_string());
     facts.insert("file_index".to_string(), chunk.file_index().to_string());
@@ -643,7 +676,11 @@ fn missing_source_row_count_error(operation: &'static str, chunk: &SourceChunk) 
     .with_detail("chunk_index", chunk.chunk_index().to_string())
     .with_detail("file_index", chunk.file_index().to_string())
     .with_detail("stable_id", chunk.stable_id().to_string())
-    .with_detail("path", chunk.path().display().to_string())
+    .with_detail("path", source_chunk_diagnostic_path(chunk))
+}
+
+fn source_chunk_diagnostic_path(chunk: &SourceChunk) -> String {
+    chunk.remote_source().map_or_else(|| chunk.path().display().to_string(), |source| source.diagnostic_location())
 }
 
 fn source_ref_series(
@@ -937,7 +974,7 @@ fn materialize_partition_columns(
                 .with_detail("chunk_index", chunk.chunk_index().to_string())
                 .with_detail("file_index", chunk.file_index().to_string())
                 .with_detail("stable_id", chunk.stable_id().to_string())
-                .with_detail("path", chunk.path().display().to_string())
+                .with_detail("path", source_chunk_diagnostic_path(chunk))
         })?;
         frame = frame.with_column(column.name(), series).map_err(|error| {
             error
@@ -961,7 +998,7 @@ fn read_parquet_source_chunk_frame(
     chunk: &SourceChunk,
     mode: SourceReadMode,
     operation: &'static str,
-) -> Result<DataFrame> {
+) -> Result<ParquetSourceChunkReadOutput> {
     read_parquet_source_chunk_frame_with_input(runtime, source, chunk, mode, operation, SourceChunkReadInput::Path)
 }
 
@@ -972,7 +1009,7 @@ fn read_parquet_source_chunk_frame_from_host_buffer(
     mode: SourceReadMode,
     host_buffer: &[u8],
     operation: &'static str,
-) -> Result<DataFrame> {
+) -> Result<ParquetSourceChunkReadOutput> {
     read_parquet_source_chunk_frame_with_input(
         runtime,
         source,
@@ -990,7 +1027,7 @@ fn read_parquet_source_chunk_frame_with_input(
     mode: SourceReadMode,
     operation: &'static str,
     input: SourceChunkReadInput<'_>,
-) -> Result<DataFrame> {
+) -> Result<ParquetSourceChunkReadOutput> {
     source.validate_chunk_partition_values(chunk, operation)?;
 
     if source.kind() == LocalParquetSourceKind::MetadataRowCount {
@@ -998,10 +1035,11 @@ fn read_parquet_source_chunk_frame_with_input(
         let count_series = runtime.series(&[count])?;
         let frame = DataFrame::from_series([(crate::io::source::ZERO_COLUMN_COUNT_COLUMN, count_series)])
             .map_err(|error| error.reanchor(operation))?;
-        return project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation));
+        let frame = project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))?;
+        return Ok(ParquetSourceChunkReadOutput::new(frame, None));
     }
 
-    let (mut frame, row_count_override) = if chunk.read_columns().is_empty() {
+    let (mut frame, row_count_override, read_evidence) = if chunk.read_columns().is_empty() {
         let row_count = chunk.known_row_count().ok_or_else(|| missing_source_row_count_error(operation, chunk))?;
         let row_count = usize::try_from(row_count).map_err(|_| {
             Error::new_with(ErrorCode::UnsupportedOperation, operation, "source chunk row count exceeds usize")
@@ -1009,19 +1047,37 @@ fn read_parquet_source_chunk_frame_with_input(
                 .with_detail("row_count", row_count.to_string())
                 .with_detail("chunk_index", chunk.chunk_index().to_string())
         })?;
-        (runtime.empty_dataframe(), Some(row_count))
+        (runtime.empty_dataframe(), Some(row_count), None)
     } else {
         let row_groups = if chunk.reads_all_row_groups() { None } else { Some(chunk.row_group_indexes_i32()?) };
         let table_options = match input {
-            SourceChunkReadInput::Path => ParquetTableReadOptions::from_parts(
-                std::path::PathBuf::from(chunk.reader_path()),
-                Some(chunk.read_columns().to_vec()),
-                0,
-                None,
-                row_groups,
-                source.reader_predicate().cloned(),
-                runtime.clone(),
-            ),
+            SourceChunkReadInput::Path => {
+                if let Some(remote_source) = chunk.remote_source() {
+                    let mut remote_source = remote_source.clone();
+                    if let Some(known_file_bytes) = chunk.known_file_bytes() {
+                        remote_source = remote_source.with_known_size_bytes(known_file_bytes);
+                    }
+                    ParquetTableReadOptions::from_remote_parts(
+                        remote_source,
+                        Some(chunk.read_columns().to_vec()),
+                        0,
+                        None,
+                        row_groups,
+                        source.reader_predicate().cloned(),
+                        runtime.clone(),
+                    )
+                } else {
+                    ParquetTableReadOptions::from_parts(
+                        std::path::PathBuf::from(chunk.reader_path()),
+                        Some(chunk.read_columns().to_vec()),
+                        0,
+                        None,
+                        row_groups,
+                        source.reader_predicate().cloned(),
+                        runtime.clone(),
+                    )
+                }
+            },
             SourceChunkReadInput::HostBuffer(buffer) => ParquetTableReadOptions::from_host_buffer_parts(
                 buffer,
                 Some(chunk.read_columns().to_vec()),
@@ -1032,28 +1088,31 @@ fn read_parquet_source_chunk_frame_with_input(
                 runtime.clone(),
             ),
         };
-        let result = parquet::read_parquet_table(&table_options).map_err(|error| {
+        let result = parquet::read_parquet_table_with_evidence(&table_options).map_err(|error| {
             error
                 .reanchor(operation)
                 .with_detail("chunk_index", chunk.chunk_index().to_string())
                 .with_detail("file_index", chunk.file_index().to_string())
                 .with_detail("stable_id", chunk.stable_id().to_string())
-                .with_detail_if_absent("path", chunk.path().display().to_string())
+                .with_detail_if_absent("path", source_chunk_diagnostic_path(chunk))
         })?;
-        let (table, names) = require_reader_schema_names(result, operation, "parquet reader").map_err(|error| {
-            error
-                .reanchor(operation)
-                .with_detail("chunk_index", chunk.chunk_index().to_string())
-                .with_detail("file_index", chunk.file_index().to_string())
-                .with_detail("stable_id", chunk.stable_id().to_string())
-                .with_detail("path", chunk.path().display().to_string())
-        })?;
-        (DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?, None)
+        let read_evidence = result.read_evidence().cloned();
+        let (table, names) = require_reader_schema_names(result.into_table_read_output(), operation, "parquet reader")
+            .map_err(|error| {
+                error
+                    .reanchor(operation)
+                    .with_detail("chunk_index", chunk.chunk_index().to_string())
+                    .with_detail("file_index", chunk.file_index().to_string())
+                    .with_detail("stable_id", chunk.stable_id().to_string())
+                    .with_detail("path", source_chunk_diagnostic_path(chunk))
+            })?;
+        (DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?, None, read_evidence)
     };
 
     frame = materialize_partition_columns(runtime, source, chunk, frame, row_count_override)?;
     frame = materialize_missing_null_columns(runtime, source, frame, row_count_override, mode)?;
-    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
+    let frame = project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))?;
+    Ok(ParquetSourceChunkReadOutput::new(frame, read_evidence))
 }
 
 fn read_parquet_source_chunks_frame(
@@ -1062,7 +1121,7 @@ fn read_parquet_source_chunks_frame(
     chunks: &[SourceChunk],
     mode: SourceReadMode,
     operation: &'static str,
-) -> Result<DataFrame> {
+) -> Result<ParquetSourceChunkReadOutput> {
     if chunks.is_empty() {
         return Err(Error::new_with(ErrorCode::EmptyInput, operation, "source chunk batch must not be empty")
             .with_detail("reason", "empty_source_chunk_batch"));
@@ -1095,10 +1154,19 @@ fn read_parquet_source_chunks_frame(
     }
 
     let omit_row_groups = chunks.iter().all(SourceChunk::selects_all_known_file_row_groups);
-    let mut filepaths = Vec::with_capacity(chunks.len());
+    let mut inputs = Vec::with_capacity(chunks.len());
     let mut row_groups_per_file = (!omit_row_groups).then(|| Vec::with_capacity(chunks.len()));
     for chunk in chunks {
         source.validate_chunk_partition_values(chunk, operation)?;
+        if let Some(remote_source) = chunk.remote_source() {
+            let mut remote_source = remote_source.clone();
+            if let Some(known_file_bytes) = chunk.known_file_bytes() {
+                remote_source = remote_source.with_known_size_bytes(known_file_bytes);
+            }
+            inputs.push(ParquetMultiTableInput::RemoteSource(remote_source));
+        } else {
+            inputs.push(ParquetMultiTableInput::LocalPath(std::path::PathBuf::from(chunk.reader_path())));
+        }
         if !omit_row_groups && chunk.reads_all_row_groups() {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedOperation,
@@ -1108,7 +1176,7 @@ fn read_parquet_source_chunks_frame(
             .with_detail("reason", "reads_all_row_groups_not_supported")
             .with_detail("chunk_index", chunk.chunk_index().to_string())
             .with_detail("file_index", chunk.file_index().to_string())
-            .with_detail("path", chunk.path().display().to_string()));
+            .with_detail("path", source_chunk_diagnostic_path(chunk)));
         }
         if let Some(row_groups_per_file) = row_groups_per_file.as_mut() {
             let row_groups = chunk.row_group_indexes_i32()?;
@@ -1121,25 +1189,27 @@ fn read_parquet_source_chunks_frame(
                 .with_detail("reason", "empty_row_group_selection")
                 .with_detail("chunk_index", chunk.chunk_index().to_string())
                 .with_detail("file_index", chunk.file_index().to_string())
-                .with_detail("path", chunk.path().display().to_string()));
+                .with_detail("path", source_chunk_diagnostic_path(chunk)));
             }
             row_groups_per_file.push(row_groups);
         }
-        filepaths.push(std::path::PathBuf::from(chunk.reader_path()));
     }
 
-    let table_options = ParquetMultiTableReadOptions::from_parts(
-        filepaths,
+    let table_options = ParquetMultiTableReadOptions::from_inputs(
+        inputs,
         Some(source.read_columns().to_vec()),
         row_groups_per_file,
         source.reader_predicate().cloned(),
         runtime.clone(),
     );
     let result = parquet::read_parquet_multi_table(&table_options).map_err(|error| error.reanchor(operation))?;
-    let (table, names) = require_reader_schema_names(result, operation, "multi-source parquet reader")?;
+    let read_evidence = result.read_evidence().cloned();
+    let (table, names) =
+        require_reader_schema_names(result.into_table_read_output(), operation, "multi-source parquet reader")?;
     let mut frame = DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?;
     frame = materialize_missing_null_columns(runtime, source, frame, None, mode)?;
-    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))
+    let frame = project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))?;
+    Ok(ParquetSourceChunkReadOutput::new(frame, read_evidence))
 }
 
 fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
@@ -1176,21 +1246,22 @@ fn read_parquet_source_chunk_with_budget_input(
     token: &ExecutionBudgetToken,
     operation: &'static str,
     input: SourceChunkReadInput<'_>,
-) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
     let budget_runtime = runtime
         .with_memory_resource_override(token.memory_resource(), operation)
         .map_err(|error| token.annotate_error(error, operation))?;
-    let frame = match input {
+    let output = match input {
         SourceChunkReadInput::Path => read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode, operation),
         SourceChunkReadInput::HostBuffer(buffer) => {
             read_parquet_source_chunk_frame_from_host_buffer(&budget_runtime, source, chunk, mode, buffer, operation)
         },
     }
     .map_err(|error| token.annotate_error(error, operation))?;
-    let output_rows = frame.num_rows();
-    let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+    let output_rows = output.frame().num_rows();
+    let output_bytes = dataframe_device_allocated_size_bytes(output.frame(), operation)
         .map_err(|error| token.annotate_error(error, operation))?;
-    frame
+    output
+        .frame()
         .record_boundary_observation_for_query_stage(
             BoundaryKind::HostToDevice,
             QueryStageKind::SourceRead,
@@ -1215,7 +1286,7 @@ fn read_parquet_source_chunk_with_budget_input(
         report = report.with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
     }
 
-    Ok(BudgetedExecutionOutcome::new(frame, report))
+    Ok(BudgetedExecutionOutcome::new(output, report))
 }
 
 impl DataFrame {
@@ -1551,7 +1622,8 @@ impl DataFrame {
             for chunk in plan.chunks() {
                 frames.push(
                     read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)
-                        .map_err(|error| error.reanchor(operation))?,
+                        .map_err(|error| error.reanchor(operation))?
+                        .into_frame(),
                 );
             }
 
@@ -1581,15 +1653,27 @@ impl DataFrame {
         chunk: &SourceChunk,
         mode: SourceReadMode,
     ) -> Result<Self> {
+        Self::read_parquet_source_chunk_with_evidence(runtime, source, chunk, mode)
+            .map(ParquetSourceChunkReadOutput::into_frame)
+    }
+
+    /// Execute one planned local Parquet source chunk and return lower-layer
+    /// read evidence alongside the decoded frame.
+    pub fn read_parquet_source_chunk_with_evidence(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+    ) -> Result<ParquetSourceChunkReadOutput> {
         let operation = "dataframe::read_parquet_source_chunk";
-        let frame = read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)?;
-        frame.record_boundary_observation_for_query_stage(
+        let output = read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)?;
+        output.frame().record_boundary_observation_for_query_stage(
             BoundaryKind::HostToDevice,
             QueryStageKind::SourceRead,
             false,
             operation,
         )?;
-        Ok(frame)
+        Ok(output)
     }
 
     /// Execute one planned local Parquet source chunk from a caller-owned host
@@ -1605,16 +1689,29 @@ impl DataFrame {
         mode: SourceReadMode,
         host_buffer: &[u8],
     ) -> Result<Self> {
+        Self::read_parquet_source_chunk_from_host_buffer_with_evidence(runtime, source, chunk, mode, host_buffer)
+            .map(ParquetSourceChunkReadOutput::into_frame)
+    }
+
+    /// Execute one planned local Parquet source chunk from host memory and
+    /// return lower-layer read evidence alongside the decoded frame.
+    pub fn read_parquet_source_chunk_from_host_buffer_with_evidence(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+        host_buffer: &[u8],
+    ) -> Result<ParquetSourceChunkReadOutput> {
         let operation = "dataframe::read_parquet_source_chunk_from_host_buffer";
-        let frame =
+        let output =
             read_parquet_source_chunk_frame_from_host_buffer(runtime, source, chunk, mode, host_buffer, operation)?;
-        frame.record_boundary_observation_for_query_stage(
+        output.frame().record_boundary_observation_for_query_stage(
             BoundaryKind::HostToDevice,
             QueryStageKind::SourceRead,
             false,
             operation,
         )?;
-        Ok(frame)
+        Ok(output)
     }
 
     /// Execute one planned local Parquet source chunk under a hard budget token.
@@ -1636,6 +1733,20 @@ impl DataFrame {
         mode: SourceReadMode,
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let outcome = Self::read_parquet_source_chunk_with_budget_with_evidence(runtime, source, chunk, mode, token)?;
+        let (output, report) = outcome.into_parts();
+        Ok(BudgetedExecutionOutcome::new(output.into_frame(), report))
+    }
+
+    /// Execute one planned local Parquet source chunk under a hard budget
+    /// token and return lower-layer read evidence alongside the decoded frame.
+    pub fn read_parquet_source_chunk_with_budget_with_evidence(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
         let operation = "dataframe::read_parquet_source_chunk_with_budget";
         read_parquet_source_chunk_with_budget_input(
             runtime,
@@ -1663,16 +1774,32 @@ impl DataFrame {
         mode: SourceReadMode,
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let outcome = Self::read_parquet_source_chunks_with_budget_with_evidence(runtime, source, chunks, mode, token)?;
+        let (output, report) = outcome.into_parts();
+        Ok(BudgetedExecutionOutcome::new(output.into_frame(), report))
+    }
+
+    /// Execute multiple planned local Parquet source chunks under a hard
+    /// budget token and return lower-layer read evidence alongside the decoded
+    /// frame.
+    pub fn read_parquet_source_chunks_with_budget_with_evidence(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunks: &[SourceChunk],
+        mode: SourceReadMode,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
         let operation = "dataframe::read_parquet_source_chunks_with_budget";
         let budget_runtime = runtime
             .with_memory_resource_override(token.memory_resource(), operation)
             .map_err(|error| token.annotate_error(error, operation))?;
-        let frame = read_parquet_source_chunks_frame(&budget_runtime, source, chunks, mode, operation)
+        let output = read_parquet_source_chunks_frame(&budget_runtime, source, chunks, mode, operation)
             .map_err(|error| token.annotate_error(error, operation))?;
-        let output_rows = frame.num_rows();
-        let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+        let output_rows = output.frame().num_rows();
+        let output_bytes = dataframe_device_allocated_size_bytes(output.frame(), operation)
             .map_err(|error| token.annotate_error(error, operation))?;
-        frame
+        output
+            .frame()
             .record_boundary_observation_for_query_stage(
                 BoundaryKind::HostToDevice,
                 QueryStageKind::SourceRead,
@@ -1688,7 +1815,7 @@ impl DataFrame {
             .with_context_facts(parquet_source_batch_budget_context(source, chunks, mode))
             .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
 
-        Ok(BudgetedExecutionOutcome::new(frame, report))
+        Ok(BudgetedExecutionOutcome::new(output, report))
     }
 
     /// Execute one planned local Parquet source chunk from caller-owned host
@@ -1706,6 +1833,29 @@ impl DataFrame {
         host_buffer: &[u8],
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let outcome = Self::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
+            runtime,
+            source,
+            chunk,
+            mode,
+            host_buffer,
+            token,
+        )?;
+        let (output, report) = outcome.into_parts();
+        Ok(BudgetedExecutionOutcome::new(output.into_frame(), report))
+    }
+
+    /// Execute one planned local Parquet source chunk from host memory under a
+    /// hard budget token and return lower-layer read evidence alongside the
+    /// decoded frame.
+    pub fn read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+        host_buffer: &[u8],
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
         let operation = "dataframe::read_parquet_source_chunk_with_budget_from_host_buffer";
         read_parquet_source_chunk_with_budget_input(
             runtime,
