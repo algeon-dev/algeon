@@ -149,6 +149,23 @@ fn test_melt_empty_dataframe() {
 }
 
 #[test]
+fn test_melt_all_columns_as_id_vars_returns_empty_long_frame() {
+    let a = Series::from_strings("A", &["x", "y"]).unwrap();
+    let b = Series::new::<i32>("B", &[1, 2]).unwrap();
+    let df = DataFrame::from_series(vec![("A", a), ("B", b)]).unwrap();
+
+    let opts = MeltOptions::builder().id_vars(&["A", "B"]).build();
+    let result = df.melt(opts).unwrap();
+
+    assert_eq!(result.num_rows(), 0);
+    assert_eq!(result.num_columns(), 4);
+    assert_eq!(result.series("A").unwrap().to_strings().unwrap(), Vec::<String>::new());
+    assert_eq!(result.series("B").unwrap().to_vec::<i32>().unwrap(), Vec::<i32>::new());
+    assert_eq!(result.series("variable").unwrap().to_strings().unwrap(), Vec::<String>::new());
+    assert_eq!(result.series("value").unwrap().to_vec::<i32>().unwrap(), Vec::<i32>::new());
+}
+
+#[test]
 fn test_melt_single_row() {
     let a = Series::from_strings("A", &["x"]).unwrap();
     let b = Series::new::<i32>("B", &[10]).unwrap();

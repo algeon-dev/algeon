@@ -2,7 +2,9 @@ mod support;
 
 use std::{ffi::c_void, ptr};
 
-use support::{CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, lock_shim_state};
+use support::{
+    CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, lock_shim_state,
+};
 
 fn make_i32_column(data: &[i32]) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();

@@ -16,11 +16,12 @@ fn test_create_i32_column() {
     let data = vec![1i32, 2, 3, 4, 5];
     let col = Column::from_slice(&data).unwrap();
     let view = col.view().unwrap();
+    let null_count: usize = view.null_count().unwrap();
 
     assert_eq!(view.len().unwrap(), 5);
     assert!(!view.is_empty().unwrap());
     assert_eq!(view.data_type().unwrap().id(), TypeId::Int32);
-    assert_eq!(view.null_count().unwrap(), 0);
+    assert_eq!(null_count, 0);
     assert!(!view.nullable().unwrap());
 
     let host_data = view.to_vec::<i32>().unwrap();
@@ -46,10 +47,11 @@ fn test_nullable_column() {
     let validity = vec![true, false, true, false];
     let col = Column::from_slice_nullable(&data, &validity).unwrap();
     let view = col.view().unwrap();
+    let null_count: usize = view.null_count().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
     assert!(view.nullable().unwrap());
-    assert_eq!(view.null_count().unwrap(), 2);
+    assert_eq!(null_count, 2);
 
     let host_data = view.to_vec::<i32>().unwrap();
     assert_eq!(host_data, data);
@@ -188,6 +190,20 @@ fn test_device_data_ptr_empty_column() {
 }
 
 #[test]
+fn test_child_rejects_out_of_bounds_index_without_segfault() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+
+    let err = match view.child(0) {
+        Ok(_) => panic!("expected out-of-bounds child access to return an error"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert!(err.to_string().contains("out of bounds"), "unexpected error: {err}");
+}
+
+#[test]
 fn test_core_domain_modules_export_documented_surface() {
     use cudf::core::{
         column::{Column as DomainColumn, ColumnView as DomainColumnView, DeviceSlice as DomainDeviceSlice},
@@ -220,6 +236,11 @@ fn test_core_domain_modules_export_documented_surface() {
 #[test]
 fn test_device_slice_stays_under_core_domain_module() {
     let _: Option<cudf::core::column::DeviceSlice<'static>> = None;
+}
+
+#[test]
+fn test_device_slice_is_reexported_at_crate_root() {
+    let _: Option<cudf::DeviceSlice<'static>> = None;
 }
 
 // --- DeviceSlice tests ---

@@ -59,6 +59,20 @@ fn manual_readiness(device: i32) -> ProducerReadiness<'static> {
     }
 }
 
+fn wrap_owned_table_transfer(transfer: OwnedTableTransfer) -> OwnedTableTransfer {
+    OwnedTableTransfer::try_new_with_semantic_columns(
+        transfer.table().clone(),
+        transfer.columns().to_vec(),
+        transfer.semantic_columns().to_vec(),
+        transfer.bindings().to_vec(),
+        *transfer.readiness(),
+        *transfer.diagnostics(),
+        *transfer.release_contract(),
+        transfer,
+    )
+    .unwrap()
+}
+
 #[test]
 fn column_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
@@ -280,6 +294,25 @@ fn owned_table_transfer_import_rejects_non_cudf_owner_state() {
     };
 
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+}
+
+#[test]
+fn owned_table_transfer_import_rejects_excessively_nested_wrappers() {
+    let runtime = Runtime::builder().build().unwrap();
+    let table = Table::from_columns(vec![Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap()]).unwrap();
+
+    let mut transfer = table.try_into_owned_device_table_transfer().unwrap();
+    for _ in 0..40 {
+        transfer = wrap_owned_table_transfer(transfer);
+    }
+
+    let err = match Table::try_from_owned_device_table_transfer(transfer) {
+        Ok(_) => panic!("expected excessively nested owned-transfer wrappers to be rejected"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    assert!(err.to_string().contains("nesting"), "unexpected error: {err}");
 }
 
 #[test]

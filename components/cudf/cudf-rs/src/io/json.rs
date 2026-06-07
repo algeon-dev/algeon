@@ -1,7 +1,7 @@
 //! JSON / JSON Lines (NDJSON) file I/O.
 
 use std::{
-    ffi::CString,
+    ffi::{CStr, CString, c_char},
     path::{Path, PathBuf},
     ptr,
     sync::Arc,
@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, Result},
+        error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
     runtime::Runtime,
@@ -111,7 +111,13 @@ pub fn read_json_with_metadata(options: &JsonReaderOptions) -> Result<JsonTableW
         [("lines", options.lines.to_string())],
     )?;
 
-    let column_names = collect_column_names(names_ptr, num_names);
+    let column_names = unsafe {
+        let names = collect_column_names(names_ptr, num_names);
+        if !names_ptr.is_null() && num_names >= 0 {
+            cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
+        }
+        names?
+    };
 
     let table = match output_domain {
         Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
@@ -122,18 +128,37 @@ pub fn read_json_with_metadata(options: &JsonReaderOptions) -> Result<JsonTableW
 }
 
 /// Collect column names from a C-allocated string array and free the C memory.
-fn collect_column_names(names_ptr: *mut *mut std::os::raw::c_char, num_names: i32) -> Vec<String> {
-    if names_ptr.is_null() || num_names <= 0 {
-        return Vec::new();
+unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> Result<Vec<String>> {
+    let operation = "io::json::read_json_with_metadata";
+
+    if num_names < 0 {
+        return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned negative column name count")
+            .with_operation(operation)
+            .with_context("num_names", num_names.to_string()));
     }
-    let names: Vec<String> = (0..num_names as usize)
-        .map(|i| {
-            let cstr = unsafe { std::ffi::CStr::from_ptr(*names_ptr.add(i)) };
-            cstr.to_string_lossy().into_owned()
-        })
-        .collect();
-    unsafe { cudf_sys::cudf_io_free_column_names(names_ptr, num_names) };
-    names
+
+    if num_names > 0 && names_ptr.is_null() {
+        return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned null column name array with positive count")
+            .with_operation(operation)
+            .with_context("num_names", num_names.to_string())
+            .with_context("names_ptr_null", "true"));
+    }
+
+    let mut names = Vec::with_capacity(num_names as usize);
+    for i in 0..num_names {
+        let name_ptr = *names_ptr.add(i as usize);
+        if name_ptr.is_null() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned null column name entry")
+                .with_operation(operation)
+                .with_context("num_names", num_names.to_string())
+                .with_context("name_index", i.to_string()));
+        }
+
+        let cstr = CStr::from_ptr(name_ptr);
+        names.push(cstr.to_string_lossy().into_owned());
+    }
+
+    Ok(names)
 }
 
 /// Options for writing a low-level [`Table`] to a JSON file.
@@ -179,13 +204,21 @@ pub(crate) fn write_json_with_exec(
     options: &JsonWriterOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {
-    let filepath = super::path_to_cstring(&options.filepath, "io::json::write_json")?;
+    let operation = "io::json::write_json";
+    let filepath = super::path_to_cstring(&options.filepath, operation)?;
 
     let c_names: Vec<CString> = options
         .column_names
         .iter()
-        .map(|s| CString::new(s.as_str()).expect("column name should not contain null byte"))
-        .collect();
+        .enumerate()
+        .map(|(index, name)| {
+            CString::new(name.as_str()).map_err(|_| {
+                Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                    .with_operation(operation)
+                    .with_context("column_index", index.to_string())
+            })
+        })
+        .collect::<Result<_>>()?;
     let c_name_ptrs: Vec<*const std::os::raw::c_char> = c_names.iter().map(|s| s.as_ptr()).collect();
 
     let names_ptr = if c_name_ptrs.is_empty() { ptr::null() } else { c_name_ptrs.as_ptr() };
@@ -214,7 +247,7 @@ pub(crate) fn write_json_with_exec(
                 )
             },
         },
-        "io::json::write_json",
+        operation,
         [("lines", options.lines.to_string()), ("include_nulls", options.include_nulls.to_string())],
     )
 }

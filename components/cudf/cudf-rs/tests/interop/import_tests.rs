@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use cudf::{
     Column, DataFrame, Runtime, Table, TypeId,
     interop::{
-        BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, PhysicalValidity,
-        OwnedTableTransfer, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,
+        BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedTableTransfer,
+        PhysicalValidity, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,
     },
     io::json::JsonReaderOptions,
     ops::dictionary,

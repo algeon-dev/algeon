@@ -111,7 +111,7 @@ impl Series {
             let cv = column.view().expect("Column must have a valid view");
             (
                 cv.len().expect("Column view must report length"),
-                cv.null_count().expect("Column view must report null count") as usize,
+                cv.null_count().expect("Column view must report null count"),
             )
         };
         Self { name: None, column, cached_len, cached_null_count }
@@ -204,7 +204,7 @@ impl Series {
     pub(super) fn from_column_with_cache(column: Column) -> Result<Self> {
         let (cached_len, cached_null_count) = {
             let cv = column.view()?;
-            (cv.len()?, cv.null_count()? as usize)
+            (cv.len()?, cv.null_count()?)
         };
         Ok(Self { name: None, column: Arc::new(column), cached_len, cached_null_count })
     }

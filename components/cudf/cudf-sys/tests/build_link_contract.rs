@@ -7,6 +7,8 @@ use std::{
 };
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
+const NATIVE_CMAKELISTS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/CMakeLists.txt"));
 
 #[test]
 fn manifest_parser_ignores_comments_and_blank_lines() {
@@ -91,4 +93,32 @@ fn normalized_cmake_bool_from_env_reads_optional_env_input() {
     assert_eq!(build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap(), Some("ON"));
 
     std::env::remove_var("CUDA_STATIC_RUNTIME");
+}
+
+#[test]
+fn build_script_tracks_build_support_and_cargo_link_template_changes() {
+    for tracked in ["build_support.rs", "native/cmake/cargo-link.txt.in"] {
+        let expected = format!("cargo:rerun-if-changed={tracked}");
+        assert!(BUILD_RS.contains(&expected), "expected build.rs to track {tracked} with `{expected}`");
+    }
+}
+
+#[test]
+fn native_cmakelists_sanitizes_missing_imported_target_properties() {
+    for property in ["CUDF_CXX_FLAGS", "CUDF_CUDA_FLAGS", "CUDF_CXX_DEFINITIONS", "CUDF_CUDA_DEFINITIONS"] {
+        let sentinel = format!("\"{property}-NOTFOUND\"");
+        assert!(
+            NATIVE_CMAKELISTS.contains(&sentinel),
+            "expected native/CMakeLists.txt to guard imported property {property} against -NOTFOUND"
+        );
+    }
+}
+
+#[test]
+fn native_cmakelists_preserves_existing_prefix_path_when_using_install_dir() {
+    let required_snippet = "list(PREPEND CMAKE_PREFIX_PATH";
+    assert!(
+        NATIVE_CMAKELISTS.contains(required_snippet),
+        "expected native/CMakeLists.txt to prepend CUDF install paths instead of overwriting CMAKE_PREFIX_PATH"
+    );
 }

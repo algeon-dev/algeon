@@ -1333,7 +1333,13 @@ impl DataFrame {
         // Step 1: Tile id columns K times
         for id_name in id_vars {
             let id_series = self.series(id_name)?;
-            if k <= 1 {
+            if k == 0 {
+                let empty = Series::from_column(
+                    Column::empty(id_series.dtype()?.id())?.with_execution_domain(Arc::clone(&self.domain)),
+                )?
+                .rename(id_name);
+                result_columns.push((id_name, empty));
+            } else if k == 1 {
                 result_columns.push((id_name, id_series));
             } else {
                 let copies: Vec<&Series> = (0..k).map(|_| &id_series).collect();

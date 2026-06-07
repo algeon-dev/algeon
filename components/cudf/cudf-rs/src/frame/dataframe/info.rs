@@ -204,7 +204,7 @@ impl DataFrame {
                 if include_columns && include_null_counts {
                     Some(view.null_count().map_err(|e| {
                         e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
-                    })? as usize)
+                    })?)
                 } else {
                     None
                 };

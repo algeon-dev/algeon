@@ -160,6 +160,24 @@ fn test_round_trip_nullable_bool8() {
     assert_eq!(validity, vec![true, false, true]);
 }
 
+#[test]
+fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
+    let lhs = cudf::Series::new_nullable("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
+    let rhs = cudf::Series::new_nullable("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
+    let flag = lhs.eq(&rhs).unwrap().rename("flag");
+    let df = DataFrame::from_columns([("flag", flag)]).unwrap();
+
+    let batch = df.to_record_batch().unwrap();
+    let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
+
+    assert_eq!(arr.len(), 3);
+    assert!(arr.is_valid(0));
+    assert!(!arr.is_valid(1));
+    assert!(arr.is_valid(2));
+    assert!(arr.value(0));
+    assert!(!arr.value(2));
+}
+
 // ---------------------------------------------------------------------------
 // Schema (column names) preserved
 // ---------------------------------------------------------------------------

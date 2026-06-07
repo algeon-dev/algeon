@@ -93,8 +93,14 @@ cudf_status_t cudf_replace_nulls_policy_ex(
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
-    auto const rp = (policy == 0) ? cudf::replace_policy::PRECEDING
-                                  : cudf::replace_policy::FOLLOWING;
+    cudf::replace_policy rp;
+    switch (policy) {
+      case 0: rp = cudf::replace_policy::PRECEDING; break;
+      case 1: rp = cudf::replace_policy::FOLLOWING; break;
+      default:
+        set_error("replace policy must be 0 (PRECEDING) or 1 (FOLLOWING)");
+        return CUDF_ERROR_INVALID_OPERATION;
+    }
     cudf_exec_context exec{cudf::get_default_stream(),
                            cudf::get_current_device_resource_ref(),
                            nullptr};

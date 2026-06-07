@@ -2450,6 +2450,28 @@ fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
 }
 
 #[test]
+fn test_replace_nulls_policy_rejects_invalid_policy_value() {
+    let col = make_i32_column_nullable(&[1, 0, 3], &[true, false, true]);
+    let view = make_column_view(col);
+
+    let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe { cudf_sys::cudf_replace_nulls_policy(view, 42, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null(), "invalid policy must not produce an output column");
+    assert!(
+        last_error_message().contains("policy"),
+        "expected invalid policy error message, got: {}",
+        last_error_message()
+    );
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
 fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
     let dict = make_dictionary_i32_column(&[1, 2, 1]);
     let dict_view = make_column_view(dict);

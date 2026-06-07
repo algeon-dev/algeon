@@ -13,12 +13,8 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
+    let null_count =
+        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
     if interop_type.id() == InteropTypeId::String {
         if num_children < 1 {
@@ -155,12 +151,8 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let schema_nullability = schema_nullability(nullable);
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
+    let null_count =
+        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
     if interop_type.id() != InteropTypeId::List {
         return prepared_host_leaf_or_string_column_projection_from_view(
@@ -315,12 +307,8 @@ pub(super) fn prepared_host_column_projection_from_view(
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let schema_nullability = schema_nullability(nullable);
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
+    let null_count =
+        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
     if interop_type.id() == InteropTypeId::Struct {
         let root_offset = usize::try_from(

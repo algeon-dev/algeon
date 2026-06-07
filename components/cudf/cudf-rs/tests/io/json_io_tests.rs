@@ -113,6 +113,21 @@ fn test_json_lines_write_defaults_to_ndjson() {
     assert!(content.contains("\"x\""));
 }
 
+#[test]
+fn test_json_write_rejects_column_name_with_nul_byte() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad.jsonl");
+
+    let c1 = Column::from_slice(&[1i32]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = JsonWriterOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
+    let err = json::write_json(&view, &write_opts).unwrap_err();
+
+    assert!(err.to_string().contains("null byte"), "unexpected error: {err}");
+}
+
 // ===========================================================================
 // Nonexistent file error
 // ===========================================================================

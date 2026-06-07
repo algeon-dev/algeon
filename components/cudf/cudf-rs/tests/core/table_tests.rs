@@ -76,8 +76,9 @@ fn test_table_with_nullable_columns() {
     assert_eq!(view.num_rows().unwrap(), 3);
 
     let col0 = view.column(0).unwrap();
+    let null_count: usize = col0.null_count().unwrap();
     assert!(col0.nullable().unwrap());
-    assert_eq!(col0.null_count().unwrap(), 1);
+    assert_eq!(null_count, 1);
 }
 
 #[test]

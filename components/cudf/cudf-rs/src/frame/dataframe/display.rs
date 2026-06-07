@@ -38,7 +38,7 @@ impl std::fmt::Display for DataFrame {
 struct DisplayColumnMetadata {
     type_str: String,
     nullable: Option<bool>,
-    null_count: Option<i32>,
+    null_count: Option<usize>,
 }
 
 impl DisplayColumnMetadata {

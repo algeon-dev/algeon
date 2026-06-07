@@ -99,14 +99,18 @@ impl<'a> ColumnView<'a> {
     }
 
     /// Returns the number of null (invalid) elements.
-    pub fn null_count(&self) -> Result<i32> {
+    pub fn null_count(&self) -> Result<usize> {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_null_count(self.handle.as_ptr(), &mut out) },
             "column_view::null_count",
         )?;
-        Ok(out)
+        usize::try_from(out).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "column null count must be >= 0")
+                .with_operation("column_view::null_count")
+                .with_context("null_count", out.to_string())
+        })
     }
 
     /// Returns `true` if this column has a null mask allocated.
@@ -139,8 +143,16 @@ impl<'a> ColumnView<'a> {
                 .with_context("child_index", index.to_string()));
         }
 
+        let num_children = self.num_children()?;
+        if index >= num_children {
+            return Err(Error::new(ErrorKind::InvalidOperation, "column child index out of bounds")
+                .with_operation("column_view::child")
+                .with_context("child_index", index.to_string())
+                .with_context("num_children", num_children.to_string()));
+        }
+
         let mut child_handle = ptr::null_mut();
-        // SAFETY: self.handle is valid. index >= 0 is checked above.
+        // SAFETY: self.handle is valid and the child index is validated above.
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
             "column_view::child",

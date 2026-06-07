@@ -302,7 +302,7 @@ pub(super) fn transfer_from_owned_table_with_names(
         to_static_readiness(readiness),
         owned_transfer_diagnostics(),
         owned_transfer_release_contract(default_device),
-        OwnedTableTransferState { _table: table },
+        OwnedTableTransferState::new(table),
     )
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -333,7 +333,7 @@ pub(super) fn prepare_partitioned_host_table_export_from_columns(
     operation: &'static str,
 ) -> Result<PreparedTableExport<'static>, InteropError> {
     prepare_host_table_export_from_columns(
-        producer.columns.values(),
+        producer.columns(),
         producer.num_rows(),
         Some(producer.column_names_owned()),
         operation,

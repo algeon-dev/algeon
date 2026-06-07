@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use rapids_interop::{
     BorrowedColumnView, BorrowedTableView, BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile,
-    InteropError, InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer,
-    PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
-    SemanticColumn,
+    InteropError, InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity,
+    Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SemanticColumn,
 };
 
 use super::{
@@ -17,11 +16,7 @@ use super::{
     map_interop_error, map_interop_type_id,
 };
 use crate::{
-    core::{
-        column::Column,
-        error,
-        table::Table,
-    },
+    core::{column::Column, error, table::Table},
     frame::{dataframe::DataFrame, series::Series},
     runtime::Runtime,
 };
@@ -63,38 +58,19 @@ fn prepared_device_export_producer_device(
     }
 }
 
-fn validate_import_runtime_device(
+fn validate_runtime_device(
     operation: &'static str,
+    expected_label: &'static str,
+    message: &'static str,
     expected_device: i32,
     runtime: &Runtime,
 ) -> Result<(), InteropError> {
     let actual_device = runtime.device().ordinal() as i32;
     if actual_device != expected_device {
-        return Err(InteropError::new(
-            InteropErrorKind::ExecutionBindingMismatch,
-            "borrowed descriptor import requires the destination runtime to use the same CUDA device",
-        )
-        .with_context("operation", operation)
-        .with_context("descriptor_device", expected_device.to_string())
-        .with_context("runtime_device", actual_device.to_string()));
-    }
-    Ok(())
-}
-
-fn validate_prepared_import_runtime_device(
-    operation: &'static str,
-    expected_device: i32,
-    runtime: &Runtime,
-) -> Result<(), InteropError> {
-    let actual_device = runtime.device().ordinal() as i32;
-    if actual_device != expected_device {
-        return Err(InteropError::new(
-            InteropErrorKind::ExecutionBindingMismatch,
-            "prepared device export import requires the destination runtime to use the same CUDA device",
-        )
-        .with_context("operation", operation)
-        .with_context("producer_device", expected_device.to_string())
-        .with_context("runtime_device", actual_device.to_string()));
+        return Err(InteropError::new(InteropErrorKind::ExecutionBindingMismatch, message)
+            .with_context("operation", operation)
+            .with_context(expected_label, expected_device.to_string())
+            .with_context("runtime_device", actual_device.to_string()));
     }
     Ok(())
 }
@@ -270,7 +246,13 @@ pub(super) fn import_column_from_borrowed_view(
     runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Column, InteropError> {
-    validate_import_runtime_device(operation, borrowed.execution().device(), runtime)?;
+    validate_runtime_device(
+        operation,
+        "descriptor_device",
+        "borrowed descriptor import requires the destination runtime to use the same CUDA device",
+        borrowed.execution().device(),
+        runtime,
+    )?;
     let len = checked_i32_from_usize("len", borrowed.len(), operation)?;
     let offset = checked_i32_from_usize("offset", borrowed.offset(), operation)?;
     let (null_mask, null_count) = borrowed_null_mask_parts(borrowed, operation)?;
@@ -308,7 +290,13 @@ pub(super) fn import_table_from_borrowed_view(
     runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Table, InteropError> {
-    validate_import_runtime_device(operation, borrowed.execution().device(), runtime)?;
+    validate_runtime_device(
+        operation,
+        "descriptor_device",
+        "borrowed descriptor import requires the destination runtime to use the same CUDA device",
+        borrowed.execution().device(),
+        runtime,
+    )?;
     if borrowed.num_columns() == 0 {
         if borrowed.num_rows() != 0 {
             return Err(InteropError::new(
@@ -352,20 +340,42 @@ pub(super) fn import_table_from_owned_transfer(
     transfer: OwnedTableTransfer,
     operation: &'static str,
 ) -> Result<Table, InteropError> {
-    match transfer.try_into_owner::<OwnedTableTransferState>() {
-        Ok(state) => Ok(state.into_table()),
-        Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
-            Ok(inner_transfer) => import_table_from_owned_transfer(inner_transfer, operation),
-            Err(_) => Err(
-                InteropError::new(
-                    InteropErrorKind::ProfileUnsupported,
-                    "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
-                )
-                .with_context("operation", operation)
-                .with_context("consumer", "cudf-rs")
-                .with_context("profile", "owned_device_transfer"),
-            ),
-        },
+    const MAX_OWNED_TABLE_TRANSFER_NESTING: usize = 32;
+
+    fn unsupported_owned_table_root(operation: &'static str) -> InteropError {
+        InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
+        )
+        .with_context("operation", operation)
+        .with_context("consumer", "cudf-rs")
+        .with_context("profile", "owned_device_transfer")
+    }
+
+    let mut nesting = 0usize;
+    let mut current = transfer;
+    loop {
+        match current.try_into_owner::<OwnedTableTransferState>() {
+            Ok(state) => return Ok(state.into_table()),
+            Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
+                Ok(inner_transfer) => {
+                    nesting += 1;
+                    if nesting > MAX_OWNED_TABLE_TRANSFER_NESTING {
+                        return Err(InteropError::new(
+                            InteropErrorKind::ProfileUnsupported,
+                            "cudf-rs owned table import rejected an owned-transfer root with excessive nesting",
+                        )
+                        .with_context("operation", operation)
+                        .with_context("consumer", "cudf-rs")
+                        .with_context("profile", "owned_device_transfer")
+                        .with_context("max_nesting", MAX_OWNED_TABLE_TRANSFER_NESTING.to_string())
+                        .with_context("observed_nesting", nesting.to_string()));
+                    }
+                    current = inner_transfer;
+                },
+                Err(_) => return Err(unsupported_owned_table_root(operation)),
+            },
+        }
     }
 }
 
@@ -386,7 +396,13 @@ pub(super) fn import_column_from_prepared_export(
     match export.diagnostics().profile() {
         ExportProfile::PreparedDeviceExport => {
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
-            validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+            validate_runtime_device(
+                operation,
+                "producer_device",
+                "prepared device export import requires the destination runtime to use the same CUDA device",
+                producer_device,
+                runtime,
+            )?;
             let lease = export.try_activate_runtime_read_lease(
                 RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
                 RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
@@ -480,7 +496,13 @@ pub(super) fn import_table_from_prepared_export(
     match export.diagnostics().profile() {
         ExportProfile::PreparedDeviceExport => {
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
-            validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+            validate_runtime_device(
+                operation,
+                "producer_device",
+                "prepared device export import requires the destination runtime to use the same CUDA device",
+                producer_device,
+                runtime,
+            )?;
             let lease = export.try_activate_runtime_read_lease(
                 RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
                 RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
