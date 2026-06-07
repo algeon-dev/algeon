@@ -155,30 +155,43 @@ fn bounded_source_adjacent_chunk_batching_enabled(
             .reader_predicate
             .as_ref()
             .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate))
-        && bounded_source_adjacent_chunk_batches(context, bounded.source, chunks)
-            .iter()
-            .any(|batch| batch.chunk_count() > 1)
+        && bounded_source_adjacent_chunk_batches(context, bounded, chunks).iter().any(|batch| batch.chunk_count() > 1)
 }
 
 fn bounded_source_adjacent_chunk_batches(
     context: &ExecutionContext,
-    source: &LocalParquetSource,
+    bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> Vec<SourceChunkBatch> {
     let max_batch_source_read_bytes = match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
-            Some(max_source_chunk_bytes.min(source_adjacent_raw_source_batch_max_bytes(source, chunks)))
+            Some(max_source_chunk_bytes.min(source_adjacent_raw_source_batch_max_bytes(
+                bounded.source,
+                chunks,
+                is_source_adjacent_grouped_aggregate(bounded),
+            )))
         },
-        MemoryControlPolicy::Unbounded => Some(source_adjacent_raw_source_batch_max_bytes(source, chunks)),
+        MemoryControlPolicy::Unbounded => Some(source_adjacent_raw_source_batch_max_bytes(
+            bounded.source,
+            chunks,
+            is_source_adjacent_grouped_aggregate(bounded),
+        )),
     };
     plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
 }
 
-fn source_adjacent_raw_source_batch_max_bytes(source: &LocalParquetSource, chunks: &[SourceChunk]) -> u64 {
+fn source_adjacent_raw_source_batch_max_bytes(
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    source_adjacent_grouped_aggregate: bool,
+) -> u64 {
     if source.scan_limit.is_none()
         && source.partition_columns.is_empty()
         && chunks.iter().all(source_chunk_requires_remote_direct_read)
     {
+        if source_adjacent_grouped_aggregate {
+            return SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES;
+        }
         REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
     } else {
         SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
@@ -197,7 +210,7 @@ fn execute_bounded_source_adjacent_chunk_batches_serial(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<CommittedPartial>> {
-    let batches = bounded_source_adjacent_chunk_batches(context, bounded.source, chunks);
+    let batches = bounded_source_adjacent_chunk_batches(context, bounded, chunks);
     let mut partials = Vec::with_capacity(batches.len());
     for batch in batches {
         context.check_cancellation("nexus_query_engine.exec.bounded.source_adjacent_chunk_batch")?;
@@ -1582,4 +1595,85 @@ pub(in crate::exec) fn observed_source_read_batch_reservation_request(
         contract.planning_bytes,
         contract.estimated_bytes,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, sync::Arc};
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        runtime::SourceChunkPlanningMode,
+        source::{CredentialMode, LocalParquetFile, ParquetSourceLocation, ResolvedParquetSource},
+    };
+
+    #[test]
+    fn remote_direct_grouped_source_adjacent_batching_uses_grouped_aggregate_cap() {
+        let source = remote_direct_source();
+        let chunks = vec![remote_direct_chunk(0, 128 * 1024 * 1024), remote_direct_chunk(1, 128 * 1024 * 1024)];
+
+        assert_eq!(
+            source_adjacent_raw_source_batch_max_bytes(&source, &chunks, true),
+            SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
+        );
+        assert_eq!(
+            source_adjacent_raw_source_batch_max_bytes(&source, &chunks, false),
+            REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
+        );
+    }
+
+    fn remote_direct_source() -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, false)]));
+        let file = LocalParquetFile::from_resolved_parquet_source(remote_direct_resolved_source()).unwrap();
+        LocalParquetSource::from_files(vec![file], schema, vec!["c0".to_string()])
+    }
+
+    fn remote_direct_chunk(chunk_index: usize, estimated_source_read_bytes: u64) -> SourceChunk {
+        let resolved_source = remote_direct_resolved_source();
+        SourceChunk {
+            source_node_id: NodeId::from_index_for_internal_use(0),
+            chunk_index,
+            file_index: 0,
+            location: ParquetSourceLocation::object_store_uri("s3://bucket/table.parquet").unwrap(),
+            path: PathBuf::from("s3://bucket/table.parquet"),
+            resolved_source,
+            stable_id: "s3://bucket/table.parquet".to_string(),
+            row_group_indexes: vec![chunk_index],
+            reads_all_row_groups: false,
+            known_file_bytes: Some(estimated_source_read_bytes),
+            known_row_group_bytes: Some(estimated_source_read_bytes),
+            known_projected_compressed_bytes: Some(estimated_source_read_bytes),
+            known_projected_uncompressed_bytes: Some(estimated_source_read_bytes),
+            known_pure_filter_compressed_bytes: Some(0),
+            known_pure_filter_uncompressed_bytes: Some(0),
+            estimated_chunk_bytes: Some(estimated_source_read_bytes),
+            estimated_source_read_bytes: Some(estimated_source_read_bytes),
+            exact_source_read_preflight_bytes: None,
+            source_file_row_groups: Some(vec![chunk_index]),
+            source_file_row_group_bytes: Some(vec![estimated_source_read_bytes]),
+            source_file_projected_compressed_bytes: Some(vec![estimated_source_read_bytes]),
+            source_file_projected_uncompressed_bytes: Some(vec![estimated_source_read_bytes]),
+            source_file_pure_filter_compressed_bytes: Some(vec![0]),
+            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
+            source_file_row_group_rows: Some(vec![1]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: true,
+            read_columns: vec!["c0".to_string()],
+            partition_values: Vec::new(),
+            zero_column_count: false,
+            known_row_count: Some(1),
+            scan_limit_rows: None,
+            size_estimate_based: false,
+            source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test".to_string(),
+        }
+    }
+
+    fn remote_direct_resolved_source() -> ResolvedParquetSource {
+        ResolvedParquetSource::remote_direct("s3://bucket/table.parquet", CredentialMode::SharedProcessEnv)
+            .with_remote_read_mode(RemoteParquetReadMode::RequireDirect)
+    }
 }

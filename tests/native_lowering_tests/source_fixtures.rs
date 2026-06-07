@@ -471,6 +471,52 @@ pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_pushed_down_label_prefix_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan_with_projection_indices(path, vec![0, 4, 2, 3]);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let prefix: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "substr",
+        unicode::substr(),
+        vec![col("label", &scan_schema).unwrap(), lit(ScalarValue::Int64(Some(1))), lit(ScalarValue::Int64(Some(1)))],
+        Arc::new(Field::new("substr", DataType::Utf8View, true)),
+        Arc::new(ConfigOptions::new()),
+    ));
+    let predicate = in_list(
+        prefix,
+        vec![lit(ScalarValue::Utf8View(Some("a".to_string()))), lit(ScalarValue::Utf8View(Some("b".to_string())))],
+        &false,
+        scan_schema.as_ref(),
+    )
+    .unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+pub(super) fn parquet_scan_with_pushed_down_partial_reader_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let payload_eq =
+        binary(col("payload", &scan_schema).unwrap(), Operator::Eq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let label_like: Arc<dyn PhysicalExpr> = Arc::new(LikeExpr::new(
+        false,
+        false,
+        col("label", &scan_schema).unwrap(),
+        lit(ScalarValue::Utf8(Some("a%".to_string()))),
+    ));
+    let predicate = binary(payload_eq, Operator::And, label_like, &scan_schema).unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_access_plan(
     path: &std::path::Path,
     access_plan: ParquetAccessPlan,

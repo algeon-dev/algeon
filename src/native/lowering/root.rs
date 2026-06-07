@@ -159,7 +159,7 @@ pub(super) fn lower_slice1_plan(
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
-    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
+    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown_covers_filter {
         parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
     } else {
         None

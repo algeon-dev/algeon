@@ -11,7 +11,7 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
+    BinaryOp as NativeBinaryOp, Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
     LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
     MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
@@ -163,7 +163,7 @@ pub(super) fn lower_source_input(
     native_source.diagnostics.selected_row_group_stats = selected_row_group_stats;
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
-    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
+    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown_covers_filter {
         parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
     } else {
         None
@@ -417,12 +417,13 @@ fn table_format_reader_pushdown_predicate(
             Ok(predicate) => predicate,
             Err(_) => return Ok(None),
         };
-    if native_source.reader_predicate_is_supported(&predicate)
-        && !table_format_reader_predicate_references_stats_filter_risky_type(&predicate, source_output_schema)
-    {
+    if let Some(predicate) = supported_reader_pushdown_predicate(&predicate, native_source, |expr| {
+        !table_format_reader_predicate_references_stats_filter_risky_type(expr, source_output_schema)
+    }) {
         Ok(Some(SourceReaderPushdownPredicate {
-            expr: predicate,
-            covers_filter: table_format_reader_pushdown_can_elide_native_filter(native_source),
+            covers_filter: predicate.covers_predicate
+                && table_format_reader_pushdown_can_elide_native_filter(native_source),
+            expr: predicate.expr,
         }))
     } else {
         Ok(None)
@@ -980,9 +981,9 @@ pub(super) fn source_reader_pushdown_predicate(
     {
         return Ok(None);
     }
-    let covers_filter = scan_predicate_exactly_matches_filter(parquet_source, filter);
+    let scan_predicate_covers_filter = scan_predicate_exactly_matches_filter(parquet_source, filter);
     let predicate = if let Some(filter) = filter
-        && covers_filter
+        && scan_predicate_covers_filter
     {
         let bindings = source_bindings_for_schema(source_output_schema, Arc::clone(&frontend_schema));
         lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings))
@@ -999,11 +1000,64 @@ pub(super) fn source_reader_pushdown_predicate(
         Err(_error) if filter.is_none() => return Ok(None),
         Err(error) => return Err(error),
     };
-    if native_source.reader_predicate_is_supported(&predicate) {
-        Ok(Some(SourceReaderPushdownPredicate { expr: predicate, covers_filter }))
+    if let Some(predicate) = supported_reader_pushdown_predicate(&predicate, native_source, |_| true) {
+        let covers_filter = if filter.is_some() {
+            scan_predicate_covers_filter && predicate.covers_predicate
+        } else {
+            predicate.covers_predicate
+        };
+        Ok(Some(SourceReaderPushdownPredicate { covers_filter, expr: predicate.expr }))
     } else {
         Ok(None)
     }
+}
+
+#[derive(Debug)]
+struct SupportedReaderPushdownPredicate {
+    expr: NativeExpr,
+    covers_predicate: bool,
+}
+
+fn supported_reader_pushdown_predicate(
+    predicate: &NativeExpr,
+    native_source: &NativeLocalParquetSource,
+    allow_expr: impl Fn(&NativeExpr) -> bool,
+) -> Option<SupportedReaderPushdownPredicate> {
+    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate)
+        && allow_expr(&expr)
+    {
+        return Some(SupportedReaderPushdownPredicate { expr, covers_predicate: true });
+    }
+
+    let mut conjuncts = Vec::new();
+    collect_supported_reader_pushdown_conjuncts(predicate, native_source, &allow_expr, &mut conjuncts);
+    combine_reader_pushdown_conjuncts(conjuncts)
+        .map(|expr| SupportedReaderPushdownPredicate { expr, covers_predicate: false })
+}
+
+fn collect_supported_reader_pushdown_conjuncts(
+    predicate: &NativeExpr,
+    native_source: &NativeLocalParquetSource,
+    allow_expr: &impl Fn(&NativeExpr) -> bool,
+    conjuncts: &mut Vec<NativeExpr>,
+) {
+    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate)
+        && allow_expr(&expr)
+    {
+        conjuncts.push(expr);
+        return;
+    }
+
+    if let NativeExpr::Binary { left, op: NativeBinaryOp::And, right, .. } = predicate {
+        collect_supported_reader_pushdown_conjuncts(left, native_source, allow_expr, conjuncts);
+        collect_supported_reader_pushdown_conjuncts(right, native_source, allow_expr, conjuncts);
+    }
+}
+
+fn combine_reader_pushdown_conjuncts(conjuncts: Vec<NativeExpr>) -> Option<NativeExpr> {
+    let mut conjuncts = conjuncts.into_iter();
+    let first = conjuncts.next()?;
+    Some(conjuncts.fold(first, |left, right| NativeExpr::binary(left, NativeBinaryOp::And, right)))
 }
 
 pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<super::FieldBinding> {
