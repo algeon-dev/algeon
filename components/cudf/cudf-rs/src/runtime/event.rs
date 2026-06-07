@@ -79,6 +79,14 @@ impl CudaEvent {
         Ok(out != 0)
     }
 
+    /// Borrow this owner as a low-level `cudf-sys` event handle.
+    ///
+    /// The returned wrapper does not transfer ownership. Its lifetime is tied
+    /// to `&self`, and only `CudaEvent` remains responsible for destruction.
+    pub fn as_borrowed_sys(&self) -> cudf_sys::BorrowedEvent<'_> {
+        unsafe { cudf_sys::BorrowedEvent::from_raw(self.handle.raw.as_ptr()) }
+    }
+
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
         self.handle.raw.as_ptr()
     }

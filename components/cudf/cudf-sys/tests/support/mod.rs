@@ -85,8 +85,177 @@ pub fn current_device_resource_raw() -> *mut c_void {
     out
 }
 
-pub fn make_stats_memory_resource() -> cudf_sys::MemoryResource {
-    cudf_sys::MemoryResource::new_test_stats().unwrap()
+pub struct OwnedStream {
+    raw: cudf_sys::cudf_stream_handle,
+}
+
+impl OwnedStream {
+    pub fn new() -> Self {
+        let mut raw = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_stream_create(&mut raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    pub fn as_raw(&self) -> cudf_sys::cudf_stream_handle {
+        self.raw
+    }
+
+    pub fn borrowed(&self) -> cudf_sys::BorrowedStream<'_> {
+        unsafe { cudf_sys::BorrowedStream::from_raw(self.raw) }
+    }
+
+    pub fn synchronize(&self) {
+        let st = unsafe { cudf_sys::cudf_stream_synchronize(self.raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        let mut out = 0;
+        let st = unsafe { cudf_sys::cudf_stream_is_ready(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        out != 0
+    }
+
+    pub fn raw_cuda_stream(&self) -> *mut c_void {
+        let mut out = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_stream_raw(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!out.is_null());
+        out
+    }
+}
+
+impl Drop for OwnedStream {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { cudf_sys::cudf_stream_destroy(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+pub struct OwnedEvent {
+    raw: cudf_sys::cudf_event_handle,
+}
+
+impl OwnedEvent {
+    pub fn new() -> Self {
+        let mut raw = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_event_create(&mut raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    pub fn as_raw(&self) -> cudf_sys::cudf_event_handle {
+        self.raw
+    }
+
+    pub fn borrowed(&self) -> cudf_sys::BorrowedEvent<'_> {
+        unsafe { cudf_sys::BorrowedEvent::from_raw(self.raw) }
+    }
+
+    pub fn record(&self, stream: &OwnedStream) {
+        let st = unsafe { cudf_sys::cudf_event_record(self.raw, stream.as_raw()) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    }
+
+    pub fn synchronize(&self) {
+        let st = unsafe { cudf_sys::cudf_event_synchronize(self.raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        let mut out = 0;
+        let st = unsafe { cudf_sys::cudf_event_is_ready(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        out != 0
+    }
+
+    pub fn raw_cuda_event(&self) -> *mut c_void {
+        let mut out = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_event_raw(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!out.is_null());
+        out
+    }
+}
+
+impl Drop for OwnedEvent {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { cudf_sys::cudf_event_destroy(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+pub struct OwnedMemoryResource {
+    raw: cudf_sys::cudf_memory_resource_handle,
+}
+
+impl OwnedMemoryResource {
+    pub fn new_cuda() -> Self {
+        let mut raw = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    pub fn new_pool(initial_pool_size: usize, maximum_pool_size: usize) -> Self {
+        let mut raw = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    pub fn new_test_stats() -> Self {
+        let mut raw = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_test_memory_resource_create_stats(&mut raw) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    pub fn as_raw(&self) -> cudf_sys::cudf_memory_resource_handle {
+        self.raw
+    }
+
+    pub fn borrowed(&self) -> cudf_sys::BorrowedMemoryResource<'_> {
+        unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.raw) }
+    }
+
+    pub fn allocation_count(&self) -> i64 {
+        let mut out = 0_i64;
+        let st = unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        out
+    }
+
+    pub fn raw_device_resource(&self) -> *mut c_void {
+        let mut out = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_memory_resource_raw(self.raw, &mut out) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert!(!out.is_null());
+        out
+    }
+}
+
+impl Drop for OwnedMemoryResource {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+pub fn make_stats_memory_resource() -> OwnedMemoryResource {
+    OwnedMemoryResource::new_test_stats()
 }
 
 pub fn owned_string_value(ptr: *mut c_char, len: i32) -> String {

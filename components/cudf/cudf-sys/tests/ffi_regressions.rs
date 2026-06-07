@@ -114,8 +114,8 @@ extern "C" {
 }
 
 use support::{
-    NO_SYNC_RECORDED, current_device_resource_raw, default_stream_value, last_error_message, last_exec_mr_raw,
-    last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
+    NO_SYNC_RECORDED, OwnedEvent, OwnedStream, current_device_resource_raw, default_stream_value, last_error_message,
+    last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
     owned_string_value, reset_exec_observation, stream_value,
 };
 
@@ -596,11 +596,11 @@ fn test_event_create_record_wait_and_synchronize_smoke() {
 
 #[test]
 fn test_raw_cuda_event_record_and_wait_smoke() {
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let event = cudf_sys::Event::new().expect("failed to create event");
+    let stream = OwnedStream::new();
+    let event = OwnedEvent::new();
 
-    let raw_stream = stream.raw_cuda_stream().expect("failed to resolve raw CUDA stream");
-    let raw_event = event.raw_cuda_event().expect("failed to resolve raw CUDA event");
+    let raw_stream = stream.raw_cuda_stream();
+    let raw_event = event.raw_cuda_event();
 
     let status = unsafe { cudf_sys::cudf_raw_cuda_event_record(raw_event, raw_stream) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -693,11 +693,13 @@ fn test_scalar_create_string_synchronizes_default_stream_before_return() {
 fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_before_return() {
     let _shim_state = lock_shim_state();
     let value = 42i32;
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
     let mr = make_stats_memory_resource();
     let default_mr = current_device_resource_raw();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
     reset_exec_observation();
     let mut scalar: *mut c_void = ptr::null_mut();
@@ -728,11 +730,13 @@ fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_bef
 fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_before_return() {
     let _shim_state = lock_shim_state();
     let hello = std::ffi::CString::new("hello").unwrap();
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
     let mr = make_stats_memory_resource();
     let default_mr = current_device_resource_raw();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
     reset_exec_observation();
     let mut scalar: *mut c_void = ptr::null_mut();
@@ -779,9 +783,10 @@ fn test_column_create_numeric_host_source_sync_contract() {
     assert_eq!(last_exec_sync_stream_value(), default_stream);
     assert_eq!(read_i32_column_data(legacy_out, data.len()), data);
 
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut explicit_out: *mut c_void = ptr::null_mut();
@@ -835,9 +840,10 @@ fn test_column_create_strings_host_source_sync_contract() {
     assert_eq!(last_exec_sync_stream_value(), default_stream);
     assert_eq!(read_string_column_data(legacy_out), values);
 
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut explicit_out: *mut c_void = ptr::null_mut();
@@ -868,7 +874,7 @@ fn test_column_create_strings_host_source_sync_contract() {
 fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[7, 8, 9]);
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
@@ -878,7 +884,8 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     assert_ne!(last_exec_stream_value(), explicit_stream);
     assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
 
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
     reset_exec_observation();
     let mut explicit_out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec.as_raw(), &mut explicit_out) };
@@ -914,9 +921,10 @@ fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
     assert_eq!(last_exec_stream_value(), default_stream);
     assert_eq!(last_exec_sync_stream_value(), default_stream);
 
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
     let mut explicit_buf = vec![0i32; 3];
     reset_exec_observation();
     let st = unsafe {
@@ -1139,9 +1147,10 @@ fn test_column_view_strings_to_host_empty_ex_matches_legacy_contract() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
     let mut legacy_offsets = vec![-1i32; 1];
     let mut legacy_total_chars = -1;
     let mut ex_offsets = vec![-1i32; 1];
@@ -1190,9 +1199,10 @@ fn test_column_view_strings_to_host_ex_sync_contract() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
     let mut offsets = vec![-1i32; 4];
     let mut chars = vec![0u8; 5];
     let mut total_chars = -1;
@@ -1226,9 +1236,10 @@ fn test_column_view_strings_to_host_ex_sync_contract() {
 fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
     let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut is_valid = -1;
@@ -1245,9 +1256,10 @@ fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
 fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
     let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut out = 0i32;
@@ -1264,9 +1276,10 @@ fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
 fn test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync() {
     let _shim_state = lock_shim_state();
     let scalar = make_string_scalar("hello");
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut out: *mut c_char = ptr::null_mut();
@@ -1306,9 +1319,10 @@ fn test_column_create_from_device_data_sync_and_async_contracts() {
     assert_eq!(last_exec_sync_stream_value(), default_stream);
     assert_eq!(read_i32_column_data(sync_out, 3), vec![21, 22, 23]);
 
-    let stream = cudf_sys::Stream::new().unwrap();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
 
     reset_exec_observation();
     let mut async_out: *mut c_void = ptr::null_mut();
@@ -1324,7 +1338,7 @@ fn test_column_create_from_device_data_sync_and_async_contracts() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), explicit_stream);
     assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-    stream.synchronize().unwrap();
+    stream.synchronize();
     assert_eq!(read_i32_column_data(async_out, 3), vec![21, 22, 23]);
 
     unsafe {
@@ -2118,15 +2132,16 @@ fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
     let mut legacy_out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(stats_mr.test_allocation_count().unwrap(), 0);
+    assert_eq!(stats_mr.allocation_count(), 0);
     assert_eq!(last_exec_mr_raw(), default_mr);
 
-    let exec_opts = cudf_sys::ExecutionContext::new().with_memory_resource(&stats_mr);
+    let borrowed_mr = stats_mr.borrowed();
+    let exec_opts = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed_mr);
     reset_exec_observation();
     let mut explicit_out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec_opts.as_raw(), &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(stats_mr.test_allocation_count().unwrap() > 0);
+    assert!(stats_mr.allocation_count() > 0);
     assert_ne!(last_exec_mr_raw(), default_mr);
 
     unsafe {

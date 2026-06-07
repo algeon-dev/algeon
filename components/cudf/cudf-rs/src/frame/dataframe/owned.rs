@@ -433,18 +433,8 @@ impl DataFrame {
     }
 
     #[doc(hidden)]
-    pub fn __debug_retained_provenance_kind(&self) -> &'static str {
-        self.__debug_execution_domain_kind()
-    }
-
-    #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
-    }
-
-    #[doc(hidden)]
-    pub fn __debug_retained_provenance_id(&self) -> u64 {
-        self.__debug_execution_domain_id()
     }
 
     #[doc(hidden)]
@@ -453,18 +443,8 @@ impl DataFrame {
     }
 
     #[doc(hidden)]
-    pub fn __debug_retained_provenance_stream_value(&self) -> usize {
-        self.__debug_execution_domain_stream_value()
-    }
-
-    #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
-    }
-
-    #[doc(hidden)]
-    pub fn __debug_retained_provenance_mr_value(&self) -> usize {
-        self.__debug_execution_domain_mr_value()
     }
 
     pub(crate) fn synchronize_for_forced_output_domain(

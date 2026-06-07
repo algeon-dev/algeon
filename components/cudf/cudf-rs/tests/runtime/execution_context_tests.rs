@@ -18,7 +18,11 @@
 
 use std::{ffi::c_void, ptr};
 
-use cudf::{DeviceId, core::memory::DeviceMemoryResource, runtime::CudaStream};
+use cudf::{
+    DeviceId,
+    core::memory::DeviceMemoryResource,
+    runtime::{CudaEvent, CudaStream},
+};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,
     cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
@@ -299,28 +303,31 @@ fn execution_context_default_has_null_handles() {
 /// ExecutionContext stores a non-null stream handle.
 #[test]
 fn execution_context_with_stream_stores_handle() {
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
     let raw = ctx.raw();
     assert!(!raw.stream.is_null(), "stream handle should be non-null");
-    assert_eq!(raw.stream, stream.as_raw(), "stream handle mismatch");
+    assert_eq!(raw.stream, borrowed.as_raw(), "stream handle mismatch");
 }
 
 /// ExecutionContext stores a non-null memory-resource handle.
 #[test]
 fn execution_context_with_mr_stores_handle() {
-    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&mr);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed);
     let raw = ctx.raw();
     assert!(!raw.mr.is_null(), "mr handle should be non-null");
-    assert_eq!(raw.mr, mr.as_raw(), "mr handle mismatch");
+    assert_eq!(raw.mr, borrowed.as_raw(), "mr handle mismatch");
 }
 
 /// ExecutionContext is Copy — copying produces an identical struct.
 #[test]
 fn execution_context_is_copy() {
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
     let copy = ctx; // Copy
     assert_eq!(ctx.raw().stream, copy.raw().stream);
     assert_eq!(ctx.raw().mr, copy.raw().mr);
@@ -370,11 +377,12 @@ fn execution_context_struct_size_is_correct() {
 fn column_copy_ex_uses_explicit_stream() {
     let col = create_i32_column_raw(&[10, 20, 30]);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
     let default_stream = obs_default_stream();
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let explicit_stream = stream.__debug_raw_handle_value();
     assert_ne!(
         explicit_stream, default_stream,
         "explicit stream must differ from default for this test to be meaningful"
@@ -404,10 +412,11 @@ fn column_to_host_ex_uses_explicit_stream() {
     let col = create_i32_column_raw(&data);
     let view = column_view_raw(col);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let explicit_stream = stream.__debug_raw_handle_value();
 
     obs_reset();
     let mut host_buf = [0i32; 3];
@@ -437,10 +446,11 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     let src_view = column_view_raw(src_col);
     let device_ptr = column_view_device_ptr(src_view);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let explicit_stream = stream.__debug_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -490,9 +500,10 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
     let input_view = column_view_raw(input);
     let replacement = create_i32_scalar_raw(99);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let explicit_stream = stream.__debug_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -521,9 +532,10 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
     let replacement = create_i32_column_raw(&[10, 20, 30]);
     let replacement_view = column_view_raw(replacement);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = CudaStream::new().expect("failed to create stream");
+    let borrowed = stream.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
+    let explicit_stream = stream.__debug_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -553,10 +565,12 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     let gather_map = create_i32_column_raw(&[2, 0]);
     let gather_map_view = column_view_raw(gather_map);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = CudaStream::new().expect("failed to create stream");
+    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let explicit_stream = stream.__debug_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -595,10 +609,12 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     let mask = create_bool_column_raw(&[true, false, true]);
     let mask_view = column_view_raw(mask);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = CudaStream::new().expect("failed to create stream");
+    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let explicit_stream = stream.__debug_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -675,8 +691,9 @@ fn column_copy_ex_default_context_uses_defaults() {
 fn column_copy_ex_explicit_mr_is_observed() {
     let col = create_i32_column_raw(&[5, 10, 15]);
 
-    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&mr);
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
+    let borrowed = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -696,11 +713,13 @@ fn column_copy_ex_explicit_mr_is_observed() {
 fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     let col = create_i32_column_raw(&[5, 10, 15]);
     let view = column_view_raw(col);
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
+    let stream = CudaStream::new().expect("failed to create stream");
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
     let default_mr = obs_current_device_resource();
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -722,11 +741,13 @@ fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
 #[test]
 fn table_copy_ex_uses_explicit_stream_and_mr() {
     let table = create_single_column_table_raw(&[5, 10, 15]);
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
+    let stream = CudaStream::new().expect("failed to create stream");
+    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
     let default_mr = obs_current_device_resource();
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = mr.as_borrowed_sys();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -1029,13 +1050,14 @@ fn groupby_agg_default_produces_correct_results() {
 fn column_copy_ex_pool_mr_is_observed() {
     let col = create_i32_column_raw(&[42, 43, 44]);
 
-    let pool_mr = cudf_sys::MemoryResource::new_pool(
+    let pool_mr = DeviceMemoryResource::pool(
         16 * 1024 * 1024, // 16 MB initial
         0,                // unbounded max
     )
     .expect("failed to create pool MR");
+    let borrowed_mr = pool_mr.as_borrowed_sys();
 
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&pool_mr);
+    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed_mr);
 
     let default_mr = obs_current_device_resource();
 
@@ -1061,12 +1083,14 @@ fn column_copy_ex_pool_mr_is_observed() {
 fn column_copy_ex_stream_and_mr_combined() {
     let col = create_i32_column_raw(&[7, 8, 9]);
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let pool_mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let stream = CudaStream::new().expect("failed to create stream");
+    let pool_mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let borrowed_stream = stream.as_borrowed_sys();
+    let borrowed_mr = pool_mr.as_borrowed_sys();
 
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&pool_mr);
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let explicit_stream = stream.__debug_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -1107,6 +1131,13 @@ fn device_memory_resource_is_send_sync() {
     assert_send_sync::<DeviceMemoryResource>();
 }
 
+/// CudaEvent is Send + Sync (required for retained owner sharing).
+#[test]
+fn cuda_event_is_send_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<CudaEvent>();
+}
+
 /// CudaStream can be created and synchronized.
 #[test]
 fn cuda_stream_create_and_sync() {
@@ -1132,6 +1163,36 @@ fn device_memory_resource_create_cuda() {
 #[test]
 fn device_memory_resource_create_pool() {
     let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+}
+
+/// `CudaStream::as_borrowed_sys` preserves the sys-handle identity.
+#[test]
+fn cuda_stream_as_borrowed_sys_preserves_handle() {
+    let stream = CudaStream::new().unwrap();
+    let borrowed = stream.as_borrowed_sys();
+    assert_eq!(stream.__debug_raw_handle_value(), obs_stream_handle_value(borrowed.as_raw()));
+}
+
+/// `CudaEvent::as_borrowed_sys` preserves the sys-handle identity.
+#[test]
+fn cuda_event_as_borrowed_sys_preserves_handle() {
+    let stream = CudaStream::new().unwrap();
+    let event = CudaEvent::new().unwrap();
+    event.record(&stream).unwrap();
+
+    let borrowed = event.as_borrowed_sys();
+    assert_eq!(event.__debug_raw_handle_value(), borrowed.as_raw() as usize);
+}
+
+/// `DeviceMemoryResource::as_borrowed_sys` preserves the sys-handle identity.
+#[test]
+fn device_memory_resource_as_borrowed_sys_preserves_handle() {
+    let mr = DeviceMemoryResource::cuda().unwrap();
+    let borrowed = mr.as_borrowed_sys();
+    let mut underlying = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(mr.__debug_raw_handle_value(), underlying as usize);
 }
 
 // ===========================================================================

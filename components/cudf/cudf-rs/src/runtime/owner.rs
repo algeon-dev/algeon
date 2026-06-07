@@ -34,7 +34,7 @@ impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Runtime")
             .field("device", &self.device())
-            .field("retained_provenance", &self.__debug_retained_provenance_id())
+            .field("retained_provenance", &self.__debug_execution_domain_id())
             .finish()
     }
 }
@@ -80,11 +80,6 @@ impl Runtime {
     #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
-    }
-
-    #[doc(hidden)]
-    pub fn __debug_retained_provenance_id(&self) -> u64 {
-        self.__debug_execution_domain_id()
     }
 }
 
