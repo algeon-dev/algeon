@@ -361,6 +361,16 @@ impl Stream {
         status_to_result(unsafe { cudf_stream_is_ready(self.handle, &mut out) })?;
         Ok(out != 0)
     }
+
+    /// Borrow the underlying raw CUDA stream pointer.
+    ///
+    /// The returned pointer does not transfer ownership and is valid only while
+    /// this owning handle remains alive.
+    pub fn raw_cuda_stream(&self) -> Result<*mut c_void, cudf_status_t> {
+        let mut out = std::ptr::null_mut();
+        status_to_result(unsafe { cudf_stream_raw(self.handle, &mut out) })?;
+        Ok(out)
+    }
 }
 
 impl Drop for Stream {
@@ -410,10 +420,18 @@ impl MemoryResource {
         Ok(out)
     }
 
-    pub fn test_raw_device_resource(&self) -> Result<*mut c_void, cudf_status_t> {
+    /// Borrow the underlying raw `device_memory_resource*`.
+    ///
+    /// The returned pointer does not transfer ownership and is valid only while
+    /// this owning handle remains alive.
+    pub fn raw_device_resource(&self) -> Result<*mut c_void, cudf_status_t> {
         let mut out = std::ptr::null_mut();
-        status_to_result(unsafe { cudf_test_memory_resource_raw(self.handle, &mut out) })?;
+        status_to_result(unsafe { cudf_memory_resource_raw(self.handle, &mut out) })?;
         Ok(out)
+    }
+
+    pub fn test_raw_device_resource(&self) -> Result<*mut c_void, cudf_status_t> {
+        self.raw_device_resource()
     }
 }
 
@@ -628,7 +646,9 @@ extern "C" {
     /// Materialize a column null mask into a host buffer.
     ///
     /// This helper synchronizes cuDF's default stream before return so
-    /// `host_buf` is fully populated on success.
+    /// `host_buf` is fully populated on success. For sliced views, the
+    /// exported host bitmask is normalized to the logical slice so the view's
+    /// first row maps to bit 0.
     pub fn cudf_column_view_null_mask_to_host(
         handle: cudf_column_view_handle,
         host_buf: *mut u8,
@@ -637,6 +657,10 @@ extern "C" {
 
     /// Materialize a column null mask into a host buffer with explicit
     /// execution options.
+    ///
+    /// On success, the host buffer is fully populated before the function
+    /// returns. For sliced views, the exported host bitmask is normalized to
+    /// the logical slice so the view's first row maps to bit 0.
     pub fn cudf_column_view_null_mask_to_host_ex(
         handle: cudf_column_view_handle,
         host_buf: *mut u8,
@@ -1035,6 +1059,12 @@ extern "C" {
     /// Report whether work already enqueued on `handle` has completed.
     pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
 
+    /// Borrow the underlying raw CUDA stream pointer from `handle`.
+    ///
+    /// This does not transfer ownership. The returned pointer is valid only
+    /// while `handle` remains alive.
+    pub fn cudf_stream_raw(handle: cudf_stream_handle, out: *mut *mut c_void) -> cudf_status_t;
+
     // -- Memory Resource -----------------------------------------------------
 
     /// Create an owned CUDA-backed RMM memory resource handle.
@@ -1055,6 +1085,12 @@ extern "C" {
 
     /// Destroy a memory resource created by this shim.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle);
+
+    /// Borrow the underlying raw `device_memory_resource*` from `handle`.
+    ///
+    /// This does not transfer ownership. The returned pointer is valid only
+    /// while `handle` remains alive.
+    pub fn cudf_memory_resource_raw(handle: cudf_memory_resource_handle, out: *mut *mut c_void) -> cudf_status_t;
 
     // -- I/O: Parquet --------------------------------------------------------
 

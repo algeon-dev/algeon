@@ -68,6 +68,26 @@ impl ExecutionDomain {
         ExecutionIdentity::new(NEXT_EXPLICIT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed))
     }
 
+    pub(crate) fn ambient_default_for_device_snapshot(device: i32) -> Arc<Self> {
+        #[cfg(feature = "strict-multi-gpu")]
+        panic!(
+            "cudf: ambient_default() is disabled under the `strict-multi-gpu` feature. \
+             Use Runtime::builder().with_device(...).build() to create an explicit runtime."
+        );
+
+        #[cfg(not(feature = "strict-multi-gpu"))]
+        {
+            let cache = AMBIENT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut map = cache.lock().expect("ambient domain cache poisoned");
+            if let Some(domain) = map.get(&device) {
+                return Arc::clone(domain);
+            }
+            let domain = Arc::new(Self { kind: DomainKind::AmbientDefault { device_snapshot: device } });
+            map.insert(device, Arc::clone(&domain));
+            domain
+        }
+    }
+
     pub(crate) fn ambient_default() -> Arc<Self> {
         #[cfg(feature = "strict-multi-gpu")]
         panic!(
@@ -81,15 +101,7 @@ impl ExecutionDomain {
             // if the CUDA runtime call fails (should never happen in practice).
             let mut device: i32 = 0;
             let _ = unsafe { cudf_sys::cudf_cuda_get_device(&mut device) };
-
-            let cache = AMBIENT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut map = cache.lock().expect("ambient domain cache poisoned");
-            if let Some(domain) = map.get(&device) {
-                return Arc::clone(domain);
-            }
-            let domain = Arc::new(Self { kind: DomainKind::AmbientDefault { device_snapshot: device } });
-            map.insert(device, Arc::clone(&domain));
-            domain
+            Self::ambient_default_for_device_snapshot(device)
         }
     }
 

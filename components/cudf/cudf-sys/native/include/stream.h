@@ -28,6 +28,12 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle);
 /// (1 ready, 0 not ready).
 cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out);
 
+/// Borrow the underlying raw CUDA stream pointer from an owning stream handle.
+///
+/// This does not transfer ownership. `*out` is valid only while `handle`
+/// remains alive.
+cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void** out);
+
 #ifdef __cplusplus
 }
 #endif

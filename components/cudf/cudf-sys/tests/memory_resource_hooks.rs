@@ -44,3 +44,17 @@ fn stats_memory_resource_can_be_installed_as_current_allocator() {
 
     unsafe { cudf_sys::cudf_column_destroy(col) };
 }
+
+#[test]
+fn raw_memory_resource_accessor_returns_underlying_device_resource_pointer() {
+    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create CUDA memory resource");
+    let raw = mr.raw_device_resource().expect("failed to resolve underlying device memory resource");
+    assert!(!raw.is_null(), "underlying device memory resource pointer must be non-null");
+}
+
+#[test]
+fn raw_stream_accessor_returns_underlying_cuda_stream_pointer() {
+    let stream = cudf_sys::Stream::new().expect("failed to create CUDA stream");
+    let raw = stream.raw_cuda_stream().expect("failed to resolve underlying CUDA stream pointer");
+    assert!(!raw.is_null(), "underlying CUDA stream pointer must be non-null");
+}

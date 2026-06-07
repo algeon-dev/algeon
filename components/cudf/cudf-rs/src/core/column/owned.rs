@@ -693,6 +693,190 @@ impl Column {
 }
 
 // ---------------------------------------------------------------------------
+// Zero-copy device buffer adoption
+// ---------------------------------------------------------------------------
+
+impl Column {
+    /// Create a column by adopting (moving) an existing [`DeviceBuffer`].
+    ///
+    /// **Zero-copy:** no device-to-device memcpy occurs. The buffer's device
+    /// memory becomes the column's data buffer directly. The `DeviceBuffer` is
+    /// consumed and must not be used after this call.
+    ///
+    /// Only fixed-width types are supported. The buffer's byte size must equal
+    /// `row_count * type_id.size_in_bytes()`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::{Column, DeviceBuffer, TypeId};
+    ///
+    /// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
+    /// let col = Column::from_device_buffer(buf, 3, TypeId::Int32).unwrap();
+    /// assert_eq!(col.view().unwrap().len().unwrap(), 3);
+    /// ```
+    pub fn from_device_buffer(buffer: super::DeviceBuffer, row_count: usize, type_id: TypeId) -> Result<Self> {
+        let operation = "column::from_device_buffer";
+
+        // Only fixed-width types.
+        let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "from_device_buffer only supports fixed-width types")
+                .with_operation(operation)
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+        })?;
+
+        // row_count → i32 for FFI.
+        let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
+
+        // Byte-size check: buffer must hold exactly row_count elements.
+        let expected_bytes = row_count * (elem_size as usize);
+        let actual_bytes = buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        if actual_bytes != expected_bytes {
+            return Err(Error::new(ErrorKind::InvalidOperation, "buffer size does not match row_count * element size")
+                .with_operation(operation)
+                .with_context("buffer_bytes", actual_bytes.to_string())
+                .with_context("expected_bytes", expected_bytes.to_string())
+                .with_context("row_count", row_count.to_string())
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+        }
+
+        // Extract raw handle — ownership transfers to FFI on success.
+        let (raw_buf, device_snapshot) = buffer.into_raw_parts();
+        let domain = ExecutionDomain::ambient_default_for_device_snapshot(device_snapshot);
+
+        let mut handle = ptr::null_mut();
+        let status =
+            unsafe { cudf_sys::cudf_column_adopt_device_buffer(type_id.to_raw(), raw_buf, row_count_i32, &mut handle) };
+
+        match error::check_status_in(status, operation) {
+            Ok(()) => Ok(Self::from_handle_with_domain(handle, domain)),
+            Err(err) => {
+                // SAFETY: FFI guarantees the buffer handle remains valid on failure.
+                // Reconstruct so Drop cleans up.
+                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, device_snapshot) };
+                Err(err)
+            },
+        }
+    }
+
+    /// Create a nullable column by adopting data and null-mask
+    /// [`DeviceBuffer`]s.
+    ///
+    /// **Zero-copy:** no device-to-device memcpy occurs. Both buffers'
+    /// device memory becomes the column's data and null-mask directly.
+    ///
+    /// The `null_mask_buffer` must contain at least
+    /// `cudf::bitmask_allocation_size_bytes(row_count)` bytes of bitmask data.
+    /// In practice this is `ceil(row_count / 8)` rounded up to a 64-byte
+    /// allocation boundary. `null_count` must not exceed `row_count`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::{Column, DeviceBuffer, TypeId};
+    ///
+    /// let data_buf = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+    /// // Bitmask: bits 0 and 2 set → rows 0 and 2 are valid, row 1 is null.
+    /// let mut mask = [0u8; 64];
+    /// mask[0] = 0x05;
+    /// let mask_buf = DeviceBuffer::from_host_data(&mask).unwrap();
+    /// let col = Column::from_device_buffer_nullable(
+    ///     data_buf,
+    ///     mask_buf,
+    ///     1,
+    ///     3,
+    ///     TypeId::Int32,
+    /// )
+    /// .unwrap();
+    /// ```
+    pub fn from_device_buffer_nullable(
+        data_buffer: super::DeviceBuffer,
+        null_mask_buffer: super::DeviceBuffer,
+        null_count: usize,
+        row_count: usize,
+        type_id: TypeId,
+    ) -> Result<Self> {
+        let operation = "column::from_device_buffer_nullable";
+
+        // Only fixed-width types.
+        let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "from_device_buffer_nullable only supports fixed-width types")
+                .with_operation(operation)
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+        })?;
+
+        let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
+
+        let null_count_i32 = i32::try_from(null_count).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "null_count exceeds i32::MAX")
+                .with_operation(operation)
+                .with_context("null_count", null_count.to_string())
+        })?;
+
+        // null_count must not exceed row_count.
+        if null_count > row_count {
+            return Err(Error::new(ErrorKind::InvalidOperation, "null_count exceeds row_count")
+                .with_operation(operation)
+                .with_context("null_count", null_count.to_string())
+                .with_context("row_count", row_count.to_string()));
+        }
+
+        // Byte-size check for data buffer.
+        let expected_data_bytes = row_count * (elem_size as usize);
+        let actual_data_bytes = data_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        if actual_data_bytes != expected_data_bytes {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "data buffer size does not match row_count * element size",
+            )
+            .with_operation(operation)
+            .with_context("buffer_bytes", actual_data_bytes.to_string())
+            .with_context("expected_bytes", expected_data_bytes.to_string()));
+        }
+
+        // Mask buffer must satisfy cudf's bitmask allocation size: 64-byte aligned.
+        // cudf::bitmask_allocation_size_bytes(n) = ceil(n / 8) rounded up to 64 bytes.
+        let min_mask_bytes = row_count.div_ceil(8).div_ceil(64) * 64;
+        let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        if actual_mask_bytes < min_mask_bytes {
+            return Err(Error::new(ErrorKind::InvalidOperation, "null mask buffer too small")
+                .with_operation(operation)
+                .with_context("mask_bytes", actual_mask_bytes.to_string())
+                .with_context("min_required_bytes", min_mask_bytes.to_string())
+                .with_context("row_count", row_count.to_string()));
+        }
+
+        // Extract raw handles. The resulting column retains the data buffer's
+        // creation-time device provenance.
+        let (raw_data, data_device_snapshot) = data_buffer.into_raw_parts();
+        let (raw_mask, mask_device_snapshot) = null_mask_buffer.into_raw_parts();
+        let domain = ExecutionDomain::ambient_default_for_device_snapshot(data_device_snapshot);
+
+        let mut handle = ptr::null_mut();
+        let status = unsafe {
+            cudf_sys::cudf_column_adopt_device_buffer_nullable(
+                type_id.to_raw(),
+                raw_data,
+                raw_mask,
+                null_count_i32,
+                row_count_i32,
+                &mut handle,
+            )
+        };
+
+        match error::check_status_in(status, operation) {
+            Ok(()) => Ok(Self::from_handle_with_domain(handle, domain)),
+            Err(err) => {
+                // SAFETY: FFI guarantees both handles remain valid on failure.
+                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_device_snapshot) };
+                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_device_snapshot) };
+                Err(err)
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Binary operations on Column
 // ---------------------------------------------------------------------------
 

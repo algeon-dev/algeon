@@ -70,4 +70,15 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out) {
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void** out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    *out = reinterpret_cast<void*>(cudf_stream_view_from_handle(handle).value());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 }  // extern "C"

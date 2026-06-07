@@ -195,14 +195,17 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
 /// bitmask_allocation_size_bytes(size) bytes.
 ///
 /// Returns CUDF_ERROR_NULL if column has no null mask.
-/// Returns CUDF_ERROR_INVALID_OPERATION for sliced views (offset != 0).
 /// This helper synchronizes cuDF's default stream before return so `host_buf`
-/// is fully populated on success.
+/// is fully populated on success. For sliced views, the exported host bitmask
+/// is normalized to the logical slice so the view's first row maps to bit 0.
 cudf_status_t cudf_column_view_null_mask_to_host(cudf_column_view_handle handle,
                                                  uint8_t* host_buf,
                                                  size_t buf_size);
 
 /// Copy null mask to host buffer with explicit execution options.
+///
+/// For sliced views, the exported host bitmask is normalized to the logical
+/// slice so the view's first row maps to bit 0.
 cudf_status_t cudf_column_view_null_mask_to_host_ex(
     cudf_column_view_handle handle,
     uint8_t* host_buf,

@@ -7,7 +7,8 @@
 mod common;
 
 use cudf::{
-    DataFrame, DeviceId, ExecutionContext, MeltOptions, Runtime, Scalar, Series, SortOptions, TypeId,
+    Column, DataFrame, DeviceBuffer, DeviceId, ExecutionContext, MeltOptions, Runtime, Scalar, Series, SortOptions,
+    TypeId,
     core::memory::DeviceMemoryResource,
     ops::expr::{col, lit},
     runtime::CudaStream,
@@ -170,6 +171,61 @@ fn columns_from_different_devices_have_different_domains() {
     // Mixing columns from different devices into one DataFrame must fail.
     let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
+
+    common::set_current_device(device0);
+}
+
+#[test]
+fn adopted_device_buffer_preserves_creation_device_provenance() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+    let buffer = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
+
+    common::set_current_device(device1);
+    let adopted = Column::from_device_buffer(buffer, 3, TypeId::Int32).unwrap();
+
+    common::set_current_device(device0);
+    let ambient = Column::from_slice(&[4i32, 5, 6]).unwrap();
+    let frame = DataFrame::new(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    assert!(
+        frame.is_ok(),
+        "adopted column should retain ambient-default provenance from device {} even after switching to device {}",
+        device0.ordinal(),
+        device1.ordinal()
+    );
+
+    common::set_current_device(device0);
+}
+
+#[test]
+fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+    let data_buffer = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+    let mut mask = [0u8; 64];
+    mask[0] = 0x05;
+    let mask_buffer = DeviceBuffer::from_host_data(&mask).unwrap();
+
+    common::set_current_device(device1);
+    let adopted = Column::from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32).unwrap();
+
+    common::set_current_device(device0);
+    let ambient = Column::from_slice(&[40i32, 50, 60]).unwrap();
+    let frame = DataFrame::new(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    assert!(
+        frame.is_ok(),
+        "nullable adopted column should retain ambient-default provenance from device {} even after switching to device {}",
+        device0.ordinal(),
+        device1.ordinal()
+    );
 
     common::set_current_device(device0);
 }

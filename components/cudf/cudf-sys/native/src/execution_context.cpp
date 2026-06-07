@@ -188,13 +188,11 @@ cudf_status_t cudf_test_stream_handle_value(cudf_stream_handle handle,
                                             std::uintptr_t* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
-    *out = reinterpret_cast<std::uintptr_t>(
-        cudf_stream_view_from_handle(handle).value());
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
+  void* raw = nullptr;
+  cudf_status_t const status = cudf_stream_raw(handle, &raw);
+  if (status != CUDF_SUCCESS) { return status; }
+  *out = reinterpret_cast<std::uintptr_t>(raw);
+  return CUDF_SUCCESS;
 }
 
 cudf_status_t cudf_test_current_device_resource_raw(void** out) {

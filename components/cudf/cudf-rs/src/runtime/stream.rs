@@ -90,7 +90,12 @@ impl CudaStream {
     }
 
     pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
-        Ok(self.debug_handle_value()? as *mut std::ffi::c_void)
+        let mut out = std::ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_stream_raw(self.handle.raw.as_ptr(), &mut out) },
+            "stream::interop_raw_handle",
+        )?;
+        Ok(out)
     }
 
     pub(crate) fn debug_handle_value(&self) -> Result<usize> {

@@ -6,6 +6,8 @@ mod column_ops_tests;
 mod column_string_tests;
 #[path = "core/column_tests.rs"]
 mod column_tests;
+#[path = "core/device_buffer_tests.rs"]
+mod device_buffer_tests;
 #[path = "core/error_path_tests.rs"]
 mod error_path_tests;
 #[path = "core/scalar_tests.rs"]

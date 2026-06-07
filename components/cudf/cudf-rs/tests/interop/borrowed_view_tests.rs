@@ -1,5 +1,5 @@
-use cudf::{Column, DataFrame, Runtime, Series, Table};
-use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId};
+use cudf::{Column, DataFrame, Runtime, Series, Table, TypeId, ops::dictionary};
+use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};
 
 #[test]
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
@@ -11,7 +11,7 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
 
     let borrowed = view.try_borrow_column_view().unwrap();
 
-    assert_eq!(borrowed.type_id(), TypeId::Int32);
+    assert_eq!(borrowed.type_id(), InteropTypeId::Int32);
     assert_eq!(borrowed.len(), 3);
     assert_eq!(borrowed.offset(), 0);
     assert_eq!(borrowed.data_ptr(), view.device_data_ptr().unwrap());
@@ -49,7 +49,7 @@ fn sliced_column_view_preserves_offset_semantics() {
 
     let borrowed = sliced.try_borrow_column_view().unwrap();
 
-    assert_eq!(borrowed.type_id(), TypeId::Int32);
+    assert_eq!(borrowed.type_id(), InteropTypeId::Int32);
     assert_eq!(borrowed.len(), 2);
     assert_eq!(borrowed.offset(), 1);
     assert_eq!(borrowed.data_ptr(), base.device_data_ptr().unwrap());
@@ -128,6 +128,17 @@ fn unsupported_string_columns_fail_clearly() {
     let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
+}
+
+#[test]
+fn dictionary_columns_fail_clearly_as_unsupported_v1_types() {
+    let runtime = Runtime::builder().build().unwrap();
+    let base = Column::from_slice_with_runtime(&runtime, &[3i32, 1, 3, 2]).unwrap();
+    let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
+    let err = dict.view().unwrap().try_borrow_column_view().unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
+    assert!(err.context().iter().any(|(key, value)| *key == "type_id" && value == "dictionary32"));
 }
 
 #[test]

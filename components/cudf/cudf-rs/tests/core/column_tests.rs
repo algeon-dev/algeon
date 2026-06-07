@@ -103,6 +103,16 @@ fn test_validity_none_for_non_nullable_column() {
 }
 
 #[test]
+fn test_validity_for_sliced_nullable_column_is_normalized_to_slice() {
+    let col =
+        Column::from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();
+    let sliced = col.slice_view(1, 4).unwrap();
+
+    let validity = sliced.validity().unwrap().unwrap();
+    assert_eq!(validity, vec![false, true, true, false]);
+}
+
+#[test]
 fn test_various_numeric_types() {
     // i8
     let col = Column::from_slice(&[1i8, -1, 127]).unwrap();
