@@ -711,10 +711,8 @@ fn validate_remote_parquet_datasource_probe_request(
     resolved_source: &crate::source::ResolvedParquetSource,
     operation: &'static str,
 ) -> Result<()> {
-    if !matches!(
-        resolved_source.read_strategy,
-        crate::source::ParquetReadStrategy::RemoteDirect | crate::source::ParquetReadStrategy::RemoteKvikioExperimental
-    ) || resolved_source.decode_input != crate::source::SourceDecodeInput::Filepath
+    if !matches!(resolved_source.read_strategy, crate::source::ParquetReadStrategy::RemoteDirect)
+        || resolved_source.decode_input != crate::source::SourceDecodeInput::Filepath
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -857,8 +855,7 @@ fn cudf_local_parquet_file_for_chunk(
 ) -> Result<cudf::io::source::LocalParquetFile> {
     let partition_values = chunk.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
     let mut cudf_file = match chunk.resolved_source.read_strategy {
-        crate::source::ParquetReadStrategy::RemoteDirect
-        | crate::source::ParquetReadStrategy::RemoteKvikioExperimental => match &chunk.location {
+        crate::source::ParquetReadStrategy::RemoteDirect => match &chunk.location {
             crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
                 cudf::io::source::LocalParquetFile::object_store_uri(
                     uri.clone(),
@@ -974,8 +971,7 @@ fn cudf_local_parquet_file(
 ) -> Result<cudf::io::source::LocalParquetFile> {
     let partition_values = file.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
     let mut cudf_file = match file.resolved_source.read_strategy {
-        crate::source::ParquetReadStrategy::RemoteDirect
-        | crate::source::ParquetReadStrategy::RemoteKvikioExperimental => match &file.location {
+        crate::source::ParquetReadStrategy::RemoteDirect => match &file.location {
             crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
                 cudf::io::source::LocalParquetFile::object_store_uri(
                     uri.clone(),

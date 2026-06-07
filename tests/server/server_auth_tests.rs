@@ -126,10 +126,13 @@ roles = ["reader"]
     file.write_all(toml_body.as_bytes()).expect("write config file");
     let path_str = path.to_string_lossy().into_owned();
 
-    let config = ServerConfig::from_env_get(|name| {
-        if name == "DATAFUSION_NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
-    })
-    .expect("load config with TOML overlay");
+    let config =
+        ServerConfig::from_env_get(
+            |name| {
+                if name == "NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
+            },
+        )
+        .expect("load config with TOML overlay");
 
     let AuthMode::BasicBearer { users, token_ttl_secs } = &config.auth.mode else {
         panic!("expected BasicBearer mode after TOML load, got {:?}", config.auth.mode);
@@ -155,10 +158,13 @@ password_hash = "plaintext-not-allowed"
     std::fs::write(&path, toml_body).expect("write config file");
     let path_str = path.to_string_lossy().into_owned();
 
-    let err = ServerConfig::from_env_get(|name| {
-        if name == "DATAFUSION_NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
-    })
-    .expect_err("plaintext password must be rejected at load time");
+    let err =
+        ServerConfig::from_env_get(
+            |name| {
+                if name == "NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
+            },
+        )
+        .expect_err("plaintext password must be rejected at load time");
     let msg = err.to_string();
     assert!(msg.contains("Argon2"), "error must mention argon2: {msg}");
 }

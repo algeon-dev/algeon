@@ -259,9 +259,7 @@ fn local_parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetF
     match file.resolved_source.read_strategy {
         ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
         ParquetReadStrategy::LocalCacheKvikio => file.path.is_file(),
-        ParquetReadStrategy::RemoteHostBuffer
-        | ParquetReadStrategy::RemoteDirect
-        | ParquetReadStrategy::RemoteKvikioExperimental => false,
+        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteDirect => false,
     }
 }
 
@@ -1484,9 +1482,7 @@ fn load_object_store_parquet_footer_metadata(
 fn source_file_can_fetch_object_store_footer(file: &LocalParquetFile) -> bool {
     matches!(
         file.resolved_source.read_strategy,
-        ParquetReadStrategy::RemoteHostBuffer
-            | ParquetReadStrategy::RemoteDirect
-            | ParquetReadStrategy::RemoteKvikioExperimental
+        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteDirect
     )
 }
 
@@ -1904,9 +1900,7 @@ pub(crate) fn object_store_decimal_reader_predicate_requires_footer_contract(
 ) -> bool {
     matches!(
         file.resolved_source.read_strategy,
-        ParquetReadStrategy::RemoteDirect
-            | ParquetReadStrategy::RemoteHostBuffer
-            | ParquetReadStrategy::RemoteKvikioExperimental
+        ParquetReadStrategy::RemoteDirect | ParquetReadStrategy::RemoteHostBuffer
     ) && matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })
         && source
             .reader_predicate

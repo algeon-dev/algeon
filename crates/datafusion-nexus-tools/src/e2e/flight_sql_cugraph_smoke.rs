@@ -17,12 +17,12 @@ use tonic::transport::Endpoint;
 
 type SmokeResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const SOURCE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_SOURCE";
-const ICEBERG_EDGE_TABLE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_EDGE_TABLE";
-const ICEBERG_SRC_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_SRC_COL";
-const ICEBERG_DST_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_DST_COL";
-const ICEBERG_WEIGHT_COL_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
-const RESULT_MODE_ENV: &str = "DATAFUSION_NEXUS_CUGRAPH_SMOKE_RESULT_MODE";
+const SOURCE_ENV: &str = "NEXUS_CUGRAPH_SMOKE_SOURCE";
+const ICEBERG_EDGE_TABLE_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_EDGE_TABLE";
+const ICEBERG_SRC_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_SRC_COL";
+const ICEBERG_DST_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_DST_COL";
+const ICEBERG_WEIGHT_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
+const RESULT_MODE_ENV: &str = "NEXUS_CUGRAPH_SMOKE_RESULT_MODE";
 
 const DEFAULT_ICEBERG_EDGE_TABLE: &str = "glue.graph_sf1.bh_edges";
 const DEFAULT_ICEBERG_SRC_COL: &str = "src_id";
@@ -224,7 +224,7 @@ fn optional_nonempty_env(name: &str) -> Option<String> {
 
 fn server_url(url_arg: Option<String>) -> String {
     url_arg
-        .or_else(|| std::env::var("DATAFUSION_NEXUS_FLIGHT_SQL_URL").ok())
+        .or_else(|| std::env::var("NEXUS_FLIGHT_SQL_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:50051".to_string())
 }
 

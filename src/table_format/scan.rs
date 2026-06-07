@@ -18,24 +18,32 @@ use crate::{Result, policy::FallbackReason};
 /// source object-store settings.
 pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
 
-/// Env var selecting the table-format Parquet source strategy.
-pub const CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV: &str = "CUDF_ICEBERG_PARQUET_READ_STRATEGY";
-/// Env var enabling the experimental remote KvikIO source strategy.
-pub const CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV: &str = "CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL";
-/// Env var enabling foreground remote-direct object-store Parquet reads.
-pub const CUDF_ICEBERG_REMOTE_DIRECT_ENV: &str = "CUDF_ICEBERG_REMOTE_DIRECT";
-/// Env var selecting the lower-layer fallback policy for remote-direct Parquet reads.
-pub const CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV: &str = "CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE";
-/// Env var enabling ranged mini-Parquet fallback for remote host-buffer reads.
-pub const CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV: &str = "CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED";
-/// Env var selecting whether complete local lakehouse cache hits may be used for foreground reads.
-pub const CUDF_LAKEHOUSE_CACHE_READ_ENV: &str = "CUDF_LAKEHOUSE_CACHE_READ";
+/// Env var selecting the table-format Parquet source strategy. Accepts `auto`,
+/// `host_buffer`, `local_cache`, or `remote_kvikio`; defaults to `auto`.
+pub const NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV: &str = "NEXUS_ICEBERG_PARQUET_READ_STRATEGY";
+/// Boolean env var enabling foreground remote-direct object-store Parquet
+/// reads. Defaults to enabled.
+pub const NEXUS_ICEBERG_REMOTE_DIRECT_ENV: &str = "NEXUS_ICEBERG_REMOTE_DIRECT";
+/// Env var selecting the lower-layer fallback policy for remote-direct Parquet
+/// reads. Accepts `prefer_direct`, `require_direct`, or
+/// `allow_host_fallback`; defaults to `prefer_direct`.
+pub const NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV: &str = "NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE";
+/// Boolean env var enabling ranged mini-Parquet fallback for remote host-buffer
+/// reads. Defaults to disabled.
+pub const NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV: &str = "NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED";
+/// Env var selecting whether complete local lakehouse cache hits may be used
+/// for foreground reads. Accepts `enabled`, `disabled`, or `bypass`; defaults
+/// to `enabled`.
+pub const NEXUS_LAKEHOUSE_CACHE_READ_ENV: &str = "NEXUS_LAKEHOUSE_CACHE_READ";
 /// Env var pointing at the local lakehouse byte-cache root.
-pub const CUDF_LAKEHOUSE_CACHE_ROOT_ENV: &str = "CUDF_LAKEHOUSE_CACHE_ROOT";
-/// Env var selecting lakehouse byte-cache miss behavior.
-pub const CUDF_LAKEHOUSE_CACHE_POLICY_ENV: &str = "CUDF_LAKEHOUSE_CACHE_POLICY";
-/// Env var selecting the best-effort retained byte target for the lakehouse cache.
-pub const CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV: &str = "CUDF_LAKEHOUSE_CACHE_MAX_BYTES";
+pub const NEXUS_LAKEHOUSE_CACHE_ROOT_ENV: &str = "NEXUS_LAKEHOUSE_CACHE_ROOT";
+/// Env var selecting lakehouse byte-cache miss behavior. Accepts `disabled`,
+/// `read_through`, or `fill_before_read`; defaults to `disabled`.
+pub const NEXUS_LAKEHOUSE_CACHE_POLICY_ENV: &str = "NEXUS_LAKEHOUSE_CACHE_POLICY";
+/// Env var selecting the best-effort retained byte target for the lakehouse
+/// cache. Values are bytes; zero or invalid values are ignored by the
+/// format-neutral resolver and rejected by server config validation.
+pub const NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV: &str = "NEXUS_LAKEHOUSE_CACHE_MAX_BYTES";
 /// Standard AWS SDK S3 endpoint override env var.
 pub const AWS_ENDPOINT_URL_S3_ENV: &str = "AWS_ENDPOINT_URL_S3";
 /// Standard AWS SDK endpoint override env var.
@@ -277,7 +285,7 @@ pub enum TableFormatParquetReadStrategyPreference {
     HostBuffer,
     /// Prefer an existing local byte-cache entry when available.
     LocalCache,
-    /// Prefer experimental remote KvikIO when explicitly enabled.
+    /// Prefer remote KvikIO through the remote-direct reader path.
     RemoteKvikio,
 }
 
@@ -351,8 +359,6 @@ impl TableFormatLakehouseCacheReadPolicy {
 pub struct TableFormatParquetReadStrategyConfig {
     /// Preferred strategy for remote Parquet data files.
     pub preference: TableFormatParquetReadStrategyPreference,
-    /// Whether experimental remote KvikIO is allowed.
-    pub remote_kvikio_experimental: bool,
     /// Whether remote-direct object-store reads are available to the foreground query policy.
     pub remote_direct_enabled: bool,
     /// Lower-layer fallback policy requested for remote-direct object-store reads.
@@ -388,7 +394,6 @@ impl Default for TableFormatParquetReadStrategyConfig {
     fn default() -> Self {
         Self {
             preference: TableFormatParquetReadStrategyPreference::Auto,
-            remote_kvikio_experimental: false,
             remote_direct_enabled: true,
             remote_direct_read_mode: RemoteParquetReadMode::PreferDirect,
             remote_host_buffer_ranged_enabled: false,
@@ -430,7 +435,7 @@ fn table_format_parquet_read_strategy_config_from_env(
     let env_nonempty = |get: &mut dyn FnMut(&str) -> Option<String>, name: &str| {
         get(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
     };
-    let preference = match get(CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV)
+    let preference = match get(NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV)
         .unwrap_or_else(|| "auto".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -440,24 +445,24 @@ fn table_format_parquet_read_strategy_config_from_env(
         "remote_kvikio" => TableFormatParquetReadStrategyPreference::RemoteKvikio,
         _ => TableFormatParquetReadStrategyPreference::Auto,
     };
-    let remote_kvikio_experimental = get(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV)
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-    let remote_direct_enabled = get(CUDF_ICEBERG_REMOTE_DIRECT_ENV)
+    let remote_direct_enabled = get(NEXUS_ICEBERG_REMOTE_DIRECT_ENV)
         .is_none_or(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO"));
-    let remote_direct_read_mode = get(CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
+    let remote_direct_read_mode = get(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
         .as_deref()
         .map(parse_remote_parquet_read_mode_lossy)
         .unwrap_or_default();
-    let remote_host_buffer_ranged_enabled = get(CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)
+    let remote_host_buffer_ranged_enabled = get(NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-    let lakehouse_cache_root = env_nonempty(&mut get, CUDF_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
-    let lakehouse_cache_read_policy =
-        match get(CUDF_LAKEHOUSE_CACHE_READ_ENV).unwrap_or_else(|| "enabled".to_string()).to_ascii_lowercase().as_str()
-        {
-            "disabled" | "bypass" | "bypassed" => TableFormatLakehouseCacheReadPolicy::Disabled,
-            _ => TableFormatLakehouseCacheReadPolicy::Enabled,
-        };
-    let lakehouse_cache_policy = match get(CUDF_LAKEHOUSE_CACHE_POLICY_ENV)
+    let lakehouse_cache_root = env_nonempty(&mut get, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
+    let lakehouse_cache_read_policy = match get(NEXUS_LAKEHOUSE_CACHE_READ_ENV)
+        .unwrap_or_else(|| "enabled".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "disabled" | "bypass" | "bypassed" => TableFormatLakehouseCacheReadPolicy::Disabled,
+        _ => TableFormatLakehouseCacheReadPolicy::Enabled,
+    };
+    let lakehouse_cache_policy = match get(NEXUS_LAKEHOUSE_CACHE_POLICY_ENV)
         .unwrap_or_else(|| "disabled".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -467,15 +472,15 @@ fn table_format_parquet_read_strategy_config_from_env(
         _ => TableFormatLakehouseCachePolicy::Disabled,
     };
     let lakehouse_cache_max_bytes =
-        get(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV).and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
-    let storage_endpoint = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT")
+        get(NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV).and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
+    let storage_endpoint = env_nonempty(&mut get, "NEXUS_ICEBERG_S3_ENDPOINT")
         .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_S3_ENV))
         .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_ENV))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
-    let has_storage_region = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_REGION").is_some();
-    let has_explicit_s3_credentials = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some();
+    let has_storage_region = env_nonempty(&mut get, "NEXUS_ICEBERG_S3_REGION").is_some();
+    let has_explicit_s3_credentials = env_nonempty(&mut get, "NEXUS_ICEBERG_S3_ACCESS_KEY_ID").is_some()
+        || env_nonempty(&mut get, "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
+        || env_nonempty(&mut get, "NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some();
     let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
         CredentialMode::FutureTenantScoped
     } else {
@@ -488,7 +493,6 @@ fn table_format_parquet_read_strategy_config_from_env(
     };
     TableFormatParquetReadStrategyConfig {
         preference,
-        remote_kvikio_experimental,
         remote_direct_enabled,
         remote_direct_read_mode,
         remote_host_buffer_ranged_enabled,
@@ -675,13 +679,6 @@ fn resolve_s3_table_format_parquet_source(
         },
         TableFormatParquetReadStrategyPreference::HostBuffer => {
             remote_host_buffer_fallback_source(location, config, "explicit_remote_host_buffer_full", false)
-        },
-        TableFormatParquetReadStrategyPreference::RemoteKvikio if config.remote_kvikio_experimental => {
-            if config.remote_direct_enabled {
-                remote_direct_or_capability_fallback_source(location, config, Some("remote_kvikio_compat_alias"))
-            } else {
-                remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
-            }
         },
         TableFormatParquetReadStrategyPreference::RemoteKvikio => {
             if config.remote_direct_enabled {
@@ -1042,7 +1039,7 @@ mod tests {
     #[test]
     fn table_format_parquet_read_strategy_config_from_env_uses_catalog_endpoint_identity() {
         let env = BTreeMap::from([
-            ("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
+            ("NEXUS_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
             ("AWS_ENDPOINT_URL_S3", "https://aws.example.invalid"),
         ]);
         let config =
@@ -1056,8 +1053,8 @@ mod tests {
     #[test]
     fn table_format_parquet_read_strategy_config_marks_explicit_s3_credentials_as_scoped() {
         let env = BTreeMap::from([
-            ("DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID", "access"),
-            ("DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY", "secret"),
+            ("NEXUS_ICEBERG_S3_ACCESS_KEY_ID", "access"),
+            ("NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY", "secret"),
         ]);
         let config =
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
@@ -1068,7 +1065,7 @@ mod tests {
 
     #[test]
     fn table_format_parquet_read_strategy_config_marks_s3_region_as_scoped() {
-        let env = BTreeMap::from([("DATAFUSION_NEXUS_ICEBERG_S3_REGION", "us-west-2")]);
+        let env = BTreeMap::from([("NEXUS_ICEBERG_S3_REGION", "us-west-2")]);
         let config =
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
 
@@ -1121,7 +1118,7 @@ mod tests {
         });
         assert!(!default_config.remote_host_buffer_ranged_enabled);
 
-        let env = BTreeMap::from([(CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, "1")]);
+        let env = BTreeMap::from([(NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, "1")]);
         let enabled_config =
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
         assert!(enabled_config.remote_host_buffer_ranged_enabled);
@@ -1129,7 +1126,7 @@ mod tests {
 
     #[test]
     fn table_format_parquet_read_strategy_config_from_env_parses_remote_direct_read_mode() {
-        let env = BTreeMap::from([(CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, "require_direct")]);
+        let env = BTreeMap::from([(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, "require_direct")]);
         let config =
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
 

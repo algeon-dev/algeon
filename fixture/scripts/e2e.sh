@@ -23,20 +23,20 @@ RUN_GLUE=1
 RUN_SERVER=1
 GPU_PARITY=0
 
-REST_URI="${DATAFUSION_NEXUS_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
-GLUE_URI="${DATAFUSION_NEXUS_ICEBERG_GLUE_URI:-${DEFAULT_GLUE_URI}}"
-WAREHOUSE="${DATAFUSION_NEXUS_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
-S3_ENDPOINT="${DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT:-${DEFAULT_S3_ENDPOINT}}"
-S3_REGION="${DATAFUSION_NEXUS_ICEBERG_S3_REGION:-us-east-1}"
-S3_ACCESS_KEY="${DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-${RUSTFS_ACCESS_KEY:-cudfadmin}}"
-S3_SECRET_KEY="${DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-${RUSTFS_SECRET_KEY:-cudfadminsecret}}"
+REST_URI="${NEXUS_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
+GLUE_URI="${NEXUS_ICEBERG_GLUE_URI:-${DEFAULT_GLUE_URI}}"
+WAREHOUSE="${NEXUS_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
+S3_ENDPOINT="${NEXUS_ICEBERG_S3_ENDPOINT:-${DEFAULT_S3_ENDPOINT}}"
+S3_REGION="${NEXUS_ICEBERG_S3_REGION:-us-east-1}"
+S3_ACCESS_KEY="${NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-${RUSTFS_ACCESS_KEY:-cudfadmin}}"
+S3_SECRET_KEY="${NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-${RUSTFS_SECRET_KEY:-cudfadminsecret}}"
 MOTO_ACCESS_KEY="${MOTO_ACCESS_KEY:-moto-access}"
 MOTO_SECRET_KEY="${MOTO_SECRET_KEY:-moto-secret}"
 WAREHOUSE_BUCKET=""
 
-REST_TABLE="${CUDF_ICEBERG_REST_E2E_TABLE:-nation}"
-REST_GROUP_COL="${CUDF_ICEBERG_REST_E2E_GROUP_COL:-n_regionkey}"
-REST_EXPECTED_ROWS="${CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS:-}"
+REST_TABLE="${NEXUS_ICEBERG_REST_E2E_TABLE:-nation}"
+REST_GROUP_COL="${NEXUS_ICEBERG_REST_E2E_GROUP_COL:-n_regionkey}"
+REST_EXPECTED_ROWS="${NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS:-}"
 
 usage() {
   cat <<'USAGE'
@@ -58,19 +58,19 @@ Options:
   --glue-only            Run only the Glue/Moto backend E2E runner
   --server-only          Run only the server + Glue/Moto E2E runner
   --no-server            Run REST and Glue/Moto backend runners, but not server E2E
-  --gpu-parity           Enable CUDF_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
+  --gpu-parity           Enable NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
   --rest-table NAME      REST table used for scan/planning checks (default: nation)
   --rest-group-col NAME  REST group column for planning checks (default: n_regionkey)
   --expected-rows N      Expected REST table row count (default: 25 for tpch nation)
   -h, --help             Show this help
 
 Environment overrides:
-  DOCKER, DATAFUSION_NEXUS_ICEBERG_REST_URI,
-  DATAFUSION_NEXUS_ICEBERG_GLUE_URI, DATAFUSION_NEXUS_ICEBERG_WAREHOUSE,
-  DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT,
-  DATAFUSION_NEXUS_ICEBERG_S3_REGION,
-  DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID,
-  DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY.
+  DOCKER, NEXUS_ICEBERG_REST_URI,
+  NEXUS_ICEBERG_GLUE_URI, NEXUS_ICEBERG_WAREHOUSE,
+  NEXUS_ICEBERG_S3_ENDPOINT,
+  NEXUS_ICEBERG_S3_REGION,
+  NEXUS_ICEBERG_S3_ACCESS_KEY_ID,
+  NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY.
 
 Endpoint overrides must be loopback http:// URLs. Custom endpoint ports require
 --skip-stack because fixture/iceberg-local/docker-compose.yml publishes fixed
@@ -180,12 +180,12 @@ warehouse_bucket() {
   local rest
 
   if [[ "${warehouse}" != s3://* ]]; then
-    die "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE must be an s3:// URI for iceberg-local, got '${warehouse}'"
+    die "NEXUS_ICEBERG_WAREHOUSE must be an s3:// URI for iceberg-local, got '${warehouse}'"
   fi
   rest="${warehouse#s3://}"
   rest="${rest%%/*}"
   if [[ -z "${rest}" ]]; then
-    die "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE must include a bucket, got '${warehouse}'"
+    die "NEXUS_ICEBERG_WAREHOUSE must include a bucket, got '${warehouse}'"
   fi
   printf '%s\n' "${rest}"
 }
@@ -295,9 +295,9 @@ if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" ]];
   die "no E2E runners selected"
 fi
 
-require_loopback_http_url "DATAFUSION_NEXUS_ICEBERG_REST_URI" "${REST_URI}"
-require_loopback_http_url "DATAFUSION_NEXUS_ICEBERG_GLUE_URI" "${GLUE_URI}"
-require_loopback_http_url "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT" "${S3_ENDPOINT}"
+require_loopback_http_url "NEXUS_ICEBERG_REST_URI" "${REST_URI}"
+require_loopback_http_url "NEXUS_ICEBERG_GLUE_URI" "${GLUE_URI}"
+require_loopback_http_url "NEXUS_ICEBERG_S3_ENDPOINT" "${S3_ENDPOINT}"
 WAREHOUSE_BUCKET="$(warehouse_bucket "${WAREHOUSE}")"
 
 if [[ "${SKIP_STACK}" != "1" ]] && has_custom_endpoint_override; then
@@ -364,32 +364,32 @@ namespace="${WORKLOAD}_sf${SCALE}"
 if [[ "${RUN_REST}" == "1" ]]; then
   step "running REST catalog E2E"
   rest_env=(
-    "CUDF_ICEBERG_REST_E2E=1"
-    "DATAFUSION_NEXUS_ICEBERG_REST_URI=${REST_URI}"
-    "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
-    "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
-    "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=true"
-    "DATAFUSION_NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
-    "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
-    "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
-    "DATAFUSION_NEXUS_ICEBERG_NAMESPACE=${namespace}"
-    "CUDF_ICEBERG_REST_E2E_TABLE=${REST_TABLE}"
-    "CUDF_ICEBERG_REST_E2E_GROUP_COL=${REST_GROUP_COL}"
+    "NEXUS_ICEBERG_REST_E2E=1"
+    "NEXUS_ICEBERG_REST_URI=${REST_URI}"
+    "NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
+    "NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
+    "NEXUS_ICEBERG_S3_PATH_STYLE=true"
+    "NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
+    "NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
+    "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
+    "NEXUS_ICEBERG_NAMESPACE=${namespace}"
+    "NEXUS_ICEBERG_REST_E2E_TABLE=${REST_TABLE}"
+    "NEXUS_ICEBERG_REST_E2E_GROUP_COL=${REST_GROUP_COL}"
   )
   if [[ -n "${REST_EXPECTED_ROWS}" ]]; then
-    rest_env+=("CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS=${REST_EXPECTED_ROWS}")
+    rest_env+=("NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS=${REST_EXPECTED_ROWS}")
   fi
   if [[ "${GPU_PARITY}" == "1" ]]; then
-    rest_env+=("CUDF_ICEBERG_REST_E2E_GPU_PARITY=1")
+    rest_env+=("NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1")
     env "${rest_env[@]}" \
-      DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
       flock /tmp/cudf-gpu.lock \
       cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
   else
     env "${rest_env[@]}" \
-      DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
       cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
@@ -397,14 +397,14 @@ if [[ "${RUN_REST}" == "1" ]]; then
 fi
 
 glue_env=(
-  "CUDF_ICEBERG_GLUE_LOCAL_E2E=1"
-  "DATAFUSION_NEXUS_ICEBERG_GLUE_URI=${GLUE_URI}"
-  "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
-  "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
-  "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=true"
-  "DATAFUSION_NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
-  "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
-  "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
+  "NEXUS_ICEBERG_GLUE_LOCAL_E2E=1"
+  "NEXUS_ICEBERG_GLUE_URI=${GLUE_URI}"
+  "NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
+  "NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
+  "NEXUS_ICEBERG_S3_PATH_STYLE=true"
+  "NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
+  "NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
+  "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
   "MOTO_ACCESS_KEY=${MOTO_ACCESS_KEY}"
   "MOTO_SECRET_KEY=${MOTO_SECRET_KEY}"
 )

@@ -17,7 +17,7 @@ use native_iceberg_smoke_report::{
 
 #[test]
 fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_config() {
-    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
+    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
     let IcebergNativeSmokeFixture::GlueS3 { profile, database, table, catalog_id, region, .. } = &config.fixture else {
@@ -47,9 +47,9 @@ fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_
 #[test]
 fn local_metadata_mode_requires_metadata_location_and_parses_table_ident() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "local_metadata"),
-        ("CUDF_ICEBERG_METADATA_LOCATION", "/tmp/table/metadata/v1.metadata.json"),
-        ("CUDF_ICEBERG_TABLE_IDENT", "local_db.local_table"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "local_metadata"),
+        ("NEXUS_ICEBERG_METADATA_LOCATION", "/tmp/table/metadata/v1.metadata.json"),
+        ("NEXUS_ICEBERG_TABLE_IDENT", "local_db.local_table"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -67,8 +67,8 @@ fn local_metadata_mode_requires_metadata_location_and_parses_table_ident() {
 fn explicit_glue_table_keeps_single_table_count_smoke_by_default() {
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_GLUE_TABLE", "lineitem"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_GLUE_TABLE", "lineitem"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -81,11 +81,11 @@ fn explicit_glue_table_keeps_single_table_count_smoke_by_default() {
 #[test]
 fn glue_s3_fixture_accepts_local_moto_and_rustfs_endpoints() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("DATAFUSION_NEXUS_ICEBERG_GLUE_URI", "http://localhost:5001"),
-        ("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT", "http://localhost:9000"),
-        ("DATAFUSION_NEXUS_ICEBERG_S3_REGION", "us-east-1"),
-        ("DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE", "true"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_GLUE_URI", "http://localhost:5001"),
+        ("NEXUS_ICEBERG_S3_ENDPOINT", "http://localhost:9000"),
+        ("NEXUS_ICEBERG_S3_REGION", "us-east-1"),
+        ("NEXUS_ICEBERG_S3_PATH_STYLE", "true"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -102,9 +102,9 @@ fn glue_s3_fixture_accepts_local_moto_and_rustfs_endpoints() {
 #[test]
 fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
-        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("NEXUS_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -123,13 +123,13 @@ fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
 #[test]
 fn rest_s3_tpcds_query_ids_rewrite_tables_within_rest_namespace() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "rest_s3"),
-        ("DATAFUSION_NEXUS_ICEBERG_NAMESPACE", "tpcds_sf10"),
-        ("CUDF_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
-        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
-        ("CUDF_ICEBERG_SMOKE_EXECUTION_MODE", "native_only"),
-        ("CUDF_ICEBERG_SMOKE_STREAM_TSV", "1"),
-        ("CUDF_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR", "true"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "rest_s3"),
+        ("NEXUS_ICEBERG_NAMESPACE", "tpcds_sf10"),
+        ("NEXUS_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("NEXUS_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+        ("NEXUS_ICEBERG_SMOKE_EXECUTION_MODE", "native_only"),
+        ("NEXUS_ICEBERG_SMOKE_STREAM_TSV", "1"),
+        ("NEXUS_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR", "true"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -150,9 +150,9 @@ fn rest_s3_tpcds_query_ids_rewrite_tables_within_rest_namespace() {
 #[test]
 fn tpch_and_tpcds_query_sets_are_mutually_exclusive() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_SMOKE_QUERY_IDS", "q06"),
-        ("CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("NEXUS_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03"),
     ]);
     let error = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string()))
         .expect_err("mixed workload query ids should fail");
@@ -163,9 +163,9 @@ fn tpch_and_tpcds_query_sets_are_mutually_exclusive() {
 #[test]
 fn custom_query_file_selects_all_table_custom_mode() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_CUSTOM_WORKLOAD", "tpcds"),
-        ("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_CUSTOM_WORKLOAD", "tpcds"),
+        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -177,16 +177,16 @@ fn custom_query_file_selects_all_table_custom_mode() {
 
 #[test]
 fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins() {
-    let missing_workload = HashMap::from([("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json")]);
+    let missing_workload = HashMap::from([("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json")]);
     let error =
         IcebergNativeSmokeConfig::from_env_get(|name| missing_workload.get(name).map(|value| value.to_string()))
             .expect_err("custom query file without workload should fail");
-    assert!(error.to_string().contains("CUDF_ICEBERG_CUSTOM_WORKLOAD"));
+    assert!(error.to_string().contains("NEXUS_ICEBERG_CUSTOM_WORKLOAD"));
 
     let mixed = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_QUERY_IDS", "q06"),
-        ("CUDF_ICEBERG_CUSTOM_WORKLOAD", "tpch"),
-        ("CUDF_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpch_probe.json"),
+        ("NEXUS_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("NEXUS_ICEBERG_CUSTOM_WORKLOAD", "tpch"),
+        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpch_probe.json"),
     ]);
     let error = IcebergNativeSmokeConfig::from_env_get(|name| mixed.get(name).map(|value| value.to_string()))
         .expect_err("custom query file and built-in query ids should fail");
@@ -196,16 +196,16 @@ fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins()
 #[test]
 fn object_store_staging_mode_env_accepts_disabled_and_required_aliases() {
     let disabled = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "disabled"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "disabled"),
     ]);
     let disabled_config =
         IcebergNativeSmokeConfig::from_env_get(|name| disabled.get(name).map(|value| value.to_string())).unwrap();
     assert_eq!(disabled_config.object_store_staging, ObjectStoreStagingMode::Disabled);
 
     let required = HashMap::from([
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "1"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "1"),
     ]);
     let required_config =
         IcebergNativeSmokeConfig::from_env_get(|name| required.get(name).map(|value| value.to_string())).unwrap();

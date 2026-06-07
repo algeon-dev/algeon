@@ -28,14 +28,14 @@ type BenchmarkResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 const REPORT_SCHEMA_VERSION: u32 = 7;
 const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tlakehouse_cache_read_mode\tlakehouse_cache_fill_mode\tsource_fallback_reason\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tnative_source_read_runtime_rows\tlakehouse_cache_fill_event_snapshot_rows\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
 
-const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS";
-const WARMUPS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_WARMUPS";
-const ITERATIONS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_ITERATIONS";
-const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_OBJECT_STORE_STAGING";
-const QUERY_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS";
-const ITERATION_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_ITERATION_TIMEOUT_SECS";
-const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_CPU_BASELINE_TIMEOUT_SECS";
-const CPU_CHILD_ENV: &str = "CUDF_ICEBERG_TPCH_BENCH_CPU_CHILD";
+const QUERY_IDS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS";
+const WARMUPS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_WARMUPS";
+const ITERATIONS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_ITERATIONS";
+const OBJECT_STORE_STAGING_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_OBJECT_STORE_STAGING";
+const QUERY_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS";
+const ITERATION_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_ITERATION_TIMEOUT_SECS";
+const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_CPU_BASELINE_TIMEOUT_SECS";
+const CPU_CHILD_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_CPU_CHILD";
 const DEFAULT_TIMEOUT_ENABLED_CPU_BASELINE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 
@@ -679,7 +679,7 @@ impl IcebergTpchBenchmarkConfig {
             IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }
         ) {
             return Err(benchmark_error(
-                "native Iceberg TPC-H benchmark requires CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+                "native Iceberg TPC-H benchmark requires NEXUS_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
             ));
         }
 

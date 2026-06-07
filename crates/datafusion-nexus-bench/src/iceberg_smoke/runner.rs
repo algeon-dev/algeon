@@ -114,7 +114,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
 ) -> SmokeResult<IcebergNativeSmokeReport> {
     if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
         return Err(smoke_error(
-            "TPC-H Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+            "TPC-H Iceberg smoke query ids require NEXUS_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
         ));
     };
 
@@ -227,7 +227,7 @@ pub(crate) async fn run_tpcds_subset_report(
 ) -> SmokeResult<IcebergNativeSmokeReport> {
     if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
         return Err(smoke_error(
-            "TPC-DS Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+            "TPC-DS Iceberg smoke query ids require NEXUS_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
         ));
     };
 
@@ -340,7 +340,7 @@ pub(crate) async fn run_custom_subset_report(
 ) -> SmokeResult<IcebergNativeSmokeReport> {
     if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
         return Err(smoke_error(
-            "custom Iceberg SQL probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+            "custom Iceberg SQL probes require NEXUS_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
         ));
     };
     let workload = config
@@ -383,7 +383,7 @@ pub(crate) async fn run_custom_subset_report(
                 IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }
             ) {
                 return Err(smoke_error(
-                    "custom TPC-DS probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+                    "custom TPC-DS probes require NEXUS_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
                 ));
             }
             for table_name in TPCDS_TABLES {
@@ -812,7 +812,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
 }
 
 fn iceberg_footer_pruning_enabled() -> bool {
-    std::env::var("CUDF_ICEBERG_FOOTER_PRUNING")
+    std::env::var("NEXUS_ICEBERG_FOOTER_PRUNING")
         .ok()
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
 }

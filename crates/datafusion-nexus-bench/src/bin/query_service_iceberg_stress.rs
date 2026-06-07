@@ -25,11 +25,11 @@ use tokio::sync::Barrier;
 const TSV_SCHEMA_VERSION: u32 = 1;
 const AWS_REGION_ENV: &str = "AWS_REGION";
 const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
-const CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_NAME";
-const CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "CUDF_ICEBERG_GLUE_DATABASE";
-const CUDF_ICEBERG_GLUE_TABLE_ENV: &str = "CUDF_ICEBERG_GLUE_TABLE";
-const CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "CUDF_ICEBERG_GLUE_WAREHOUSE";
-const CUDF_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_ID";
+const NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
+const NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "NEXUS_ICEBERG_GLUE_DATABASE";
+const NEXUS_ICEBERG_GLUE_TABLE_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLE";
+const NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_GLUE_WAREHOUSE";
+const NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
 const DEFAULT_CATALOG_NAME: &str = "glue";
 const DEFAULT_DATABASE: &str = "tpch_sf1";
 const DEFAULT_TABLE: &str = "lineitem";
@@ -80,15 +80,15 @@ struct StressConfig {
 
 impl StressConfig {
     fn from_env() -> DataFusionResult<Self> {
-        let catalog_name = env_string(CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, DEFAULT_CATALOG_NAME);
-        let database = env_string(CUDF_ICEBERG_GLUE_DATABASE_ENV, DEFAULT_DATABASE);
-        let table = env_string(CUDF_ICEBERG_GLUE_TABLE_ENV, DEFAULT_TABLE);
-        let warehouse = env_string(CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, DEFAULT_WAREHOUSE);
+        let catalog_name = env_string(NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, DEFAULT_CATALOG_NAME);
+        let database = env_string(NEXUS_ICEBERG_GLUE_DATABASE_ENV, DEFAULT_DATABASE);
+        let table = env_string(NEXUS_ICEBERG_GLUE_TABLE_ENV, DEFAULT_TABLE);
+        let warehouse = env_string(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DEFAULT_WAREHOUSE);
         let region = std::env::var(AWS_REGION_ENV)
             .or_else(|_| std::env::var(AWS_DEFAULT_REGION_ENV))
             .unwrap_or_else(|_| DEFAULT_REGION.to_string());
         let mut glue = GlueIcebergTableConfig::new(catalog_name, database, table, warehouse, region);
-        glue.catalog_id = match std::env::var(CUDF_ICEBERG_GLUE_CATALOG_ID_ENV) {
+        glue.catalog_id = match std::env::var(NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV) {
             Ok(value) if value.trim().is_empty() => None,
             Ok(value) => Some(value),
             Err(_) if DEFAULT_CATALOG_ID.trim().is_empty() => None,

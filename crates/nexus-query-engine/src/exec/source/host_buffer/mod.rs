@@ -330,7 +330,7 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &cra
     const MIN_OPTIMIZED_BATCH_FILES: usize = 8;
     const MAX_OPTIMIZED_BATCH_SOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
 
-    if !std::env::var("CUDF_LAKEHOUSE_OPTIMIZED_BATCH_CACHE").is_ok_and(|value| value == "1")
+    if !std::env::var("NEXUS_LAKEHOUSE_OPTIMIZED_BATCH_CACHE").is_ok_and(|value| value == "1")
         || batch.chunk_count() < MIN_OPTIMIZED_BATCH_FILES
         || source.reader_predicate.is_some()
         || source.scan_limit.is_some()

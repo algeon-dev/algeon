@@ -79,21 +79,21 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 # ===========================================================================
 #
 # ── Server core ─────────────────────────────────────────────────────────────
-#   DATAFUSION_NEXUS_SERVER_BIND                   default: 0.0.0.0:50051
-#   DATAFUSION_NEXUS_SERVER_LOG                    default: info
-#   DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT          default: 1
+#   NEXUS_SERVER_BIND                   default: 0.0.0.0:50051
+#   NEXUS_SERVER_LOG                    default: info
+#   NEXUS_SERVER_MAX_IN_FLIGHT          default: 1
 #
 # ── Native memory budget (all three required together, or all omitted) ──────
-#   DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
-#   DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
-#   DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
+#   NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
+#   NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
+#   NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 #
 # ── Iceberg / AWS Glue (omit all to disable) ────────────────────────────────
-#   DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE         required when any Iceberg var set
-#   DATAFUSION_NEXUS_ICEBERG_WAREHOUSE             required  (s3://...)
-#   DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES           required  "alias=db.tbl,tbl2"
-#   DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME     default: glue
-#   DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID       optional
+#   NEXUS_ICEBERG_GLUE_DATABASE         required when any Iceberg var set
+#   NEXUS_ICEBERG_WAREHOUSE             required  (s3://...)
+#   NEXUS_ICEBERG_GLUE_TABLES           required  "alias=db.tbl,tbl2"
+#   NEXUS_ICEBERG_GLUE_CATALOG_NAME     default: glue
+#   NEXUS_ICEBERG_GLUE_CATALOG_ID       optional
 #   AWS_DEFAULT_REGION                            required (KvikIO S3Endpoint reads ONLY this
 #                                                 variable; AWS_REGION alone is not enough and
 #                                                 will cause silent fallthrough to unsigned S3
@@ -110,13 +110,13 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 #   CUDF_NATIVE_PIPELINE_EXECUTION_MODE           strict_bounded | adaptive
 #
 # ── cuGraph SQL DSL (binary must be built with cugraph support) ─────────────
-#   DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED        true | false
-#   DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS     optional allowlist by SQL
+#   NEXUS_SERVER_CUGRAPH_ENABLED        true | false
+#   NEXUS_SERVER_CUGRAPH_ALGORITHMS     optional allowlist by SQL
 #                                                 function name, e.g.
 #                                                 cugraph_pagerank,cugraph_bfs
-#   DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED       default graph direction
-#   DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER       default renumber flag
-#   DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY
+#   NEXUS_SERVER_CUGRAPH_DIRECTED       default graph direction
+#   NEXUS_SERVER_CUGRAPH_RENUMBER       default renumber flag
+#   NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY
 #                                                 python_cugraph | raw_libcugraph
 #
 # ===========================================================================

@@ -46,7 +46,7 @@ use crate::{
 /// and this guard does not fire.
 const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profile over Iceberg when the \
      `iceberg-cpu` feature was not compiled in — rebuild with --features iceberg-cpu, or switch to \
-     DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native";
+     NEXUS_SERVER_SESSION_PROFILE=native";
 
 /// Stable bucket for common Flight SQL native-rejection codes.
 ///
@@ -423,7 +423,7 @@ mod tests {
         let cpu_hint = profile_hint(ServerSessionProfile::CpuFallback);
         assert!(!cpu_hint.is_empty(), "cpu_fallback profile must carry a hint");
         assert!(
-            cpu_hint.contains("DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native"),
+            cpu_hint.contains("NEXUS_SERVER_SESSION_PROFILE=native"),
             "the hint must point operators back at the env var to fix the profile; got {cpu_hint:?}",
         );
         assert!(
