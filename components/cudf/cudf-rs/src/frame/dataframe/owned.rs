@@ -73,17 +73,14 @@ pub(crate) fn derive_frame_domain_from_columns(
 
     let domain = Arc::clone(first_column.execution_domain());
     for (name, column) in columns.iter().skip(1) {
-        if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "all columns in a dataframe must share one retained provenance",
-            )
-            .with_operation(operation)
-            .with_context("left_domain", domain.debug_label())
-            .with_context("right_domain", column.execution_domain().debug_label())
-            .with_context("column_name", name.clone())
-            .with_context("frame_column", first_name.clone()));
-        }
+        ExecutionDomain::require_same_provenance(
+            &domain,
+            column.execution_domain(),
+            operation,
+            "dataframe construction requires all columns to already share one retained provenance",
+            "use copy_into_runtime(...) to relocate all Series inputs into one Runtime before constructing the DataFrame",
+        )
+        .map_err(|e| e.with_context("column_name", name.clone()).with_context("frame_column", first_name.clone()))?;
     }
 
     Ok(domain)
@@ -500,25 +497,30 @@ impl DataFrame {
         Ok(copied)
     }
 
-    pub(crate) fn clone_or_copy_series_into_domain(
+    pub(crate) fn validate_series_insertion_domain(
+        &self,
         series: &Series,
-        output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
         column_name: &str,
-    ) -> Result<Arc<Column>> {
-        if ExecutionDomain::same_provenance(series.as_column().execution_domain(), output_domain) {
-            return Ok(Arc::clone(series.column_arc()));
+    ) -> Result<()> {
+        if ExecutionDomain::same_provenance(series.as_column().execution_domain(), &self.domain) {
+            return Ok(());
         }
 
-        series.as_column().execution_domain().fence_stream(operation).map_err(|e| {
-            e.with_context("column_name", column_name.to_string())
-                .with_context("target_domain", output_domain.debug_label())
-        })?;
-
-        series.as_column().copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new).map_err(|e| {
-            e.with_context("column_name", column_name.to_string())
-                .with_context("target_domain", output_domain.debug_label())
-        })
+        Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "mixed-provenance dataframe column insertion requires explicit relocation into one runtime before insertion",
+        )
+        .with_operation(operation)
+        .with_context("column_name", column_name.to_string())
+        .with_context("frame_domain", self.domain.debug_label())
+        .with_context("series_domain", series.as_column().execution_domain().debug_label())
+        .with_context("frame_device", self.domain.device_snapshot().to_string())
+        .with_context("series_device", series.as_column().execution_domain().device_snapshot().to_string())
+        .with_context(
+            "remedy",
+            "use copy_into_runtime(...) to relocate the DataFrame or incoming Series into one Runtime before inserting it",
+        ))
     }
     /// Start a groupby operation.
     ///

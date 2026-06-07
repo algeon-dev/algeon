@@ -5,6 +5,7 @@
 //! share GPU memory via reference counting instead of deep-copying column
 //! data.
 
+mod context;
 mod display;
 mod info;
 mod io;
@@ -14,6 +15,7 @@ mod reshape;
 mod select;
 mod table_view;
 
+pub use context::DataFrameExecutionScope;
 pub use info::{
     ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
 };

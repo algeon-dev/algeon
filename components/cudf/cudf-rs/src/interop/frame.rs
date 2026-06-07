@@ -161,23 +161,23 @@ impl PartitionedDataFrameExport {
 impl Series {
     /// Convenience consumer that deep-copies a shared borrowed interop column
     /// descriptor into an unnamed high-level `Series`.
-    pub fn try_from_borrowed_column_view_with_runtime(
+    pub fn try_import_from_borrowed_column_view_into_runtime(
         borrowed: &BorrowedColumnView<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::Series::try_from_borrowed_column_view_with_runtime";
-        let column = Column::try_from_borrowed_column_view_with_runtime(borrowed, runtime)?;
+        let operation = "interop::Series::try_import_from_borrowed_column_view_into_runtime";
+        let column = Column::try_import_from_borrowed_column_view_into_runtime(borrowed, runtime)?;
         wrap_imported_series(column, operation)
     }
 
     /// Convenience consumer that imports a shared prepared export root into an
     /// unnamed high-level `Series`.
-    pub fn try_from_prepared_column_export_with_runtime(
+    pub fn try_import_from_prepared_column_export_into_runtime(
         export: &PreparedColumnExport<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::Series::try_from_prepared_column_export_with_runtime";
-        let column = Column::try_from_prepared_column_export_with_runtime(export, runtime)?;
+        let operation = "interop::Series::try_import_from_prepared_column_export_into_runtime";
+        let column = Column::try_import_from_prepared_column_export_into_runtime(export, runtime)?;
         wrap_imported_series(column, operation)
     }
 
@@ -278,43 +278,43 @@ impl DataFrame {
     /// Convenience consumer that deep-copies a shared borrowed interop table
     /// descriptor into a high-level `DataFrame` using explicit caller-provided
     /// schema names.
-    pub fn try_from_borrowed_table_view_with_runtime_and_names(
+    pub fn try_import_from_borrowed_table_view_into_runtime_and_names(
         borrowed: &BorrowedTableView<'_>,
         runtime: &Runtime,
         names: Vec<String>,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_from_borrowed_table_view_with_runtime_and_names";
-        let table = Table::try_from_borrowed_table_view_with_runtime(borrowed, runtime)?;
+        let operation = "interop::DataFrame::try_import_from_borrowed_table_view_into_runtime_and_names";
+        let table = Table::try_import_from_borrowed_table_view_into_runtime(borrowed, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 
     /// Convenience consumer that imports a shared prepared table export root
     /// into a high-level `DataFrame` using schema names carried on the shared
     /// root.
-    pub fn try_from_prepared_table_export_with_runtime(
+    pub fn try_import_from_prepared_table_export_into_runtime(
         export: &PreparedTableExport<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_from_prepared_table_export_with_runtime";
+        let operation = "interop::DataFrame::try_import_from_prepared_table_export_into_runtime";
         let names = required_dataframe_import_names(
             export.table().names(),
             operation,
-            "DataFrame::try_from_prepared_table_export_with_runtime_and_names",
+            "DataFrame::try_import_from_prepared_table_export_into_runtime_and_names",
         )?;
-        let table = Table::try_from_prepared_table_export_with_runtime(export, runtime)?;
+        let table = Table::try_import_from_prepared_table_export_into_runtime(export, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 
     /// Convenience consumer that imports a shared prepared table export root
     /// into a high-level `DataFrame` using explicit caller-provided schema
     /// names.
-    pub fn try_from_prepared_table_export_with_runtime_and_names(
+    pub fn try_import_from_prepared_table_export_into_runtime_and_names(
         export: &PreparedTableExport<'_>,
         runtime: &Runtime,
         names: Vec<String>,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_from_prepared_table_export_with_runtime_and_names";
-        let table = Table::try_from_prepared_table_export_with_runtime(export, runtime)?;
+        let operation = "interop::DataFrame::try_import_from_prepared_table_export_into_runtime_and_names";
+        let table = Table::try_import_from_prepared_table_export_into_runtime(export, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 

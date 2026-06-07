@@ -127,11 +127,11 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
     let df = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap()),
-        ("score", Series::new_with_runtime(&df_rt, "score", &[100i32, 200, 300]).unwrap()),
+        ("id", df_rt.series("id", &[10i32, 20, 30]).unwrap()),
+        ("score", df_rt.series("score", &[100i32, 200, 300]).unwrap()),
     ])
     .unwrap();
-    let values = Series::new_with_runtime(&values_rt, "values", &[20i32, 30]).unwrap();
+    let values = values_rt.series("values", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.__debug_execution_domain_stream_value();
     let expected_exec_mr = df.__debug_execution_domain_mr_value();
     let expected_presync_stream = values.as_column().__debug_execution_domain_stream_value();

@@ -171,14 +171,14 @@ impl Column {
     /// This is a device-to-device copy on the descriptor's CUDA device. It is
     /// not zero-copy, and the destination runtime must be pinned to the same
     /// CUDA device as the borrowed execution binding.
-    pub fn try_from_borrowed_column_view_with_runtime(
+    pub fn try_import_from_borrowed_column_view_into_runtime(
         borrowed: &BorrowedColumnView<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
         import_column_from_borrowed_view(
             borrowed,
             runtime,
-            "interop::Column::try_from_borrowed_column_view_with_runtime",
+            "interop::Column::try_import_from_borrowed_column_view_into_runtime",
         )
     }
 
@@ -206,14 +206,14 @@ impl Column {
     /// bytes into new device ownership inside the destination runtime. Both
     /// paths synchronize completion before returning so producer liveness can
     /// end honestly.
-    pub fn try_from_prepared_column_export_with_runtime(
+    pub fn try_import_from_prepared_column_export_into_runtime(
         export: &PreparedColumnExport<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
         import_column_from_prepared_export(
             export,
             runtime,
-            "interop::Column::try_from_prepared_column_export_with_runtime",
+            "interop::Column::try_import_from_prepared_column_export_into_runtime",
         )
     }
 

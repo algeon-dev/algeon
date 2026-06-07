@@ -1,6 +1,6 @@
 //! Tests for DataFrame concat, copy, rename, select.
 
-use cudf::{DataFrame, ErrorKind, Series, core::Column};
+use cudf::{DataFrame, ErrorKind, core::Column};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -89,8 +89,8 @@ fn test_concat_mismatched_column_types_returns_error() {
 fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_series([("a", Series::new_with_runtime(&left_rt, "a", &[1i32, 2]).unwrap())]).unwrap();
-    let right = DataFrame::from_series([("a", Series::new_with_runtime(&right_rt, "a", &[3i32, 4]).unwrap())]).unwrap();
+    let left = DataFrame::from_series([("a", left_rt.series("a", &[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("a", right_rt.series("a", &[3i32, 4]).unwrap())]).unwrap();
     let expected_exec_stream = left.__debug_execution_domain_stream_value();
     let expected_exec_mr = left.__debug_execution_domain_mr_value();
     let expected_sync_stream = right.__debug_execution_domain_stream_value();

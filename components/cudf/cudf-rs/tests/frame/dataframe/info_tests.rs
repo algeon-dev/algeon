@@ -222,11 +222,7 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
 fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let df = DataFrame::from_columns([(
-        "names",
-        Series::from_strings_with_runtime(&rt, "names", &["ab", "cde", ""]).unwrap(),
-    )])
-    .unwrap();
+    let df = DataFrame::from_columns([("names", rt.string_series("names", &["ab", "cde", ""]).unwrap())]).unwrap();
 
     obs_reset();
     let info = df.info_with(InfoDetail::COLUMNS | InfoDetail::PAYLOAD_BYTES).unwrap();

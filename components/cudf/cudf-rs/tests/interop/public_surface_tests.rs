@@ -114,12 +114,14 @@ fn cudf_interop_exposes_high_level_consumer_import_adapters() {
     ) {
     }
 
-    assert_series_borrowed_import(Series::try_from_borrowed_column_view_with_runtime);
-    assert_series_prepared_import(Series::try_from_prepared_column_export_with_runtime);
+    assert_series_borrowed_import(Series::try_import_from_borrowed_column_view_into_runtime);
+    assert_series_prepared_import(Series::try_import_from_prepared_column_export_into_runtime);
     assert_series_owned_import(Series::try_from_owned_device_column_transfer);
-    assert_dataframe_borrowed_import(DataFrame::try_from_borrowed_table_view_with_runtime_and_names);
-    assert_dataframe_prepared_import(DataFrame::try_from_prepared_table_export_with_runtime);
-    assert_dataframe_prepared_import_with_names(DataFrame::try_from_prepared_table_export_with_runtime_and_names);
+    assert_dataframe_borrowed_import(DataFrame::try_import_from_borrowed_table_view_into_runtime_and_names);
+    assert_dataframe_prepared_import(DataFrame::try_import_from_prepared_table_export_into_runtime);
+    assert_dataframe_prepared_import_with_names(
+        DataFrame::try_import_from_prepared_table_export_into_runtime_and_names,
+    );
     assert_dataframe_owned_import(DataFrame::try_from_owned_device_table_transfer);
     assert_dataframe_owned_import_with_names(DataFrame::try_from_owned_device_table_transfer_and_names);
 }

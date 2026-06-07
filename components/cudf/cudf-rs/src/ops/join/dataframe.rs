@@ -18,7 +18,7 @@ use crate::{
 
 impl DataFrame {
     /// Merge using a borrowed per-operation execution override.
-    pub fn merge_with_context(
+    pub(crate) fn merge_in_context(
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
@@ -30,18 +30,18 @@ impl DataFrame {
             options,
             output_domain.explicit_exec_options_raw(),
             Some(output_domain),
-            "dataframe::merge_with_context",
+            "dataframe::in_context::merge",
         )
     }
 
     /// Merge-split using a borrowed per-operation execution override.
-    pub fn merge_split_with_context(
+    pub(crate) fn merge_split_in_context(
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
         ctx: &ExecutionContext<'_>,
     ) -> Result<DataFrameJoinResult> {
-        let operation: &'static str = "dataframe::merge_split_with_context";
+        let operation: &'static str = "dataframe::in_context::merge_split";
         let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
@@ -71,13 +71,13 @@ impl DataFrame {
     }
 
     #[doc(hidden)]
-    pub fn __debug_merge_with_execution_context(
+    pub fn __debug_merge_in_context(
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
         ctx: &ExecutionContext<'_>,
     ) -> Result<Self> {
-        self.merge_with_context(right, options, ctx)
+        self.merge_in_context(right, options, ctx)
     }
     // -- Joins (merge) -------------------------------------------------------
 
@@ -219,6 +219,11 @@ impl DataFrame {
     ) -> Result<DataFrameJoinResult> {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
 
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.execution_domain(),
+            right.execution_domain(),
+            operation,
+        )?;
         if !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain) {
             self.execution_domain().fence_stream(operation)?;
         }
@@ -251,14 +256,14 @@ impl DataFrame {
         let rp_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_payload_indices)?;
 
         let result = if let Some(exec_options) = exec_options {
-            join::join_with_exec_options(
+            join::join_impl(
                 lk_table.table(),
                 rk_table.table(),
                 lp_table.table(),
                 rp_table.table(),
                 null_equality,
                 join_type,
-                exec_options,
+                Some(exec_options),
                 operation,
             )?
         } else {

@@ -689,6 +689,16 @@ impl ColumnView<'_> {
         })?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.execution_domain(),
+            values.execution_domain(),
+            "column_view::isin",
+        )
+        .map_err(|e| {
+            e.with_context("input_type_id", input_type_id_str.clone())
+                .with_context("values_type_id", values_type_id_str.clone())
+        })?;
+
         if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
             values.execution_domain().fence_stream("column_view::isin").map_err(|e| {
                 e.with_context("input_type_id", input_type_id_str.clone())
@@ -697,7 +707,7 @@ impl ColumnView<'_> {
         }
 
         let exec_options = self.domain.explicit_exec_options_raw();
-        search::contains_with_exec_options(values, self, exec_options.as_ref(), "column_view::isin")
+        search::contains_impl(values, self, exec_options.as_ref(), "column_view::isin")
             .map(|column| column.with_execution_domain(Arc::clone(&self.domain)))
             .map_err(|e| {
                 e.with_operation("column_view::isin")
@@ -759,6 +769,53 @@ impl ColumnView<'_> {
                 .with_context("input_count", input_count.to_string())
                 .with_context("keys_count", keys_count.to_string())
                 .with_context("values_count", values_count.to_string()));
+        }
+
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.execution_domain(),
+            keys.execution_domain(),
+            "column_view::map",
+        )
+        .map_err(|e| {
+            e.with_context("input_type_id", input_type_id_str.clone())
+                .with_context("keys_type_id", keys_type_id_str.clone())
+                .with_context("values_type_id", values_type_id_str.clone())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.execution_domain(),
+            values.execution_domain(),
+            "column_view::map",
+        )
+        .map_err(|e| {
+            e.with_context("input_type_id", input_type_id_str.clone())
+                .with_context("keys_type_id", keys_type_id_str.clone())
+                .with_context("values_type_id", values_type_id_str.clone())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        if !ExecutionDomain::same_provenance(keys.execution_domain(), &self.domain) {
+            keys.execution_domain().fence_stream("column_view::map").map_err(|e| {
+                e.with_context("input_type_id", input_type_id_str.clone())
+                    .with_context("keys_type_id", keys_type_id_str.clone())
+                    .with_context("values_type_id", values_type_id_str.clone())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?;
+        }
+        if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
+            values.execution_domain().fence_stream("column_view::map").map_err(|e| {
+                e.with_context("input_type_id", input_type_id_str.clone())
+                    .with_context("keys_type_id", keys_type_id_str.clone())
+                    .with_context("values_type_id", values_type_id_str.clone())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?;
         }
 
         if input_count == 0 {

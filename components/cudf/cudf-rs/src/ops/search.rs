@@ -1,13 +1,16 @@
 //! GPU-accelerated search / set-membership operations.
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
-fn contains_impl(
+pub(crate) fn contains_impl(
     haystack: &ColumnView<'_>,
     needles: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -52,17 +55,17 @@ fn contains_impl(
 /// // result: [true, false]
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(haystack.execution_domain());
+    let output_domain = Arc::clone(haystack.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        haystack.execution_domain(),
+        needles.execution_domain(),
+        "search::contains",
+    )?;
+    if !ExecutionDomain::same_provenance(needles.execution_domain(), &output_domain) {
+        needles.execution_domain().fence_stream("search::contains")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
-    contains_with_exec_options(haystack, needles, exec_options.as_ref(), "search::contains")
+    contains_impl(haystack, needles, exec_options.as_ref(), "search::contains")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-pub(crate) fn contains_with_exec_options(
-    haystack: &ColumnView<'_>,
-    needles: &ColumnView<'_>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
-) -> Result<Column> {
-    contains_impl(haystack, needles, exec_options, operation)
-}

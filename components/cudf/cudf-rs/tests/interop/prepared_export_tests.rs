@@ -140,7 +140,7 @@ fn read_struct_dataframe(rows: &str) -> DataFrame {
 #[test]
 fn series_prepare_device_export_can_activate_synchronous_read_lease() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = runtime.series("id", &[1i32, 2, 3]).unwrap();
 
     let export = series.try_prepare_device_column_export().unwrap();
     let lease = export
@@ -153,8 +153,8 @@ fn series_prepare_device_export_can_activate_synchronous_read_lease() {
 #[test]
 fn dataframe_prepare_device_export_can_activate_stream_read_lease() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
@@ -187,8 +187,8 @@ fn shared_table_read_lease_orders_consumer_stream_after_stream_ordered_producer_
     let _observation_lock = lock_event_observation();
     let producer_stream = CudaStream::new().unwrap();
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let consumer_stream = CudaStream::new().unwrap();
@@ -225,7 +225,7 @@ fn shared_column_read_lease_with_event_readiness_orders_consumer_stream_after_pr
     let _observation_lock = lock_event_observation();
     let producer_stream = CudaStream::new().unwrap();
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let producer_ready = CudaEvent::new().unwrap();
     producer_ready.record(&producer_stream).unwrap();
     let export = series.try_prepare_device_column_export_with_event(&producer_ready).unwrap();
@@ -264,13 +264,13 @@ fn shared_column_read_lease_with_event_readiness_orders_consumer_stream_after_pr
 #[test]
 fn shared_stream_read_lease_drop_synchronizes_consumer_stream() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[10i32, 20, 30]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[10i32, 20, 30]).unwrap();
     let consumer_done = CudaEvent::new().unwrap();
 
     {
@@ -294,7 +294,7 @@ fn shared_stream_read_lease_drop_synchronizes_consumer_stream() {
 #[test]
 fn series_prepare_device_export_can_activate_runtime_stream_read_lease() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -325,7 +325,7 @@ fn series_prepare_device_export_can_activate_runtime_stream_read_lease() {
 #[test]
 fn runtime_column_read_lease_preserves_accessor_and_debug_surface() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -372,7 +372,7 @@ fn runtime_column_read_lease_preserves_accessor_and_debug_surface() {
 fn runtime_stream_read_lease_complete_does_not_fallback_synchronize_consumer_stream() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -410,7 +410,7 @@ fn runtime_stream_read_lease_complete_does_not_fallback_synchronize_consumer_str
 #[test]
 fn series_prepare_device_export_defaults_to_cuda_guaranteed_fallback_backend() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -430,7 +430,7 @@ fn series_prepare_device_export_defaults_to_cuda_guaranteed_fallback_backend() {
 #[test]
 fn shared_cuda_explicit_backend_reports_behavior_and_releases_guard_on_drop() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series
         .try_prepare_device_column_export()
         .unwrap()
@@ -461,7 +461,7 @@ fn shared_cuda_explicit_backend_reports_behavior_and_releases_guard_on_drop() {
 fn shared_cuda_explicit_stream_read_lease_drop_does_not_hidden_fallback_synchronize_consumer_stream() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series
         .try_prepare_device_column_export()
         .unwrap()
@@ -492,8 +492,8 @@ fn shared_cuda_explicit_stream_read_lease_drop_does_not_hidden_fallback_synchron
 #[test]
 fn runtime_table_read_lease_preserves_accessor_and_debug_surface() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -541,7 +541,7 @@ fn runtime_table_read_lease_preserves_accessor_and_debug_surface() {
 fn runtime_stream_read_lease_with_explicit_backend_complete_returns_witness_via_shared_backend() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series
         .try_prepare_device_column_export()
         .unwrap()
@@ -610,7 +610,7 @@ fn runtime_complete_invokes_custom_shared_backend_complete_path() {
     }
 
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let complete_calls = Arc::new(AtomicUsize::new(0));
     let export = series
         .try_prepare_device_column_export()
@@ -636,7 +636,7 @@ fn runtime_complete_invokes_custom_shared_backend_complete_path() {
 fn runtime_stream_read_lease_with_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series
         .try_prepare_device_column_export()
         .unwrap()
@@ -686,8 +686,8 @@ fn runtime_stream_read_lease_with_explicit_backend_drop_does_not_synchronize_and
 fn runtime_table_read_lease_with_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
@@ -745,8 +745,8 @@ fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
@@ -757,7 +757,7 @@ fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
     let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
@@ -795,13 +795,13 @@ fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_
 #[test]
 fn runtime_stream_read_lease_drop_synchronizes_consumer_stream() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(producer_runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[10i32, 20, 30]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[10i32, 20, 30]).unwrap();
     let consumer_done = CudaEvent::new().unwrap();
 
     {
@@ -827,7 +827,7 @@ fn runtime_stream_read_lease_orders_consumer_stream_after_stream_ordered_produce
     let _observation_lock = lock_event_observation();
     let producer_stream = CudaStream::new().unwrap();
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
     let consumer_stream = CudaStream::new().unwrap();
     let _consumer_runtime =
@@ -865,8 +865,8 @@ fn runtime_table_read_lease_orders_consumer_stream_after_stream_ordered_producer
     let _observation_lock = lock_event_observation();
     let producer_stream = CudaStream::new().unwrap();
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let consumer_stream = CudaStream::new().unwrap();
@@ -903,7 +903,7 @@ fn runtime_table_read_lease_orders_consumer_stream_after_stream_ordered_producer
 #[test]
 fn runtime_and_shared_read_leases_share_one_export_root_state() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
     let cloned = export.clone();
 
@@ -934,7 +934,7 @@ fn runtime_and_shared_read_leases_share_one_export_root_state() {
 #[test]
 fn shared_read_lease_blocks_runtime_activation_until_completion() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -982,8 +982,8 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -991,7 +991,7 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
 
@@ -1028,8 +1028,8 @@ fn shared_cross_device_read_lease_orders_consumer_stream_on_activation_then_wait
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
@@ -1040,7 +1040,7 @@ fn shared_cross_device_read_lease_orders_consumer_stream_on_activation_then_wait
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
@@ -1091,8 +1091,8 @@ fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -1100,7 +1100,7 @@ fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
     let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
@@ -1144,8 +1144,8 @@ fn runtime_cross_device_read_lease_orders_consumer_stream_on_activation_then_wai
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
@@ -1156,7 +1156,7 @@ fn runtime_cross_device_read_lease_orders_consumer_stream_on_activation_then_wai
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
@@ -1199,7 +1199,7 @@ fn runtime_cross_device_read_lease_orders_consumer_stream_on_activation_then_wai
 #[test]
 fn series_prepare_device_export_with_event_preserves_event_readiness() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let producer_ready = CudaEvent::new().unwrap();
     producer_ready.record(producer_runtime.stream()).unwrap();
 
@@ -1217,7 +1217,7 @@ fn series_prepare_device_export_with_event_preserves_event_readiness() {
 #[test]
 fn series_prepare_device_export_with_event_can_activate_runtime_stream_read_lease() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let producer_ready = CudaEvent::new().unwrap();
     producer_ready.record(producer_runtime.stream()).unwrap();
     let export = series.try_prepare_device_column_export_with_event(&producer_ready).unwrap();
@@ -1257,8 +1257,8 @@ fn dataframe_prepare_device_export_with_event_can_activate_runtime_cross_device_
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let producer_ready = CudaEvent::new().unwrap();
     producer_ready.record(producer_runtime.stream()).unwrap();
@@ -1268,7 +1268,7 @@ fn dataframe_prepare_device_export_with_event_can_activate_runtime_cross_device_
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_runtime =
         Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-    let _consumer_work = cudf::Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9]).unwrap();
+    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
 
@@ -1304,7 +1304,7 @@ fn series_prepare_device_export_with_event_rejects_mismatched_event_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-    let series = cudf::Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
 
     common::set_current_device(device1);
     let wrong_device_event = CudaEvent::new().unwrap();
@@ -1394,8 +1394,8 @@ fn sliced_column_prepare_device_export_preserves_base_pointer_and_offset() {
 #[test]
 fn table_view_prepare_device_export_preserves_num_rows_names_and_uniform_readiness() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
     let expected_stream = frame.__debug_execution_domain_stream_value();
 
@@ -1425,9 +1425,8 @@ fn table_view_prepare_device_export_preserves_num_rows_names_and_uniform_readine
 #[test]
 fn table_view_prepare_device_export_preserves_schema_nullability_metadata() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals =
-        cudf::Series::new_nullable_with_runtime(&runtime, "value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
@@ -1439,7 +1438,7 @@ fn table_view_prepare_device_export_preserves_schema_nullability_metadata() {
 #[test]
 fn series_prepare_host_export_can_activate_synchronous_read_lease() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = runtime.series("id", &[1i32, 2, 3]).unwrap();
 
     let export = series.try_prepare_host_column_export().unwrap();
     let lease = export
@@ -1519,8 +1518,8 @@ fn nullable_column_prepare_host_export_preserves_packed_validity_mask() {
 #[test]
 fn dataframe_prepare_host_export_preserves_names_and_host_profile() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
@@ -1535,9 +1534,8 @@ fn dataframe_prepare_host_export_preserves_names_and_host_profile() {
 #[test]
 fn dataframe_prepare_host_export_preserves_schema_nullability_metadata() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals =
-        cudf::Series::new_nullable_with_runtime(&runtime, "value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
@@ -1549,7 +1547,7 @@ fn dataframe_prepare_host_export_preserves_schema_nullability_metadata() {
 #[test]
 fn series_prepare_host_export_rejects_cuda_completion_authority() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let consumer_stream = CudaStream::new().unwrap();
     let _consumer_runtime =
         Runtime::builder().with_device(runtime.device()).with_stream(consumer_stream.clone()).build().unwrap();
@@ -1747,8 +1745,7 @@ fn sliced_struct_column_prepare_host_export_resets_root_and_child_offsets_to_act
 #[test]
 fn dictionary_column_prepare_host_export_materializes_indices_and_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base =
-        cudf::Series::from_strings_with_runtime(&runtime, "category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let export = dict.try_prepare_host_column_export().unwrap();
     let (indices, keys) = match export.column().layout() {
@@ -1789,8 +1786,7 @@ fn dictionary_column_prepare_host_export_materializes_indices_and_string_keys() 
 #[test]
 fn sliced_dictionary_column_prepare_host_export_resets_root_offset_and_materializes_active_indices_only() {
     let runtime = Runtime::builder().build().unwrap();
-    let base =
-        cudf::Series::from_strings_with_runtime(&runtime, "category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let sliced = dict.slice_view(1, 2).unwrap();
 
@@ -2056,13 +2052,9 @@ fn sliced_string_column_prepare_host_export_resets_offset_and_materializes_activ
 #[test]
 fn nullable_string_column_prepare_host_export_preserves_packed_validity_mask() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = cudf::Series::from_strings_nullable_with_runtime(
-        &runtime,
-        "name",
-        &["alice", "placeholder", "bob", "unused"],
-        &[true, false, true, false],
-    )
-    .unwrap();
+    let series = runtime
+        .nullable_string_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
+        .unwrap();
 
     let export = series.try_prepare_host_column_export().unwrap();
 
@@ -2082,8 +2074,8 @@ fn nullable_string_column_prepare_host_export_preserves_packed_validity_mask() {
 #[test]
 fn dataframe_prepare_host_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let names = cudf::Series::from_strings_with_runtime(&runtime, "name", &["alice", "bob", "cara"]).unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let frame = DataFrame::from_columns([("name", names), ("id", ids)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
@@ -2272,8 +2264,8 @@ fn dataframe_prepare_host_export_accepts_struct_and_dictionary_columns_with_supp
 #[test]
 fn series_and_dataframe_prepare_device_export_match_underlying_low_level_exports() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids.clone()), ("value", vals.clone())]).unwrap();
 
     let series_export = ids.try_prepare_device_column_export().unwrap();
@@ -2409,8 +2401,8 @@ fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span(
 #[test]
 fn dataframe_prepare_device_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let names = cudf::Series::from_strings_with_runtime(&runtime, "name", &["alice", "bob", "cara"]).unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let frame = DataFrame::from_columns([("name", names), ("id", ids)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
@@ -2683,7 +2675,7 @@ fn dictionary_column_prepare_device_export_preserves_indices_and_keys_metadata()
 #[test]
 fn dictionary_string_column_prepare_device_export_preserves_binary_like_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = cudf::Series::from_strings_with_runtime(&runtime, "name", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.string_series("name", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column().view().unwrap(), TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
     let keys_view = dictionary::keys(&dict_view).unwrap();
@@ -2716,9 +2708,8 @@ fn dictionary_string_column_prepare_device_export_preserves_binary_like_keys() {
 #[test]
 fn dataframe_prepare_device_export_accepts_dictionary_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let base =
-        cudf::Series::from_strings_with_runtime(&runtime, "category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
-    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[10i32, 20, 30, 40]).unwrap();
+    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let ids = runtime.series("id", &[10i32, 20, 30, 40]).unwrap();
     let dict = dictionary::encode(&base.as_column().view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(dict).unwrap().rename("category");
     let frame = DataFrame::from_columns([("category", category), ("id", ids)]).unwrap();

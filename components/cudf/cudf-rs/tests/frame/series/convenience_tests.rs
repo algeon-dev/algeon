@@ -241,8 +241,8 @@ fn test_isin_strings() {
 fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     let source_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let s = Series::new_with_runtime(&source_rt, "x", &[1i32, 2, 3, 4, 5]).unwrap();
-    let values = Series::new_with_runtime(&values_rt, "vals", &[2i32, 4]).unwrap();
+    let s = source_rt.series("x", &[1i32, 2, 3, 4, 5]).unwrap();
+    let values = values_rt.series("vals", &[2i32, 4]).unwrap();
     let expected_exec_stream = s.as_column().__debug_execution_domain_stream_value();
     let expected_exec_mr = s.as_column().__debug_execution_domain_mr_value();
     let expected_sync_stream = values.as_column().__debug_execution_domain_stream_value();

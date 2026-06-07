@@ -8,11 +8,14 @@
 //! # Quick Start
 //!
 //! ```no_run
-//! use cudf::{DataFrame, Series};
+//! use cudf::{DataFrame, Runtime};
 //!
-//! // Create named Series from host data.
-//! let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
-//! let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+//! // Build an explicit runtime for this workflow.
+//! let rt = Runtime::builder().build().unwrap();
+//!
+//! // Create named Series from host data inside that runtime.
+//! let ids = rt.series("ids", &[1i32, 2, 3]).unwrap();
+//! let scores = rt.series("scores", &[10.0f64, 20.0, 30.0]).unwrap();
 //!
 //! // Build a DataFrame from Series.
 //! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
@@ -23,6 +26,13 @@
 //! // Retrieve a column back as a Series (zero-copy, Arc-shared).
 //! let score = df.series("score").unwrap();
 //! assert_eq!(score.len(), 3);
+//!
+//! // Common reductions can materialize directly to host values.
+//! let total = score.sum_value::<f64>().unwrap();
+//! let mean = score.mean_value().unwrap();
+//!
+//! assert_eq!(total, 60.0);
+//! assert_eq!(mean, Some(20.0));
 //! ```
 //!
 //! # Primary Types
@@ -36,6 +46,8 @@
 //! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
 //! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
+//! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
+//!   — high-level reductions that return host values directly.
 //!
 //! # Advanced Usage
 //!
@@ -49,7 +61,9 @@
 //! - [`core::ColumnView`] — A non-owning borrow of a column, tied by lifetime.
 //! - [`core::Table`] — An owned GPU table (collection of columns).
 //! - [`core::TableView`] — A non-owning borrow of a table.
-//! - [`core::Scalar`] — A single value on the GPU.
+//! - [`core::Scalar`] — A single value on the GPU. Most high-level reduction
+//!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
+//!   `Scalar` when you need explicit device-resident scalar behavior.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
 //! - [`DataFrame::table_view`] — zero-copy bridge from high-level
 //!   `DataFrame` into low-level [`core::TableView`] workflows.
@@ -117,8 +131,8 @@
 //!     .unwrap();
 //!
 //! // Each series lives on its respective GPU.
-//! let s0 = Series::new_with_runtime::<i32>(&rt0, "a", &[1, 2, 3]).unwrap();
-//! let s1 = Series::new_with_runtime::<i32>(&rt1, "b", &[4, 5, 6]).unwrap();
+//! let s0 = rt0.series("a", &[1i32, 2, 3]).unwrap();
+//! let s1 = rt1.series("b", &[4i32, 5, 6]).unwrap();
 //! ```
 //!
 //! Objects created without an explicit [`Runtime`] use the *ambient default*

@@ -58,6 +58,8 @@ mod series_host_materialization_tests;
 mod series_ops_tests;
 #[path = "frame/series/series_reduction_tests.rs"]
 mod series_reduction_tests;
+#[path = "frame/series/series_reduction_value_tests.rs"]
+mod series_reduction_value_tests;
 #[path = "frame/series/series_tests.rs"]
 mod series_tests;
 

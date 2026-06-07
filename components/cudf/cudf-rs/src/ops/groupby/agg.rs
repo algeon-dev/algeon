@@ -61,7 +61,7 @@ pub struct GroupByResult {
     pub results: Vec<Vec<Column>>,
 }
 
-fn groupby_aggregate_impl(
+pub(crate) fn groupby_aggregate_impl(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
@@ -193,8 +193,15 @@ fn compatible_groupby_domain(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let _ = requests;
-    Ok(std::sync::Arc::clone(keys.execution_domain()))
+    let output_domain = std::sync::Arc::clone(keys.execution_domain());
+    for request in requests {
+        ExecutionDomain::require_same_device_and_fence_secondary(
+            &output_domain,
+            request.values.execution_domain(),
+            "groupby::groupby_aggregate",
+        )?;
+    }
+    Ok(output_domain)
 }
 
 fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::Arc<ExecutionDomain>) -> GroupByResult {
@@ -306,12 +313,3 @@ pub fn groupby_aggregate(
         .map(|result| bind_groupby_result_domain(result, output_domain))
 }
 
-pub(crate) fn groupby_aggregate_with_exec_options(
-    keys: &TableView<'_>,
-    requests: &[AggregationRequest<'_>],
-    null_policy: NullPolicy,
-    exec_options: &cudf_sys::cudf_exec_options_t,
-    operation: &'static str,
-) -> Result<GroupByResult> {
-    groupby_aggregate_impl(keys, requests, null_policy, Some(exec_options), operation)
-}

@@ -336,21 +336,61 @@ impl ExecutionDomain {
         left.debug_id() == right.debug_id() && left.debug_kind() == right.debug_kind()
     }
 
+    pub(crate) fn require_same_device_for_mixed_inputs(
+        left: &Arc<Self>,
+        right: &Arc<Self>,
+        operation: &'static str,
+    ) -> Result<()> {
+        let left_device = left.device_snapshot();
+        let right_device = right.device_snapshot();
+        if left_device == right_device {
+            return Ok(());
+        }
+
+        Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "cross-device operation requires explicit relocation into one runtime before execution",
+        )
+        .with_operation(operation)
+        .with_context("left_domain", left.debug_label())
+        .with_context("right_domain", right.debug_label())
+        .with_context("left_device", left_device.to_string())
+        .with_context("right_device", right_device.to_string())
+        .with_context(
+            "remedy",
+            "use copy_into_runtime(...) to relocate all inputs into one Runtime before calling this operation",
+        ))
+    }
+
+    pub(crate) fn require_same_device_and_fence_secondary(
+        primary: &Arc<Self>,
+        secondary: &Arc<Self>,
+        operation: &'static str,
+    ) -> Result<()> {
+        Self::require_same_device_for_mixed_inputs(primary, secondary, operation)?;
+        if !Self::same_provenance(primary, secondary) {
+            secondary.fence_stream(operation)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn require_same_provenance(
         left: &Arc<Self>,
         right: &Arc<Self>,
         operation: &'static str,
-    ) -> Result<Arc<Self>> {
+        message: &'static str,
+        remedy: &'static str,
+    ) -> Result<()> {
         if Self::same_provenance(left, right) {
-            Ok(Arc::clone(left))
-        } else {
-            Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "container construction requires one shared retained provenance",
-            )
+            return Ok(());
+        }
+
+        Err(Error::new(ErrorKind::InvalidOperation, message)
             .with_operation(operation)
             .with_context("left_domain", left.debug_label())
-            .with_context("right_domain", right.debug_label()))
-        }
+            .with_context("right_domain", right.debug_label())
+            .with_context("left_device", left.device_snapshot().to_string())
+            .with_context("right_device", right.device_snapshot().to_string())
+            .with_context("remedy", remedy))
     }
 }

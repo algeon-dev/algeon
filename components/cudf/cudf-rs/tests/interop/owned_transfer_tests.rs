@@ -108,8 +108,8 @@ fn column_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contra
 #[test]
 fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let (table, _names) = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap().try_into_table().unwrap();
 
     let transfer = table.try_into_owned_device_table_transfer().unwrap();
@@ -127,7 +127,7 @@ fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
 #[test]
 fn series_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = Series::new_with_runtime(&runtime, "numbers", &[1i32, 2, 3]).unwrap();
+    let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
     let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
     let expected_stream = series.as_column().__debug_execution_domain_stream_value();
 
@@ -154,7 +154,7 @@ fn series_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contra
 #[test]
 fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = Series::new_with_runtime(&runtime, "numbers", &[7i32, 8, 9]).unwrap();
+    let series = runtime.series("numbers", &[7i32, 8, 9]).unwrap();
     let shared = series.clone();
     let original_ptr = shared.as_column_view().unwrap().device_data_ptr().unwrap();
 
@@ -171,8 +171,8 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
 #[test]
 fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let values = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
     let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
 
@@ -192,8 +192,8 @@ fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract()
 #[test]
 fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let values = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
     let shared = frame.clone();
     let original_id_ptr = shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();

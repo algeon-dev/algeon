@@ -139,11 +139,15 @@ impl Table {
     /// destination runtime's retained provenance. It is not zero-copy, and the
     /// destination runtime must be pinned to the same CUDA device as the
     /// borrowed execution binding.
-    pub fn try_from_borrowed_table_view_with_runtime(
+    pub fn try_import_from_borrowed_table_view_into_runtime(
         borrowed: &BorrowedTableView<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
-        import_table_from_borrowed_view(borrowed, runtime, "interop::Table::try_from_borrowed_table_view_with_runtime")
+        import_table_from_borrowed_view(
+            borrowed,
+            runtime,
+            "interop::Table::try_import_from_borrowed_table_view_into_runtime",
+        )
     }
 
     /// Consume a shared owned device transfer root back into an owned
@@ -171,14 +175,14 @@ impl Table {
     /// device ownership inside the destination runtime. Both paths
     /// synchronize completion before returning so producer liveness can end
     /// honestly.
-    pub fn try_from_prepared_table_export_with_runtime(
+    pub fn try_import_from_prepared_table_export_into_runtime(
         export: &PreparedTableExport<'_>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
         import_table_from_prepared_export(
             export,
             runtime,
-            "interop::Table::try_from_prepared_table_export_with_runtime",
+            "interop::Table::try_import_from_prepared_table_export_into_runtime",
         )
     }
 

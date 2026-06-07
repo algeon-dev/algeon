@@ -594,17 +594,21 @@ impl Series {
     /// # Cost
     /// GPU-allocating: a new column is produced with nulls replaced.
     pub fn fillna_with_series(&self, other: &Series) -> Result<Series> {
+        let operation = "series::fillna_with_series";
         let output_domain = Arc::clone(self.column.execution_domain());
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.column.execution_domain(),
+            other.column.execution_domain(),
+            operation,
+        )?;
+        if !ExecutionDomain::same_provenance(other.column.execution_domain(), &output_domain) {
+            other.column.execution_domain().fence_stream(operation)?;
+        }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_column_with_exec_options(
-            &cv,
-            &other_cv,
-            exec_options.as_ref(),
-            "series::fillna_with_series",
-        )?
-        .with_execution_domain(output_domain);
+        let col = replace::replace_nulls_column_with_exec_options(&cv, &other_cv, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 

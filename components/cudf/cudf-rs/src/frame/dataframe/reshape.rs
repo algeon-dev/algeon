@@ -143,7 +143,7 @@ const SORT_KEY_INLINE_CAPACITY: usize = 4;
 
 impl DataFrame {
     /// Sort using a borrowed per-operation execution override.
-    pub fn sort_values_with_context<I, S>(
+    pub(crate) fn sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
@@ -159,12 +159,12 @@ impl DataFrame {
             options,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::sort_values_with_context",
+            "dataframe::in_context::sort_values",
         )
     }
 
     #[doc(hidden)]
-    pub fn __debug_sort_values_with_execution_context<I, S>(
+    pub fn __debug_sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
@@ -174,41 +174,41 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.sort_values_with_context(by, options, ctx)
+        self.sort_values_in_context(by, options, ctx)
     }
 
     /// Gather rows using a borrowed per-operation execution override.
-    pub fn gather_with_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.as_column_view()?;
         self.gather_by_column_view_impl(
             &cv,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::gather_with_context",
+            "dataframe::in_context::gather",
         )
     }
 
     #[doc(hidden)]
-    pub fn __debug_gather_with_execution_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
-        self.gather_with_context(indices, ctx)
+    pub fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        self.gather_in_context(indices, ctx)
     }
 
     /// Filter rows using a borrowed per-operation execution override.
-    pub fn filter_with_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask_impl(
             &mask_view,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::filter_with_context",
+            "dataframe::in_context::filter",
         )
     }
 
     #[doc(hidden)]
-    pub fn __debug_filter_with_execution_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
-        self.filter_with_context(mask, ctx)
+    pub fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        self.filter_in_context(mask, ctx)
     }
 
     /// Return the first `n` rows.
@@ -321,28 +321,24 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the
     /// `contains` / `filter` operation fails.
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
+        let operation = "dataframe::filter_isin";
         let cv = values.as_column_view()?;
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::filter_isin")
+                .with_operation(operation)
                 .with_context("column_name", column.to_string())
         })?;
         let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, cv.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(cv.execution_domain(), &output_domain) {
-            cv.execution_domain().fence_stream("dataframe::filter_isin")?;
+            cv.execution_domain().fence_stream(operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let mask =
-            ops::search::contains_with_exec_options(&cv, &col_view, exec_options.as_ref(), "dataframe::filter_isin")?
-                .with_execution_domain(Arc::clone(&output_domain));
+        let mask = ops::search::contains_impl(&cv, &col_view, exec_options.as_ref(), operation)?
+            .with_execution_domain(Arc::clone(&output_domain));
         let mask_view = mask.view()?;
-        self.filter_by_mask_impl(
-            &mask_view,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::filter_isin",
-        )
+        self.filter_by_mask_impl(&mask_view, output_domain.explicit_exec_options_raw(), output_domain, operation)
     }
 
     /// Validate that a `Series` is a valid boolean mask for this DataFrame.
@@ -454,12 +450,12 @@ impl DataFrame {
 
         let result_table = if all_in_order {
             if let Some(exec_options) = exec_options.as_ref() {
-                sorting::sort_with_exec_options(
+                sorting::sort_table_impl(
                     tv.table(),
                     Some(&orders),
                     null_order_ref,
                     options.stable,
-                    exec_options,
+                    Some(exec_options),
                     operation,
                 )?
             } else {
@@ -471,13 +467,13 @@ impl DataFrame {
             // table view, then reorder the full table according to those keys.
             let keys_table = tv.table().select_columns(&key_indices)?;
             if let Some(exec_options) = exec_options.as_ref() {
-                sorting::sort_by_key_with_exec_options(
+                sorting::sort_by_key_impl(
                     tv.table(),
                     &keys_table,
                     Some(&orders),
                     null_order_ref,
                     options.stable,
-                    exec_options,
+                    Some(exec_options),
                     operation,
                 )?
             } else {
@@ -561,14 +557,14 @@ impl DataFrame {
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
-    pub fn concat_with_context(&self, other: &DataFrame, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: &ExecutionContext<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::concat_with_context")?;
+        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::in_context::concat")?;
         self.concat_impl(
             other,
             output_domain.explicit_exec_options_raw(),
             Some(output_domain),
-            "dataframe::concat_with_context",
+            "dataframe::in_context::concat",
         )
     }
 
@@ -582,6 +578,7 @@ impl DataFrame {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
         let exec_options = exec_options.or_else(|| output_domain.explicit_exec_options_raw());
 
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, &other.domain, operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             self.domain.fence_stream(operation)?;
         }
@@ -657,13 +654,7 @@ impl DataFrame {
     /// DataFrame's existing row count.
     pub fn with_column(&self, name: &str, col: impl IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
-        if self.columns.is_empty() {
-            ExecutionDomain::require_same_provenance(
-                &self.domain,
-                series.as_column().execution_domain(),
-                "dataframe::with_column",
-            )?;
-        }
+        self.validate_series_insertion_domain(&series, "dataframe::with_column", name)?;
         let col_rows = series.len();
         let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
@@ -747,11 +738,8 @@ impl DataFrame {
                 expected_rows = Some(series_rows);
             }
 
-            let column = if self.columns.is_empty() && self.domain.explicit_stream().is_some() {
-                Self::clone_or_copy_series_into_domain(&series, &self.domain, "dataframe::assign", name)?
-            } else {
-                Arc::clone(series.column_arc())
-            };
+            self.validate_series_insertion_domain(&series, "dataframe::assign", name)?;
+            let column = Arc::clone(series.column_arc());
 
             new_columns.insert(name.to_string(), column);
         }
@@ -815,22 +803,27 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub(crate) fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
+        let operation = "dataframe::replace_nulls";
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::replace_nulls")
+                .with_operation(operation)
                 .with_context("column_name", column.to_string())
         })?;
 
+        ExecutionDomain::require_same_device_and_fence_secondary(
+            col.execution_domain(),
+            value.execution_domain(),
+            operation,
+        )?;
         let cv = col.view()?;
         let exec_options = col.execution_domain().explicit_exec_options_raw();
-        let new_col =
-            replace::replace_nulls_with_exec_options(&cv, value, exec_options.as_ref(), "dataframe::replace_nulls")?
-                .with_execution_domain(Arc::clone(col.execution_domain()));
+        let new_col = replace::replace_nulls_with_exec_options(&cv, value, exec_options.as_ref(), operation)?
+            .with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::replace_nulls")?;
+        let domain = derive_frame_domain_from_columns(&new_columns, operation)?;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 
@@ -977,28 +970,28 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the types
     /// or lengths are incompatible.
     pub fn fillna_with_series(&self, column: &str, fill_series: &Series) -> Result<Self> {
+        let operation = "dataframe::fillna_with_series";
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::fillna_with_series")
+                .with_operation(operation)
                 .with_context("column_name", column.to_string())
         })?;
 
         let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
         let fill_cv = fill_series.as_column_view()?;
+        ExecutionDomain::require_same_device_for_mixed_inputs(&output_domain, fill_cv.execution_domain(), operation)?;
+        if !ExecutionDomain::same_provenance(fill_cv.execution_domain(), &output_domain) {
+            fill_cv.execution_domain().fence_stream(operation)?;
+        }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let new_col = replace::replace_nulls_column_with_exec_options(
-            &cv,
-            &fill_cv,
-            exec_options.as_ref(),
-            "dataframe::fillna_with_series",
-        )?
-        .with_execution_domain(output_domain);
+        let new_col = replace::replace_nulls_column_with_exec_options(&cv, &fill_cv, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::fillna_with_series")?;
+        let domain = derive_frame_domain_from_columns(&new_columns, operation)?;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 }
@@ -1011,6 +1004,7 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, indices.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             self.domain.fence_stream(operation)?;
         }
@@ -1022,8 +1016,15 @@ impl DataFrame {
             return self.empty_with_same_schema_in_domain(output_domain);
         }
         let tv = self.build_table_view()?;
-        let result_table = copying::gather_with_exec_options(tv.table(), indices, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let result_table = copying::gather_impl(
+            tv.table(),
+            indices,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            "nullify",
+            exec_options.as_ref(),
+            operation,
+        )?
+        .with_execution_domain(output_domain);
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1034,6 +1035,7 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, mask.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             self.domain.fence_stream(operation)?;
         }
@@ -1044,7 +1046,7 @@ impl DataFrame {
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
         let result_table =
-            filter::apply_boolean_mask_with_exec_options(tv.table(), mask, exec_options.as_ref(), operation)?
+            filter::apply_boolean_mask_impl(tv.table(), mask, exec_options.as_ref(), operation)?
                 .with_execution_domain(output_domain);
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1069,17 +1071,17 @@ impl DataFrame {
         let map = Column::from_slice_in_domain(&indices, &self.domain)?;
         let tv = self.build_table_view()?;
         let exec_options = self.domain.explicit_exec_options_raw();
-        // SAFETY: indices are constructed from `start..start+len` which the
-        // callers have already validated against row_count, and the i32
-        // conversion above ensures no truncation.
-        let result_table = unsafe {
-            copying::gather_unchecked_with_exec_options(
-                tv.table(),
-                &map.view()?,
-                exec_options.as_ref(),
-                "dataframe::gather_range",
-            )?
-        }
+        // Indices are constructed from `start..start+len` which the callers
+        // have already validated against row_count, and the i32 conversion
+        // above ensures no truncation, so DONT_CHECK is safe here.
+        let result_table = copying::gather_impl(
+            tv.table(),
+            &map.view()?,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+            "dont_check",
+            exec_options.as_ref(),
+            "dataframe::gather_range",
+        )?
         .with_execution_domain(Arc::clone(&self.domain));
 
         Self::from_table_with_names(result_table, self.column_names_owned())

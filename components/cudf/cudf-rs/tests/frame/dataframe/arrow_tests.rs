@@ -7,11 +7,46 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, TypeId, core::Column};
+use cudf::{DataFrame, ErrorKind, TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
 // Round-trip: DataFrame → RecordBatch → DataFrame
 // ---------------------------------------------------------------------------
+
+#[test]
+fn test_arrow_datatype_try_from_type_id_supported_mappings() {
+    assert_eq!(ArrowDataType::try_from(TypeId::Int32).unwrap(), ArrowDataType::Int32);
+    assert_eq!(ArrowDataType::try_from(TypeId::Float64).unwrap(), ArrowDataType::Float64);
+    assert_eq!(ArrowDataType::try_from(TypeId::Bool8).unwrap(), ArrowDataType::Boolean);
+    assert_eq!(ArrowDataType::try_from(TypeId::String).unwrap(), ArrowDataType::Utf8);
+}
+
+#[test]
+fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
+    let err =
+        ArrowDataType::try_from(TypeId::List).expect_err("list columns are not supported by Arrow host-copy interop");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "arrow::TryFrom<TypeId> for ArrowDataType");
+    assert!(err.message().contains("unsupported cudf type"));
+}
+
+#[test]
+fn test_type_id_try_from_arrow_datatype_supported_mappings() {
+    assert_eq!(TypeId::try_from(&ArrowDataType::Int32).unwrap(), TypeId::Int32);
+    assert_eq!(TypeId::try_from(&ArrowDataType::Float64).unwrap(), TypeId::Float64);
+    assert_eq!(TypeId::try_from(&ArrowDataType::Boolean).unwrap(), TypeId::Bool8);
+    assert_eq!(TypeId::try_from(&ArrowDataType::Utf8).unwrap(), TypeId::String);
+    assert_eq!(TypeId::try_from(&ArrowDataType::LargeUtf8).unwrap(), TypeId::String);
+}
+
+#[test]
+fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
+    let err = TypeId::try_from(&ArrowDataType::LargeBinary)
+        .expect_err("large binary arrays are not supported by cudf Arrow import");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "arrow::TryFrom<&ArrowDataType> for TypeId");
+    assert!(err.message().contains("unsupported Arrow type"));
+}
 
 #[test]
 fn test_round_trip_i32() {

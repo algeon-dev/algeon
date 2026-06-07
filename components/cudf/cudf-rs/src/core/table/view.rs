@@ -126,16 +126,14 @@ impl<'a> TableView<'a> {
         let domain = if let Some(first) = views.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, view) in views.iter().enumerate().skip(1) {
-                if !ExecutionDomain::same_provenance(&domain, view.execution_domain()) {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        "all column views in a table view must share one retained provenance",
-                    )
-                    .with_operation("table_view::from_column_views")
-                    .with_context("left_domain", domain.debug_label())
-                    .with_context("right_domain", view.execution_domain().debug_label())
-                    .with_context("column_index", index.to_string()));
-                }
+                ExecutionDomain::require_same_provenance(
+                    &domain,
+                    view.execution_domain(),
+                    "table_view::from_column_views",
+                    "all column views in a table view must share one retained provenance",
+                    "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table view from columns already placed in one Runtime before calling this operation",
+                )
+                .map_err(|e| e.with_context("column_index", index.to_string()))?;
             }
             domain
         } else {

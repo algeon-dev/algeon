@@ -13,11 +13,14 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Error, ErrorKind, Result},
-    scalar::Scalar,
-    types::{DataType, TypeId},
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Error, ErrorKind, Result},
+        scalar::Scalar,
+        types::{DataType, TypeId},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).
@@ -258,12 +261,20 @@ pub fn binary_operation_vv(
     output_type: &DataType,
 ) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        lhs.execution_domain(),
+        rhs.execution_domain(),
+        "binary::binary_operation_vv",
+    )?;
+    if !ExecutionDomain::same_provenance(rhs.execution_domain(), &output_domain) {
+        rhs.execution_domain().fence_stream("binary::binary_operation_vv")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vv")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn binary_operation_vv_impl(
+pub(crate) fn binary_operation_vv_impl(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
@@ -316,12 +327,17 @@ pub fn binary_operation_vs(
     output_type: &DataType,
 ) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        rhs.execution_domain(),
+        "binary::binary_operation_vs",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vs_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vs")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn binary_operation_vs_impl(
+pub(crate) fn binary_operation_vs_impl(
     lhs: &ColumnView<'_>,
     rhs: &Scalar,
     op: BinaryOperator,
@@ -374,6 +390,11 @@ pub fn binary_operation_sv(
     output_type: &DataType,
 ) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        rhs.execution_domain(),
+        "binary::binary_operation_sv",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_sv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_sv")
         .map(|column| column.with_execution_domain(output_domain))

@@ -1,11 +1,14 @@
 //! GPU-accelerated null replacement operations.
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
-    scalar::Scalar,
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+        scalar::Scalar,
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Fill policy for [`replace_nulls_policy`].
@@ -42,6 +45,11 @@ pub enum FillPolicy {
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        replacement.execution_domain(),
+        "replace::replace_nulls",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     replace_nulls_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls")
         .map(|column| column.with_execution_domain(output_domain))
@@ -91,7 +99,12 @@ pub(crate) fn replace_nulls_with_exec_options(
 /// // result: [1, 20, 3]
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        replacement.execution_domain(),
+        "replace::replace_nulls_column",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     replace_nulls_column_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls_column")
         .map(|column| column.with_execution_domain(output_domain))

@@ -20,3 +20,6 @@ mod partitioned_export_tests;
 
 #[path = "interop/public_surface_tests.rs"]
 mod public_surface_tests;
+
+#[path = "interop/consumer_import_naming_tests.rs"]
+mod consumer_import_naming_tests;

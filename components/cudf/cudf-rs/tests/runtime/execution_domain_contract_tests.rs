@@ -12,10 +12,11 @@ use cudf::{
     ops::{
         binary::{self, BinaryOperator},
         concatenate, copying, dictionary, filter,
+        expr::lit,
         groupby::{self, AggregationRequest},
         hashing, join,
         reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
-        replace, search, sorting, stream_compaction,
+        replace, search, sorting, stream_compaction, strings,
         unary::{self, UnaryOperator},
     },
     runtime::CudaStream,
@@ -82,6 +83,15 @@ fn explicit_nullable_i32_series(name: &str, data: &[i32], validity: &[bool], ide
     )
     .unwrap()
     .rename(name)
+}
+
+fn nullable_i32_table_column(table: &Table, index: usize) -> Vec<Option<i32>> {
+    let view = table.view().unwrap();
+    let column = view.column(index.try_into().unwrap()).unwrap();
+    let values = column.to_vec::<i32>().unwrap();
+    let validity = column.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
+
+    values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
 }
 
 #[test]
@@ -222,6 +232,23 @@ fn dataframe_new_rejects_mixed_domain_columns() {
     let context = err.context();
     assert!(context.iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
     assert!(context.iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
+    assert!(context.iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+}
+
+#[test]
+fn dataframe_from_series_rejects_mixed_domain_series_with_relocation_guidance() {
+    let left = explicit_i32_series("left", &[1, 2, 3], 101);
+    let right = explicit_i32_series("right", &[4, 5, 6], 102);
+
+    let err = DataFrame::from_series([("left", left), ("right", right)]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::from_series");
+
+    let context = err.context();
+    assert!(context.iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:101(")));
+    assert!(context.iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:102(")));
+    assert!(context.iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
 }
 
 /// [INV-CT-02] Container invariant: `Table::from_columns` rejects columns with different
@@ -237,6 +264,7 @@ fn table_from_columns_rejects_mixed_domain_columns() {
     assert_eq!(err.operation(), "table::from_columns");
     assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:3(")));
     assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:4(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
 }
 
 #[test]
@@ -400,7 +428,9 @@ fn dataframe_fillna_with_series_succeeds_with_mixed_explicit_domains() {
     .unwrap();
     let fill = explicit_i32_series("fill", &[10, 20, 30], 22);
     let expected_stream = df.__debug_execution_domain_stream_value();
+    let expected_sync_stream = fill.as_column().__debug_execution_domain_stream_value();
 
+    reset_sync_observation();
     reset_exec_observation();
     let filled = df.fillna_with_series("value", &fill).unwrap();
 
@@ -410,6 +440,7 @@ fn dataframe_fillna_with_series_succeeds_with_mixed_explicit_domains() {
 
     // Execution used the primary input's stream.
     assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     // Verify correct values.
     let host: Vec<i32> = filled.series("value").unwrap().as_column_view().unwrap().to_vec().unwrap();
@@ -542,6 +573,129 @@ fn series_high_level_ops_preserve_explicit_domain_identity() {
     let (codes, uniques) = base.factorize().unwrap();
     assert_eq!(codes.as_column().__debug_execution_domain_id(), 76);
     assert_eq!(uniques.as_column().__debug_execution_domain_id(), 76);
+}
+
+#[test]
+fn series_fillna_with_series_succeeds_with_mixed_domains_and_fences_fill_stream() {
+    let nullable = explicit_nullable_i32_series("nullable", &[1, 0, 3], &[true, false, true], 76);
+    let fill = explicit_i32_series("fill", &[10, 20, 30], 77);
+    let expected_exec_stream = nullable.as_column().__debug_execution_domain_stream_value();
+    let expected_sync_stream = fill.as_column().__debug_execution_domain_stream_value();
+
+    reset_sync_observation();
+    reset_exec_observation();
+    let filled = nullable.fillna_with_series(&fill).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(filled.as_column().__debug_execution_domain_id(), nullable.as_column().__debug_execution_domain_id());
+    assert_eq!(filled.to_vec::<i32>().unwrap(), vec![1, 20, 3]);
+}
+
+#[test]
+fn series_add_with_same_device_mixed_explicit_domains_uses_left_domain_and_fences_right_stream() {
+    let left = explicit_i32_series("left", &[1, 2, 3], 77);
+    let right = explicit_i32_series("right", &[10, 20, 30], 78);
+    let expected_stream = left.as_column().__debug_execution_domain_stream_value();
+    let fenced_stream = right.as_column().__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = left.add(&right).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(result.as_column().__debug_execution_domain_id(), left.as_column().__debug_execution_domain_id());
+    assert_eq!(result.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+}
+
+#[test]
+fn series_eq_with_same_device_mixed_explicit_domains_uses_left_domain_and_fences_right_stream() {
+    let left = explicit_i32_series("left", &[1, 2, 3], 79);
+    let right = explicit_i32_series("right", &[1, 0, 3], 80);
+    let expected_stream = left.as_column().__debug_execution_domain_stream_value();
+    let fenced_stream = right.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = left.eq(&right).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.as_column().__debug_execution_domain_id(), left.as_column().__debug_execution_domain_id());
+    assert_eq!(result.to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn series_isin_with_same_device_mixed_explicit_domains_uses_left_domain_and_fences_values_stream() {
+    let base = explicit_i32_series("base", &[3, 1, 2, 1], 81);
+    let values = explicit_i32_series("values", &[1, 3], 82);
+    let expected_stream = base.as_column().__debug_execution_domain_stream_value();
+    let fenced_stream = values.as_column().__debug_execution_domain_stream_value();
+    let default_mr = current_device_resource_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let mask = base.isin(&values).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_ne!(last_exec_mr_value(), 0);
+    assert_ne!(last_exec_mr_value(), default_mr);
+    assert_eq!(mask.as_column().__debug_execution_domain_id(), base.as_column().__debug_execution_domain_id());
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, false, true]);
+}
+
+#[test]
+fn column_view_isin_with_same_device_mixed_explicit_domains_uses_input_domain_and_fences_values_stream() {
+    let input = explicit_i32_column(&[3, 1, 2, 1], 810);
+    let values = explicit_i32_column(&[1, 3], 811);
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let expected_exec_mr = input.__debug_execution_domain_mr_value();
+    let fenced_stream = values.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = input.view().unwrap().isin(&values.view().unwrap()).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false, true]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
+#[test]
+fn column_view_map_with_same_device_mixed_explicit_domains_uses_input_domain_and_fences_secondary_streams() {
+    let input = explicit_i32_column(&[1, 2, 3, 1], 812);
+    let keys = explicit_i32_column(&[1, 2, 3], 813);
+    let values = explicit_i32_column(&[100, 200, 300], 814);
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let expected_exec_mr = input.__debug_execution_domain_mr_value();
+    let last_fenced_stream = values.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), last_fenced_stream);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]
@@ -757,8 +911,9 @@ fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
     assert_eq!(err.operation(), "dataframe::with_column");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:81(")));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("ambient_default")));
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:81(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("ambient_default")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
 }
 
 #[test]
@@ -776,22 +931,117 @@ fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
     assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 82);
 }
 
-/// v2 semantics: assign with mixed domains (explicit + ambient) succeeds.
-/// Output provenance follows the target DataFrame's domain.
 #[test]
-fn zero_column_explicit_dataframe_assign_succeeds_with_mixed_domain_series() {
+fn zero_column_explicit_dataframe_with_column_rejects_same_device_mixed_runtime_series() {
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 821))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
+    let explicit = explicit_i32_series("value", &[10, 20, 30], 822);
+
+    let err = zero.with_column("value", explicit).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:821(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("explicit:822(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+}
+
+/// Slice 5: inserting into an explicit zero-column frame must not perform an
+/// implicit relocation.
+#[test]
+fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
     let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
     let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
 
-    let result = zero.assign([("value", ambient)]).unwrap();
+    let err = zero.assign([("value", ambient)]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:83(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("ambient_default")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+}
 
-    // Output retains the target DataFrame's explicit domain.
+#[test]
+fn zero_column_explicit_dataframe_assign_preserves_same_explicit_domain() {
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 88))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
+    let explicit = explicit_i32_series("value", &[10, 20, 30], 88);
+
+    let result = zero.assign([("value", explicit)]).unwrap();
+
     assert_eq!(result.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(result.__debug_execution_domain_id(), 83);
-    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 83);
+    assert_eq!(result.__debug_execution_domain_id(), 88);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 88);
+}
+
+#[test]
+fn zero_column_explicit_dataframe_assign_rejects_same_device_mixed_runtime_series() {
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 89))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
+    let explicit = explicit_i32_series("value", &[10, 20, 30], 90);
+
+    let err = zero.assign([("value", explicit)]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:89(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("explicit:90(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+}
+
+#[test]
+fn zero_column_explicit_dataframe_with_columns_literal_preserves_same_explicit_domain() {
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 91))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
+
+    let result = zero.with_columns([lit(7i32).alias("value"), lit(1i32).alias("flag")]).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 91);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 91);
+    assert_eq!(result.series("flag").unwrap().as_column().__debug_execution_domain_id(), 91);
+    assert_eq!(result.series("value").unwrap().to_vec::<i32>().unwrap(), vec![7, 7, 7]);
+    assert_eq!(result.series("flag").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 1]);
+}
+
+#[test]
+fn explicit_dataframe_with_column_rejects_same_device_mixed_runtime_series() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 84))]).unwrap();
+    let replacement = explicit_i32_series("value", &[10, 20, 30], 85);
+
+    let err = df.with_column("value", replacement).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:84(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("explicit:85(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+}
+
+#[test]
+fn explicit_dataframe_assign_rejects_same_device_mixed_runtime_series() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 86))]).unwrap();
+    let replacement = explicit_i32_series("value", &[10, 20, 30], 87);
+
+    let err = df.assign([("value", replacement)]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert!(err.context().iter().any(|(key, value)| *key == "frame_domain" && value.starts_with("explicit:86(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "series_domain" && value.starts_with("explicit:87(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
 }
 
 #[test]
@@ -863,6 +1113,7 @@ fn table_view_from_column_views_rejects_mixed_domains() {
     assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:123(")));
     assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:124(")));
     assert!(err.context().iter().any(|(key, value)| *key == "column_index" && value == "1"));
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
 }
 
 #[test]
@@ -928,6 +1179,89 @@ fn search_contains_retains_explicit_domain_and_uses_exec_options() {
     reset_sync_observation();
     assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn strings_contains_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(2001)
+        .unwrap();
+    let target = Scalar::from_string("alpha").unwrap().__debug_rebind_execution_domain_explicit(2002).unwrap();
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let fenced_stream = target.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = strings::str_contains(&input.view().unwrap(), &target).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn strings_starts_with_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(2003)
+        .unwrap();
+    let target = Scalar::from_string("alp").unwrap().__debug_rebind_execution_domain_explicit(2004).unwrap();
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let fenced_stream = target.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = strings::starts_with(&input.view().unwrap(), &target).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn strings_ends_with_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(2005)
+        .unwrap();
+    let target = Scalar::from_string("ha").unwrap().__debug_rebind_execution_domain_explicit(2006).unwrap();
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let fenced_stream = target.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = strings::ends_with(&input.view().unwrap(), &target).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn strings_strip_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let input = Column::from_strings(&["xxalpha", "betaxx", "xxalphabetxx"])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(2007)
+        .unwrap();
+    let target = Scalar::from_string("x").unwrap().__debug_rebind_execution_domain_explicit(2008).unwrap();
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let fenced_stream = target.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = strings::strip(&input.view().unwrap(), cudf::StripSide::Both, &target).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(
+        result.view().unwrap().to_strings().unwrap(),
+        vec!["alpha".to_string(), "beta".to_string(), "alphabet".to_string()]
+    );
 }
 
 /// v2 semantics: search::contains with mixed explicit domains succeeds.
@@ -1143,8 +1477,8 @@ fn dictionary_match_dictionaries_succeeds_with_mixed_domains() {
 #[test]
 fn series_isin_uses_retained_explicit_domain_stream_end_to_end() {
     let rt = sample_runtime();
-    let base = Series::new_with_runtime(&rt, "base", &[3i32, 1, 2, 1]).unwrap();
-    let values = Series::new_with_runtime(&rt, "values", &[1i32, 3]).unwrap();
+    let base = rt.series("base", &[3i32, 1, 2, 1]).unwrap();
+    let values = rt.series("values", &[1i32, 3]).unwrap();
     let expected_stream = base.as_column().__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
@@ -1264,9 +1598,8 @@ fn stream_compaction_distinct_retains_explicit_domain_and_uses_exec_options() {
 fn dataframe_filter_isin_succeeds_with_mixed_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let df =
-        DataFrame::from_columns([("id", Series::new_with_runtime(&left_rt, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
-    let values = Series::new_with_runtime(&right_rt, "values", &[20i32, 30]).unwrap();
+    let df = DataFrame::from_columns([("id", left_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let values = right_rt.series("values", &[20i32, 30]).unwrap();
     let expected_stream = df.__debug_execution_domain_stream_value();
     let expected_mr = df.__debug_execution_domain_mr_value();
 
@@ -1377,6 +1710,31 @@ fn sorting_sort_by_key_succeeds_with_mixed_domains() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     // Verify correct values.
+    reset_sync_observation();
+    let host = sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn sorting_stable_sort_by_key_succeeds_with_mixed_domains() {
+    let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 1330)]).unwrap();
+    let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 1331)]).unwrap();
+    let expected_stream = values.__debug_execution_domain_stream_value();
+    let expected_mr = values.__debug_execution_domain_mr_value();
+    let expected_sync_stream = keys.__debug_execution_domain_stream_value();
+
+    reset_sync_observation();
+    reset_exec_observation();
+    let sorted = sorting::stable_sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
+
+    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(sorted.__debug_execution_domain_id(), 1331);
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
     reset_sync_observation();
     let host = sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(host, vec![10, 20, 30]);
@@ -1758,6 +2116,44 @@ fn binary_operation_sv_succeeds_with_mixed_domains() {
 }
 
 #[test]
+fn binary_operation_vs_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let lhs = explicit_i32_column(&[2, 3, 4], 1580);
+    let rhs = Scalar::from_value(10i32).unwrap().__debug_rebind_execution_domain_explicit(1581).unwrap();
+    let expected_exec_stream = lhs.__debug_execution_domain_stream_value();
+    let fenced_stream = rhs.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result =
+        binary::binary_operation_vs(&lhs.view().unwrap(), &rhs, BinaryOperator::Mul, &DataType::new(TypeId::Int32))
+            .unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+}
+
+#[test]
+fn binary_operation_sv_with_same_device_mixed_explicit_domains_fences_column_stream() {
+    let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(1582).unwrap();
+    let rhs = explicit_i32_column(&[2, 4, 5], 1583);
+    let expected_exec_stream = lhs.__debug_execution_domain_stream_value();
+    let fenced_stream = rhs.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result =
+        binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
+            .unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
+}
+
+#[test]
 fn reduction_reduce_retains_explicit_domain_and_uses_exec_options() {
     let input = explicit_i32_column(&[1, 2, 3, 4], 160);
     let expected_stream = input.__debug_execution_domain_stream_value();
@@ -1979,6 +2375,31 @@ fn copying_gather_succeeds_with_mixed_domains() {
 }
 
 #[test]
+fn copying_gather_unchecked_succeeds_with_mixed_domains() {
+    let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 1780)]).unwrap();
+    let gather_map = explicit_i32_column(&[2, 0], 1781);
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
+    let expected_sync_stream = gather_map.__debug_execution_domain_stream_value();
+
+    reset_sync_observation();
+    reset_exec_observation();
+    let result = unsafe { copying::gather_unchecked(&table.view().unwrap(), &gather_map.view().unwrap()) }.unwrap();
+
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 1780);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let host = result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![30, 10]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
 fn replace_nulls_retains_input_explicit_domain_and_uses_exec_options() {
     let input = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
         .unwrap()
@@ -2000,6 +2421,26 @@ fn replace_nulls_retains_input_explicit_domain_and_uses_exec_options() {
     reset_sync_observation();
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 99, 3]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn replace_nulls_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
+    let input = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(1790)
+        .unwrap();
+    let replacement = Scalar::from_value(99i32).unwrap().__debug_rebind_execution_domain_explicit(1791).unwrap();
+    let expected_exec_stream = input.__debug_execution_domain_stream_value();
+    let fenced_stream = replacement.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = replace::replace_nulls(&input.view().unwrap(), &replacement).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 99, 3]);
 }
 
 #[test]
@@ -2037,7 +2478,9 @@ fn replace_nulls_column_succeeds_with_mixed_domains() {
     let replacement = explicit_i32_column(&[10, 20, 30], 182);
     let expected_stream = input.__debug_execution_domain_stream_value();
     let expected_mr = input.__debug_execution_domain_mr_value();
+    let expected_sync_stream = replacement.__debug_execution_domain_stream_value();
 
+    reset_sync_observation();
     reset_exec_observation();
     let result = replace::replace_nulls_column(&input.view().unwrap(), &replacement.view().unwrap()).unwrap();
 
@@ -2049,6 +2492,7 @@ fn replace_nulls_column_succeeds_with_mixed_domains() {
     // Execution used the input column's stream and MR.
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     // Verify correct values.
     reset_sync_observation();
@@ -2101,7 +2545,9 @@ fn join_inner_join_succeeds_with_mixed_domains() {
     let right_payload = Table::from_columns(vec![explicit_i32_column(&[200, 300, 400], 185)]).unwrap();
     let expected_stream = left_keys.__debug_execution_domain_stream_value();
     let expected_mr = left_keys.__debug_execution_domain_mr_value();
+    let expected_sync_stream = right_keys.__debug_execution_domain_stream_value();
 
+    reset_sync_observation();
     reset_exec_observation();
     let result = join::inner_join(
         &left_keys.view().unwrap(),
@@ -2123,6 +2569,7 @@ fn join_inner_join_succeeds_with_mixed_domains() {
     // Execution used the left table's stream and MR.
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     // Verify correct values.
     reset_sync_observation();
@@ -2131,6 +2578,106 @@ fn join_inner_join_succeeds_with_mixed_domains() {
     assert_eq!(left_host, vec![2, 3]);
     assert_eq!(right_host, vec![2, 3]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn join_left_join_succeeds_with_mixed_domains() {
+    let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 1850)]).unwrap();
+    let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1851)]).unwrap();
+    let left_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 1850))])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap()
+        .to_table_copy()
+        .unwrap();
+    let right_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[2, 4], 1851))])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap()
+        .to_table_copy()
+        .unwrap();
+    let expected_stream = left_keys.__debug_execution_domain_stream_value();
+    let expected_mr = left_keys.__debug_execution_domain_mr_value();
+    let expected_sync_stream = right_keys.__debug_execution_domain_stream_value();
+
+    reset_sync_observation();
+    reset_exec_observation();
+    let result = join::left_join(
+        &left_keys.view().unwrap(),
+        &right_keys.view().unwrap(),
+        &left_payload.view().unwrap(),
+        &right_payload.view().unwrap(),
+        join::NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(result.left.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.right.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.left.__debug_execution_domain_id(), 1850);
+    assert_eq!(result.right.__debug_execution_domain_id(), 1850);
+    assert_eq!(result.left.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let mut left_host = nullable_i32_table_column(&result.left, 0);
+    let mut right_host = nullable_i32_table_column(&result.right, 0);
+    left_host.sort();
+    right_host.sort();
+    assert_eq!(left_host, vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(right_host, vec![None, None, Some(2)]);
+}
+
+#[test]
+fn join_full_join_succeeds_with_mixed_domains() {
+    let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1852)]).unwrap();
+    let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3], 1853)]).unwrap();
+    let left_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 1852))])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap()
+        .to_table_copy()
+        .unwrap();
+    let right_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[2, 3], 1853))])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap()
+        .to_table_copy()
+        .unwrap();
+    let expected_stream = left_keys.__debug_execution_domain_stream_value();
+    let expected_mr = left_keys.__debug_execution_domain_mr_value();
+    let expected_sync_stream = right_keys.__debug_execution_domain_stream_value();
+
+    reset_sync_observation();
+    reset_exec_observation();
+    let result = join::full_join(
+        &left_keys.view().unwrap(),
+        &right_keys.view().unwrap(),
+        &left_payload.view().unwrap(),
+        &right_payload.view().unwrap(),
+        join::NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(result.left.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.right.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.left.__debug_execution_domain_id(), 1852);
+    assert_eq!(result.right.__debug_execution_domain_id(), 1852);
+    assert_eq!(result.left.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let mut left_host = nullable_i32_table_column(&result.left, 0);
+    let mut right_host = nullable_i32_table_column(&result.right, 0);
+    left_host.sort();
+    right_host.sort();
+    assert_eq!(left_host, vec![None, Some(1), Some(2)]);
+    assert_eq!(right_host, vec![None, Some(2), Some(3)]);
 }
 
 #[test]
@@ -2198,6 +2745,35 @@ fn groupby_aggregate_succeeds_with_mixed_domains() {
     assert_eq!(key_host, vec![1, 2]);
     assert_eq!(sum_host, vec![30, 70]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn groupby_aggregate_with_same_device_mixed_explicit_domains_uses_keys_domain_and_fences_values_stream() {
+    let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 1870)]).unwrap();
+    let values = explicit_i32_column(&[10, 20, 30, 40], 1871);
+    let values_view = values.view().unwrap();
+    let aggregations = [Agg::Sum];
+    let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
+    let expected_exec_stream = keys.__debug_execution_domain_stream_value();
+    let expected_mr = keys.__debug_execution_domain_mr_value();
+    let fenced_stream = values.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = groupby::groupby_aggregate(&keys.view().unwrap(), &requests, groupby::NullPolicy::Exclude).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.keys.__debug_execution_domain_id(), keys.__debug_execution_domain_id());
+    assert_eq!(result.results[0][0].__debug_execution_domain_id(), keys.__debug_execution_domain_id());
+
+    reset_sync_observation();
+    let key_host = result.keys.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let sum_host = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
+    assert_eq!(key_host, vec![1, 2]);
+    assert_eq!(sum_host, vec![30, 70]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]

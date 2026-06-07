@@ -781,7 +781,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
-    let sorted = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(sorted.__debug_execution_domain_id(), 501);
@@ -801,7 +801,7 @@ fn sort_with_execution_context_rejects_ambient_default_promotion() {
     let stream = CudaStream::new().unwrap();
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
-    let err = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap_err();
+    let err = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
@@ -822,7 +822,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
     let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
-    let sorted = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
     assert_ne!(obs_last_mr() as usize, default_mr);
     assert_eq!(sorted.__debug_execution_domain_id(), 502);
@@ -848,7 +848,7 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
 
     obs_reset();
     let joined = left
-        .__debug_merge_with_execution_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx)
+        .__debug_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx)
         .unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
@@ -872,7 +872,7 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     obs_reset();
     let result = df
         .groupby(["key"])
-        .__debug_agg_with_execution_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx)
+        .__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx)
         .unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
@@ -891,7 +891,7 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
-    let gathered = df.__debug_gather_with_execution_context(&indices, &ctx).unwrap();
+    let gathered = df.__debug_gather_in_context(&indices, &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(gathered.__debug_execution_domain_id(), 505);
@@ -912,7 +912,7 @@ fn gather_with_execution_context_rejects_ambient_default_promotion() {
     let stream = CudaStream::new().unwrap();
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
-    let err = df.__debug_gather_with_execution_context(&indices, &ctx).unwrap_err();
+    let err = df.__debug_gather_in_context(&indices, &ctx).unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
@@ -940,7 +940,7 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
-    let filtered = df.__debug_filter_with_execution_context(&mask, &ctx).unwrap();
+    let filtered = df.__debug_filter_in_context(&mask, &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(filtered.__debug_execution_domain_id(), 506);
@@ -961,7 +961,7 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
     let stream = CudaStream::new().unwrap();
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
-    let err = df.__debug_filter_with_execution_context(&mask, &ctx).unwrap_err();
+    let err = df.__debug_filter_in_context(&mask, &ctx).unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.is_permanent());
@@ -975,7 +975,7 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
 // ===========================================================================
 // Category 4: Default-context fallback
 //
-// Verify that existing (non-_with_context) APIs still use the default stream
+// Verify that existing high-level APIs outside the scoped override path still use the default stream
 // by checking the observation hook after a regular operation.
 // ===========================================================================
 
@@ -997,8 +997,8 @@ fn column_copy_default_uses_default_stream() {
 }
 
 /// Existing `DataFrame::sort_values` (no context) should produce correct
-/// results. This is the backward-compatibility baseline for
-/// sort_values_with_context.
+/// results. This is the default-path baseline for
+/// `DataFrame::in_context(&ctx).sort_values(...)`.
 #[test]
 fn sort_values_default_produces_correct_results() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
@@ -1012,7 +1012,7 @@ fn sort_values_default_produces_correct_results() {
 }
 
 /// Existing `DataFrame::merge` (no context) should produce correct results.
-/// This is the backward-compatibility baseline for merge_with_context.
+/// This is the default-path baseline for `DataFrame::in_context(&ctx).merge(...)`.
 #[test]
 fn merge_default_produces_correct_results() {
     let left_ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
@@ -1029,7 +1029,7 @@ fn merge_default_produces_correct_results() {
 }
 
 /// Existing `GroupBy::agg` (no context) should produce correct results.
-/// This is the backward-compatibility baseline for agg_with_context.
+/// This is the default-path baseline for `GroupBy::in_context(&ctx).agg(...)`.
 #[test]
 fn groupby_agg_default_produces_correct_results() {
     let keys = cudf::Series::new::<i32>("key", &[1, 1, 2, 2]).unwrap();

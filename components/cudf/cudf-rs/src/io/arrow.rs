@@ -137,56 +137,60 @@ pub fn dataframe_from_record_batch(batch: &RecordBatch) -> Result<DataFrame> {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers: cudf TypeId ↔ Arrow DataType mapping
+// Trait-based cudf TypeId ↔ Arrow DataType mapping
 // ---------------------------------------------------------------------------
 
-/// Map a cudf `TypeId` to the corresponding Arrow `DataType`.
-#[allow(dead_code)]
-fn cudf_type_to_arrow(type_id: TypeId) -> Result<ArrowDataType> {
-    match type_id {
-        TypeId::Int8 => Ok(ArrowDataType::Int8),
-        TypeId::Int16 => Ok(ArrowDataType::Int16),
-        TypeId::Int32 => Ok(ArrowDataType::Int32),
-        TypeId::Int64 => Ok(ArrowDataType::Int64),
-        TypeId::UInt8 => Ok(ArrowDataType::UInt8),
-        TypeId::UInt16 => Ok(ArrowDataType::UInt16),
-        TypeId::UInt32 => Ok(ArrowDataType::UInt32),
-        TypeId::UInt64 => Ok(ArrowDataType::UInt64),
-        TypeId::Float32 => Ok(ArrowDataType::Float32),
-        TypeId::Float64 => Ok(ArrowDataType::Float64),
-        TypeId::Bool8 => Ok(ArrowDataType::Boolean),
-        TypeId::String => Ok(ArrowDataType::Utf8),
-        _ => Err(Error::new(
-            ErrorKind::InvalidOperation,
-            format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
-        )
-        .with_operation("arrow::cudf_type_to_arrow")
-        .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
+impl TryFrom<TypeId> for ArrowDataType {
+    type Error = Error;
+
+    fn try_from(type_id: TypeId) -> Result<Self> {
+        match type_id {
+            TypeId::Int8 => Ok(ArrowDataType::Int8),
+            TypeId::Int16 => Ok(ArrowDataType::Int16),
+            TypeId::Int32 => Ok(ArrowDataType::Int32),
+            TypeId::Int64 => Ok(ArrowDataType::Int64),
+            TypeId::UInt8 => Ok(ArrowDataType::UInt8),
+            TypeId::UInt16 => Ok(ArrowDataType::UInt16),
+            TypeId::UInt32 => Ok(ArrowDataType::UInt32),
+            TypeId::UInt64 => Ok(ArrowDataType::UInt64),
+            TypeId::Float32 => Ok(ArrowDataType::Float32),
+            TypeId::Float64 => Ok(ArrowDataType::Float64),
+            TypeId::Bool8 => Ok(ArrowDataType::Boolean),
+            TypeId::String => Ok(ArrowDataType::Utf8),
+            _ => Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
+            )
+            .with_operation("arrow::TryFrom<TypeId> for ArrowDataType")
+            .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
+        }
     }
 }
 
-/// Map an Arrow `DataType` to the corresponding cudf `TypeId`.
-#[allow(dead_code)]
-fn arrow_type_to_cudf(dt: &ArrowDataType) -> Result<TypeId> {
-    match dt {
-        ArrowDataType::Int8 => Ok(TypeId::Int8),
-        ArrowDataType::Int16 => Ok(TypeId::Int16),
-        ArrowDataType::Int32 => Ok(TypeId::Int32),
-        ArrowDataType::Int64 => Ok(TypeId::Int64),
-        ArrowDataType::UInt8 => Ok(TypeId::UInt8),
-        ArrowDataType::UInt16 => Ok(TypeId::UInt16),
-        ArrowDataType::UInt32 => Ok(TypeId::UInt32),
-        ArrowDataType::UInt64 => Ok(TypeId::UInt64),
-        ArrowDataType::Float32 => Ok(TypeId::Float32),
-        ArrowDataType::Float64 => Ok(TypeId::Float64),
-        ArrowDataType::Boolean => Ok(TypeId::Bool8),
-        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
-        _ => Err(Error::new(
-            ErrorKind::InvalidOperation,
-            format!("unsupported Arrow type for cudf conversion: {:?}", dt),
-        )
-        .with_operation("arrow::arrow_type_to_cudf")
-        .with_context("arrow_type", format!("{:?}", dt))),
+impl TryFrom<&ArrowDataType> for TypeId {
+    type Error = Error;
+
+    fn try_from(dt: &ArrowDataType) -> Result<Self> {
+        match dt {
+            ArrowDataType::Int8 => Ok(TypeId::Int8),
+            ArrowDataType::Int16 => Ok(TypeId::Int16),
+            ArrowDataType::Int32 => Ok(TypeId::Int32),
+            ArrowDataType::Int64 => Ok(TypeId::Int64),
+            ArrowDataType::UInt8 => Ok(TypeId::UInt8),
+            ArrowDataType::UInt16 => Ok(TypeId::UInt16),
+            ArrowDataType::UInt32 => Ok(TypeId::UInt32),
+            ArrowDataType::UInt64 => Ok(TypeId::UInt64),
+            ArrowDataType::Float32 => Ok(TypeId::Float32),
+            ArrowDataType::Float64 => Ok(TypeId::Float64),
+            ArrowDataType::Boolean => Ok(TypeId::Bool8),
+            ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
+            _ => Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("unsupported Arrow type for cudf conversion: {:?}", dt),
+            )
+            .with_operation("arrow::TryFrom<&ArrowDataType> for TypeId")
+            .with_context("arrow_type", format!("{:?}", dt))),
+        }
     }
 }
 

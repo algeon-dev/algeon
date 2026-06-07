@@ -5,10 +5,13 @@
 
 use std::{ptr, sync::Arc};
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
-    scalar::Scalar,
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+        scalar::Scalar,
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 // ---------------------------------------------------------------------------
@@ -49,7 +52,7 @@ pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn to_lower_impl(
+pub(crate) fn to_lower_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -71,7 +74,7 @@ pub fn to_upper(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn to_upper_impl(
+pub(crate) fn to_upper_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -94,12 +97,17 @@ fn to_upper_impl(
 /// `target` must be a valid (non-null) string scalar.
 pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        target.execution_domain(),
+        "strings::contains",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     str_contains_impl(input, target, exec_options.as_ref(), "strings::contains")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn str_contains_impl(
+pub(crate) fn str_contains_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -119,12 +127,17 @@ fn str_contains_impl(
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
 pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        target.execution_domain(),
+        "strings::starts_with",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     starts_with_impl(input, target, exec_options.as_ref(), "strings::starts_with")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn starts_with_impl(
+pub(crate) fn starts_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -144,12 +157,17 @@ fn starts_with_impl(
 /// Element-wise ends-with test against a scalar string. Returns a BOOL8 column.
 pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        target.execution_domain(),
+        "strings::ends_with",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     ends_with_impl(input, target, exec_options.as_ref(), "strings::ends_with")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn ends_with_impl(
+pub(crate) fn ends_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -176,12 +194,17 @@ fn ends_with_impl(
 /// string scalar to strip whitespace.
 pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        to_strip.execution_domain(),
+        "strings::strip",
+    )?;
     let exec_options = output_domain.explicit_exec_options_raw();
     strip_impl(input, side, to_strip, exec_options.as_ref(), "strings::strip")
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn strip_impl(
+pub(crate) fn strip_impl(
     input: &ColumnView<'_>,
     side: StripSide,
     to_strip: &Scalar,
@@ -214,7 +237,7 @@ pub fn count_characters(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn count_characters_impl(
+pub(crate) fn count_characters_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -236,7 +259,7 @@ pub fn count_bytes(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn count_bytes_impl(
+pub(crate) fn count_bytes_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,

@@ -8,4 +8,4 @@ mod agg;
 mod dataframe;
 
 pub use agg::{Agg, AggregationRequest, GroupByResult, NullPolicy, groupby_aggregate};
-pub use dataframe::{AggSpec, GroupBy, GroupByOptions};
+pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions};
