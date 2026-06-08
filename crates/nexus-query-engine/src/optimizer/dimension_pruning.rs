@@ -290,10 +290,9 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
     }
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
-    let sink = plan.sink().clone();
     let root = plan.root_id();
     DimensionDerivedRowGroupPruningResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, root, sink),
+        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink()),
         change,
         diagnostics,
     }
@@ -325,8 +324,7 @@ fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan,
         return (plan, false);
     }
     let root = plan.root_id();
-    let sink = plan.sink().clone();
-    (QueryPlan::from_rewritten_parts(nodes, root, sink), true)
+    (rewrite::finish_rewritten_plan(nodes, root, plan.sink()), true)
 }
 
 /// Returns a copy of `plan` with eligible post-aggregate group-key filters
@@ -1481,7 +1479,7 @@ pub fn apply_local_parquet_row_group_selections(
     let sink = plan.sink().clone();
     let dynamic_filter_routes = plan.dynamic_filter_routes().to_vec();
     let unchanged = |nodes: Vec<QueryNode>| LocalParquetRowGroupSelectionApplyResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, root, sink.clone())
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink)
             .with_dynamic_filter_routes(dynamic_filter_routes.clone()),
         applied: false,
         before: 0,
@@ -1538,7 +1536,7 @@ pub fn apply_local_parquet_row_group_selections(
     }
     source.refresh_diagnostics();
     LocalParquetRowGroupSelectionApplyResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, root, sink).with_dynamic_filter_routes(dynamic_filter_routes),
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink).with_dynamic_filter_routes(dynamic_filter_routes),
         applied: true,
         before,
         after,
@@ -1579,7 +1577,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
     let root = plan.root_id();
     let sink = plan.sink().clone();
     let unchanged = |nodes: Vec<QueryNode>| DimensionDerivedApplyResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, root, sink.clone()),
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink),
         applied: false,
         before: 0,
         after: 0,
@@ -1622,7 +1620,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
     }
     source.refresh_diagnostics();
     DimensionDerivedApplyResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, root, sink),
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink),
         applied: true,
         before,
         after,

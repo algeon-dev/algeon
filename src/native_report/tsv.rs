@@ -130,7 +130,7 @@ pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractG
         if index > 0 {
             output.push('|');
         }
-        output.push_str(&stable_tsv_field(&row.to_stable_kv_row()));
+        output.push_str(&stable_nested_tsv_field(&row.to_stable_kv_row()));
     }
     output
 }
@@ -165,7 +165,7 @@ pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBounde
             graph.barrier_count,
             graph.resource_count,
             graph.gate_count,
-            stable_tsv_field(&graph.sink_kind),
+            stable_nested_tsv_field(&graph.sink_kind),
             graph.sink_gate_count,
         );
     }
@@ -179,29 +179,21 @@ pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) 
 
     let mut rows = rows.iter().collect::<Vec<_>>();
     rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    rows.iter().map(|row| stable_nested_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
 pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeDynamicFilterRuntimeMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_lakehouse_cache_fill_event_snapshot_rows(
     rows: &[NativeLakehouseCacheFillEventMetricRow],
 ) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
+    format_stable_nested_metric_rows(rows, NativeLakehouseCacheFillEventMetricRow::to_stable_kv_row)
+}
 
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+pub(super) fn format_source_read_runtime_rows(rows: &[NativeSourceReadRuntimeMetricRow]) -> String {
+    format_stable_nested_metric_rows(rows, NativeSourceReadRuntimeMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_native_optimizer_diagnostics(
@@ -216,33 +208,15 @@ pub(super) fn format_native_optimizer_diagnostics(
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeJoinStrategyMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeAggregateStrategyMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeGraphRuntimeMetricRow::to_stable_kv_row)
 }
 
 #[cfg(test)]
@@ -282,26 +256,88 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn nested_metric_row_formatters_escape_delimiters_sort_rows_and_cover_empty_rows() {
+        assert_eq!(format_graph_runtime_rows(&[]), "none");
+        assert_eq!(format_task_operator_rows(&[]), "none");
+        assert_eq!(format_task_runtime_rows(&[]), "none");
+        assert_eq!(format_dynamic_filter_runtime_rows(&[]), "none");
+        assert_eq!(format_source_read_runtime_rows(&[]), "none");
+        assert_eq!(format_lakehouse_cache_fill_event_snapshot_rows(&[]), "none");
+        assert_eq!(format_aggregate_strategy_rows(&[]), "none");
+        assert_eq!(format_join_strategy_rows(&[]), "none");
+
+        let formatted = format_task_operator_rows(&[
+            NativeTaskOperatorMetricRow {
+                operator_kind: "z|op\twith\nbreak".to_string(),
+                task_count: 2,
+                ..Default::default()
+            },
+            NativeTaskOperatorMetricRow { operator_kind: "a".to_string(), task_count: 1, ..Default::default() },
+        ]);
+        assert!(formatted.starts_with("operator_kind=a,"));
+        assert_eq!(formatted.matches('|').count(), 1);
+        assert!(formatted.contains("operator_kind=z op with break"));
+
+        assert!(
+            !format_graph_runtime_rows(&[NativeGraphRuntimeMetricRow {
+                node_id: "g|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("g|1")
+        );
+        assert!(
+            !format_task_runtime_rows(&[NativeTaskRuntimeMetricRow {
+                compiled_task_id: "t|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("t|1")
+        );
+        assert!(
+            !format_dynamic_filter_runtime_rows(&[NativeDynamicFilterRuntimeMetricRow {
+                dynamic_filter_id: "df|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("df|1")
+        );
+        assert!(
+            !format_source_read_runtime_rows(&[NativeSourceReadRuntimeMetricRow {
+                source_node_id: "s|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("s|1")
+        );
+        assert!(
+            !format_lakehouse_cache_fill_event_snapshot_rows(&[NativeLakehouseCacheFillEventMetricRow {
+                outcome: "filled|late".to_string(),
+                ..Default::default()
+            }])
+            .contains("filled|late")
+        );
+        assert!(
+            !format_aggregate_strategy_rows(&[NativeAggregateStrategyMetricRow {
+                node_id: "agg|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("agg|1")
+        );
+        assert!(
+            !format_join_strategy_rows(&[NativeJoinStrategyMetricRow {
+                node_id: "join|1".to_string(),
+                ..Default::default()
+            }])
+            .contains("join|1")
+        );
+    }
 }
 
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeTaskOperatorMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    format_stable_nested_metric_rows(rows, NativeTaskRuntimeMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {
@@ -337,6 +373,20 @@ fn metadata_value(value: &str) -> String {
 
 pub(super) fn stable_tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn stable_nested_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r', '|'], " ")
+}
+
+fn format_stable_nested_metric_rows<T>(rows: &[T], stable_row: impl Fn(&T) -> String) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().map(stable_row).collect::<Vec<_>>();
+    rows.sort();
+    rows.into_iter().map(|row| stable_nested_tsv_field(&row)).collect::<Vec<_>>().join("|")
 }
 
 pub(super) fn metric_count(metrics: &MetricsSet, name: &str) -> usize {

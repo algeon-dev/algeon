@@ -26,6 +26,32 @@ use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServ
 use tokio::sync::Barrier;
 
 const TSV_SCHEMA_VERSION: u32 = 1;
+const TSV_COLUMNS: &[&str] = &[
+    "row_type",
+    "request_index",
+    "tenant_id",
+    "workload_class",
+    "query_id",
+    "iteration",
+    "admission_sequence",
+    "admission_wait_ms",
+    "total_wall_ms",
+    "native_wall_ms",
+    "planning_outcome",
+    "post_native_execution_path",
+    "native_runtime_outcome",
+    "parity_status",
+    "cpu_output_rows",
+    "native_output_rows",
+    "cpu_output_fingerprint",
+    "native_output_fingerprint",
+    "error_code",
+    "error_kind",
+    "error_status",
+    "error_operation",
+    "error_facts",
+    "error_message",
+];
 
 const DATASET_ROOT_ENV: &str = CUDF_TPCH_PARQUET_DIR_ENV;
 const BULK_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_BULK_QUERY_IDS";
@@ -241,7 +267,8 @@ impl StressReport {
                 format_ms(summary.p95_total_wall_ms),
             ));
         }
-        output.push_str("row_type\trequest_index\ttenant_id\tworkload_class\tquery_id\titeration\tadmission_sequence\tadmission_wait_ms\ttotal_wall_ms\tnative_wall_ms\tplanning_outcome\tpost_native_execution_path\tnative_runtime_outcome\tparity_status\tcpu_output_rows\tnative_output_rows\tcpu_output_fingerprint\tnative_output_fingerprint\terror_code\terror_kind\terror_status\terror_operation\terror_facts\terror_message\n");
+        output.push_str(&TSV_COLUMNS.join("\t"));
+        output.push('\n');
         for row in &self.rows {
             output.push_str(&row.to_tsv_line());
             output.push('\n');
@@ -252,7 +279,7 @@ impl StressReport {
 
 impl StressRow {
     fn to_tsv_line(&self) -> String {
-        [
+        let fields = [
             self.row_type.to_string(),
             self.request_index.to_string(),
             self.tenant_id.clone(),
@@ -277,11 +304,9 @@ impl StressRow {
             self.error.operation.clone().unwrap_or_else(|| "none".to_string()),
             format_facts(&self.error.facts),
             self.error.message.clone().unwrap_or_else(|| "none".to_string()),
-        ]
-        .into_iter()
-        .map(|field| tsv_escape(&field))
-        .collect::<Vec<_>>()
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), TSV_COLUMNS.len());
+        fields.into_iter().map(|field| tsv_escape(&field)).collect::<Vec<_>>().join("\t")
     }
 }
 
@@ -895,6 +920,35 @@ mod tests {
     #[test]
     fn tsv_escape_removes_row_and_field_breaks() {
         assert_eq!(tsv_escape("a\tb\nc\rd"), "a\\tb\\nc\\rd");
+    }
+
+    #[test]
+    fn stress_tsv_row_contract_matches_columns() {
+        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_COLUMNS.first(), Some(&"row_type"));
+        assert_eq!(TSV_COLUMNS.last(), Some(&"error_message"));
+        let row = StressRow {
+            row_type: "query",
+            request_index: 1,
+            tenant_id: "interactive".to_string(),
+            workload_class: "interactive",
+            query_id: "q06".to_string(),
+            iteration: 1,
+            admission_sequence: Some(1),
+            admission_wait_ms: Some(0.0),
+            total_wall_ms: 10.0,
+            native_wall_ms: Some(5.0),
+            planning_outcome: "accepted_replaced".to_string(),
+            post_native_execution_path: "native".to_string(),
+            native_runtime_outcome: "succeeded",
+            parity_status: "matched",
+            cpu_output_rows: Some(1),
+            native_output_rows: Some(1),
+            cpu_output_fingerprint: Some("cpu".to_string()),
+            native_output_fingerprint: Some("native".to_string()),
+            error: StructuredFailure::default(),
+        };
+        assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
     }
 
     #[test]

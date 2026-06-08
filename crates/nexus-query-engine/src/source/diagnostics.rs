@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::{LocalParquetFile, PartitionColumn, SourceColumnRef};
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +192,46 @@ impl SourceDiagnostics {
             rejected_features,
         }
     }
+}
+
+pub(crate) fn redacted_path_diagnostic(path: &Path) -> String {
+    let path = path.display().to_string();
+    redacted_location_diagnostic(path.as_str()).unwrap_or(path)
+}
+
+pub(crate) fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
+    redacted_location_diagnostic(stable_id).unwrap_or_else(|| stable_id.to_string())
+}
+
+pub(crate) fn redacted_object_store_path_diagnostic(path: &str) -> String {
+    format!("object_store_path:fnv64:{:016x}", stable_fnv1a64(path.as_bytes()))
+}
+
+pub(super) fn redacted_debug_value(kind: &str, value: &str) -> String {
+    format!("{kind}:fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len())
+}
+
+pub(super) fn redacted_debug_option(kind: &str, value: Option<&str>) -> Option<String> {
+    value.map(|value| redacted_debug_value(kind, value))
+}
+
+fn redacted_location_diagnostic(location: &str) -> Option<String> {
+    let (scheme, _) = location.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    Some(object_store_diagnostic_id(scheme.as_str(), location))
+}
+
+pub(super) fn object_store_diagnostic_id(scheme: &str, identity: &str) -> String {
+    format!("object_store:{scheme}:fnv64:{:016x}", stable_fnv1a64(identity.as_bytes()))
+}
+
+pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn summarize_source_read_strategy(files: &[LocalParquetFile]) -> String {

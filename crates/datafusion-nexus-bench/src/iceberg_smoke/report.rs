@@ -8,13 +8,14 @@ pub struct IcebergNativeSmokeReport {
 impl IcebergNativeSmokeReport {
     pub fn to_tsv(&self) -> String {
         let rows = self.rows.iter().map(IcebergNativeSmokeReportRow::to_tsv_row).collect::<Vec<_>>().join("\n");
-        format!("# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{REPORT_HEADER}\n{rows}\n",)
+        let header = REPORT_COLUMNS.join("\t");
+        format!("# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{header}\n{rows}\n",)
     }
 }
 
 pub fn write_smoke_tsv_header(writer: &mut dyn Write) -> SmokeResult<()> {
     writeln!(writer, "# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
-    writeln!(writer, "{REPORT_HEADER}")?;
+    writeln!(writer, "{}", REPORT_COLUMNS.join("\t"))?;
     writer.flush()?;
     Ok(())
 }
@@ -163,7 +164,7 @@ impl IcebergNativeSmokeReportRow {
     }
 
     pub(crate) fn to_tsv_row(&self) -> String {
-        [
+        let fields = [
             self.query_id.clone(),
             self.fixture_mode.clone(),
             self.catalog_type.clone(),
@@ -219,10 +220,8 @@ impl IcebergNativeSmokeReportRow {
             self.parity_status.as_str().to_string(),
             self.parity_detail.clone().unwrap_or_else(|| "none".to_string()),
             self.credential_source.clone(),
-        ]
-        .into_iter()
-        .map(|field| stable_tsv_field(&field))
-        .collect::<Vec<_>>()
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), REPORT_COLUMNS.len());
+        fields.into_iter().map(|field| stable_tsv_field(&field)).collect::<Vec<_>>().join("\t")
     }
 }

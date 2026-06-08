@@ -107,8 +107,7 @@ pub(crate) fn optimize_stream_fanout_replay(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let applied_fanouts = rewriter.applied_fanouts;
     let changed = rewriter.changed;
-    let new_sink = rewrite::rewrite_sink(plan.sink(), new_root);
-    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink());
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
     for (fanout_node_id, join_probe_consumer_node_ids) in candidates {

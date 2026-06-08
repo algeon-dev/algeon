@@ -45,6 +45,189 @@ pub mod plan;
 pub mod runtime;
 pub mod source;
 
+/// Common native-engine imports for constructing and executing a plan.
+pub mod prelude {
+    pub use crate::{
+        ExecutionContext, ExecutionContextBuilder, Expr, LocalParquetSource, NativePipelineExecutionMode, QueryOutput,
+        QueryOutputMode, QueryPlan, QueryPlanBuilder, ResultSink, execute_query_plan,
+    };
+}
+
+/// DataFusion-free native IR contracts.
+pub mod ir {
+    pub use crate::{
+        datatypes::{
+            arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
+            is_supported_arrow_implicit_cast, is_supported_arrow_type, timestamp_unit_to_cudf_resolution,
+        },
+        expr::{
+            AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart,
+            Expr, GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
+        },
+        plan::{
+            AggregateNode, DataPlacement, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
+            GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+            GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
+            GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams,
+            GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
+            GraphLayoutRequirement, GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition,
+            GraphOutDegreesAllParams, GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphSccParams,
+            GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
+            GraphWccParams, GraphWeightPolicy, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
+            JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NativePlanCpuPreferenceReason,
+            NativePlanPreferenceDecision, NativePlanPreferenceFacts, NativePlanPreferenceOptions, NodeId, PlanFacts,
+            PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink,
+            SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
+            native_plan_preference_decision, stable_graph_result_schema,
+        },
+        source::{
+            ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
+            LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+            ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation,
+            PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
+            RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition,
+            SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics, SourceFormat, SourceNode,
+            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        },
+    };
+}
+
+/// Capability admission, strict bounded, and adaptive admission contracts.
+pub mod admission_contracts {
+    pub use crate::{
+        adaptive_report::{
+            ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus,
+            AdaptiveFinalSinkBoundary, AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract,
+            AdaptivePipelineReport, AdaptivePipelineReportRow, AdaptiveRuntimeActionCounts,
+            AdaptiveRuntimeActionsAllowed, AdaptiveSinkKind, AdaptiveStrategy,
+        },
+        capability::*,
+        contract_report::{
+            StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
+            StrictBoundedContractReport,
+        },
+        exec::{
+            AdaptivePipelineAdmission, StrictBoundedPipelineAdmission, adaptive_bounded_pipeline_admission,
+            adaptive_bounded_pipeline_admission_with_memory_history, strict_bounded_pipeline_admission,
+            strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+            strict_bounded_pipeline_rejection_projection,
+            strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+        },
+        mode::{
+            AdaptiveExecutionMode, NativePipelineExecutionMode, StatisticalAggregateExecutionMode,
+            StatisticalAggregateToleranceContract, StddevSampExecutionMode, StrictBoundedExecutionMode,
+        },
+    };
+}
+
+/// Runtime execution, resource, and source IO contracts.
+pub mod runtime_contracts {
+    pub use crate::{
+        adaptive_runtime::{
+            AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
+            AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistoryShape, AdaptiveTaskMemoryHistorySummary,
+            AdaptiveTaskMemoryObservation,
+        },
+        chunk::{
+            SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel,
+            plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
+            plan_local_parquet_source_chunks_with_metadata_cache,
+        },
+        exec::{
+            GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
+            GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap, GpuResultHandle,
+            JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
+            QueryExecutionResult, QueryOutput, QueryOutputMode, ResolvedRemoteParquetDatasourceProbe,
+            STRING_OFFSET_BYTES_CONSERVATIVE, execute_query_plan, execute_query_plan_with_gpu_inputs,
+            join_output_upper_bound_bytes, materialize_gpu_result_to_host, partial_aggregate_upper_bound_bytes,
+            probe_resolved_remote_parquet_datasource, read_gpu_resident_source, read_local_parquet_source,
+            validate_local_parquet_source,
+        },
+        runtime::{
+            BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
+            BuildMaterializationBoundary, DEFAULT_GDS_LOCAL_MOUNT_ROOT, DEFAULT_GDS_MAX_CONCURRENT_OPS,
+            DEFAULT_GDS_MIN_CHUNK_BYTES, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
+            ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, GdsAvailabilityStatus,
+            GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, LakehouseCacheFillEventSnapshot,
+            MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId, NVIDIA_FS_PROC_PATH,
+            NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus, ProbeExecutionBoundary, QueryHandle, QueryService,
+            QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, ReservationKind,
+            ResultMaterializationBoundary, RetryFacts, S3SourceStorageCredential, S3SourceStorageProfile,
+            ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig, SourceFetchStrategy,
+            SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility,
+            SourceReadBoundary, SourceSchedulerPolicy, SourceStorageProfile, StreamLease, TenantId, TenantQueryContext,
+            TenantQueueDepth, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
+        },
+    };
+}
+
+/// Metrics and report evidence contracts.
+pub mod metrics_contracts {
+    pub use crate::metrics::{
+        AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
+        DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics,
+        MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics,
+        QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, TaskOperatorMetrics,
+        TaskRuntimeMetrics,
+    };
+}
+
+/// Native optimizer rule contracts.
+pub mod optimizer_contracts {
+    pub use crate::{
+        dynamic_filter::{
+            DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
+            DynamicFilterId, DynamicFilterKind, DynamicFilterPayload, DynamicFilterProducer, DynamicFilterReadiness,
+            DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+        },
+        optimizer::{
+            AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics,
+            AggregateJoinPushdownDiagnostics, AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
+            DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+            DIMENSION_KEY_FILTER_MAX_RUNS, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedApplyResult,
+            DimensionDerivedPruningRequest, DimensionDerivedRowGroupPruningCandidateDiagnostics,
+            DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
+            DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter,
+            DynamicFilterRouteCandidateDiagnostics, DynamicFilterRouteDiscoveryDiagnostics,
+            DynamicFilterRouteDiscoveryOptions, DynamicFilterRouteRejectedReason, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+            JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics,
+            JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason,
+            JoinFilterReassociationCandidateDiagnostics, JoinFilterReassociationDiagnostics,
+            JoinFilterReassociationOptions, JoinFilterReassociationRejectedReason,
+            KeyRange as DimensionDerivedKeyRange, LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetRowGroupSelection,
+            LocalParquetRowGroupSelectionApplyResult, LocalParquetSourceReuseCandidateDiagnostics,
+            LocalParquetSourceReuseDiagnostics, LocalParquetSourceReuseOptions, LocalParquetSourceReuseRejectedReason,
+            NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
+            OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics,
+            OuterJoinNullRejectionDiagnostics, OuterJoinNullRejectionOptions, OuterJoinNullRejectionRejectedReason,
+            PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationCandidateDiagnostics,
+            ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions,
+            ProjectionSimplificationRejectedReason, RowGroupOverlapSelection, SEMIJOIN_REDUCTION_RULE_NAME,
+            SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
+            SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
+            SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
+            SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
+            SemijoinReductionResult, SharedSubplanMaterializationCandidateDiagnostics,
+            SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
+            SharedSubplanMaterializationRejectedReason, StreamFanoutReplayCandidateDiagnostics,
+            StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason,
+            apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
+            dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests, optimize_query_plan,
+            optimize_semijoin_reduction, seed_dimension_derived_reader_predicates, select_overlapping_row_groups,
+        },
+    };
+}
+
+/// Compiled pipeline graph contracts.
+pub mod pipeline_contracts {
+    pub use crate::pipeline::{
+        CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
+        ReservationGateOwner, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+        compile_pipeline,
+    };
+}
+
 pub use adaptive_report::{
     ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus,
     AdaptiveFinalSinkBoundary, AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract, AdaptivePipelineReport,

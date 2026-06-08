@@ -13,6 +13,16 @@ pub(super) fn rewrite_sink(sink: &ResultSink, input: NodeId) -> ResultSink {
     sink_with_input(sink, input)
 }
 
+pub(super) fn finish_rewritten_plan(nodes: Vec<QueryNode>, root: NodeId, sink: &ResultSink) -> QueryPlan {
+    let sink = rewrite_sink(sink, root);
+    QueryPlan::from_rewritten_parts(nodes, root, sink)
+}
+
+pub(super) fn finish_compacted_rewritten_plan(nodes: Vec<QueryNode>, root: NodeId, sink: &ResultSink) -> QueryPlan {
+    let (nodes, root) = compact_reachable_rewritten_nodes(nodes, root);
+    finish_rewritten_plan(nodes, root, sink)
+}
+
 pub(super) fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
     let mut reachable = BTreeSet::new();
     let mut stack = vec![plan.sink().input()];
@@ -191,8 +201,8 @@ mod tests {
             AggregateNode, EdgeNormalizeNode, EdgeNormalizeSpec, FilterNode, GraphAlgorithm, GraphAlgorithmNode,
             GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs,
             GraphConstructionOptions, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinNode,
-            JoinSpec, JoinType, LimitNode, ProjectionNode, ProjectionOutput, SortNode, UnionNode, WindowNode,
-            WindowSpec,
+            JoinSpec, JoinType, LimitNode, PlanFacts, ProjectionNode, ProjectionOutput, SchemaBehavior, SortNode,
+            UnionNode, WindowNode, WindowSpec,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -216,6 +226,47 @@ mod tests {
             assert_eq!(remapped.input_ids(), expected_inputs.as_slice(), "{label}");
             assert_graph_bfs_side_inputs_match_input_list(label, &remapped);
         }
+    }
+
+    #[test]
+    fn finish_compacted_rewritten_plan_remaps_root_sink_and_drops_unreachable_nodes() {
+        let schema = test_schema(&["x"]);
+        let source = QueryNode {
+            id: node_id(0),
+            kind: PlanNode::Source(Box::new(SourceNode::GpuResident(GpuResidentSource::new(
+                "reachable",
+                Arc::clone(&schema),
+            )))),
+            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::SourceOutput),
+        };
+        let unreachable = QueryNode {
+            id: node_id(1),
+            kind: PlanNode::Source(Box::new(SourceNode::GpuResident(GpuResidentSource::new(
+                "unreachable",
+                Arc::clone(&schema),
+            )))),
+            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::SourceOutput),
+        };
+        let projection = QueryNode {
+            id: node_id(2),
+            kind: PlanNode::Projection(ProjectionNode::new(
+                node_id(0),
+                vec![ProjectionOutput::new(Expr::column("x"), Field::new("x", DataType::Int32, false))],
+            )),
+            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::Projection),
+        };
+        let sink = ResultSink::HostArrow { input: node_id(2), schema };
+
+        let plan = finish_compacted_rewritten_plan(vec![source, unreachable, projection], node_id(2), &sink);
+
+        assert_eq!(plan.node_count(), 2);
+        assert_eq!(plan.root_id(), node_id(1));
+        assert!(matches!(plan.sink(), ResultSink::HostArrow { input, .. } if *input == node_id(1)));
+        let PlanNode::Projection(projection) = &plan.root_node().kind else {
+            panic!("compacted root should remain the projection");
+        };
+        assert_eq!(projection.input, node_id(0));
+        assert!(plan.unreachable_node_ids().is_empty());
     }
 
     fn rewrite_helper_coverage_cases() -> Vec<(&'static str, PlanNode, Vec<NodeId>)> {

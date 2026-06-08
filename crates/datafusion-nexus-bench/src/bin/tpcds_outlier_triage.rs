@@ -51,6 +51,8 @@ use nexus_query_engine::{
     SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
 };
 
+const CURRENT_STATE_TSV_SCHEMA_VERSION: u32 = 1;
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = TriageConfig::from_env()?;
@@ -290,17 +292,28 @@ struct CurrentStateRow {
 }
 
 impl CurrentStateRow {
-    const HEADER: &'static str = concat!(
-        "query_id\tdirect_lowering_outcome\tdirect_lowering_first_rejection\t",
-        "native_optimizer_rules_applied\tfirst_capability_rejection_projection\tstrict_bounded_envelope\t",
-        "compiled_pipeline_status\tcompiled_pipeline_task_count\tcompiled_pipeline_edge_count\t",
-        "compiled_pipeline_barrier_count\tcompiled_pipeline_resource_count\tcompiled_pipeline_gate_count\t",
-        "post_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\t",
-        "post_rule_planning_outcomes\tbundle"
-    );
+    const COLUMNS: &'static [&'static str] = &[
+        "query_id",
+        "direct_lowering_outcome",
+        "direct_lowering_first_rejection",
+        "native_optimizer_rules_applied",
+        "first_capability_rejection_projection",
+        "strict_bounded_envelope",
+        "compiled_pipeline_status",
+        "compiled_pipeline_task_count",
+        "compiled_pipeline_edge_count",
+        "compiled_pipeline_barrier_count",
+        "compiled_pipeline_resource_count",
+        "compiled_pipeline_gate_count",
+        "post_native_execution_path",
+        "native_plan_fragment_count",
+        "host_datafusion_boundary_count",
+        "post_rule_planning_outcomes",
+        "bundle",
+    ];
 
     fn to_tsv_line(&self) -> String {
-        [
+        let fields = [
             self.query_id.as_str(),
             self.direct_lowering_outcome.as_str(),
             self.direct_lowering_first_rejection.as_str(),
@@ -318,11 +331,9 @@ impl CurrentStateRow {
             self.host_datafusion_boundary_count.as_str(),
             self.post_rule_planning_outcomes.as_str(),
             self.bundle.as_str(),
-        ]
-        .into_iter()
-        .map(stable_tsv_field)
-        .collect::<Vec<_>>()
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), Self::COLUMNS.len());
+        fields.into_iter().map(stable_tsv_field).collect::<Vec<_>>().join("\t")
     }
 }
 
@@ -609,8 +620,10 @@ fn summarize_retained_planning_tsv(tsv: &str) -> RetainedPlanningSummary {
 
 fn write_current_state_tsv(out_dir: &Path, rows: &[CurrentStateRow]) -> Result<(), Box<dyn Error>> {
     let mut out = String::new();
-    out.push_str("# tpcds_strict_bounded_phase0_current_state_schema_version=1\n");
-    out.push_str(CurrentStateRow::HEADER);
+    out.push_str(&format!(
+        "# tpcds_strict_bounded_phase0_current_state_schema_version={CURRENT_STATE_TSV_SCHEMA_VERSION}\n"
+    ));
+    out.push_str(&CurrentStateRow::COLUMNS.join("\t"));
     out.push('\n');
     for row in rows {
         out.push_str(&row.to_tsv_line());
@@ -917,4 +930,36 @@ fn write_top_summary(cfg: &TriageConfig, rows: &[String]) -> Result<(), Box<dyn 
     out.push_str("Open any query's `SUMMARY.md` for diff commands and the decision tree (logical-divergence → physical-divergence → rule-rejection → nexus-query-engine / cudf-rs).\n");
     fs::write(cfg.out_dir.join("SUMMARY.md"), out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_state_tsv_row_contract_matches_columns() {
+        let row = CurrentStateRow {
+            query_id: "q01".to_string(),
+            direct_lowering_outcome: "rewritten".to_string(),
+            direct_lowering_first_rejection: "none".to_string(),
+            native_optimizer_rules_applied: "none".to_string(),
+            first_capability_rejection_projection: "none".to_string(),
+            strict_bounded_envelope: "ready".to_string(),
+            compiled_pipeline_status: "compiled".to_string(),
+            compiled_pipeline_task_count: "1".to_string(),
+            compiled_pipeline_edge_count: "0".to_string(),
+            compiled_pipeline_barrier_count: "0".to_string(),
+            compiled_pipeline_resource_count: "0".to_string(),
+            compiled_pipeline_gate_count: "0".to_string(),
+            post_native_execution_path: "native".to_string(),
+            native_plan_fragment_count: "1".to_string(),
+            host_datafusion_boundary_count: "0".to_string(),
+            post_rule_planning_outcomes: "accepted_replaced".to_string(),
+            bundle: "q01".to_string(),
+        };
+        assert_eq!(CURRENT_STATE_TSV_SCHEMA_VERSION, 1);
+        assert_eq!(CurrentStateRow::COLUMNS.first(), Some(&"query_id"));
+        assert_eq!(CurrentStateRow::COLUMNS.last(), Some(&"bundle"));
+        assert_eq!(row.to_tsv_line().split('\t').count(), CurrentStateRow::COLUMNS.len());
+    }
 }

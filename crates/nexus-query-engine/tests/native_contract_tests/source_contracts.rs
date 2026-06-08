@@ -4,6 +4,21 @@ use super::*;
 mod chunk_planning;
 
 #[test]
+fn source_module_facade_preserves_public_model_and_diagnostic_paths() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
+    let file: nexus_query_engine::source::LocalParquetFile =
+        nexus_query_engine::source::LocalParquetFile::new("/tmp/source-facade.parquet").with_file_size_bytes(128);
+    let source =
+        nexus_query_engine::source::LocalParquetSource::from_files(vec![file], schema, vec!["key".to_string()]);
+    let node = nexus_query_engine::source::SourceNode::LocalParquet(source.clone());
+
+    assert!(matches!(node, nexus_query_engine::source::SourceNode::LocalParquet(_)));
+    assert_eq!(source.diagnostics.format, nexus_query_engine::source::SourceFormat::Parquet);
+    assert_eq!(source.diagnostics.byte_range_disposition, nexus_query_engine::source::ByteRangeDisposition::FullFiles);
+    assert_eq!(nexus_query_engine::source::ZERO_COLUMN_COUNT_COLUMN, ZERO_COLUMN_COUNT_COLUMN);
+}
+
+#[test]
 fn local_parquet_source_tracks_direct_source_diagnostics() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),

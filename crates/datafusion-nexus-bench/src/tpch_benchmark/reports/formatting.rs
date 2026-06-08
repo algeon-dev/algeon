@@ -134,63 +134,27 @@ pub(super) fn format_adaptive_pipeline_rows(rows: &[AdaptivePipelineReportRow]) 
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_join_strategy_metric_rows(rows)
 }
 
 pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_aggregate_strategy_metric_rows(rows)
 }
 
 pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_graph_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_task_operator_metric_rows(rows)
 }
 
 pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_task_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_dynamic_filter_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_failure_facts(facts: &BTreeMap<String, String>) -> String {

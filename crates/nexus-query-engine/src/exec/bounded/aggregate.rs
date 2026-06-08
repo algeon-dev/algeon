@@ -1,6 +1,11 @@
-use arrow::{array::new_empty_array, datatypes::SchemaRef as ArrowSchemaRef, record_batch::RecordBatchOptions};
+use arrow::{
+    array::new_empty_array,
+    datatypes::{DataType as ArrowDataType, SchemaRef as ArrowSchemaRef},
+    record_batch::RecordBatchOptions,
+};
 
 use super::{compiled::ResidentFrameStreamPayload, *};
+use crate::exec::source::record_bounded_parquet_source_metrics;
 
 mod final_merge;
 mod partitioned;
@@ -29,6 +34,165 @@ pub(in crate::exec::bounded) use source_adjacent::execute_bounded_partitioned_so
 pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_stream,
 };
+
+const SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub(in crate::exec::bounded) const SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 384 * 1024 * 1024;
+const SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
+const SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
+
+fn aggregate_source_chunk_planning_policy(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+) -> SourceChunkPlanningPolicy {
+    let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode(
+        bounded.source,
+        context.memory_control_policy(),
+        SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
+        context.source_chunk_planning_mode(),
+    );
+    if bounded.has_source_adjacent_stages() {
+        policy.max_source_chunk_bytes = Some(
+            policy
+                .max_source_chunk_bytes
+                .unwrap_or(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES)
+                .min(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES),
+        );
+        policy.mark_downstream_cap("source_adjacent_aggregate_downstream_cap");
+    }
+    if is_source_adjacent_grouped_aggregate(bounded) && source_adjacent_grouped_aggregate_has_string_key(bounded) {
+        policy.max_source_chunk_bytes = Some(
+            policy
+                .max_source_chunk_bytes
+                .unwrap_or(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
+                .min(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES),
+        );
+        policy.max_row_groups_per_chunk =
+            policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS);
+        policy.mark_downstream_cap("source_adjacent_grouped_aggregate_downstream_cap");
+    }
+    policy
+}
+
+pub(in crate::exec::bounded) fn is_source_adjacent_grouped_aggregate(bounded: &BoundedPlan<'_>) -> bool {
+    bounded.has_source_adjacent_stages()
+        && !bounded.aggregate.0.spec.group_exprs.is_empty()
+        && bounded.aggregate.0.spec.grouping_sets.is_none()
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    context.check_cancellation("nexus_query_engine.exec.bounded.aggregate")?;
+    validate_local_parquet_source(bounded.source)?;
+    bounded.validate_capabilities()?;
+
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
+        bounded.source_id,
+        bounded.source,
+        aggregate_source_chunk_planning_policy(context, bounded),
+        context,
+    )?;
+    for chunk in &chunk_plan.chunks {
+        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+    }
+    if chunk_plan.chunks.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.bounded.plan",
+            "bounded execution requires at least one planned source chunk",
+        )
+        .with_fact("source_node_id", bounded.source_id));
+    }
+    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
+
+    if aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
+        || aggregate_spec_has_distinct(&bounded.aggregate.0.spec)
+    {
+        return execute_bounded_whole_input_aggregate_from_raw_chunks(
+            context,
+            bounded,
+            &chunk_plan.chunks,
+            reservations,
+            metrics,
+        );
+    }
+    if should_execute_partitioned_source_adjacent_grouped_aggregate(context, bounded, &chunk_plan) {
+        return execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
+            context,
+            bounded,
+            &chunk_plan.chunks,
+            reservations,
+            metrics,
+        );
+    }
+
+    let partials =
+        execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
+    execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)
+}
+
+fn should_execute_partitioned_source_adjacent_grouped_aggregate(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunk_plan: &SourceChunkPlan,
+) -> bool {
+    bounded.has_source_adjacent_stages()
+        && !bounded.aggregate.0.spec.group_exprs.is_empty()
+        && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
+        && bounded.aggregate.0.spec.grouping_sets.is_none()
+        && chunk_plan.chunks.len() > 1
+        && source_adjacent_partitioned_chunks_are_row_group_morsels(&chunk_plan.chunks)
+        && source_adjacent_partitioned_raw_retention_fits_budget(context, &chunk_plan.chunks)
+        && source_adjacent_group_key_partitioning_fits_rows(bounded, &chunk_plan.chunks)
+}
+
+fn source_adjacent_partitioned_chunks_are_row_group_morsels(chunks: &[SourceChunk]) -> bool {
+    chunks.iter().all(|chunk| chunk.row_group_count() <= 1)
+}
+
+fn source_adjacent_partitioned_raw_retention_fits_budget(context: &ExecutionContext, chunks: &[SourceChunk]) -> bool {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        return true;
+    };
+
+    let mut retained_bytes = 0u64;
+    let mut largest_chunk_bytes = 0u64;
+    for chunk in chunks {
+        let Some(chunk_bytes) = chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes) else {
+            return false;
+        };
+        retained_bytes = match retained_bytes.checked_add(chunk_bytes) {
+            Some(bytes) => bytes,
+            None => return false,
+        };
+        largest_chunk_bytes = largest_chunk_bytes.max(chunk_bytes);
+    }
+
+    retained_bytes.saturating_add(largest_chunk_bytes) <= device_budget_bytes
+}
+
+fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, chunks: &[SourceChunk]) -> bool {
+    if !source_adjacent_grouped_aggregate_has_string_key(bounded) {
+        return true;
+    }
+    chunks.iter().all(|chunk| {
+        chunk.known_row_count.is_some_and(|rows| rows <= SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS)
+    })
+}
+
+fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -> bool {
+    let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
+        return false;
+    };
+    lowered_keys.key_columns.iter().any(|key_column| {
+        bounded.aggregate_input_schema.field_with_name(key_column).is_ok_and(|field| {
+            matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+        })
+    })
+}
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,

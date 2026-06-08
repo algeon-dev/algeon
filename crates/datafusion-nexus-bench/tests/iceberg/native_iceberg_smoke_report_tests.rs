@@ -336,7 +336,69 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row.clone()] };
 
     let tsv = report.to_tsv();
-    assert!(tsv.starts_with("# native_iceberg_smoke_report_tsv_schema_version=10\n"));
+    let mut lines = tsv.lines();
+    assert_eq!(lines.next(), Some("# native_iceberg_smoke_report_tsv_schema_version=10"));
+    let header = lines.next().expect("header line");
+    let row_line = lines.next().expect("row line");
+    let expected_columns = [
+        "query_id",
+        "fixture_mode",
+        "catalog_type",
+        "table_ident",
+        "sql",
+        "table_format",
+        "snapshot_id",
+        "planned_data_file_count",
+        "planned_delete_file_count",
+        "planned_bytes",
+        "admitted_native_source_file_count",
+        "rejected_feature_list",
+        "native_source_read_capability",
+        "source_read_strategy",
+        "source_decode_input",
+        "credential_mode",
+        "lakehouse_cache_status",
+        "lakehouse_cache_read_mode",
+        "lakehouse_cache_fill_mode",
+        "source_fallback_reason",
+        "direct_device_read_disposition",
+        "object_store_staging_mode",
+        "object_store_staging_status",
+        "staged_data_file_count",
+        "staged_bytes",
+        "native_planning_outcome",
+        "native_reason_code",
+        "post_native_execution_path",
+        "cpu_arrow_reader_fallback",
+        "native_runtime_started",
+        "native_runtime_outcome",
+        "native_runtime_elapsed_ms",
+        "native_output_rows",
+        "native_output_batches",
+        "source_fetch_bytes",
+        "source_fetch_count",
+        "host_fetch_budget_wait_time_ms",
+        "source_fetch_concurrency_wait_time_ms",
+        "source_fetch_time_ms",
+        "source_decode_time_ms",
+        "native_source_read_runtime_rows",
+        "lakehouse_cache_fill_event_snapshot_rows",
+        "expected_count",
+        "native_count_value",
+        "cpu_runtime_started",
+        "cpu_runtime_outcome",
+        "cpu_runtime_elapsed_ms",
+        "cpu_output_rows",
+        "cpu_output_batches",
+        "cpu_output_fingerprint",
+        "native_output_fingerprint",
+        "comparison_mode",
+        "parity_status",
+        "parity_detail",
+        "credential_source",
+    ];
+    assert_eq!(header, expected_columns.join("\t"));
+    assert_eq!(row_line.split('\t').count(), expected_columns.len());
     assert!(tsv.contains("\tnative_source_read_capability\t"));
     assert!(tsv.contains("\tsource_read_strategy\t"));
     assert!(tsv.contains("\tsource_decode_input\t"));

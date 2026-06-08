@@ -64,6 +64,31 @@ fn native_service_overloaded_error_preserves_adapter_classification_and_facts() 
 }
 
 #[test]
+fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
+    let native_error = nexus_query_engine::QueryError::new(
+        nexus_query_engine::QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.plan.lower",
+        "native plan shape is not supported",
+    )
+    .with_fact("native_code", "lower_layer_override")
+    .with_fact("native_operation", "lower_layer_operation")
+    .with_fact("native_fact_collision_keys", "lower_layer_collision_value")
+    .with_fact("fallback_reason", "unsupported_shape");
+
+    let adapter_error =
+        Error::from_native("datafusion_nexus.native.lower", "native cudf lowering failed", native_error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
+    assert_eq!(adapter_error.fact_value("native_operation"), Some("nexus_query_engine.plan.lower"));
+    assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_shape"));
+    assert_eq!(
+        adapter_error.fact_value("native_fact_collision_keys"),
+        Some("native_code,native_fact_collision_keys,native_operation")
+    );
+}
+
+#[test]
 fn error_keeps_machine_code_operation_and_context_facts() {
     let error = Error::new(
         ErrorCode::NativeCandidateRejected,

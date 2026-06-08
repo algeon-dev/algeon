@@ -115,6 +115,46 @@ pub use workload::{
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativePlanningFailure,
 };
 
+/// Format nested graph-runtime metric rows for TSV report cells.
+pub fn format_native_graph_runtime_metric_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
+    tsv::format_graph_runtime_rows(rows)
+}
+
+/// Format nested task-operator metric rows for TSV report cells.
+pub fn format_native_task_operator_metric_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
+    tsv::format_task_operator_rows(rows)
+}
+
+/// Format nested task-runtime metric rows for TSV report cells.
+pub fn format_native_task_runtime_metric_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
+    tsv::format_task_runtime_rows(rows)
+}
+
+/// Format nested dynamic-filter runtime metric rows for TSV report cells.
+pub fn format_native_dynamic_filter_runtime_metric_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
+    tsv::format_dynamic_filter_runtime_rows(rows)
+}
+
+/// Format nested source-read runtime metric rows for TSV report cells.
+pub fn format_native_source_read_runtime_metric_rows(rows: &[NativeSourceReadRuntimeMetricRow]) -> String {
+    tsv::format_source_read_runtime_rows(rows)
+}
+
+/// Format nested lakehouse-cache fill event rows for TSV report cells.
+pub fn format_native_lakehouse_cache_fill_event_metric_rows(rows: &[NativeLakehouseCacheFillEventMetricRow]) -> String {
+    tsv::format_lakehouse_cache_fill_event_snapshot_rows(rows)
+}
+
+/// Format nested aggregate-strategy metric rows for TSV report cells.
+pub fn format_native_aggregate_strategy_metric_rows(rows: &[NativeAggregateStrategyMetricRow]) -> String {
+    tsv::format_aggregate_strategy_rows(rows)
+}
+
+/// Format nested join-strategy metric rows for TSV report cells.
+pub fn format_native_join_strategy_metric_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
+    tsv::format_join_strategy_rows(rows)
+}
+
 fn report_rows_for_item(
     item: NativeFallbackPressureWorkloadItem,
     execution_config: &NativeCudfExecutionConfig,

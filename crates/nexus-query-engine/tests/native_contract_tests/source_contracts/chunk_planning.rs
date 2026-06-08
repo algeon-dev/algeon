@@ -494,6 +494,46 @@ fn source_chunk_planning_expands_all_row_groups_from_parquet_metadata() {
 }
 
 #[test]
+fn source_chunk_planning_merges_supplied_row_group_bytes_with_footer_metadata() {
+    let dir = unique_temp_dir("nexus-query-engine-mixed-source-footer-chunks");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 6, 2);
+    let supplied_row_group_bytes = vec![111, 222, 333];
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(supplied_row_group_bytes.clone()),
+        ],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan = plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 2)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 2);
+    assert_eq!(plan.row_group_count(), 3);
+    assert!(plan.row_group_metadata_available);
+    assert_eq!(plan.metadata_unavailable_files, 0);
+    assert_eq!(plan.metadata_load_count, 1);
+    assert_eq!(plan.chunks[0].known_row_group_bytes, Some(333));
+    assert_eq!(plan.chunks[1].known_row_group_bytes, Some(333));
+    assert_eq!(plan.chunks[0].source_file_row_group_bytes, Some(supplied_row_group_bytes.clone()));
+    assert_eq!(plan.chunks[1].source_file_row_group_bytes, Some(supplied_row_group_bytes));
+    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
+    let projected_uncompressed = plan.chunks[0]
+        .source_file_projected_uncompressed_bytes
+        .as_ref()
+        .expect("footer metadata should fill projected uncompressed bytes");
+    assert_eq!(projected_uncompressed.len(), 3);
+    assert!(projected_uncompressed.iter().all(|bytes| *bytes > 0));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn source_chunk_planning_loads_warm_local_cache_footer_metadata() {
     let dir = unique_temp_dir("nexus-query-engine-local-cache-source-chunks");
     let path = dir.join("cache-entry.parquet");

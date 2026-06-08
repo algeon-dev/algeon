@@ -32,7 +32,7 @@
 //! what makes the ranged fetch safe to feed back into the existing reader
 //! contract.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use bytes::{Bytes, BytesMut};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
@@ -47,7 +47,17 @@ use parquet::{
     schema::types::{ColumnDescPtr, SchemaDescriptor, Type},
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use super::{
+    object_store_fetch::{HostParquetBuffer, ScheduledHostParquetFetch},
+    object_store_safety::{object_store_bucket_fact, source_fetch_location},
+};
+use crate::{
+    chunk::SourceChunk,
+    error::{QueryError, QueryErrorCode, Result},
+    exec::source::metrics::format_row_groups,
+    runtime::{ExecutionContext, S3ObjectStoreKey},
+    source::{LocalParquetFile, LocalParquetSource},
+};
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
 /// Speculative tail size for the first ranged GET. Large enough to cover the
@@ -130,6 +140,332 @@ impl RangedParquetFetch {
         }
         Ok(self)
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RangedParquetFetchDiagnostics {
+    pub(super) mini_payload_bytes: u64,
+    pub(super) original_file_bytes: u64,
+    pub(super) selected_original_row_groups: Vec<usize>,
+    pub(super) mini_row_group_rows: Vec<u64>,
+    pub(super) mini_row_group_bytes: Vec<u64>,
+    pub(super) footer_bytes: u64,
+    pub(super) selected_file_column_indices: Vec<usize>,
+    pub(super) requested_range_count: usize,
+    pub(super) requested_range_bytes: u64,
+}
+
+impl From<&RangedParquetFetch> for RangedParquetFetchDiagnostics {
+    fn from(fetch: &RangedParquetFetch) -> Self {
+        Self {
+            mini_payload_bytes: fetch.mini_payload_bytes(),
+            original_file_bytes: fetch.original_file_bytes,
+            selected_original_row_groups: fetch.selected_original_row_groups.clone(),
+            mini_row_group_rows: fetch.mini_row_group_rows.clone(),
+            mini_row_group_bytes: fetch.mini_row_group_bytes.clone(),
+            footer_bytes: fetch.footer_bytes,
+            selected_file_column_indices: fetch.selected_file_column_indices.clone(),
+            requested_range_count: fetch.requested_range_count,
+            requested_range_bytes: fetch.requested_range_bytes,
+        }
+    }
+}
+
+pub(super) fn file_request(source: &LocalParquetSource, file: &LocalParquetFile) -> Option<RangedParquetFetchRequest> {
+    if !file.resolved_source.remote_host_buffer_ranged_enabled {
+        return None;
+    }
+    if !matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        return None;
+    }
+    let column_indices = source.read_column_file_indices.clone();
+    let column_pruned = file_column_pruning_applies(file, source);
+    if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
+        && super::represented_file_row_group_count(file).is_some_and(|total| row_groups.len() < total)
+    {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit(row_groups.clone()),
+            Some(column_indices),
+        ));
+    }
+    let scan_limit = source.scan_limit.filter(|limit| *limit > 0).and_then(|limit| u64::try_from(limit).ok());
+    if let Some(scan_limit) = scan_limit {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::ScanLimit(scan_limit),
+            Some(column_indices),
+        ));
+    }
+    if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
+        && column_pruned
+        && super::represented_file_row_group_count(file).is_some()
+    {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit(row_groups.clone()),
+            Some(column_indices),
+        ));
+    }
+    if column_pruned && super::represented_file_row_group_count(file).is_some_and(|total| total > 0) {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit(
+                (0..super::represented_file_row_group_count(file).expect("checked above")).collect(),
+            ),
+            Some(column_indices),
+        ));
+    }
+    None
+}
+
+pub(super) fn chunk_request(source: &LocalParquetSource, chunk: &SourceChunk) -> Option<RangedParquetFetchRequest> {
+    if !chunk.resolved_source.remote_host_buffer_ranged_enabled {
+        return None;
+    }
+    if !matches!(chunk.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        return None;
+    }
+    let column_indices = source.read_column_file_indices.clone();
+    let column_pruned = chunk_column_pruning_applies(chunk, source);
+    if !chunk.row_group_indexes.is_empty()
+        && chunk_source_file_row_group_count(chunk).is_some_and(|row_groups| chunk.row_group_indexes.len() < row_groups)
+    {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit(chunk.row_group_indexes.clone()),
+            Some(column_indices),
+        ));
+    }
+    let scan_limit = source.scan_limit.filter(|limit| *limit > 0).and_then(|limit| u64::try_from(limit).ok());
+    if chunk.scan_limit_rows.is_some()
+        && let Some(scan_limit) = scan_limit
+    {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::ScanLimit(scan_limit),
+            Some(column_indices),
+        ));
+    }
+    if !chunk.row_group_indexes.is_empty() && column_pruned && chunk_source_file_row_group_count(chunk).is_some() {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit(chunk.row_group_indexes.clone()),
+            Some(column_indices),
+        ));
+    }
+    if column_pruned && let Some(total_row_groups) = chunk_source_file_row_group_count(chunk).filter(|count| *count > 0)
+    {
+        return Some(RangedParquetFetchRequest::new(
+            RangedRowGroupSelector::Explicit((0..total_row_groups).collect()),
+            Some(column_indices),
+        ));
+    }
+    None
+}
+
+pub(super) fn attach_fetch_facts(
+    error: QueryError,
+    ranged_fetch: &RangedParquetFetchDiagnostics,
+    chunk: &SourceChunk,
+) -> QueryError {
+    error
+        .with_fact("source_fetch_mode", "ranged_parquet")
+        .with_fact("mini_parquet_bytes", ranged_fetch.mini_payload_bytes)
+        .with_fact("requested_range_count", ranged_fetch.requested_range_count)
+        .with_fact("requested_range_bytes", ranged_fetch.requested_range_bytes)
+        .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
+        .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
+        .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
+        .with_fact(
+            "selected_original_row_groups",
+            comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
+        )
+        .with_fact(
+            "selected_file_column_indices",
+            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
+        )
+        .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
+        .with_fact("original_chunk_row_groups", format_row_groups(chunk))
+}
+
+pub(super) fn attach_file_fetch_facts(
+    error: QueryError,
+    ranged_fetch: &RangedParquetFetchDiagnostics,
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+) -> QueryError {
+    error
+        .with_fact("source_fetch_mode", "ranged_parquet")
+        .with_fact("mini_parquet_bytes", ranged_fetch.mini_payload_bytes)
+        .with_fact("requested_range_count", ranged_fetch.requested_range_count)
+        .with_fact("requested_range_bytes", ranged_fetch.requested_range_bytes)
+        .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
+        .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
+        .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
+        .with_fact(
+            "selected_original_row_groups",
+            comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
+        )
+        .with_fact(
+            "selected_file_column_indices",
+            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
+        )
+        .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
+        .with_fact("path", super::parquet_file_path_fact(file))
+        .with_fact("stable_id", super::parquet_file_stable_id_fact(file))
+        .with_fact("file_index", file_index)
+        .with_fact("chunk_index", chunk_index)
+}
+
+/// Schedules a footer-first ranged Parquet fetch that returns a compact
+/// mini-Parquet buffer covering selected row groups and file columns. This is
+/// the host-buffer fallback for remote reads that can still avoid full-object
+/// S3 transfer before libcudf sees the file.
+pub(super) fn start_host_parquet_buffer_ranged_fetch(
+    context: &ExecutionContext,
+    location: &crate::source::ParquetSourceLocation,
+    resolved_source: &crate::source::ResolvedParquetSource,
+    request: RangedParquetFetchRequest,
+) -> Result<ScheduledHostParquetFetch> {
+    context.check_cancellation("nexus_query_engine.source_fetch.host_buffer_ranged")?;
+    let fetch_location = source_fetch_location(location, resolved_source)?;
+    let host_budget_wait_timer = Instant::now();
+    let mut permit = context.host_fetch_budget().acquire(1).map_err(|error| {
+        error
+            .with_fact_if_absent("source_fetch_substrate", "object_store")
+            .with_fact_if_absent("source_fetch_scheme", "s3")
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
+            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+    })?;
+    let mut host_budget_wait_elapsed = host_budget_wait_timer.elapsed();
+    let concurrency_wait_timer = Instant::now();
+    let operation_permit = context.acquire_source_fetch_operation().map_err(|error| {
+        error
+            .with_fact_if_absent("source_fetch_substrate", "object_store")
+            .with_fact_if_absent("source_fetch_scheme", "s3")
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
+            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+    })?;
+    let concurrency_wait_elapsed = concurrency_wait_timer.elapsed();
+    let store = context.s3_object_store(S3ObjectStoreKey {
+        bucket: fetch_location.bucket.clone(),
+        region: fetch_location.region.clone(),
+        storage_profile_id: fetch_location.storage_profile_id.clone(),
+    })?;
+    let key = fetch_location.key.clone();
+    let bucket_for_error = fetch_location.bucket.clone();
+    let region_for_error = fetch_location.region.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let _fetch_handle = context.spawn_object_store_custom_fetch(
+        move || fetch_ranged_parquet(store, key, request),
+        move |fetch_result| {
+            let fetch_elapsed = fetch_result.elapsed;
+            let result = fetch_result
+                .value
+                .map_err(|error| {
+                    error
+                        .with_fact_if_absent("source_fetch_substrate", "object_store")
+                        .with_fact_if_absent("source_fetch_scheme", "s3")
+                        .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+                        .with_fact_if_absent("bucket", object_store_bucket_fact(bucket_for_error.as_str()))
+                        .with_fact_if_absent("region", region_for_error.as_str())
+                })
+                .and_then(|ranged_fetch| {
+                    let actual_bytes = ranged_fetch.mini_payload_bytes();
+                    let grow_wait_timer = Instant::now();
+                    permit.grow_to(actual_bytes.max(1)).map_err(|error| {
+                        error
+                            .with_fact_if_absent("source_fetch_substrate", "object_store")
+                            .with_fact_if_absent("source_fetch_scheme", "s3")
+                            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+                            .with_fact_if_absent("bucket", object_store_bucket_fact(bucket_for_error.as_str()))
+                            .with_fact_if_absent("actual_bytes", actual_bytes)
+                    })?;
+                    host_budget_wait_elapsed += grow_wait_timer.elapsed();
+                    let diagnostics = RangedParquetFetchDiagnostics::from(&ranged_fetch);
+                    Ok(HostParquetBuffer {
+                        bytes: ranged_fetch.bytes,
+                        permit: Some(permit),
+                        actual_bytes,
+                        ranged_fetch: Some(diagnostics),
+                        host_budget_wait_elapsed,
+                        concurrency_wait_elapsed,
+                        fetch_elapsed,
+                    })
+                });
+            let _ = sender.send(result);
+            drop(operation_permit);
+        },
+    );
+    Ok(ScheduledHostParquetFetch { receiver })
+}
+
+fn file_column_pruning_applies(file: &LocalParquetFile, source: &LocalParquetSource) -> bool {
+    column_pruning_likely_applies(source)
+        || source_read_bytes_are_strict_subset(
+            source_read_bytes_for_all_rows(
+                file.projected_row_group_compressed_bytes.as_ref(),
+                file.pure_filter_row_group_compressed_bytes.as_ref(),
+            ),
+            file.row_group_bytes.as_ref().map(|bytes| bytes.iter().sum()),
+        )
+}
+
+fn chunk_column_pruning_applies(chunk: &SourceChunk, source: &LocalParquetSource) -> bool {
+    column_pruning_likely_applies(source)
+        || source_read_bytes_are_strict_subset(chunk.estimated_source_read_bytes, chunk.known_file_bytes)
+        || source_read_bytes_are_strict_subset(
+            source_read_bytes_for_all_rows(
+                chunk.source_file_projected_compressed_bytes.as_ref(),
+                chunk.source_file_pure_filter_compressed_bytes.as_ref(),
+            ),
+            chunk.source_file_row_group_bytes.as_ref().map(|bytes| bytes.iter().sum()),
+        )
+}
+
+fn column_pruning_likely_applies(source: &LocalParquetSource) -> bool {
+    if source.read_column_file_indices.is_empty() {
+        return false;
+    }
+    if let Some(file_column_count) = source.file_column_count {
+        let mut indices = source.read_column_file_indices.clone();
+        indices.sort_unstable();
+        indices.dedup();
+        return indices.len() < file_column_count;
+    }
+    !source.read_column_file_indices.iter().copied().eq(0..source.read_column_file_indices.len())
+}
+
+fn source_read_bytes_are_strict_subset(selected: Option<u64>, total: Option<u64>) -> bool {
+    matches!((selected, total), (Some(selected), Some(total)) if selected > 0 && selected < total)
+}
+
+fn source_read_bytes_for_all_rows(projected: Option<&Vec<u64>>, pure_filter: Option<&Vec<u64>>) -> Option<u64> {
+    match (projected, pure_filter) {
+        (Some(projected), Some(pure_filter)) if projected.len() == pure_filter.len() => {
+            projected.iter().zip(pure_filter).try_fold(0u64, |total, (projected, pure_filter)| {
+                total.checked_add(projected.saturating_add(*pure_filter))
+            })
+        },
+        (Some(projected), None) => projected.iter().try_fold(0u64, |total, bytes| total.checked_add(*bytes)),
+        (None, Some(pure_filter)) => pure_filter.iter().try_fold(0u64, |total, bytes| total.checked_add(*bytes)),
+        _ => None,
+    }
+}
+
+fn chunk_source_file_row_group_count(chunk: &SourceChunk) -> Option<usize> {
+    chunk
+        .source_file_row_group_rows
+        .as_ref()
+        .or(chunk.source_file_row_group_bytes.as_ref())
+        .or(chunk.source_file_projected_compressed_bytes.as_ref())
+        .or(chunk.source_file_projected_uncompressed_bytes.as_ref())
+        .or(chunk.source_file_pure_filter_compressed_bytes.as_ref())
+        .or(chunk.source_file_pure_filter_uncompressed_bytes.as_ref())
+        .map(Vec::len)
+}
+
+fn comma_separated_usize_values(values: &[usize]) -> String {
+    values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn comma_separated_u64(values: &[u64]) -> String {
+    values.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
 }
 
 /// Fetches only the row groups needed to satisfy a scan limit or an explicit
