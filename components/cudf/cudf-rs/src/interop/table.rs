@@ -224,6 +224,10 @@ impl Table {
 
     /// Move this owned table into the shared RAPIDS owned device transfer
     /// profile plus a CUDA-backed releaser for signal-driven release.
+    ///
+    /// The returned releaser accepts release and schedules any required
+    /// consumer-signal wait onto a background runtime job instead of blocking
+    /// the caller thread.
     pub fn try_into_owned_device_table_transfer_with_runtime_release(
         self,
     ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
