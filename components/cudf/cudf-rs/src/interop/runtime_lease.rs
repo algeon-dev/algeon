@@ -1118,7 +1118,7 @@ macro_rules! impl_try_activate_runtime_read_lease {
 /// CUDA-specific compatibility wrapper over a shared active column read lease.
 ///
 /// Activation still goes through [`PreparedColumnExport::try_activate_read_lease`]
-/// under the hood, so export-root single-active-lease coordination, shared
+/// under the hood, so export-root overlapping-lease coordination, shared
 /// liveness retention, and backend-declared incomplete-drop behavior all stay
 /// aligned with the shared contract. This wrapper only changes the completion
 /// surface exposed to CUDA-runtime-oriented callers.
@@ -1140,7 +1140,7 @@ impl_runtime_active_read_lease_surface!(
 /// CUDA-specific compatibility wrapper over a shared active table read lease.
 ///
 /// Activation still goes through [`PreparedTableExport::try_activate_read_lease`]
-/// under the hood, so export-root single-active-lease coordination, shared
+/// under the hood, so export-root overlapping-lease coordination, shared
 /// liveness retention, and backend-declared incomplete-drop behavior all stay
 /// aligned with the shared contract. This wrapper only changes the completion
 /// surface exposed to CUDA-runtime-oriented callers.

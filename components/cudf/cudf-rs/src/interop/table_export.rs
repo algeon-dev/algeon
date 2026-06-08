@@ -397,3 +397,32 @@ pub(super) fn transfer_partitioned_owned_table_from_columns(
     PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
         .map_err(|error| error.with_context("operation", operation))
 }
+
+pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release(
+    producer: PartitionedDataFrameExport,
+    operation: &'static str,
+) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+    let schema_names = producer.column_names_owned();
+    let row_count = producer.num_rows();
+    let mut partitions = Vec::new();
+    let mut releasers = Vec::new();
+
+    for group in producer.grouped_owned_columns() {
+        let top_level_column_indices = group.top_level_column_indices;
+        let table = Table::from_columns(group.columns)
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let (transfer, releaser) = transfer_from_owned_table_with_names_and_runtime_release(table, None, operation)?;
+        partitions.push(PartitionedOwnedTableTransferPartition::new(
+            top_level_column_indices.clone(),
+            transfer,
+        ));
+        releasers.push(PartitionedRuntimeOwnedTableTransferReleaserPartition::new(
+            top_level_column_indices,
+            releaser,
+        ));
+    }
+
+    let transfer = PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
+        .map_err(|error| error.with_context("operation", operation))?;
+    Ok((transfer, PartitionedRuntimeOwnedTableTransferReleaser::new(releasers)))
+}

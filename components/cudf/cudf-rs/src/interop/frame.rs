@@ -159,6 +159,23 @@ impl PartitionedDataFrameExport {
     ) -> Result<PartitionedOwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDevicePartitionedTableTransfer>::try_into_owned_device_partitioned_table_transfer(self)
     }
+
+    /// Move this heterogeneous producer into the shared RAPIDS partitioned
+    /// owned device transfer profile plus one CUDA-backed releaser per
+    /// retained-provenance partition for signal-driven release.
+    ///
+    /// Each partition retains its own release contract and runtime-backed
+    /// releaser. Calling a partition releaser accepts release and schedules
+    /// any required consumer-signal wait onto a background runtime job
+    /// instead of blocking the caller thread.
+    pub fn try_into_owned_device_partitioned_table_transfer_with_runtime_release(
+        self,
+    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+        transfer_partitioned_owned_table_from_columns_with_runtime_release(
+            self,
+            "interop::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer_with_runtime_release",
+        )
+    }
 }
 
 impl Series {

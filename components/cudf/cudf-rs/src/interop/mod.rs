@@ -48,6 +48,9 @@
 //! - [`RuntimeOwnedColumnTransferReleaser`] and
 //!   [`RuntimeOwnedTableTransferReleaser`] are CUDA-backed release helpers for
 //!   the signal-driven owned-transfer producer path.
+//! - [`PartitionedRuntimeOwnedTableTransferReleaser`] mirrors that runtime
+//!   release path for partitioned owned transfer by preserving one releaser per
+//!   retained-provenance partition.
 //! - Borrowing and prepared export do not transfer ownership.
 //! - Borrowed compatibility and prepared export both avoid host copies on the
 //!   input path because they describe existing device buffers.
@@ -157,7 +160,10 @@ pub use runtime_lease::{
     RuntimeLeaseCompletionResult, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
     TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
 };
-pub use transfer::{RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser};
+pub use transfer::{
+    PartitionedRuntimeOwnedTableTransferReleaser, PartitionedRuntimeOwnedTableTransferReleaserPartition,
+    RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
+};
 pub mod runtime {
     pub use super::runtime_lease::{
         RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority,
@@ -172,6 +178,7 @@ use table_export::{
     prepare_partitioned_device_table_export_from_columns, prepare_partitioned_host_table_export_from_columns,
     prepare_table_export_from_view, prepare_table_export_from_view_with_readiness, transfer_from_owned_table,
     transfer_from_owned_table_with_names, transfer_partitioned_owned_table_from_columns,
+    transfer_partitioned_owned_table_from_columns_with_runtime_release,
 };
 use transfer::*;
 
