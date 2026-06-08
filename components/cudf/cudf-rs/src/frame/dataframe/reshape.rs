@@ -1,5 +1,20 @@
 use typed_builder::TypedBuilder;
 
+/// How [`DataFrame::dropna`] decides which rows to drop when `thresh` is unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropNaHow {
+    /// Drop rows when any inspected column is null.
+    Any,
+    /// Drop rows only when all inspected columns are null.
+    All,
+}
+
+impl Default for DropNaHow {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
 /// Options for [`DataFrame::dropna`].
 ///
 /// Controls which rows are dropped based on null values. Mirrors the
@@ -19,10 +34,9 @@ pub struct DropNaOptions {
     /// `None` means derive from `how`.
     #[builder(default, setter(transform = |thresh: i32| Some(thresh)))]
     thresh: Option<i32>,
-    /// If `true`, drop only when **all** subset columns are null.
-    /// If `false` (default), drop when **any** subset column is null.
+    /// How rows should be dropped when `thresh` is unset.
     #[builder(default)]
-    how_all: bool,
+    how: DropNaHow,
 }
 
 impl Default for DropNaOptions {
@@ -48,7 +62,7 @@ impl DropNaOptions {
 /// - `subset` = all columns
 /// - `keep` = [`DuplicateKeepOption::KeepAny`]
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct DistinctOptions {
+pub struct DropDuplicatesOptions {
     /// Column names to use as deduplication keys. Empty means all columns.
     #[builder(default, setter(transform = |columns: &[&str]| columns.iter().map(|s| s.to_string()).collect()))]
     subset: Vec<String>,
@@ -57,13 +71,13 @@ pub struct DistinctOptions {
     keep: DuplicateKeepOption,
 }
 
-impl Default for DistinctOptions {
+impl Default for DropDuplicatesOptions {
     fn default() -> Self {
         Self::builder().build()
     }
 }
 
-impl DistinctOptions {
+impl DropDuplicatesOptions {
     /// Create default options: all columns, keep any.
     pub fn new() -> Self {
         Self::default()
@@ -233,6 +247,29 @@ impl DataFrame {
     #[doc(hidden)]
     pub fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
+    }
+
+    /// Return the first `n` rows using a borrowed per-operation execution override.
+    pub(crate) fn head_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let total = self.num_rows();
+        let take = n.min(total);
+        self.gather_range_in_context(0, take, ctx, "dataframe::in_context::head")
+    }
+
+    /// Return the last `n` rows using a borrowed per-operation execution override.
+    pub(crate) fn tail_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let total = self.num_rows();
+        let take = n.min(total);
+        let start = total - take;
+        self.gather_range_in_context(start, take, ctx, "dataframe::in_context::tail")
+    }
+
+    /// Return `length` rows starting at `offset` using a borrowed per-operation execution override.
+    pub(crate) fn slice_in_context(&self, offset: usize, length: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let total = self.num_rows();
+        let start = offset.min(total);
+        let take = length.min(total - start);
+        self.gather_range_in_context(start, take, ctx, "dataframe::in_context::slice")
     }
 
     /// Return the first `n` rows.
@@ -538,14 +575,16 @@ impl DataFrame {
     /// schema (all columns) is preserved.
     ///
     /// This is the low-level implementation behind [`drop_duplicates`](Self::drop_duplicates).
-    /// External callers should use `drop_duplicates` with [`DistinctOptions`] instead.
+    /// External callers should use `drop_duplicates` with [`DropDuplicatesOptions`] instead.
     pub(crate) fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
-        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::distinct")?;
-        let tv = self.build_table_view()?;
-        let result_table =
-            stream_compaction::distinct(tv.table(), &key_indices, keep, NullEquality::Equal, NanEquality::AllEqual)?
-                .with_execution_domain(Arc::clone(&self.domain));
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let output_domain = Arc::clone(&self.domain);
+        self.distinct_impl(
+            subset,
+            keep,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::distinct",
+        )
     }
 
     /// Drop rows where the specified columns contain nulls.
@@ -558,11 +597,14 @@ impl DataFrame {
     ///
     /// Returns an error if any name in `subset` is not in the schema.
     pub(crate) fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
-        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls")?;
-        let tv = self.build_table_view()?;
-        let result_table = stream_compaction::drop_nulls(tv.table(), &key_indices, keep_threshold)?
-            .with_execution_domain(Arc::clone(&self.domain));
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let output_domain = Arc::clone(&self.domain);
+        self.drop_nulls_impl(
+            subset,
+            keep_threshold,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::drop_nulls",
+        )
     }
 
     /// Concatenate two DataFrames row-wise.
@@ -862,14 +904,10 @@ impl DataFrame {
         let names: Vec<String> = exprs
             .iter()
             .map(|(explicit_name, expr)| {
-                explicit_name
-                    .as_deref()
-                    .or_else(|| expr.output_name())
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
-                            .with_operation("dataframe::with_columns")
-                    })
+                explicit_name.as_deref().or_else(|| expr.output_name()).map(str::to_string).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
+                        .with_operation("dataframe::with_columns")
+                })
             })
             .collect::<Result<_>>()?;
 
@@ -970,15 +1008,49 @@ impl DataFrame {
 
         let threshold = if let Some(t) = opts.thresh {
             t
-        } else if opts.how_all {
-            // "all": drop only when every subset column is null → keep if ≥1 non-null.
-            1
         } else {
-            // "any": drop if any subset column is null → keep if all non-null.
-            subset_len
+            match opts.how {
+                DropNaHow::All => {
+                    // "all": drop only when every subset column is null → keep if ≥1 non-null.
+                    1
+                },
+                DropNaHow::Any => {
+                    // "any": drop if any subset column is null → keep if all non-null.
+                    subset_len
+                },
+            }
         };
 
         self.drop_nulls(&subset_names, threshold).map_err(|e| e.with_operation("dataframe::dropna"))
+    }
+
+    /// Drop rows containing null values using a borrowed per-operation execution override.
+    pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
+                .with_operation("dataframe::in_context::dropna")
+        })?;
+
+        let threshold = if let Some(t) = opts.thresh {
+            t
+        } else {
+            match opts.how {
+                DropNaHow::All => 1,
+                DropNaHow::Any => subset_len,
+            }
+        };
+
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.drop_nulls_impl(
+            &subset_names,
+            threshold,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::in_context::dropna",
+        )
     }
 
     /// Remove duplicate rows.
@@ -995,11 +1067,30 @@ impl DataFrame {
     /// # Errors
     ///
     /// Returns an error if any column in `subset` is not in the schema.
-    pub fn drop_duplicates(&self, opts: DistinctOptions) -> Result<Self> {
+    pub fn drop_duplicates(&self, opts: DropDuplicatesOptions) -> Result<Self> {
         let subset_names: Vec<&str> =
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
         self.distinct(&subset_names, opts.keep).map_err(|e| e.with_operation("dataframe::drop_duplicates"))
+    }
+
+    /// Remove duplicate rows using a borrowed per-operation execution override.
+    pub(crate) fn drop_duplicates_in_context(
+        &self,
+        opts: DropDuplicatesOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.distinct_impl(
+            &subset_names,
+            opts.keep,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::in_context::drop_duplicates",
+        )
     }
 
     /// Replace null values in a single column with a plain Rust value.
@@ -1085,6 +1176,58 @@ impl DataFrame {
 }
 
 impl DataFrame {
+    fn distinct_impl(
+        &self,
+        subset: &[&str],
+        keep: DuplicateKeepOption,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+
+        let key_indices = resolve_column_names(&self.columns, subset, operation)?;
+        let tv = self.build_table_view()?;
+        let result_table = stream_compaction::distinct_impl(
+            tv.table(),
+            &key_indices,
+            keep,
+            NullEquality::Equal,
+            NanEquality::AllEqual,
+            exec_options.as_ref(),
+            operation,
+        )?
+        .with_execution_domain(output_domain);
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    fn drop_nulls_impl(
+        &self,
+        subset: &[&str],
+        keep_threshold: i32,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+
+        let key_indices = resolve_column_names(&self.columns, subset, operation)?;
+        let tv = self.build_table_view()?;
+        let result_table = stream_compaction::drop_nulls_impl(
+            tv.table(),
+            &key_indices,
+            keep_threshold,
+            exec_options.as_ref(),
+            operation,
+        )?
+        .with_execution_domain(output_domain);
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
     fn gather_by_column_view_impl(
         &self,
         indices: &ColumnView<'_>,
@@ -1145,31 +1288,68 @@ impl DataFrame {
             return self.empty_with_same_schema();
         }
 
+        let output_domain = Arc::clone(&self.domain);
+        self.gather_range_impl(
+            start,
+            len,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::gather_range",
+        )
+    }
+
+    fn gather_range_in_context(
+        &self,
+        start: usize,
+        len: usize,
+        ctx: &ExecutionContext<'_>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.gather_range_impl(start, len, output_domain.explicit_exec_options_raw(), output_domain, operation)
+    }
+
+    fn gather_range_impl(
+        &self,
+        start: usize,
+        len: usize,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        if len == 0 {
+            return self.empty_with_same_schema_in_domain(output_domain);
+        }
+
         let end = start + len; // callers guarantee no overflow
         let start_i32: i32 = start.try_into().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "gather_range: start exceeds i32::MAX")
-                .with_operation("dataframe::gather_range")
+            Error::new(ErrorKind::InvalidOperation, "gather_range: start exceeds i32::MAX").with_operation(operation)
         })?;
         let end_i32: i32 = end.try_into().map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "gather_range: start + len exceeds i32::MAX")
-                .with_operation("dataframe::gather_range")
+                .with_operation(operation)
         })?;
         let indices: Vec<i32> = (start_i32..end_i32).collect();
-        let map = Column::from_slice_in_domain(&indices, &self.domain)?;
+        let map = Column::from_slice_in_domain(&indices, &output_domain)?;
+        let map_view = map.view()?;
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, map_view.execution_domain(), operation)?;
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+
         let tv = self.build_table_view()?;
-        let exec_options = self.domain.explicit_exec_options_raw();
         // Indices are constructed from `start..start+len` which the callers
         // have already validated against row_count, and the i32 conversion
         // above ensures no truncation, so DONT_CHECK is safe here.
         let result_table = copying::gather_impl(
             tv.table(),
-            &map.view()?,
+            &map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             exec_options.as_ref(),
-            "dataframe::gather_range",
+            operation,
         )?
-        .with_execution_domain(Arc::clone(&self.domain));
+        .with_execution_domain(output_domain);
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1264,7 +1444,7 @@ impl DataFrame {
         // Each value_var name is repeated N times, in order
         let var_strings: Vec<&str> = value_vars.iter().flat_map(|name| std::iter::repeat_n(name.as_str(), n)).collect();
         let var_series =
-            Series::from_column(Column::from_strings_in_domain(&var_strings, &self.domain)?)?.rename(&opts.var_name);
+            Series::from_column(Column::from_strs_in_domain(&var_strings, &self.domain)?)?.rename(&opts.var_name);
         result_columns.push((&opts.var_name, var_series));
 
         // Step 3: Concatenate value columns into a single "value" column

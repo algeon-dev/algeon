@@ -1,7 +1,7 @@
 //! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
 
 use cudf::{
-    DataFrame, DistinctOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions, core::Column,
+    DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions, core::Column,
 };
 
 use crate::common::{
@@ -253,7 +253,7 @@ fn test_drop_duplicates_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
     let df = sample_df();
     let deduped = df
-        .drop_duplicates(DistinctOptions::builder().subset(&["id"]).keep(DuplicateKeepOption::KeepAny).build())
+        .drop_duplicates(DropDuplicatesOptions::builder().subset(&["id"]).keep(DuplicateKeepOption::KeepAny).build())
         .unwrap();
 
     assert_eq!(deduped.num_rows(), 4); // 4 distinct ids
@@ -264,7 +264,7 @@ fn test_drop_duplicates_by_single_column() {
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df();
     let deduped = df
-        .drop_duplicates(DistinctOptions::builder().subset(&["id"]).keep(DuplicateKeepOption::KeepFirst).build())
+        .drop_duplicates(DropDuplicatesOptions::builder().subset(&["id"]).keep(DuplicateKeepOption::KeepFirst).build())
         .unwrap();
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
     assert_eq!(deduped.column_index("id"), Some(0));
@@ -274,8 +274,8 @@ fn test_drop_duplicates_preserves_schema() {
 #[test]
 fn test_drop_duplicates_nonexistent_column() {
     let df = sample_df();
-    let result =
-        df.drop_duplicates(DistinctOptions::builder().subset(&["nope"]).keep(DuplicateKeepOption::KeepAny).build());
+    let result = df
+        .drop_duplicates(DropDuplicatesOptions::builder().subset(&["nope"]).keep(DuplicateKeepOption::KeepAny).build());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
 }

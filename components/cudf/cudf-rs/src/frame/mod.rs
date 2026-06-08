@@ -4,8 +4,8 @@ pub mod dataframe;
 pub mod series;
 
 pub use dataframe::{
-    ColumnMemoryAccounting, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult,
-    DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail, JsonWriteOptions,
-    ParquetWriteOptions,
+    ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
+    DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
+    InfoDetail, JsonWriteOptions, ParquetWriteOptions,
 };
 pub use series::{IntoSeries, Series};

@@ -57,7 +57,7 @@ impl SeriesStringNamespace<'_> {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn contains(&self, pat: &str) -> Result<Series> {
         let cv = self.0.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
+        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::str_contains(&cv, &scalar)?;
         self.0.with_inherited_name(col)
     }
@@ -72,7 +72,7 @@ impl SeriesStringNamespace<'_> {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn starts_with(&self, pat: &str) -> Result<Series> {
         let cv = self.0.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
+        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::starts_with(&cv, &scalar)?;
         self.0.with_inherited_name(col)
     }
@@ -87,7 +87,7 @@ impl SeriesStringNamespace<'_> {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn ends_with(&self, pat: &str) -> Result<Series> {
         let cv = self.0.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
+        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::ends_with(&cv, &scalar)?;
         self.0.with_inherited_name(col)
     }
@@ -126,7 +126,7 @@ impl SeriesStringNamespace<'_> {
     /// means strip whitespace.
     pub fn strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
         let cv = self.0.column.view()?;
-        let scalar = Scalar::from_string_in_domain(to_strip, self.0.column.execution_domain())?;
+        let scalar = Scalar::from_str_in_domain(to_strip, self.0.column.execution_domain())?;
         let col = strings::strip(&cv, side, &scalar)?;
         self.0.with_inherited_name(col)
     }

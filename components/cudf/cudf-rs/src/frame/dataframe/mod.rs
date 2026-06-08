@@ -19,10 +19,10 @@ pub use context::DataFrameExecutionScope;
 pub use info::{
     ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
 };
-pub use io::{CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions};
+pub use io::{CsvReadOptions, CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions};
 pub use owned::{DataFrame, DataFrameJoinResult};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 #[doc(hidden)]
 pub use reshape::IntoWithColumnExpr;
-pub use reshape::{DistinctOptions, DropNaOptions, MeltOptions};
+pub use reshape::{DropDuplicatesOptions, DropNaHow, DropNaOptions, MeltOptions};
 pub use table_view::DataFrameTableView;

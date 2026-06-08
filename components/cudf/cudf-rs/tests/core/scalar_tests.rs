@@ -2,13 +2,13 @@ use cudf::{TypeId, core::Scalar};
 
 #[test]
 fn test_string_scalar_value_round_trip() {
-    let scalar = Scalar::from_string("hello").unwrap();
+    let scalar = Scalar::from_str("hello").unwrap();
     assert_eq!(scalar.string_value().unwrap(), "hello");
 }
 
 #[test]
 fn test_empty_string_scalar_value_round_trip() {
-    let scalar = Scalar::from_string("").unwrap();
+    let scalar = Scalar::from_str("").unwrap();
     assert_eq!(scalar.string_value().unwrap(), "");
 }
 
@@ -58,7 +58,7 @@ fn test_valid_numeric_is_valid() {
 
 #[test]
 fn test_valid_string_is_valid() {
-    let s = Scalar::from_string("hello").unwrap();
+    let s = Scalar::from_str("hello").unwrap();
     assert!(s.is_valid().unwrap());
 }
 
@@ -70,7 +70,7 @@ fn test_numeric_scalar_data_type() {
 
 #[test]
 fn test_string_scalar_data_type() {
-    let s = Scalar::from_string("x").unwrap();
+    let s = Scalar::from_str("x").unwrap();
     assert_eq!(s.data_type().unwrap().id(), TypeId::String);
 }
 
@@ -82,6 +82,6 @@ fn test_type_mismatch_value_extraction() {
 
 #[test]
 fn test_string_scalar_numeric_value_fails() {
-    let s = Scalar::from_string("x").unwrap();
+    let s = Scalar::from_str("x").unwrap();
     assert!(s.value::<i32>().is_err());
 }

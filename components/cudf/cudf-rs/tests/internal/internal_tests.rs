@@ -6,7 +6,7 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{DataFrame, DistinctOptions, DuplicateKeepOption, Series, core::Column};
+use cudf::{DataFrame, DropDuplicatesOptions, DuplicateKeepOption, Series, core::Column};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error};
 
@@ -51,14 +51,16 @@ fn sort_preserves_schema_names_and_lengths() {
 }
 
 #[test]
-fn reassembly_after_distinct_preserves_schema() {
-    // distinct internally uses resolve + reassemble helpers.
+fn reassembly_after_drop_duplicates_preserves_schema() {
+    // drop_duplicates internally uses resolve + reassemble helpers.
     let a = Series::new::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
     let b = Series::new::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let distinct = df
-        .drop_duplicates(DistinctOptions::builder().subset(&["x", "y"]).keep(DuplicateKeepOption::KeepFirst).build())
+        .drop_duplicates(
+            DropDuplicatesOptions::builder().subset(&["x", "y"]).keep(DuplicateKeepOption::KeepFirst).build(),
+        )
         .unwrap();
 
     assert_eq!(distinct.num_columns(), 2, "schema columns preserved");

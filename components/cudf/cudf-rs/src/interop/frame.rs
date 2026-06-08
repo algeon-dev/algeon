@@ -1,6 +1,13 @@
 use super::{
-    column::transfer_from_owned_column_with_runtime_release,
-    table_export::transfer_from_owned_table_with_names_and_runtime_release, *,
+    column::{
+        transfer_from_owned_column_with_runtime_release,
+        transfer_from_owned_column_with_runtime_release_synchronization,
+    },
+    table_export::{
+        transfer_from_owned_table_with_names_and_runtime_release,
+        transfer_from_owned_table_with_names_and_runtime_release_synchronization,
+    },
+    *,
 };
 
 pub(crate) struct BorrowedPartitionColumnGroup<'a> {
@@ -154,9 +161,12 @@ impl PartitionedDataFrameExport {
 
     /// Move this heterogeneous producer into the shared RAPIDS partitioned
     /// owned device transfer profile.
-    pub fn try_into_owned_device_partitioned_table_transfer(
-        self,
-    ) -> Result<PartitionedOwnedTableTransfer, InteropError> {
+    ///
+    /// This preserves one owned-transfer root per retained-provenance
+    /// partition. Each partition still follows the conservative default
+    /// release contract unless you opt into the runtime-backed signal-release
+    /// variant below.
+    pub fn try_into_owned_transfer(self) -> Result<PartitionedOwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDevicePartitionedTableTransfer>::try_into_owned_device_partitioned_table_transfer(self)
     }
 
@@ -168,12 +178,40 @@ impl PartitionedDataFrameExport {
     /// releaser. Calling a partition releaser accepts release and schedules
     /// any required consumer-signal wait onto a background runtime job
     /// instead of blocking the caller thread.
-    pub fn try_into_owned_device_partitioned_table_transfer_with_runtime_release(
+    ///
+    /// Ownership remains exclusive per partition: importing one partition back
+    /// into a native `cudf-rs` `Table` claims that partition's ownership and
+    /// invalidates its matching releaser, while releasing one partition makes
+    /// later native import of that same partition fail.
+    pub fn try_into_owned_transfer_with_release(
         self,
     ) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
         transfer_partitioned_owned_table_from_columns_with_runtime_release(
             self,
-            "interop::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer_with_runtime_release",
+            "interop::PartitionedDataFrameExport::try_into_owned_transfer_with_release",
+        )
+    }
+
+    /// Move this heterogeneous producer into the shared RAPIDS partitioned
+    /// owned device transfer profile plus one CUDA-backed releaser per
+    /// retained-provenance partition with an explicit release-synchronization
+    /// contract.
+    ///
+    /// Each partition always declares
+    /// [`TransferCompletionRule::ReleaseWaitsOnConsumerSignal`]. Pass
+    /// [`ReleaseSynchronization::Asynchronous`] when release should return
+    /// after acceptance and background scheduling, or
+    /// [`ReleaseSynchronization::MaySynchronizeInternally`] when blocking the
+    /// caller thread is acceptable. Caller-managed synchronization remains
+    /// unsupported for this runtime-backed producer path.
+    pub fn try_into_owned_transfer_with_release_synchronization(
+        self,
+        synchronization: ReleaseSynchronization,
+    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+        transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization(
+            self,
+            synchronization,
+            "interop::PartitionedDataFrameExport::try_into_owned_transfer_with_release_synchronization",
         )
     }
 }
@@ -253,7 +291,7 @@ impl Series {
     ///
     /// Shared owned-transfer roots do not carry a schema-name fact, so the
     /// `Series` name is not exported.
-    pub fn try_into_owned_device_column_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
+    pub fn try_into_owned_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceColumnTransfer>::try_into_owned_device_column_transfer(self)
     }
 
@@ -264,12 +302,25 @@ impl Series {
     /// The returned releaser accepts release and schedules any required
     /// consumer-signal wait onto a background runtime job instead of blocking
     /// the caller thread.
-    pub fn try_into_owned_device_column_transfer_with_runtime_release(
+    pub fn try_into_owned_transfer_with_release(
         self,
     ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
-        let operation = "interop::Series::try_into_owned_device_column_transfer_with_runtime_release";
+        let operation = "interop::Series::try_into_owned_transfer_with_release";
         let column = into_owned_column_for_transfer(self, operation)?;
         transfer_from_owned_column_with_runtime_release(column, operation)
+    }
+
+    /// Convenience producer that moves this high-level `Series` into the
+    /// shared owned device transfer profile plus a CUDA-backed releaser for
+    /// signal-driven release with an explicit release-synchronization
+    /// contract.
+    pub fn try_into_owned_transfer_with_release_synchronization(
+        self,
+        synchronization: ReleaseSynchronization,
+    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+        let operation = "interop::Series::try_into_owned_transfer_with_release_synchronization";
+        let column = into_owned_column_for_transfer(self, operation)?;
+        transfer_from_owned_column_with_runtime_release_synchronization(column, synchronization, operation)
     }
 
     /// Convenience producer that projects this high-level `Series` into the
@@ -427,7 +478,7 @@ impl DataFrame {
     ///
     /// Unlike low-level `Table` owned transfer, this high-level producer
     /// preserves the `DataFrame` schema names on the shared root.
-    pub fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
+    pub fn try_into_owned_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
     }
 
@@ -438,12 +489,30 @@ impl DataFrame {
     /// The returned releaser accepts release and schedules any required
     /// consumer-signal wait onto a background runtime job instead of blocking
     /// the caller thread.
-    pub fn try_into_owned_device_table_transfer_with_runtime_release(
+    pub fn try_into_owned_transfer_with_release(
         self,
     ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
-        let operation = "interop::DataFrame::try_into_owned_device_table_transfer_with_runtime_release";
+        let operation = "interop::DataFrame::try_into_owned_transfer_with_release";
         let (table, names) = into_owned_table_for_transfer(self, operation)?;
         transfer_from_owned_table_with_names_and_runtime_release(table, Some(names), operation)
+    }
+
+    /// Convenience producer that moves this high-level `DataFrame` into the
+    /// shared owned device transfer profile plus a CUDA-backed releaser for
+    /// signal-driven release with an explicit release-synchronization
+    /// contract.
+    pub fn try_into_owned_transfer_with_release_synchronization(
+        self,
+        synchronization: ReleaseSynchronization,
+    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+        let operation = "interop::DataFrame::try_into_owned_transfer_with_release_synchronization";
+        let (table, names) = into_owned_table_for_transfer(self, operation)?;
+        transfer_from_owned_table_with_names_and_runtime_release_synchronization(
+            table,
+            Some(names),
+            synchronization,
+            operation,
+        )
     }
 
     /// Convenience producer that projects this high-level `DataFrame` into the

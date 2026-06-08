@@ -11,7 +11,7 @@
 //! // Reduce to a single scalar.
 //! let total = reduction::reduce(
 //!     &view,
-//!     &reduction::ReduceAggregation::Sum,
+//!     &reduction::ReduceAgg::Sum,
 //!     &DataType::new(TypeId::Int32),
 //! )
 //! .unwrap();
@@ -20,7 +20,7 @@
 //! // Cumulative (prefix) sum.
 //! let cumsum = reduction::scan(
 //!     &view,
-//!     reduction::ScanAggregation::Sum,
+//!     reduction::ScanAgg::Sum,
 //!     reduction::ScanType::Inclusive,
 //!     reduction::NullPolicy::Exclude,
 //! )
@@ -39,7 +39,7 @@ use crate::core::{
 
 /// Aggregation type for reduce operations.
 #[derive(Debug, Clone)]
-pub enum ReduceAggregation {
+pub enum ReduceAgg {
     Sum,
     Min,
     Max,
@@ -62,7 +62,7 @@ pub enum ReduceAggregation {
 ///
 /// Only a subset of aggregations are supported for scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScanAggregation {
+pub enum ScanAgg {
     /// Inclusive or exclusive cumulative sum.
     Sum,
     /// Inclusive or exclusive cumulative minimum.
@@ -92,18 +92,18 @@ impl ScanType {
 
 pub use crate::core::types::NullPolicy;
 
-fn reduce_agg_name(agg: &ReduceAggregation) -> &'static str {
+fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
     match agg {
-        ReduceAggregation::Sum => "sum",
-        ReduceAggregation::Min => "min",
-        ReduceAggregation::Max => "max",
-        ReduceAggregation::Product => "product",
-        ReduceAggregation::Mean => "mean",
-        ReduceAggregation::Median => "median",
-        ReduceAggregation::Any => "any",
-        ReduceAggregation::All => "all",
-        ReduceAggregation::Variance { .. } => "variance",
-        ReduceAggregation::Std { .. } => "std",
+        ReduceAgg::Sum => "sum",
+        ReduceAgg::Min => "min",
+        ReduceAgg::Max => "max",
+        ReduceAgg::Product => "product",
+        ReduceAgg::Mean => "mean",
+        ReduceAgg::Median => "median",
+        ReduceAgg::Any => "any",
+        ReduceAgg::All => "all",
+        ReduceAgg::Variance { .. } => "variance",
+        ReduceAgg::Std { .. } => "std",
     }
 }
 
@@ -119,60 +119,60 @@ pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_reduce_aggregation_destroy`.
-unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_void> {
+unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<*mut c_void> {
     use cudf_sys::cudf_reduce_aggregation_kind_t::*;
 
     let mut handle = ptr::null_mut();
     match agg {
-        ReduceAggregation::Sum => {
+        ReduceAgg::Sum => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_SUM, &mut handle),
                 "reduction::create_reduce_agg_handle(sum)",
             )?;
         },
-        ReduceAggregation::Min => {
+        ReduceAgg::Min => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MIN, &mut handle),
                 "reduction::create_reduce_agg_handle(min)",
             )?;
         },
-        ReduceAggregation::Max => {
+        ReduceAgg::Max => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MAX, &mut handle),
                 "reduction::create_reduce_agg_handle(max)",
             )?;
         },
-        ReduceAggregation::Product => {
+        ReduceAgg::Product => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_PRODUCT, &mut handle),
                 "reduction::create_reduce_agg_handle(product)",
             )?;
         },
-        ReduceAggregation::Mean => {
+        ReduceAgg::Mean => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEAN, &mut handle),
                 "reduction::create_reduce_agg_handle(mean)",
             )?;
         },
-        ReduceAggregation::Median => {
+        ReduceAgg::Median => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEDIAN, &mut handle),
                 "reduction::create_reduce_agg_handle(median)",
             )?;
         },
-        ReduceAggregation::Any => {
+        ReduceAgg::Any => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ANY, &mut handle),
                 "reduction::create_reduce_agg_handle(any)",
             )?;
         },
-        ReduceAggregation::All => {
+        ReduceAgg::All => {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ALL, &mut handle),
                 "reduction::create_reduce_agg_handle(all)",
             )?;
         },
-        ReduceAggregation::Variance { ddof } => {
+        ReduceAgg::Variance { ddof } => {
             let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(variance)")?;
             // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
@@ -180,7 +180,7 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
                 "reduction::create_reduce_agg_handle(variance)",
             )?;
         },
-        ReduceAggregation::Std { ddof } => {
+        ReduceAgg::Std { ddof } => {
             let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(std)")?;
             // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
@@ -196,15 +196,15 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_scan_aggregation_destroy`.
-unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
+unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
     use cudf_sys::cudf_reduce_aggregation_kind_t::*;
 
     let mut handle = ptr::null_mut();
     let kind = match agg {
-        ScanAggregation::Sum => CUDF_REDUCE_AGG_SUM,
-        ScanAggregation::Min => CUDF_REDUCE_AGG_MIN,
-        ScanAggregation::Max => CUDF_REDUCE_AGG_MAX,
-        ScanAggregation::Product => CUDF_REDUCE_AGG_PRODUCT,
+        ScanAgg::Sum => CUDF_REDUCE_AGG_SUM,
+        ScanAgg::Min => CUDF_REDUCE_AGG_MIN,
+        ScanAgg::Max => CUDF_REDUCE_AGG_MAX,
+        ScanAgg::Product => CUDF_REDUCE_AGG_PRODUCT,
     };
     // SAFETY: handle is initialized to null and set by the C shim on success.
     error::check_status_in_with(
@@ -216,7 +216,7 @@ unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
 }
 
 /// Reduce a column to a single scalar value.
-pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &DataType) -> Result<Scalar> {
+pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     reduce_impl(input, agg, output_type, exec_options.as_ref(), "reduction::reduce")
@@ -225,7 +225,7 @@ pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &Dat
 
 pub(crate) fn reduce_impl(
     input: &ColumnView<'_>,
-    agg: &ReduceAggregation,
+    agg: &ReduceAgg,
     output_type: &DataType,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -265,12 +265,7 @@ pub(crate) fn reduce_impl(
 }
 
 /// Compute a prefix scan (cumulative operation) on a column.
-pub fn scan(
-    input: &ColumnView<'_>,
-    agg: ScanAggregation,
-    scan_type: ScanType,
-    null_policy: NullPolicy,
-) -> Result<Column> {
+pub fn scan(input: &ColumnView<'_>, agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     scan_impl(input, agg, scan_type, null_policy, exec_options.as_ref(), "reduction::scan")
@@ -279,7 +274,7 @@ pub fn scan(
 
 pub(crate) fn scan_impl(
     input: &ColumnView<'_>,
-    agg: ScanAggregation,
+    agg: ScanAgg,
     scan_type: ScanType,
     null_policy: NullPolicy,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,

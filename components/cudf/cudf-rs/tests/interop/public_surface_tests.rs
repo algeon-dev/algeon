@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cudf::{
     DataFrame, Runtime, Series,
     interop::{
+        ReleaseSynchronization,
         borrowed::{BorrowedColumnView, BorrowedTableView},
         frame::PartitionedDataFrameExport,
         prepared::{
@@ -155,15 +156,46 @@ fn cudf_interop_exposes_high_level_owned_transfer_producers() {
         >,
     ) {
     }
+    fn assert_series_configurable_runtime_release_owned_producer(
+        _f: fn(
+            Series,
+            ReleaseSynchronization,
+        ) -> std::result::Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError>,
+    ) {
+    }
+    fn assert_dataframe_configurable_runtime_release_owned_producer(
+        _f: fn(
+            DataFrame,
+            ReleaseSynchronization,
+        ) -> std::result::Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError>,
+    ) {
+    }
+    fn assert_partitioned_dataframe_configurable_runtime_release_owned_producer(
+        _f: fn(
+            PartitionedDataFrameExport,
+            ReleaseSynchronization,
+        ) -> std::result::Result<
+            (rapids_interop::PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser),
+            InteropError,
+        >,
+    ) {
+    }
 
-    assert_series_owned_producer(Series::try_into_owned_device_column_transfer);
-    assert_dataframe_owned_producer(DataFrame::try_into_owned_device_table_transfer);
-    assert_series_runtime_release_owned_producer(Series::try_into_owned_device_column_transfer_with_runtime_release);
-    assert_dataframe_runtime_release_owned_producer(
-        DataFrame::try_into_owned_device_table_transfer_with_runtime_release,
-    );
+    assert_series_owned_producer(Series::try_into_owned_transfer);
+    assert_dataframe_owned_producer(DataFrame::try_into_owned_transfer);
+    assert_series_runtime_release_owned_producer(Series::try_into_owned_transfer_with_release);
+    assert_dataframe_runtime_release_owned_producer(DataFrame::try_into_owned_transfer_with_release);
     assert_partitioned_dataframe_runtime_release_owned_producer(
-        PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer_with_runtime_release,
+        PartitionedDataFrameExport::try_into_owned_transfer_with_release,
+    );
+    assert_series_configurable_runtime_release_owned_producer(
+        Series::try_into_owned_transfer_with_release_synchronization,
+    );
+    assert_dataframe_configurable_runtime_release_owned_producer(
+        DataFrame::try_into_owned_transfer_with_release_synchronization,
+    );
+    assert_partitioned_dataframe_configurable_runtime_release_owned_producer(
+        PartitionedDataFrameExport::try_into_owned_transfer_with_release_synchronization,
     );
 }
 

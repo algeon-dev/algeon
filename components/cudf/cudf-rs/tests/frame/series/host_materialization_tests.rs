@@ -55,7 +55,7 @@ fn test_to_vec_type_mismatch_returns_error() {
 
 #[test]
 fn test_to_vec_on_string_column_returns_error() {
-    let s = Series::from_strings("x", &["a", "b"]).unwrap();
+    let s = Series::from_strs("x", &["a", "b"]).unwrap();
     let err = s.to_vec_strict::<i32>().unwrap_err();
     assert_eq!(err.kind(), ErrorKind::TypeError);
 }
@@ -126,14 +126,14 @@ fn test_to_optional_vec_bool_preserves_false_and_skips_nulls() {
 
 #[test]
 fn test_to_strings_basic() {
-    let s = Series::from_strings("x", &["hello", "world"]).unwrap();
+    let s = Series::from_strs("x", &["hello", "world"]).unwrap();
     let vals = s.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello".to_string(), "world".to_string()]);
 }
 
 #[test]
 fn test_to_strings_empty() {
-    let s = Series::from_strings("x", &[]).unwrap();
+    let s = Series::from_strs("x", &[]).unwrap();
     let vals = s.to_strings_strict().unwrap();
     assert!(vals.is_empty());
 }
@@ -151,7 +151,7 @@ fn test_to_strings_on_numeric_returns_error() {
 
 #[test]
 fn test_to_optional_strings_with_nulls() {
-    let s = Series::from_strings_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
+    let s = Series::from_strs_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
     let vals = s.to_strings_optional().unwrap();
     assert_eq!(vals, vec![Some("a".to_string()), None, Some("c".to_string())]);
 }

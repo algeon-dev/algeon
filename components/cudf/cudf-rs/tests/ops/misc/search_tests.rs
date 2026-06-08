@@ -165,8 +165,8 @@ fn test_isin_succeeds_with_mixed_domains() {
 
 #[test]
 fn test_isin_string_column() {
-    let col = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
-    let values = Column::from_strings(&["banana", "date"]).unwrap();
+    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let values = Column::from_strs(&["banana", "date"]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();

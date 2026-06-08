@@ -48,7 +48,7 @@ use std::sync::Arc;
 use super::{
     binary::{self, BinaryOperator},
     copying,
-    reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
+    reduction::{self, ReduceAgg, ScanAgg, ScanType},
     replace::{self, FillPolicy},
     strings::{self, StripSide},
     unary::{self, UnaryOperator},
@@ -87,7 +87,7 @@ impl LitValue {
     fn to_scalar_in_domain(&self, domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> {
         match &*self.0 {
             LitValueInner::Numeric(f) => f(domain),
-            LitValueInner::String(s) => Scalar::from_string_in_domain(s, domain),
+            LitValueInner::String(s) => Scalar::from_str_in_domain(s, domain),
         }
     }
 
@@ -155,9 +155,9 @@ pub enum Expr {
     /// Forward or backward fill of nulls.
     FillNullPolicy { input: Box<Expr>, policy: FillPolicy },
     /// Cumulative (prefix scan) operation.
-    Scan { input: Box<Expr>, agg: ScanAggregation },
+    Scan { input: Box<Expr>, agg: ScanAgg },
     /// Broadcast aggregate: reduce to scalar, then broadcast to row count.
-    Reduce { input: Box<Expr>, agg: ReduceAggregation },
+    Reduce { input: Box<Expr>, agg: ReduceAgg },
     /// String operation.
     StringOp { input: Box<Expr>, op: StringOperator },
     /// Conditional: row-wise `if cond then true_val else false_val`.
@@ -296,22 +296,22 @@ impl Expr {
 
     /// Inclusive cumulative sum.
     pub fn cumsum(self) -> Expr {
-        Expr::Scan { input: Box::new(self), agg: ScanAggregation::Sum }
+        Expr::Scan { input: Box::new(self), agg: ScanAgg::Sum }
     }
 
     /// Inclusive cumulative minimum.
     pub fn cummin(self) -> Expr {
-        Expr::Scan { input: Box::new(self), agg: ScanAggregation::Min }
+        Expr::Scan { input: Box::new(self), agg: ScanAgg::Min }
     }
 
     /// Inclusive cumulative maximum.
     pub fn cummax(self) -> Expr {
-        Expr::Scan { input: Box::new(self), agg: ScanAggregation::Max }
+        Expr::Scan { input: Box::new(self), agg: ScanAgg::Max }
     }
 
     /// Inclusive cumulative product.
     pub fn cumprod(self) -> Expr {
-        Expr::Scan { input: Box::new(self), agg: ScanAggregation::Product }
+        Expr::Scan { input: Box::new(self), agg: ScanAgg::Product }
     }
 
     // -- String builders (Phase 4a) ----------------------------------------
@@ -452,29 +452,29 @@ impl Expr {
                     StringOperator::Lower => strings::to_lower(&cv)?,
                     StringOperator::Upper => strings::to_upper(&cv)?,
                     StringOperator::Strip => {
-                        let empty = Scalar::from_string_in_domain("", df.execution_domain())?;
+                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
                         strings::strip(&cv, StripSide::Both, &empty)?
                     },
                     StringOperator::LStrip => {
-                        let empty = Scalar::from_string_in_domain("", df.execution_domain())?;
+                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
                         strings::strip(&cv, StripSide::Left, &empty)?
                     },
                     StringOperator::RStrip => {
-                        let empty = Scalar::from_string_in_domain("", df.execution_domain())?;
+                        let empty = Scalar::from_str_in_domain("", df.execution_domain())?;
                         strings::strip(&cv, StripSide::Right, &empty)?
                     },
                     StringOperator::Len => strings::count_characters(&cv)?,
                     StringOperator::ByteCount => strings::count_bytes(&cv)?,
                     StringOperator::Contains(pat) => {
-                        let scalar = Scalar::from_string_in_domain(pat, df.execution_domain())?;
+                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
                         strings::str_contains(&cv, &scalar)?
                     },
                     StringOperator::StartsWith(pat) => {
-                        let scalar = Scalar::from_string_in_domain(pat, df.execution_domain())?;
+                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
                         strings::starts_with(&cv, &scalar)?
                     },
                     StringOperator::EndsWith(pat) => {
-                        let scalar = Scalar::from_string_in_domain(pat, df.execution_domain())?;
+                        let scalar = Scalar::from_str_in_domain(pat, df.execution_domain())?;
                         strings::ends_with(&cv, &scalar)?
                     },
                 };
@@ -519,7 +519,7 @@ impl ExprAggNamespace {
     /// [`Series::sum_value`](crate::frame::series::Series::sum_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn sum(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Sum }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Sum }
     }
 
     /// Mean of all rows, materialized as a full-length `Float64` column.
@@ -528,7 +528,7 @@ impl ExprAggNamespace {
     /// [`Series::mean_value`](crate::frame::series::Series::mean_value) when
     /// you want a scalar result instead of a broadcast expression operand.
     pub fn mean(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Mean }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Mean }
     }
 
     /// Minimum of all rows, materialized as a full-length column.
@@ -538,7 +538,7 @@ impl ExprAggNamespace {
     /// want a scalar result instead of a broadcast expression operand.
     #[allow(clippy::should_implement_trait)]
     pub fn min(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Min }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Min }
     }
 
     /// Maximum of all rows, materialized as a full-length column.
@@ -547,7 +547,7 @@ impl ExprAggNamespace {
     /// [`Series::max_value`](crate::frame::series::Series::max_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn max(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Max }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Max }
     }
 
     /// Standard deviation of all rows, materialized as a full-length column.
@@ -556,7 +556,7 @@ impl ExprAggNamespace {
     /// [`Series::std_value`](crate::frame::series::Series::std_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn std(self, ddof: u32) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Std { ddof } }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Std { ddof } }
     }
 
     /// Variance of all rows, materialized as a full-length column.
@@ -565,7 +565,7 @@ impl ExprAggNamespace {
     /// [`Series::var_value`](crate::frame::series::Series::var_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn var(self, ddof: u32) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Variance { ddof } }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Variance { ddof } }
     }
 
     /// Median of all rows, materialized as a full-length `Float64` column.
@@ -575,7 +575,7 @@ impl ExprAggNamespace {
     /// when you want a scalar result instead of a broadcast expression
     /// operand.
     pub fn median(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Median }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Median }
     }
 
     /// Logical ANY over all rows, materialized as a full-length BOOL8 column.
@@ -584,7 +584,7 @@ impl ExprAggNamespace {
     /// [`Series::any_value`](crate::frame::series::Series::any_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn any(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Any }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Any }
     }
 
     /// Logical ALL over all rows, materialized as a full-length BOOL8 column.
@@ -593,7 +593,7 @@ impl ExprAggNamespace {
     /// [`Series::all_value`](crate::frame::series::Series::all_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn all(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::All }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::All }
     }
 
     /// Product of all rows, materialized as a full-length column.
@@ -603,7 +603,7 @@ impl ExprAggNamespace {
     /// when you want a scalar result instead of a broadcast expression
     /// operand.
     pub fn product(self) -> Expr {
-        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Product }
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Product }
     }
 }
 

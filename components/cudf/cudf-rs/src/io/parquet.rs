@@ -30,13 +30,21 @@ pub struct ParquetReadOptions {
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
     columns: Option<Vec<String>>,
     #[builder(default)]
-    skip_rows: i64,
-    #[builder(default = -1)]
-    num_rows: i64,
+    skip_rows: usize,
+    #[builder(default, setter(transform = |num_rows: usize| Some(num_rows)))]
+    num_rows: Option<usize>,
     #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
+}
+
+fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        Error::new(ErrorKind::InvalidArgument, format!("{field} exceeds i64::MAX"))
+            .with_operation(operation)
+            .with_context(field, value.to_string())
+    })
 }
 
 /// Read a Parquet file into a low-level table result.
@@ -45,18 +53,22 @@ pub struct ParquetReadOptions {
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
 pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
+    const OPERATION: &str = "io::parquet::read_parquet";
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet")?;
+    let num_rows_context = options.num_rows.map(|num_rows| num_rows.to_string()).unwrap_or_else(|| "all".to_string());
 
     // Validate that row_groups is not combined with skip_rows or num_rows.
-    if options.row_groups.is_some() && (options.skip_rows > 0 || options.num_rows >= 0) {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "row_groups cannot be combined with skip_rows or num_rows",
-        )
-        .with_operation("io::parquet::read_parquet")
-        .with_context("skip_rows", options.skip_rows.to_string())
-        .with_context("num_rows", options.num_rows.to_string()));
+    if options.row_groups.is_some() && (options.skip_rows > 0 || options.num_rows.is_some()) {
+        return Err(Error::new(ErrorKind::InvalidArgument, "row_groups cannot be combined with skip_rows or num_rows")
+            .with_operation(OPERATION)
+            .with_context("skip_rows", options.skip_rows.to_string())
+            .with_context("num_rows", num_rows_context));
     }
+    let skip_rows = checked_i64_from_usize(options.skip_rows, "skip_rows", OPERATION)?;
+    let num_rows = match options.num_rows {
+        Some(num_rows) => checked_i64_from_usize(num_rows, "num_rows", OPERATION)?,
+        None => -1,
+    };
 
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
@@ -73,7 +85,7 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
             cols.iter()
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
-                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                        Error::new(ErrorKind::InvalidArgument, "column name contains interior null byte")
                             .with_operation("io::parquet::read_parquet")
                             .with_context("column_name", s.to_string())
                     })
@@ -102,8 +114,8 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
                     filepath.as_ptr(),
                     col_ptrs,
                     num_cols,
-                    options.skip_rows,
-                    options.num_rows,
+                    skip_rows,
+                    num_rows,
                     rg_ptr,
                     num_rg,
                     &mut table_handle,
@@ -117,8 +129,8 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
                     filepath.as_ptr(),
                     col_ptrs,
                     num_cols,
-                    options.skip_rows,
-                    options.num_rows,
+                    skip_rows,
+                    num_rows,
                     rg_ptr,
                     num_rg,
                     &mut table_handle,
@@ -131,7 +143,7 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
         [
             ("selected_column_count", num_cols.to_string()),
             ("skip_rows", options.skip_rows.to_string()),
-            ("num_rows", options.num_rows.to_string()),
+            ("num_rows", num_rows_context),
         ],
     )?;
 
@@ -197,7 +209,7 @@ pub(crate) fn write_parquet_with_exec(
         let expected = table.num_columns()? as usize;
         if names.len() != expected {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidArgument,
                 format!("column name count ({}) does not match table column count ({})", names.len(), expected),
             )
             .with_operation("io::parquet::write_parquet")
@@ -215,7 +227,7 @@ pub(crate) fn write_parquet_with_exec(
                 .iter()
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
-                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                        Error::new(ErrorKind::InvalidArgument, "column name contains interior null byte")
                             .with_operation("io::parquet::write_parquet")
                             .with_context("column_name", s.to_string())
                     })

@@ -77,7 +77,7 @@ fn consumer_import_naming_dataframe_prepared_with_names() {
 #[test]
 fn column_import_into_runtime_round_trips_data() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let export = source.try_prepare_device_column_export().unwrap();
     let dest = common::sample_runtime();
 
@@ -90,8 +90,8 @@ fn column_import_into_runtime_round_trips_data() {
 #[test]
 fn table_import_into_runtime_round_trips_data() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&source_runtime, &[10i32, 20]).unwrap();
-    let second = Column::from_slice_with_runtime(&source_runtime, &[100i64, 200]).unwrap();
+    let first = source_runtime.column_from_slice(&[10i32, 20]).unwrap();
+    let second = source_runtime.column_from_slice(&[100i64, 200]).unwrap();
     let source = Table::from_columns(vec![first, second]).unwrap();
     let view = source.view().unwrap();
     let borrowed = view.try_borrow_table_view().unwrap();
@@ -107,7 +107,7 @@ fn table_import_into_runtime_round_trips_data() {
 #[test]
 fn series_import_into_runtime_round_trips_data() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[5i32, 6]).unwrap();
+    let source = source_runtime.column_from_slice(&[5i32, 6]).unwrap();
     let view = source.view().unwrap();
     let borrowed = view.try_borrow_column_view().unwrap();
     let dest = common::sample_runtime();
@@ -120,7 +120,7 @@ fn series_import_into_runtime_round_trips_data() {
 #[test]
 fn dataframe_import_into_runtime_round_trips_data() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let col = Column::from_slice_with_runtime(&source_runtime, &[7i32, 8]).unwrap();
+    let col = source_runtime.column_from_slice(&[7i32, 8]).unwrap();
     let source = Table::from_columns(vec![col]).unwrap();
     let view = source.view().unwrap();
     let borrowed = view.try_borrow_table_view().unwrap();

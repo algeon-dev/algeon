@@ -89,7 +89,7 @@ fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'s
         .collect()
 }
 
-fn drop_nulls_impl(
+pub(crate) fn drop_nulls_impl(
     input: &TableView<'_>,
     keys: &[usize],
     keep_threshold: i32,

@@ -117,6 +117,28 @@ fn test_parquet_row_limits() {
 }
 
 #[test]
+fn test_parquet_skip_rows_and_row_limits() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_skip_rows.parquet");
+
+    let data: Vec<i32> = (0..20).collect();
+    let col = Column::from_slice(&data).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    let read_opts = parquet::ParquetReadOptions::builder().filepath(&path).skip_rows(5).num_rows(4).build();
+    let result = parquet::read_parquet(&read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
+
+    assert_eq!(read_view.num_rows().unwrap(), 4);
+    let col = read_view.column(0).unwrap();
+    assert_eq!(col.to_vec::<i32>().unwrap(), vec![5, 6, 7, 8]);
+}
+
+#[test]
 fn test_csv_roundtrip() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.csv");
@@ -135,7 +157,7 @@ fn test_csv_roundtrip() {
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = csv::CsvReadOptions::builder().filepath(&path).has_header(true).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(true).build();
     let result = csv::read_csv(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -151,7 +173,7 @@ fn test_csv_read_without_header_returns_no_schema_metadata() {
 
     std::fs::write(&path, "1,10\n2,20\n").unwrap();
 
-    let read_opts = csv::CsvReadOptions::builder().filepath(&path).has_header(false).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build();
     let result = csv::read_csv(&read_opts).unwrap();
 
     assert_eq!(result.column_names, None);
@@ -331,7 +353,7 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
     let read_opts = parquet::ParquetReadOptions::builder().filepath(&path).row_groups(&[0]).skip_rows(1).build();
     let result = parquet::read_parquet(&read_opts);
     let err = result.err().expect("expected error when combining row_groups with skip_rows");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
 #[test]
@@ -350,7 +372,7 @@ fn test_parquet_row_groups_with_num_rows_errors() {
     let read_opts = parquet::ParquetReadOptions::builder().filepath(&path).row_groups(&[0]).num_rows(2).build();
     let result = parquet::read_parquet(&read_opts);
     let err = result.err().expect("expected error when combining row_groups with num_rows");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
 #[test]
@@ -389,7 +411,7 @@ fn test_csv_custom_delimiter() {
     let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
     csv::write_csv(&view, &write_opts).unwrap();
 
-    let read_opts = csv::CsvReadOptions::builder().filepath(&path).delimiter(b'\t').build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).delimiter(b'\t').build();
     let result = csv::read_csv(&read_opts).unwrap();
     assert_eq!(result.column_names, Some(vec!["x".to_string()]));
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 2);

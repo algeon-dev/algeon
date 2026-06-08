@@ -165,8 +165,8 @@ fn test_mixed_domain_binary_operation_sv_uses_scalar_provenance() {
 
 #[test]
 fn test_string_equal_vv() {
-    let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
-    let b = Column::from_strings(&["foo", "bar", "qux"]).unwrap();
+    let a = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
+    let b = Column::from_strs(&["foo", "bar", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -177,8 +177,8 @@ fn test_string_equal_vv() {
 
 #[test]
 fn test_string_not_equal_vv() {
-    let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
-    let b = Column::from_strings(&["foo", "bar", "qux"]).unwrap();
+    let a = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
+    let b = Column::from_strs(&["foo", "bar", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -190,8 +190,8 @@ fn test_string_not_equal_vv() {
 
 #[test]
 fn test_string_less_vv() {
-    let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let a = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -203,8 +203,8 @@ fn test_string_less_vv() {
 
 #[test]
 fn test_string_greater_vv() {
-    let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let a = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -216,8 +216,8 @@ fn test_string_greater_vv() {
 
 #[test]
 fn test_string_less_equal_vv() {
-    let a = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
-    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let a = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -230,8 +230,8 @@ fn test_string_less_equal_vv() {
 
 #[test]
 fn test_string_greater_equal_vv() {
-    let a = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
-    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let a = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -248,8 +248,8 @@ fn test_string_greater_equal_vv() {
 
 #[test]
 fn test_string_equal_vs() {
-    let col = Column::from_strings(&["active", "inactive", "active"]).unwrap();
-    let scalar = Scalar::from_string("active").unwrap();
+    let col = Column::from_strs(&["active", "inactive", "active"]).unwrap();
+    let scalar = Scalar::from_str("active").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -260,8 +260,8 @@ fn test_string_equal_vs() {
 
 #[test]
 fn test_string_not_equal_vs() {
-    let col = Column::from_strings(&["active", "inactive", "active"]).unwrap();
-    let scalar = Scalar::from_string("active").unwrap();
+    let col = Column::from_strs(&["active", "inactive", "active"]).unwrap();
+    let scalar = Scalar::from_str("active").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -272,8 +272,8 @@ fn test_string_not_equal_vs() {
 
 #[test]
 fn test_string_less_vs() {
-    let col = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = Scalar::from_string("banana").unwrap();
+    let col = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = Scalar::from_str("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -285,8 +285,8 @@ fn test_string_less_vs() {
 
 #[test]
 fn test_string_greater_vs() {
-    let col = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = Scalar::from_string("banana").unwrap();
+    let col = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = Scalar::from_str("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -298,8 +298,8 @@ fn test_string_greater_vs() {
 
 #[test]
 fn test_string_less_equal_vs() {
-    let col = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = Scalar::from_string("banana").unwrap();
+    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = Scalar::from_str("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -311,8 +311,8 @@ fn test_string_less_equal_vs() {
 
 #[test]
 fn test_string_greater_equal_vs() {
-    let col = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = Scalar::from_string("banana").unwrap();
+    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = Scalar::from_str("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -328,8 +328,8 @@ fn test_string_greater_equal_vs() {
 
 #[test]
 fn test_string_equal_empty() {
-    let a = Column::from_strings(&["", "hello", ""]).unwrap();
-    let b = Column::from_strings(&["", "", "hello"]).unwrap();
+    let a = Column::from_strs(&["", "hello", ""]).unwrap();
+    let b = Column::from_strs(&["", "", "hello"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -340,8 +340,8 @@ fn test_string_equal_empty() {
 
 #[test]
 fn test_string_equal_case_sensitive() {
-    let a = Column::from_strings(&["Foo", "BAR", "baz"]).unwrap();
-    let b = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
+    let a = Column::from_strs(&["Foo", "BAR", "baz"]).unwrap();
+    let b = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -357,8 +357,8 @@ fn test_string_equal_case_sensitive() {
 
 #[test]
 fn test_string_add_vv_error() {
-    let a = Column::from_strings(&["foo", "bar"]).unwrap();
-    let b = Column::from_strings(&["baz", "qux"]).unwrap();
+    let a = Column::from_strs(&["foo", "bar"]).unwrap();
+    let b = Column::from_strs(&["baz", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -368,8 +368,8 @@ fn test_string_add_vv_error() {
 
 #[test]
 fn test_string_sub_vs_error() {
-    let col = Column::from_strings(&["foo", "bar"]).unwrap();
-    let scalar = Scalar::from_string("baz").unwrap();
+    let col = Column::from_strs(&["foo", "bar"]).unwrap();
+    let scalar = Scalar::from_str("baz").unwrap();
     let cv = col.view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));
@@ -470,7 +470,7 @@ fn test_infer_string_arithmetic_error() {
     let result = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Add);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
     assert_eq!(err.operation(), "binary::infer_binary_output_type");
 }
 

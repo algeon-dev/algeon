@@ -90,7 +90,7 @@ fn test_from_columns_rejects_length_mismatch() {
 #[test]
 fn test_from_named_pairs_happy_path() {
     let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
-    let names = Series::from_strings("names", &["a", "b", "c"]).unwrap();
+    let names = Series::from_strs("names", &["a", "b", "c"]).unwrap();
 
     let pairs = vec![("id".to_string(), ids), ("name".to_string(), names)];
     let df = DataFrame::from_named_pairs(pairs).unwrap();

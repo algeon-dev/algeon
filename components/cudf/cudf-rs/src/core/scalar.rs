@@ -62,10 +62,10 @@ impl Scalar {
         Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
     }
 
-    pub(crate) fn from_string_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) fn from_str_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
         let c_str = CString::new(value).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
-                .with_operation("scalar::from_string_in_domain")
+                .with_operation("scalar::from_str_in_domain")
         })?;
         let mut handle = ptr::null_mut();
         let exec_options = domain.explicit_exec_options_raw();
@@ -76,7 +76,7 @@ impl Scalar {
                 },
                 None => unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
             },
-            "scalar::from_string_in_domain",
+            "scalar::from_str_in_domain",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
     }
@@ -110,9 +110,9 @@ impl Scalar {
     }
 
     /// Create a valid string scalar.
-    pub fn from_string(value: &str) -> Result<Self> {
+    pub fn from_str(value: &str) -> Result<Self> {
         let domain = ExecutionDomain::ambient_default();
-        Self::from_string_in_domain(value, &domain).map_err(|e| e.with_operation("scalar::from_string"))
+        Self::from_str_in_domain(value, &domain).map_err(|e| e.with_operation("scalar::from_str"))
     }
 
     /// Create a null string scalar.

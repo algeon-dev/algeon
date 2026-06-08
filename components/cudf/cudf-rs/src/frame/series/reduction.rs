@@ -12,7 +12,7 @@ use crate::{
         types::{CudfType, DataType, NullPolicy, TypeId},
     },
     ops::{
-        reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
+        reduction::{self, ReduceAgg, ScanAgg, ScanType},
         unary::{self, UnaryOperator},
     },
 };
@@ -22,11 +22,11 @@ use crate::{
 ///
 /// Accepts `&DataType` (not bare `TypeId`) so that fixed-point scale is
 /// preserved for pass-through arms (min, max, product, decimal sum).
-pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAggregation) -> Result<DataType> {
+pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg) -> Result<DataType> {
     match agg {
         // sum: int types → Int64, float → same float, Bool8 → Int64,
         //       decimal → same decimal (preserves scale), rest → error
-        ReduceAggregation::Sum => match input.id() {
+        ReduceAgg::Sum => match input.id() {
             TypeId::Int8
             | TypeId::Int16
             | TypeId::Int32
@@ -45,16 +45,15 @@ pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAggregation
         },
 
         // min / max / product: same type as input (preserves decimal scale)
-        ReduceAggregation::Min | ReduceAggregation::Max | ReduceAggregation::Product => Ok(*input),
+        ReduceAgg::Min | ReduceAgg::Max | ReduceAgg::Product => Ok(*input),
 
         // mean / median / std / var: always Float64
-        ReduceAggregation::Mean
-        | ReduceAggregation::Median
-        | ReduceAggregation::Std { .. }
-        | ReduceAggregation::Variance { .. } => Ok(DataType::new(TypeId::Float64)),
+        ReduceAgg::Mean | ReduceAgg::Median | ReduceAgg::Std { .. } | ReduceAgg::Variance { .. } => {
+            Ok(DataType::new(TypeId::Float64))
+        },
 
         // any / all: always Bool8
-        ReduceAggregation::Any | ReduceAggregation::All => Ok(DataType::new(TypeId::Bool8)),
+        ReduceAgg::Any | ReduceAgg::All => Ok(DataType::new(TypeId::Bool8)),
     }
 }
 
@@ -79,8 +78,8 @@ impl Series {
     pub fn sum(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAggregation::Sum)?;
-        reduction::reduce(&cv, &ReduceAggregation::Sum, &out_type)
+        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Sum)?;
+        reduction::reduce(&cv, &ReduceAgg::Sum, &out_type)
     }
 
     /// Reduce the series to a host value: sum of all elements.
@@ -109,8 +108,8 @@ impl Series {
     pub fn min(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAggregation::Min)?;
-        reduction::reduce(&cv, &ReduceAggregation::Min, &out_type)
+        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Min)?;
+        reduction::reduce(&cv, &ReduceAgg::Min, &out_type)
     }
 
     /// Reduce the series to a host minimum value.
@@ -137,8 +136,8 @@ impl Series {
     pub fn max(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAggregation::Max)?;
-        reduction::reduce(&cv, &ReduceAggregation::Max, &out_type)
+        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Max)?;
+        reduction::reduce(&cv, &ReduceAgg::Max, &out_type)
     }
 
     /// Reduce the series to a host maximum value.
@@ -154,7 +153,7 @@ impl Series {
     pub fn mean(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAggregation::Mean, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::Mean, &out_type)
     }
 
     /// Reduce the series to a host mean value.
@@ -179,7 +178,7 @@ impl Series {
     pub fn median(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAggregation::Median, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::Median, &out_type)
     }
 
     /// Reduce the series to a host median value.
@@ -196,7 +195,7 @@ impl Series {
     pub fn std(&self, ddof: u32) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAggregation::Std { ddof }, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::Std { ddof }, &out_type)
     }
 
     /// Reduce the series to a host standard deviation value.
@@ -213,7 +212,7 @@ impl Series {
     pub fn var(&self, ddof: u32) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAggregation::Variance { ddof }, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::Variance { ddof }, &out_type)
     }
 
     /// Reduce the series to a host variance value.
@@ -229,7 +228,7 @@ impl Series {
     pub fn any(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Bool8);
-        reduction::reduce(&cv, &ReduceAggregation::Any, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::Any, &out_type)
     }
 
     /// Reduce the series to a host `bool`: `true` if any element is truthy.
@@ -246,7 +245,7 @@ impl Series {
     pub fn all(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let out_type = DataType::new(TypeId::Bool8);
-        reduction::reduce(&cv, &ReduceAggregation::All, &out_type)
+        reduction::reduce(&cv, &ReduceAgg::All, &out_type)
     }
 
     /// Reduce the series to a host `bool`: `true` if all elements are truthy.
@@ -263,8 +262,8 @@ impl Series {
     pub fn product(&self) -> Result<Scalar> {
         let cv = self.column.view()?;
         let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAggregation::Product)?;
-        reduction::reduce(&cv, &ReduceAggregation::Product, &out_type)
+        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Product)?;
+        reduction::reduce(&cv, &ReduceAgg::Product, &out_type)
     }
 
     /// Reduce the series to a host product value.
@@ -310,28 +309,28 @@ impl Series {
     /// GPU-allocating: produces a new column.
     pub fn cumsum(&self) -> Result<Series> {
         let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAggregation::Sum, ScanType::Inclusive, NullPolicy::Exclude)?;
+        let col = reduction::scan(&cv, ScanAgg::Sum, ScanType::Inclusive, NullPolicy::Exclude)?;
         self.with_inherited_name(col)
     }
 
     /// Inclusive cumulative minimum. Inherits the source Series' name.
     pub fn cummin(&self) -> Result<Series> {
         let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAggregation::Min, ScanType::Inclusive, NullPolicy::Exclude)?;
+        let col = reduction::scan(&cv, ScanAgg::Min, ScanType::Inclusive, NullPolicy::Exclude)?;
         self.with_inherited_name(col)
     }
 
     /// Inclusive cumulative maximum. Inherits the source Series' name.
     pub fn cummax(&self) -> Result<Series> {
         let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAggregation::Max, ScanType::Inclusive, NullPolicy::Exclude)?;
+        let col = reduction::scan(&cv, ScanAgg::Max, ScanType::Inclusive, NullPolicy::Exclude)?;
         self.with_inherited_name(col)
     }
 
     /// Inclusive cumulative product. Inherits the source Series' name.
     pub fn cumprod(&self) -> Result<Series> {
         let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAggregation::Product, ScanType::Inclusive, NullPolicy::Exclude)?;
+        let col = reduction::scan(&cv, ScanAgg::Product, ScanType::Inclusive, NullPolicy::Exclude)?;
         self.with_inherited_name(col)
     }
 

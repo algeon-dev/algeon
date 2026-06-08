@@ -32,7 +32,7 @@ fn test_filter_mask_length_mismatch() {
 #[test]
 fn test_csv_read_nonexistent_file() {
     let options =
-        cudf::io::csv::CsvReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.csv").build();
+        cudf::io::csv::CsvTableReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.csv").build();
     let result = cudf::io::csv::read_csv(&options);
     assert!(result.is_err());
 }

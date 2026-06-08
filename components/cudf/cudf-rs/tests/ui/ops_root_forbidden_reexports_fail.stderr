@@ -1,0 +1,11 @@
+error[E0432]: unresolved import `cudf::ops::MergeOptions`
+ --> tests/ui/ops_root_forbidden_reexports_fail.rs:1:5
+  |
+1 | use cudf::ops::MergeOptions;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^ no `MergeOptions` in `ops`
+  |
+help: consider importing this struct instead
+  |
+1 - use cudf::ops::MergeOptions;
+1 + use cudf::MergeOptions;
+  |

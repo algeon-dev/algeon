@@ -10,12 +10,54 @@ use crate::{
     core::error::{Error, ErrorKind, Result},
     io::{
         IoTableResult,
-        csv::{self, CsvReadOptions, CsvTableWriteOptions},
+        csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
         json::{self, JsonReadOptions, JsonTableWriteOptions},
         parquet::{self, ParquetReadOptions, ParquetTableWriteOptions},
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
+
+/// Options for [`DataFrame::read_csv_with_options`].
+///
+/// This is the schema-aware CSV reader API for `DataFrame`. Parsing knobs such
+/// as delimiter and header handling are forwarded to the low-level CSV reader.
+/// Optional `column_names` override the file header only at the DataFrame
+/// schema layer; they do not change the low-level reader metadata contract.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct CsvReadOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
+    filepath: PathBuf,
+    #[builder(default = b',')]
+    delimiter: u8,
+    #[builder(default = true)]
+    has_header: bool,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    column_names: Option<Vec<String>>,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
+    runtime: Option<Runtime>,
+}
+
+impl CsvReadOptions {
+    fn to_table_options(&self) -> CsvTableReadOptions {
+        match self.runtime.as_ref() {
+            Some(rt) => CsvTableReadOptions::builder()
+                .filepath(&self.filepath)
+                .delimiter(self.delimiter)
+                .has_header(self.has_header)
+                .with_runtime(rt)
+                .build(),
+            None => CsvTableReadOptions::builder()
+                .filepath(&self.filepath)
+                .delimiter(self.delimiter)
+                .has_header(self.has_header)
+                .build(),
+        }
+    }
+
+    fn column_names(&self) -> Option<&[String]> {
+        self.column_names.as_deref()
+    }
+}
 
 /// Options for [`DataFrame::write_csv_with_options`].
 ///
@@ -127,7 +169,8 @@ impl DataFrame {
     /// names are used unless the caller provides an explicit override.
     /// Generated fallback names are used only for headerless CSV results.
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
-        let result = csv::read_csv(&options)?;
+        let table_options = options.to_table_options();
+        let result = csv::read_csv(&table_options)?;
         let names = resolve_csv_column_names(&options, &result)?;
         Self::from_table(result.table, names)
     }

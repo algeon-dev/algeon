@@ -13,7 +13,7 @@ assert_impl_all!(Table: TryBorrowTableView);
 #[test]
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = column.view().unwrap();
     let expected_stream = column.__debug_execution_domain_stream_value();
     let expected_mr = column.__debug_execution_domain_mr_value();
@@ -36,7 +36,7 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
 #[test]
 fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_nullable_with_runtime(&runtime, &[10i32, 20, 30], &[false, true, true]).unwrap();
+    let column = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[false, true, true]).unwrap();
     let view = column.slice_view(1, 2).unwrap();
     let borrowed = view.try_borrow_column_view().unwrap();
 
@@ -53,7 +53,7 @@ fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
 #[test]
 fn sliced_column_view_preserves_offset_semantics() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[11i32, 22, 33, 44]).unwrap();
+    let column = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
     let base = column.view().unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
 
@@ -68,8 +68,8 @@ fn sliced_column_view_preserves_offset_semantics() {
 #[test]
 fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     let runtime = Runtime::builder().build().unwrap();
-    let a = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice_with_runtime(&runtime, &[4i32, 5, 6]).unwrap();
+    let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![a, b]).unwrap();
     let view = table.view().unwrap();
     let expected_stream = table.__debug_execution_domain_stream_value();
@@ -90,7 +90,7 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
 #[test]
 fn owned_column_borrow_matches_underlying_column_view_projection() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[5i32, 6, 7]).unwrap();
+    let column = runtime.column_from_slice(&[5i32, 6, 7]).unwrap();
     let view = column.view().unwrap();
 
     let borrowed_from_column = column.try_borrow_column_view().unwrap();
@@ -102,8 +102,8 @@ fn owned_column_borrow_matches_underlying_column_view_projection() {
 #[test]
 fn owned_table_borrow_matches_underlying_table_view_projection() {
     let runtime = Runtime::builder().build().unwrap();
-    let a = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice_with_runtime(&runtime, &[4i32, 5, 6]).unwrap();
+    let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![a, b]).unwrap();
     let view = table.view().unwrap();
 
@@ -161,8 +161,7 @@ fn ambient_dataframe_borrow_is_rejected() {
 #[test]
 fn string_columns_borrow_as_binary_like_layouts() {
     let runtime = Runtime::builder().build().unwrap();
-    let column =
-        Column::from_strings_nullable_with_runtime(&runtime, &["zero", "one", "two"], &[true, false, true]).unwrap();
+    let column = runtime.column_from_strs_nullable(&["zero", "one", "two"], &[true, false, true]).unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
     let borrowed = sliced.try_borrow_column_view().unwrap();
 
@@ -186,7 +185,7 @@ fn string_columns_borrow_as_binary_like_layouts() {
 #[test]
 fn dictionary_columns_borrow_with_recursive_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = Column::from_strings_with_runtime(&runtime, &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let base = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
     let borrowed = dict_view.try_borrow_column_view().unwrap();

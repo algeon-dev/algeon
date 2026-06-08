@@ -69,9 +69,20 @@ struct RuntimeOwnedTransferInner<T> {
     owner: Option<ManuallyDrop<T>>,
 }
 
+impl<T> Drop for RuntimeOwnedTransferInner<T> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            // The retained owner was never imported or released. Drop it now
+            // to avoid leaking the underlying GPU resources (Column/Table).
+            drop(ManuallyDrop::into_inner(owner));
+        }
+    }
+}
+
 struct RuntimeOwnedTransferState<T> {
     inner: Mutex<RuntimeOwnedTransferInner<T>>,
     release_device: i32,
+    release_synchronization: ReleaseSynchronization,
 }
 
 enum RuntimeOwnedReleaseCompletion {
@@ -144,13 +155,14 @@ impl RuntimeOwnedReleaseCompletion {
 }
 
 impl<T> RuntimeOwnedTransferState<T> {
-    fn new(owner: T, release_device: i32) -> Arc<Self> {
+    fn new(owner: T, release_device: i32, release_synchronization: ReleaseSynchronization) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(RuntimeOwnedTransferInner {
                 status: RuntimeOwnedTransferStatus::Pending,
                 owner: Some(ManuallyDrop::new(owner)),
             }),
             release_device,
+            release_synchronization,
         })
     }
 
@@ -193,12 +205,21 @@ impl<T> RuntimeOwnedTransferState<T> {
             let _ = completion.synchronize_fallback(operation);
         }
 
-        unsafe {
+        // Drop the retained owner inside catch_unwind so that a panicking
+        // Drop impl on Column/Table does not prevent the state machine from
+        // reaching Released.
+        let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             ManuallyDrop::drop(&mut owner);
-        }
+        }));
 
         let mut inner = self.lock_inner();
         inner.status = RuntimeOwnedTransferStatus::Released;
+
+        // If T::drop panicked, propagate after marking the terminal state so
+        // later observers always see Released.
+        if let Err(payload) = drop_result {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     fn release(
@@ -239,18 +260,51 @@ impl<T> RuntimeOwnedTransferState<T> {
             },
         };
 
-        let release_state = Arc::clone(state);
-        thread::spawn(move || release_state.finish_release_job(owner, completion, operation));
-
-        Ok(())
+        match state.release_synchronization {
+            ReleaseSynchronization::Asynchronous => {
+                let release_state = Arc::clone(state);
+                thread::spawn(move || release_state.finish_release_job(owner, completion, operation));
+                Ok(())
+            },
+            ReleaseSynchronization::MaySynchronizeInternally => {
+                Arc::clone(state).finish_release_job(owner, completion, operation);
+                Ok(())
+            },
+            ReleaseSynchronization::RequiresCallerSynchronization => {
+                let mut inner = state.lock_inner();
+                inner.owner = Some(owner);
+                inner.status = RuntimeOwnedTransferStatus::Pending;
+                Err(InteropError::new(
+                    InteropErrorKind::ProfileUnsupported,
+                    format!("runtime-backed {transfer_kind} release does not support caller-managed synchronization"),
+                )
+                .with_context("operation", operation)
+                .with_context("completion", "release_waits_on_consumer_signal")
+                .with_context("synchronization", "requires_caller_synchronization")
+                .with_context("release_device", state.release_device.to_string()))
+            },
+        }
     }
 }
 
+/// CUDA-backed releaser for a runtime-backed owned column transfer.
+///
+/// `release(...)` follows the matching transfer root's declared
+/// [`ReleaseSynchronization`]. Async transfers return once release has been
+/// accepted and scheduled, while `MaySynchronizeInternally` transfers may
+/// block the caller thread while carrying out the release contract.
 pub struct RuntimeOwnedColumnTransferReleaser {
     state: Arc<RuntimeOwnedTransferState<Column>>,
 }
 
 impl RuntimeOwnedColumnTransferReleaser {
+    /// Accept release for this transfer and schedule any required
+    /// consumer-signal wait according to the matching transfer root's
+    /// declared release synchronization.
+    ///
+    /// This fails if ownership has already been claimed by native import,
+    /// already accepted by a prior release call, or if the supplied
+    /// completion authority does not match the release contract.
     pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         RuntimeOwnedTransferState::release(
             &self.state,
@@ -261,11 +315,24 @@ impl RuntimeOwnedColumnTransferReleaser {
     }
 }
 
+/// CUDA-backed releaser for a runtime-backed owned table transfer.
+///
+/// `release(...)` follows the matching transfer root's declared
+/// [`ReleaseSynchronization`]. Async transfers return once release has been
+/// accepted and scheduled, while `MaySynchronizeInternally` transfers may
+/// block the caller thread while carrying out the release contract.
 pub struct RuntimeOwnedTableTransferReleaser {
     state: Arc<RuntimeOwnedTransferState<Table>>,
 }
 
 impl RuntimeOwnedTableTransferReleaser {
+    /// Accept release for this transfer and schedule any required
+    /// consumer-signal wait according to the matching transfer root's
+    /// declared release synchronization.
+    ///
+    /// This fails if ownership has already been claimed by native import,
+    /// already accepted by a prior release call, or if the supplied
+    /// completion authority does not match the release contract.
     pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         RuntimeOwnedTransferState::release(
             &self.state,
@@ -276,42 +343,65 @@ impl RuntimeOwnedTableTransferReleaser {
     }
 }
 
+/// One partition inside a partitioned runtime-backed owned-transfer releaser.
+///
+/// This preserves the original top-level column indices for the partition and
+/// exposes the same one-shot runtime-backed release behavior as the underlying
+/// single-table releaser.
 pub struct PartitionedRuntimeOwnedTableTransferReleaserPartition {
     top_level_column_indices: Vec<usize>,
     releaser: RuntimeOwnedTableTransferReleaser,
 }
 
 impl PartitionedRuntimeOwnedTableTransferReleaserPartition {
+    /// Create one partition releaser wrapper from partition metadata and the
+    /// underlying single-table runtime-backed releaser.
     pub fn new(top_level_column_indices: Vec<usize>, releaser: RuntimeOwnedTableTransferReleaser) -> Self {
         Self { top_level_column_indices, releaser }
     }
 
+    /// Return the original top-level schema indices covered by this partition.
     pub fn top_level_column_indices(&self) -> &[usize] {
         &self.top_level_column_indices
     }
 
+    /// Accept release for this partition and carry out any required
+    /// consumer-signal wait according to the matching transfer root's
+    /// declared release synchronization.
+    ///
+    /// This is mutually exclusive with importing the matching partition's
+    /// `OwnedTableTransfer` back into a native `cudf-rs` `Table`.
     pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         self.releaser.release(completion)
     }
 
+    /// Consume this wrapper and return the underlying single-table releaser.
     pub fn into_releaser(self) -> RuntimeOwnedTableTransferReleaser {
         self.releaser
     }
 }
 
+/// CUDA-backed releaser set for a partitioned runtime-owned table transfer.
+///
+/// Each entry preserves one retained-provenance partition, one release
+/// contract, and one exclusive ownership state machine.
 pub struct PartitionedRuntimeOwnedTableTransferReleaser {
     partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>,
 }
 
 impl PartitionedRuntimeOwnedTableTransferReleaser {
+    /// Create a partitioned releaser wrapper from already-built partition
+    /// releasers.
     pub fn new(partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>) -> Self {
         Self { partitions }
     }
 
+    /// Borrow the per-partition releasers in schema order.
     pub fn partitions(&self) -> &[PartitionedRuntimeOwnedTableTransferReleaserPartition] {
         &self.partitions
     }
 
+    /// Consume this wrapper and return the per-partition releasers.
     pub fn into_partitions(self) -> Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition> {
         self.partitions
     }
@@ -340,16 +430,18 @@ impl RuntimeOwnedTableTransferOwner {
 pub(super) fn runtime_owned_column_owner_and_releaser(
     column: Column,
     release_device: i32,
+    release_synchronization: ReleaseSynchronization,
 ) -> (RuntimeOwnedColumnTransferOwner, RuntimeOwnedColumnTransferReleaser) {
-    let state = RuntimeOwnedTransferState::new(column, release_device);
+    let state = RuntimeOwnedTransferState::new(column, release_device, release_synchronization);
     (RuntimeOwnedColumnTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedColumnTransferReleaser { state })
 }
 
 pub(super) fn runtime_owned_table_owner_and_releaser(
     table: Table,
     release_device: i32,
+    release_synchronization: ReleaseSynchronization,
 ) -> (RuntimeOwnedTableTransferOwner, RuntimeOwnedTableTransferReleaser) {
-    let state = RuntimeOwnedTransferState::new(table, release_device);
+    let state = RuntimeOwnedTransferState::new(table, release_device, release_synchronization);
     (RuntimeOwnedTableTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedTableTransferReleaser { state })
 }
 

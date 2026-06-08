@@ -2,7 +2,7 @@
 
 use cudf::{
     core::{Column, Table},
-    ops::groupby::{self, Agg, AggregationRequest, NullPolicy},
+    ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy},
 };
 
 use crate::common::{
@@ -21,7 +21,7 @@ fn test_groupby_sum() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Agg::Sum] }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Sum] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -52,7 +52,7 @@ fn test_groupby_multiple_aggregations() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Agg::Min, Agg::Max] }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Min, GroupByAgg::Max] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -87,8 +87,8 @@ fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
     let left_view = left_vals.view().unwrap();
     let right_view = right_vals.view().unwrap();
     let requests = [
-        AggregationRequest { values: &left_view, aggregations: &[Agg::Sum, Agg::Min] },
-        AggregationRequest { values: &right_view, aggregations: &[Agg::Max] },
+        AggregationRequest { values: &left_view, aggregations: &[GroupByAgg::Sum, GroupByAgg::Min] },
+        AggregationRequest { values: &right_view, aggregations: &[GroupByAgg::Max] },
     ];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
@@ -121,7 +121,8 @@ fn test_groupby_count() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals_col.view().unwrap();
-    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Agg::Count { include_nulls: false }] }];
+    let requests =
+        [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Count { include_nulls: false }] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -159,7 +160,7 @@ fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
     let kv = keys_table.view().unwrap();
     let vals_view = vals_col.view().unwrap();
 
-    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Agg::Std { ddof: 1u32 }] }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Std { ddof: 1u32 }] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
     assert_eq!(result.results.len(), 1);
@@ -196,7 +197,7 @@ fn test_groupby_multi_column_keys() {
     let kv = keys_table.view().unwrap();
 
     let vals_view = vals.view().unwrap();
-    let requests = [AggregationRequest { values: &vals_view, aggregations: &[Agg::Sum] }];
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Sum] }];
 
     let result = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).unwrap();
 
@@ -211,7 +212,7 @@ fn test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 970)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 971);
     let values_view = values.view().unwrap();
-    let requests = [AggregationRequest { values: &values_view, aggregations: &[Agg::Sum] }];
+    let requests = [AggregationRequest { values: &values_view, aggregations: &[GroupByAgg::Sum] }];
     let expected_stream = keys.__debug_execution_domain_stream_value();
     let expected_mr = keys.__debug_execution_domain_mr_value();
 

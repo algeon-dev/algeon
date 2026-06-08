@@ -46,15 +46,15 @@ fn test_new_nullable_preserves_null_count() {
 }
 
 #[test]
-fn test_from_strings() {
-    let s = Series::from_strings("names", &["alice", "bob"]).unwrap();
+fn test_from_strs() {
+    let s = Series::from_strs("names", &["alice", "bob"]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
     assert_eq!(s.len(), 2);
 }
 
 #[test]
-fn test_from_strings_nullable() {
-    let s = Series::from_strings_nullable("names", &["a", "b", "c"], &[true, false, true]).unwrap();
+fn test_from_strs_nullable() {
+    let s = Series::from_strs_nullable("names", &["a", "b", "c"], &[true, false, true]).unwrap();
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.len(), 3);
 }
@@ -201,7 +201,7 @@ fn test_eq_scalar_i32() {
 
 #[test]
 fn test_eq_scalar_str() {
-    let s = Series::from_strings("status", &["active", "inactive", "active"]).unwrap();
+    let s = Series::from_strs("status", &["active", "inactive", "active"]).unwrap();
     let mask = s.eq_scalar_str("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -211,7 +211,7 @@ fn test_eq_scalar_str() {
 
 #[test]
 fn test_ne_scalar_str() {
-    let s = Series::from_strings("status", &["active", "inactive", "active"]).unwrap();
+    let s = Series::from_strs("status", &["active", "inactive", "active"]).unwrap();
     let mask = s.ne_scalar_str("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -222,7 +222,7 @@ fn test_ne_scalar_str() {
 #[test]
 fn test_gt_scalar_str() {
     // Lexicographic: "banana" > "apple", "cherry" > "apple", "apple" == "apple"
-    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let s = Series::from_strs("fruit", &["apple", "banana", "cherry"]).unwrap();
     let mask = s.gt_scalar_str("apple").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -232,7 +232,7 @@ fn test_gt_scalar_str() {
 
 #[test]
 fn test_lt_scalar_str() {
-    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let s = Series::from_strs("fruit", &["apple", "banana", "cherry"]).unwrap();
     let mask = s.lt_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -242,7 +242,7 @@ fn test_lt_scalar_str() {
 
 #[test]
 fn test_ge_scalar_str() {
-    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let s = Series::from_strs("fruit", &["apple", "banana", "cherry"]).unwrap();
     let mask = s.ge_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -252,7 +252,7 @@ fn test_ge_scalar_str() {
 
 #[test]
 fn test_le_scalar_str() {
-    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let s = Series::from_strs("fruit", &["apple", "banana", "cherry"]).unwrap();
     let mask = s.le_scalar_str("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);

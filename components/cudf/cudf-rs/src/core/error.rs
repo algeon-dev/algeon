@@ -4,10 +4,16 @@
 
 use std::{ffi::CStr, fmt};
 
+use rapids_interop::{InteropError, InteropErrorKind};
+
 /// The kind of error that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    /// A logical precondition was violated (e.g., invalid argument).
+    /// The caller passed an invalid value or combination of values.
+    InvalidArgument,
+    /// The requested operation or type combination is not supported.
+    NotSupported,
+    /// A logical precondition or internal contract was violated.
     InvalidOperation,
     /// A CUDA runtime error occurred.
     CudaError,
@@ -30,6 +36,8 @@ pub enum ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ErrorKind::InvalidArgument => write!(f, "InvalidArgument"),
+            ErrorKind::NotSupported => write!(f, "NotSupported"),
             ErrorKind::InvalidOperation => write!(f, "InvalidOperation"),
             ErrorKind::CudaError => write!(f, "CudaError"),
             ErrorKind::FatalCudaError => write!(f, "FatalCudaError"),
@@ -260,6 +268,36 @@ fn default_status_for_kind(kind: ErrorKind) -> ErrorStatus {
         ErrorKind::CudaError | ErrorKind::OutOfMemory => ErrorStatus::Temporary,
         ErrorKind::FatalCudaError => ErrorStatus::Persistent,
         _ => ErrorStatus::Permanent,
+    }
+}
+
+fn map_interop_error_kind(kind: InteropErrorKind) -> ErrorKind {
+    match kind {
+        InteropErrorKind::UnsupportedType => ErrorKind::TypeError,
+        InteropErrorKind::NullMaskUnsupported => ErrorKind::NullError,
+        InteropErrorKind::ExecutionBindingUnavailable | InteropErrorKind::ReadinessUnavailable => ErrorKind::CudaError,
+        InteropErrorKind::UnsupportedLayout
+        | InteropErrorKind::AmbientInteropUnsupported
+        | InteropErrorKind::PlacementUnsupported
+        | InteropErrorKind::MixedDeviceUnsupported
+        | InteropErrorKind::ProfileUnsupported => ErrorKind::NotSupported,
+        InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::InvalidView
+        | InteropErrorKind::ReadinessMismatch
+        | InteropErrorKind::LeaseAlreadyActive => ErrorKind::InvalidOperation,
+    }
+}
+
+impl From<InteropError> for Error {
+    fn from(error: InteropError) -> Self {
+        let kind = map_interop_error_kind(error.kind());
+        let message = error.to_string();
+        let context = error.context().iter().map(|(key, value)| (*key, value.clone())).collect::<Vec<_>>();
+
+        let mut mapped = Error::new(kind, message).set_source(error);
+        mapped.status = default_status_for_kind(kind);
+        mapped.context = context;
+        mapped
     }
 }
 

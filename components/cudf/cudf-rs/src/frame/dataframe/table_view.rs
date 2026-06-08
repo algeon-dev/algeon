@@ -23,3 +23,9 @@ impl<'a> DataFrameTableView<'a> {
         self.bundle.table()
     }
 }
+
+impl std::fmt::Debug for DataFrameTableView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataFrameTableView").field("table", self.table()).finish()
+    }
+}

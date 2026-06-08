@@ -92,7 +92,7 @@ fn test_gather_empty_indices() {
 fn test_gather_multi_type() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = Column::from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
-    let c3 = Column::from_strings(&["a", "b", "c"]).unwrap();
+    let c3 = Column::from_strs(&["a", "b", "c"]).unwrap();
     let df = crate::common::dataframe_from_columns(
         vec!["ints".to_string(), "floats".to_string(), "strs".to_string()],
         vec![c1, c2, c3],

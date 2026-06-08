@@ -47,10 +47,15 @@
 //!   witnesses.
 //! - [`RuntimeOwnedColumnTransferReleaser`] and
 //!   [`RuntimeOwnedTableTransferReleaser`] are CUDA-backed release helpers for
-//!   the signal-driven owned-transfer producer path.
+//!   the signal-driven owned-transfer producer path. Their caller-visible
+//!   behavior follows the matching transfer root's declared
+//!   [`ReleaseSynchronization`]: async roots return once release has been
+//!   accepted and scheduled, while `MaySynchronizeInternally` roots may block
+//!   while carrying out the release contract.
 //! - [`PartitionedRuntimeOwnedTableTransferReleaser`] mirrors that runtime
 //!   release path for partitioned owned transfer by preserving one releaser per
-//!   retained-provenance partition.
+//!   retained-provenance partition. Import and release remain mutually
+//!   exclusive independently for each partition.
 //! - Borrowing and prepared export do not transfer ownership.
 //! - Borrowed compatibility and prepared export both avoid host copies on the
 //!   input path because they describe existing device buffers.
@@ -179,6 +184,7 @@ use table_export::{
     prepare_table_export_from_view, prepare_table_export_from_view_with_readiness, transfer_from_owned_table,
     transfer_from_owned_table_with_names, transfer_partitioned_owned_table_from_columns,
     transfer_partitioned_owned_table_from_columns_with_runtime_release,
+    transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization,
 };
 use transfer::*;
 

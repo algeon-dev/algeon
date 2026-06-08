@@ -1,10 +1,27 @@
-use super::{DataFrame, DataFrameJoinResult};
+use super::{DataFrame, DataFrameJoinResult, DropDuplicatesOptions, DropNaOptions};
 use crate::{
     Result,
     frame::series::Series,
     ops::{join::MergeOptions, sorting::SortOptions},
     runtime::ExecutionContext,
 };
+
+macro_rules! dataframe_scope_forward {
+    ($(#[$meta:meta])* fn $method:ident($($param:ident : $pty:ty),*) -> $ret:ty => $target:ident;) => {
+        $(#[$meta])*
+        pub fn $method(&self, $($param: $pty),*) -> $ret {
+            self.df.$target($($param,)* self.ctx)
+        }
+    };
+    ($( $(#[$meta:meta])* fn $method:ident($($param:ident : $pty:ty),*) -> $ret:ty => $target:ident; )*) => {
+        $(
+            dataframe_scope_forward!(
+                $(#[$meta])*
+                fn $method($($param : $pty),*) -> $ret => $target;
+            );
+        )*
+    };
+}
 
 /// Scoped borrowed execution override for one `DataFrame` operation chain.
 #[must_use]
@@ -33,33 +50,38 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.sort_values_in_context(by, options, self.ctx)
     }
 
-    /// Gather rows using the borrowed execution override.
-    pub fn gather(&self, indices: &Series) -> Result<DataFrame> {
-        self.df.gather_in_context(indices, self.ctx)
-    }
+    dataframe_scope_forward!(
+        /// Return the first `n` rows using the borrowed execution override.
+        fn head(n: usize) -> Result<DataFrame> => head_in_context;
 
-    /// Filter rows using the borrowed execution override.
-    pub fn filter(&self, mask: &Series) -> Result<DataFrame> {
-        self.df.filter_in_context(mask, self.ctx)
-    }
+        /// Return the last `n` rows using the borrowed execution override.
+        fn tail(n: usize) -> Result<DataFrame> => tail_in_context;
 
-    /// Concatenate with another frame using the borrowed execution override.
-    pub fn concat(&self, other: &DataFrame) -> Result<DataFrame> {
-        self.df.concat_in_context(other, self.ctx)
-    }
+        /// Return `length` rows starting at `offset` using the borrowed execution override.
+        fn slice(offset: usize, length: usize) -> Result<DataFrame> => slice_in_context;
 
-    /// Concatenate with multiple frames using the borrowed execution override.
-    pub fn concat_many(&self, others: &[&DataFrame]) -> Result<DataFrame> {
-        self.df.concat_many_in_context(others, self.ctx)
-    }
+        /// Gather rows using the borrowed execution override.
+        fn gather(indices: &Series) -> Result<DataFrame> => gather_in_context;
 
-    /// Merge with another frame using the borrowed execution override.
-    pub fn merge(&self, right: &DataFrame, options: MergeOptions) -> Result<DataFrame> {
-        self.df.merge_in_context(right, options, self.ctx)
-    }
+        /// Filter rows using the borrowed execution override.
+        fn filter(mask: &Series) -> Result<DataFrame> => filter_in_context;
 
-    /// Merge-split with another frame using the borrowed execution override.
-    pub fn merge_split(&self, right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinResult> {
-        self.df.merge_split_in_context(right, options, self.ctx)
-    }
+        /// Concatenate with another frame using the borrowed execution override.
+        fn concat(other: &DataFrame) -> Result<DataFrame> => concat_in_context;
+
+        /// Concatenate with multiple frames using the borrowed execution override.
+        fn concat_many(others: &[&DataFrame]) -> Result<DataFrame> => concat_many_in_context;
+
+        /// Merge with another frame using the borrowed execution override.
+        fn merge(right: &DataFrame, options: MergeOptions) -> Result<DataFrame> => merge_in_context;
+
+        /// Merge-split with another frame using the borrowed execution override.
+        fn merge_split(right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinResult> => merge_split_in_context;
+
+        /// Drop rows containing null values using the borrowed execution override.
+        fn dropna(opts: DropNaOptions) -> Result<DataFrame> => dropna_in_context;
+
+        /// Remove duplicate rows using the borrowed execution override.
+        fn drop_duplicates(opts: DropDuplicatesOptions) -> Result<DataFrame> => drop_duplicates_in_context;
+    );
 }

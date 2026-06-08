@@ -34,14 +34,16 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         let data_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
 
-        let strings =
-            view.to_strings().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let strings = view
+            .to_optional_strings()
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let validity =
             view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-        let offsets_bytes = encode_host_string_offsets(operation, &strings)?;
+        let string_values = strings.iter().map(|value| value.as_deref().unwrap_or("").to_string()).collect::<Vec<_>>();
+        let offsets_bytes = encode_host_string_offsets(operation, &string_values)?;
         let data_bytes: Arc<[u8]> =
-            Arc::from(strings.iter().flat_map(|value| value.as_bytes().iter().copied()).collect::<Vec<u8>>());
+            Arc::from(string_values.iter().flat_map(|value| value.as_bytes().iter().copied()).collect::<Vec<u8>>());
 
         let offsets_binding = retained_host_binding(operation, offsets_id, &offsets_bytes)?;
         let data_binding = retained_host_binding(operation, data_id, &data_bytes)?;
@@ -367,10 +369,9 @@ pub(super) fn prepared_host_column_projection_from_view(
         let mut child_ids = Vec::with_capacity(child_count);
         let mut semantic_columns = Vec::new();
         for index in 0..child_count {
-            let child_index = checked_child_index(operation, index)?;
-            let child_view = view
-                .child(child_index)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            let _ = checked_child_index(operation, index)?;
+            let child_view =
+                view.child(index).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let child_projection =
                 prepared_host_column_projection_from_view(&child_view, operation, next_column_id, next_buffer_id)?;
             next_buffer_id = child_projection.next_buffer_id;

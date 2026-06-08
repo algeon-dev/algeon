@@ -140,7 +140,7 @@ pub(crate) fn write_json_with_exec(
         .enumerate()
         .map(|(index, name)| {
             CString::new(name.as_str()).map_err(|_| {
-                Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                Error::new(ErrorKind::InvalidArgument, "column name contains interior null byte")
                     .with_operation(operation)
                     .with_context("column_index", index.to_string())
             })

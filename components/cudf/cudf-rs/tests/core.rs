@@ -9,6 +9,10 @@ mod column_ops_tests;
 mod column_string_tests;
 #[path = "core/column_tests.rs"]
 mod column_tests;
+#[path = "core/debug_tests.rs"]
+mod debug_tests;
+#[path = "core/materialization_contract_tests.rs"]
+mod materialization_contract_tests;
 #[path = "core/device_buffer_tests.rs"]
 mod device_buffer_tests;
 #[path = "core/error_api_tests.rs"]

@@ -25,7 +25,7 @@ fn test_arrow_datatype_try_from_type_id_supported_mappings() {
 fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
     let err =
         ArrowDataType::try_from(TypeId::List).expect_err("list columns are not supported by Arrow host-copy interop");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::NotSupported);
     assert_eq!(err.operation(), "arrow::TryFrom<TypeId> for ArrowDataType");
     assert!(err.message().contains("unsupported cudf type"));
 }
@@ -43,7 +43,7 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
 fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
     let err = TypeId::try_from(&ArrowDataType::LargeBinary)
         .expect_err("large binary arrays are not supported by cudf Arrow import");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::NotSupported);
     assert_eq!(err.operation(), "arrow::TryFrom<&ArrowDataType> for TypeId");
     assert!(err.message().contains("unsupported Arrow type"));
 }
@@ -311,7 +311,7 @@ fn test_from_record_batch_with_nulls() {
 fn test_round_trip_string_only() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string()],
-        vec![Column::from_strings(&["alice", "bob", "charlie"]).unwrap()],
+        vec![Column::from_strs(&["alice", "bob", "charlie"]).unwrap()],
     )
     .unwrap();
 
@@ -338,7 +338,7 @@ fn test_round_trip_mixed_string_and_numeric() {
     let df = crate::common::dataframe_from_columns(
         vec!["city".to_string(), "pop".to_string()],
         vec![
-            Column::from_strings(&["tokyo", "london", "paris"]).unwrap(),
+            Column::from_strs(&["tokyo", "london", "paris"]).unwrap(),
             Column::from_slice(&[14_000_000i64, 9_000_000, 2_000_000]).unwrap(),
         ],
     )
@@ -363,7 +363,7 @@ fn test_round_trip_mixed_string_and_numeric() {
 fn test_round_trip_nullable_string() {
     let df = crate::common::dataframe_from_columns(
         vec!["tag".to_string()],
-        vec![Column::from_strings_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
+        vec![Column::from_strs_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -392,7 +392,7 @@ fn test_round_trip_nullable_string() {
 fn test_round_trip_string_with_empty_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["s".to_string()],
-        vec![Column::from_strings(&["", "data", ""]).unwrap()],
+        vec![Column::from_strs(&["", "data", ""]).unwrap()],
     )
     .unwrap();
 
@@ -406,7 +406,7 @@ fn test_round_trip_string_with_empty_values() {
 fn test_round_trip_string_unicode() {
     let df = crate::common::dataframe_from_columns(
         vec!["text".to_string()],
-        vec![Column::from_strings(&["héllo", "日本語", "🚀🎉"]).unwrap()],
+        vec![Column::from_strs(&["héllo", "日本語", "🚀🎉"]).unwrap()],
     )
     .unwrap();
 
@@ -468,7 +468,7 @@ fn test_from_record_batch_large_string_array() {
 #[test]
 fn test_round_trip_empty_string_schema() {
     let df =
-        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![Column::from_strings(&[]).unwrap()]).unwrap();
+        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![Column::from_strs(&[]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);

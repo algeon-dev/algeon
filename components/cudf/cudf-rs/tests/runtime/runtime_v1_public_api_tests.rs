@@ -3,9 +3,10 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    Agg, AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ExecutionContext, JsonWriteOptions,
-    MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions,
-    core::{Column, Scalar, TimestampResolution, TypeId},
+    AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, DeviceId, DropDuplicatesOptions, DropNaOptions, ErrorKind,
+    ExecutionContext, GroupByAgg, JsonWriteOptions, MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime,
+    Series, SortOptions,
+    core::{Scalar, TimestampResolution, TypeId},
     runtime::CudaStream,
 };
 use cudf_sys::{
@@ -68,6 +69,45 @@ fn runtime_and_execution_context_are_public_and_send_sync() {
 }
 
 #[test]
+fn runtime_new_matches_default_builder_explicit_runtime_contract() {
+    let ambient_device = DeviceId::current().unwrap();
+
+    let via_new = Runtime::new().unwrap();
+    let via_builder = Runtime::builder().build().unwrap();
+
+    assert_eq!(via_new.device(), ambient_device);
+    assert_eq!(via_builder.device(), ambient_device);
+    assert_ne!(via_new.__debug_execution_domain_id(), 0);
+    assert_ne!(via_builder.__debug_execution_domain_id(), 0);
+
+    let from_new = via_new.series("id", &[3i32, 1, 2]).unwrap();
+    assert_eq!(from_new.as_column().__debug_execution_domain_kind(), "explicit");
+    assert_eq!(from_new.as_column().__debug_execution_domain_id(), via_new.__debug_execution_domain_id());
+    assert_eq!(
+        from_new.as_column().__debug_execution_domain_stream_value(),
+        via_new.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        from_new.as_column().__debug_execution_domain_mr_value(),
+        via_new.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(from_new.to_vec_strict::<i32>().unwrap(), vec![3, 1, 2]);
+
+    let from_builder = via_builder.series("id", &[7i32, 8, 9]).unwrap();
+    assert_eq!(from_builder.as_column().__debug_execution_domain_kind(), "explicit");
+    assert_eq!(from_builder.as_column().__debug_execution_domain_id(), via_builder.__debug_execution_domain_id());
+    assert_eq!(
+        from_builder.as_column().__debug_execution_domain_stream_value(),
+        via_builder.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        from_builder.as_column().__debug_execution_domain_mr_value(),
+        via_builder.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(from_builder.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
 fn runtime_first_series_factory_uses_runtime_domain_and_exec_options() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
@@ -84,13 +124,13 @@ fn runtime_first_series_factory_uses_runtime_domain_and_exec_options() {
 }
 
 #[test]
-fn runtime_first_string_series_factory_uses_runtime_domain_and_exec_options() {
+fn runtime_first_str_series_factory_uses_runtime_domain_and_exec_options() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
     let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
-    let series = rt.string_series("name", &["alice", "bob"]).unwrap();
+    let series = rt.str_series("name", &["alice", "bob"]).unwrap();
 
     assert_eq!(obs_last_stream(), expected_stream);
     assert_ne!(obs_last_mr() as usize, default_mr);
@@ -126,7 +166,16 @@ fn runtime_first_series_factories_seed_runtime_domain_and_values() {
     assert_eq!(nullable.to_vec_optional::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
 
     obs_reset();
-    let strings = rt.string_series("name", &["alice", "bob"]).unwrap();
+    let optional = rt.series_opt("maybe", &[Some(7i32), None, Some(9)]).unwrap();
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(optional.name(), Some("maybe"));
+    assert_eq!(optional.as_column().__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(optional.null_count(), 1);
+    assert_eq!(optional.to_vec_optional::<i32>().unwrap(), vec![Some(7), None, Some(9)]);
+
+    obs_reset();
+    let strings = rt.str_series("name", &["alice", "bob"]).unwrap();
     assert_eq!(obs_last_stream(), expected_stream);
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(strings.name(), Some("name"));
@@ -134,8 +183,7 @@ fn runtime_first_series_factories_seed_runtime_domain_and_values() {
     assert_eq!(strings.to_strings_strict().unwrap(), vec!["alice".to_string(), "bob".to_string()]);
 
     obs_reset();
-    let nullable_strings =
-        rt.nullable_string_series("nickname", &["", "ignored", "zed"], &[true, false, true]).unwrap();
+    let nullable_strings = rt.nullable_str_series("nickname", &["", "ignored", "zed"], &[true, false, true]).unwrap();
     assert_eq!(obs_last_stream(), expected_stream);
     assert_eq!(obs_last_mr() as usize, expected_mr);
     assert_eq!(nullable_strings.name(), Some("nickname"));
@@ -191,14 +239,66 @@ fn runtime_series_from_scalar_uses_runtime_exec_options_and_provenance() {
 }
 
 #[test]
-fn column_from_scalar_with_runtime_uses_runtime_exec_options_and_provenance() {
+fn runtime_low_level_column_factories_use_runtime_exec_options_and_provenance() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
     let expected_mr = rt.memory_resource().__debug_raw_handle_value();
     let scalar = Scalar::from_value(11i32).unwrap();
 
     obs_reset();
-    let column = Column::from_scalar_with_runtime(&rt, &scalar, 3).unwrap();
+    let ints = rt.column_from_slice(&[3i32, 1, 2]).unwrap();
+
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(ints.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(ints.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(ints.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(ints.view().unwrap().to_vec::<i32>().unwrap(), vec![3, 1, 2]);
+
+    obs_reset();
+    let nullable = rt.column_from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
+
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(nullable.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(nullable.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 0, 30]);
+    assert_eq!(nullable.view().unwrap().null_count().unwrap(), 1);
+
+    obs_reset();
+    let strings = rt.column_from_strs(&["alice", "bob"]).unwrap();
+
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(strings.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(strings.view().unwrap().to_strings_lossy().unwrap(), vec!["alice".to_string(), "bob".to_string()]);
+
+    obs_reset();
+    let nullable_strings = rt.column_from_strs_nullable(&["", "ignored", "zed"], &[true, false, true]).unwrap();
+
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(nullable_strings.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(
+        nullable_strings.view().unwrap().to_optional_strings().unwrap(),
+        vec![Some("".to_string()), None, Some("zed".to_string())]
+    );
+
+    obs_reset();
+    let nulls = rt.null_column(TypeId::Int32, 4).unwrap();
+
+    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(nulls.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(nulls.view().unwrap().null_count().unwrap(), 4);
+
+    obs_reset();
+    let empty = rt.empty_column(TypeId::Int32).unwrap();
+
+    assert_eq!(empty.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(empty.view().unwrap().len().unwrap(), 0);
+
+    obs_reset();
+    let column = rt.column_from_scalar(&scalar, 3).unwrap();
 
     assert_eq!(obs_last_stream(), expected_stream);
     assert_eq!(obs_last_mr() as usize, expected_mr);
@@ -284,7 +384,7 @@ fn in_context_merge_groupby_gather_and_filter_are_public_and_route_override_stre
     assert_eq!(joined.num_rows(), 2);
     assert_eq!(joined.__debug_execution_domain_stream_value(), override_stream_value);
 
-    let grouped = joined.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
+    let grouped = joined.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     assert_eq!(grouped.__debug_execution_domain_stream_value(), override_stream_value);
 
     let gather_indices = rt.series("idx", &[1i32, 0]).unwrap();
@@ -398,6 +498,95 @@ fn in_context_scopes_series_sort_and_fillna_ops() {
     assert_eq!(filled_from_series.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
     assert_eq!(filled_from_series.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
     assert_eq!(filled_from_series.to_vec_strict::<i32>().unwrap(), vec![30, 8, 10, 6]);
+}
+
+#[test]
+fn in_context_scopes_series_row_ops_and_value_counts() {
+    let data_rt = sample_runtime();
+    let ctx_rt = sample_runtime();
+    let series = data_rt.nullable_series("score", &[10i32, 0, 20, 10, 0], &[true, false, true, true, false]).unwrap();
+    let indices = data_rt.series("idx", &[2i32, 0, 4]).unwrap();
+    let mask = data_rt.series("mask", &[true, false, true, true, false]).unwrap();
+
+    let ctx_stream_value = ctx_rt.stream().__debug_raw_handle_value();
+    let ctx_mr_value = ctx_rt.memory_resource().__debug_raw_handle_value();
+    let ctx = ExecutionContext::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
+
+    obs_reset();
+    let head = series.in_context(&ctx).head(3).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(head.name(), Some("score"));
+    assert_eq!(head.as_column().__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(head.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(head.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(head.to_vec_optional::<i32>().unwrap(), vec![Some(10), None, Some(20)]);
+
+    obs_reset();
+    let slice = series.in_context(&ctx).slice(1, 3).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(slice.name(), Some("score"));
+    assert_eq!(slice.as_column().__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(slice.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(slice.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(slice.to_vec_optional::<i32>().unwrap(), vec![None, Some(20), Some(10)]);
+
+    obs_reset();
+    let gathered = series.in_context(&ctx).gather(&indices).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(gathered.name(), Some("score"));
+    assert_eq!(gathered.as_column().__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(gathered.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(gathered.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(gathered.to_vec_optional::<i32>().unwrap(), vec![Some(20), Some(10), None]);
+
+    obs_reset();
+    let filtered = series.in_context(&ctx).filter(&mask).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(filtered.name(), Some("score"));
+    assert_eq!(filtered.as_column().__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(filtered.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(filtered.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(filtered.to_vec_optional::<i32>().unwrap(), vec![Some(10), Some(20), Some(10)]);
+
+    obs_reset();
+    let dropped_nulls = series.in_context(&ctx).dropna().unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(dropped_nulls.name(), Some("score"));
+    assert_eq!(
+        dropped_nulls.as_column().__debug_execution_domain_id(),
+        series.as_column().__debug_execution_domain_id()
+    );
+    assert_eq!(dropped_nulls.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(dropped_nulls.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(dropped_nulls.to_vec_strict::<i32>().unwrap(), vec![10, 20, 10]);
+
+    obs_reset();
+    let deduped = series.in_context(&ctx).drop_duplicates().unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(deduped.name(), Some("score"));
+    assert_eq!(deduped.as_column().__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(deduped.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(deduped.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    let mut deduped_values = deduped.to_vec_optional::<i32>().unwrap();
+    deduped_values.sort_by_key(|value| value.unwrap_or(i32::MIN));
+    assert_eq!(deduped_values, vec![None, Some(10), Some(20)]);
+
+    obs_reset();
+    let counts = series.in_context(&ctx).value_counts().unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(counts.__debug_execution_domain_id(), series.as_column().__debug_execution_domain_id());
+    assert_eq!(counts.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(counts.__debug_execution_domain_mr_value(), ctx_mr_value);
+    let counts = counts.sort_values(["score"], SortOptions::new()).unwrap();
+    assert_eq!(counts.series("score").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
+    assert_eq!(counts.series("count").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 1]);
 }
 
 #[test]
@@ -711,6 +900,9 @@ fn in_context_scopes_series_cast_binary_and_set_like_ops() {
     let right = right_rt.series("right", &[1i32, 2, 3, 4]).unwrap();
     let members = right_rt.series("members", &[10i32, 30]).unwrap();
     let labels = left_rt.series("labels", &[30i32, 10, 30, 20]).unwrap();
+    let bool_left =
+        left_rt.nullable_series("bool_left", &[true, false, true, false], &[true, false, true, true]).unwrap();
+    let bool_right = right_rt.series("bool_right", &[true, true, false, true]).unwrap();
 
     let ctx_stream_value = ctx_rt.stream().__debug_raw_handle_value();
     let ctx_mr_value = ctx_rt.memory_resource().__debug_raw_handle_value();
@@ -774,6 +966,19 @@ fn in_context_scopes_series_cast_binary_and_set_like_ops() {
     assert_eq!(equals.to_vec_optional::<bool>().unwrap(), vec![Some(false), None, Some(false), Some(false)]);
 
     obs_reset();
+    let logical_and = bool_left.in_context(&ctx).logical_and(&bool_right).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(obs_last_sync_stream(), bool_right.as_column().__debug_execution_domain_stream_value());
+    assert_eq!(
+        logical_and.as_column().__debug_execution_domain_id(),
+        bool_left.as_column().__debug_execution_domain_id()
+    );
+    assert_eq!(logical_and.as_column().__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(logical_and.as_column().__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(logical_and.to_vec_optional::<bool>().unwrap(), vec![Some(true), None, Some(false), Some(false)]);
+
+    obs_reset();
     let isin = left.in_context(&ctx).isin(&members).unwrap();
     assert_eq!(obs_last_stream(), ctx_stream_value);
     assert_eq!(obs_last_mr() as usize, ctx_mr_value);
@@ -820,7 +1025,7 @@ fn in_context_scopes_series_string_accessors() {
     let data_rt = sample_runtime();
     let ctx_rt = sample_runtime();
     let strings =
-        data_rt.nullable_string_series("name", &["  Alice", "bob  ", "", "CARA"], &[true, true, false, true]).unwrap();
+        data_rt.nullable_str_series("name", &["  Alice", "bob  ", "", "CARA"], &[true, true, false, true]).unwrap();
 
     let ctx_stream_value = ctx_rt.stream().__debug_raw_handle_value();
     let ctx_mr_value = ctx_rt.memory_resource().__debug_raw_handle_value();
@@ -905,7 +1110,7 @@ fn in_context_scopes_series_string_scalar_comparison_helpers() {
     let data_rt = sample_runtime();
     let ctx_rt = sample_runtime();
     let strings =
-        data_rt.nullable_string_series("name", &["alice", "bob", "", "carol"], &[true, true, false, true]).unwrap();
+        data_rt.nullable_str_series("name", &["alice", "bob", "", "carol"], &[true, true, false, true]).unwrap();
 
     let ctx_stream_value = ctx_rt.stream().__debug_raw_handle_value();
     let ctx_mr_value = ctx_rt.memory_resource().__debug_raw_handle_value();
@@ -960,7 +1165,7 @@ fn groupby_in_context_fences_input_stream_before_override_exec() {
     let ctx = ExecutionContext::new().with_stream(&override_stream);
 
     obs_reset();
-    let grouped = df.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
+    let grouped = df.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(obs_last_stream(), override_stream_value);
     assert_eq!(obs_last_sync_stream(), input_stream_value);
@@ -1579,6 +1784,68 @@ fn in_context_filter_succeeds_on_mixed_domain_inputs() {
     assert_eq!(filtered.__debug_execution_domain_mr_value(), df_mr_value);
     assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 30]);
+}
+
+#[test]
+fn in_context_dataframe_row_and_drop_ops_use_context_exec() {
+    let data_rt = sample_runtime();
+    let ctx_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        data_rt.series("id", &[10i32, 20, 30, 20]).unwrap(),
+        data_rt.nullable_series("score", &[1i32, 0, 3, 0], &[true, false, true, false]).unwrap(),
+    ])
+    .unwrap();
+
+    let ctx_stream_value = ctx_rt.stream().__debug_raw_handle_value();
+    let ctx_mr_value = ctx_rt.memory_resource().__debug_raw_handle_value();
+    let ctx = ExecutionContext::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
+
+    obs_reset();
+    let head = df.in_context(&ctx).head(2).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(head.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(head.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(head.__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(head.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
+
+    obs_reset();
+    let tail = df.in_context(&ctx).tail(2).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(tail.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(tail.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(tail.__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(tail.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 20]);
+
+    obs_reset();
+    let slice = df.in_context(&ctx).slice(1, 2).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(slice.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(slice.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(slice.__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(slice.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
+
+    obs_reset();
+    let dropped_nulls = df.in_context(&ctx).dropna(DropNaOptions::default()).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(dropped_nulls.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(dropped_nulls.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(dropped_nulls.__debug_execution_domain_mr_value(), ctx_mr_value);
+    assert_eq!(dropped_nulls.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 30]);
+
+    obs_reset();
+    let deduped = df.in_context(&ctx).drop_duplicates(DropDuplicatesOptions::default()).unwrap();
+    assert_eq!(obs_last_stream(), ctx_stream_value);
+    assert_eq!(obs_last_mr() as usize, ctx_mr_value);
+    assert_eq!(deduped.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(deduped.__debug_execution_domain_stream_value(), ctx_stream_value);
+    assert_eq!(deduped.__debug_execution_domain_mr_value(), ctx_mr_value);
+    let deduped = deduped.sort_values(["id", "score"], SortOptions::new()).unwrap();
+    assert_eq!(deduped.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(deduped.series("score").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(1), None, Some(3)]);
 }
 
 #[test]

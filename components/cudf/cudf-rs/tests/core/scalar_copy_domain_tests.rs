@@ -366,7 +366,7 @@ fn copy_into_domain_numeric_i32_regression() {
 #[test]
 fn copy_into_domain_string_regression() {
     let rt = sample_runtime();
-    let scalar = Scalar::from_string("hello").unwrap();
+    let scalar = Scalar::from_str("hello").unwrap();
 
     // count=2 so an offsets-buffer replication bug (e.g. [0,5,0,5] vs [0,5,10]) is caught.
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();

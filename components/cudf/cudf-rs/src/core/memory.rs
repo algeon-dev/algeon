@@ -177,3 +177,12 @@ impl Drop for DeviceMemoryResourceHandle {
         }
     }
 }
+
+impl std::fmt::Debug for DeviceMemoryResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceMemoryResource")
+            .field("device", &self.device())
+            .field("handle", &self.__debug_raw_handle_value())
+            .finish()
+    }
+}

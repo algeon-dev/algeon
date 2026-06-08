@@ -52,7 +52,7 @@ fn test_factorize_i32_with_duplicates() {
 #[test]
 fn test_factorize_string_column() {
     let strings: &[&str] = &["banana", "apple", "cherry", "apple", "banana"];
-    let col = Column::from_strings(strings).unwrap();
+    let col = Column::from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -68,7 +68,7 @@ fn test_factorize_string_column() {
     assert_eq!(codes_view.len().unwrap(), 5);
 
     let codes_host = codes_view.to_vec::<i32>().unwrap();
-    let uniques_host = uniques_view.to_strings().unwrap();
+    let uniques_host = uniques_view.to_strings_lossy().unwrap();
 
     // Verify mapping.
     for (i, &code) in codes_host.iter().enumerate() {

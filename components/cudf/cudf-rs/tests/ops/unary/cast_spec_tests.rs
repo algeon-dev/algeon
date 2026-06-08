@@ -299,12 +299,12 @@ fn test_to_numeric_bool_to_i32() {
 fn test_to_numeric_rejects_non_numeric_target() {
     let s = Series::new::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_numeric(TypeId::String).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
 }
 
 #[test]
 fn test_to_numeric_rejects_timestamp_target() {
     let s = Series::new::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_numeric(TypeId::TimestampMicroseconds).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
 }

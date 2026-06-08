@@ -368,9 +368,11 @@ fn normalize_manifest_error_kind(err: &cudf::Error, operation_kind: &'static str
         {
             "column_not_found".into()
         },
-        cudf::ErrorKind::InvalidOperation | cudf::ErrorKind::TypeError | cudf::ErrorKind::NullError => {
-            "invalid_argument".into()
-        },
+        cudf::ErrorKind::InvalidArgument
+        | cudf::ErrorKind::NotSupported
+        | cudf::ErrorKind::InvalidOperation
+        | cudf::ErrorKind::TypeError
+        | cudf::ErrorKind::NullError => "invalid_argument".into(),
         cudf::ErrorKind::IndexError => "index_out_of_bounds".into(),
         _ => "unknown".into(),
     }

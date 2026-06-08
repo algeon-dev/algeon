@@ -152,10 +152,10 @@ impl BinaryOperator {
 /// - Int + Float → wider float
 /// - Float + Float → wider float
 /// - Signed int + unsigned int of same width → next wider signed int
-/// - Unsupported combinations → `ErrorKind::InvalidOperation`
+/// - Unsupported combinations → `ErrorKind::NotSupported`
 pub fn infer_binary_output_type(lhs: TypeId, rhs: TypeId, op: BinaryOperator) -> Result<DataType> {
     let make_err = |msg: &str| {
-        Err(Error::new(ErrorKind::InvalidOperation, msg.to_string())
+        Err(Error::new(ErrorKind::NotSupported, msg.to_string())
             .with_operation("binary::infer_binary_output_type")
             .with_context("lhs_type_id", format!("{:?}", lhs).to_lowercase())
             .with_context("rhs_type_id", format!("{:?}", rhs).to_lowercase())

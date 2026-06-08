@@ -89,7 +89,7 @@ impl Column {
     /// can participate in explicit-provenance pipelines without triggering
     /// mixed-provenance rejection. No device memory is allocated for the
     /// column data itself.
-    pub fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
+    pub(crate) fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
@@ -110,7 +110,7 @@ impl Column {
     }
 
     /// Create a column from a host slice inside the given explicit runtime.
-    pub fn from_slice_with_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
+    pub(crate) fn from_slice_with_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
         Self::from_slice_impl(
             data,
             None,
@@ -184,7 +184,7 @@ impl Column {
     }
 
     /// Create a nullable column from host data inside the given explicit runtime.
-    pub fn from_slice_nullable_with_runtime<T: CudfType>(
+    pub(crate) fn from_slice_nullable_with_runtime<T: CudfType>(
         runtime: &Runtime,
         data: &[T],
         validity: &[bool],
@@ -377,7 +377,7 @@ impl Column {
     /// - The pointer must remain valid until the runtime's stream has
     ///   completed the copy, because this `_with_runtime` variant does not
     ///   synchronize before returning.
-    pub unsafe fn from_device_ptr_with_runtime(
+    pub(crate) unsafe fn from_device_ptr_with_runtime(
         runtime: &Runtime,
         device_ptr: *const c_void,
         len: usize,
@@ -430,27 +430,22 @@ impl Column {
     /// # Example
     /// ```no_run
     /// use cudf::core::Column;
-    /// let col = Column::from_strings(&["hello", "world"]).unwrap();
+    /// let col = Column::from_strs(&["hello", "world"]).unwrap();
     /// ```
-    pub fn from_strings(data: &[&str]) -> Result<Self> {
-        Self::from_strings_impl(data, None, None, "column::from_strings")
+    pub fn from_strs(data: &[&str]) -> Result<Self> {
+        Self::from_strs_impl(data, None, None, "column::from_strs")
     }
 
     /// Create a STRING type column from host string data inside the given explicit runtime.
-    pub fn from_strings_with_runtime(runtime: &Runtime, data: &[&str]) -> Result<Self> {
-        Self::from_strings_impl(
-            data,
-            None,
-            Some(Arc::clone(runtime.execution_domain())),
-            "column::from_strings_with_runtime",
-        )
+    pub(crate) fn from_strs_with_runtime(runtime: &Runtime, data: &[&str]) -> Result<Self> {
+        Self::from_strs_impl(data, None, Some(Arc::clone(runtime.execution_domain())), "column::from_strs_with_runtime")
     }
 
-    pub(crate) fn from_strings_in_domain(data: &[&str], domain: &Arc<ExecutionDomain>) -> Result<Self> {
-        Self::from_strings_impl(data, None, Some(Arc::clone(domain)), "column::from_strings_in_domain")
+    pub(crate) fn from_strs_in_domain(data: &[&str], domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        Self::from_strs_impl(data, None, Some(Arc::clone(domain)), "column::from_strs_in_domain")
     }
 
-    fn from_strings_impl(
+    fn from_strs_impl(
         data: &[&str],
         validity: Option<&[bool]>,
         domain: Option<Arc<ExecutionDomain>>,
@@ -533,7 +528,7 @@ impl Column {
             TypeId::String => {
                 let dummy: Vec<&str> = vec![""; len];
                 let validity = vec![false; len];
-                Self::from_strings_impl(&dummy, Some(&validity), Some(Arc::clone(domain)), operation)
+                Self::from_strs_impl(&dummy, Some(&validity), Some(Arc::clone(domain)), operation)
             },
             _ => {
                 let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
@@ -599,7 +594,7 @@ impl Column {
     /// The resulting column carries the runtime's retained provenance so it can
     /// participate in explicit-provenance pipelines without triggering
     /// mixed-provenance rejection.
-    pub fn nulls_with_runtime(runtime: &Runtime, type_id: TypeId, len: usize) -> Result<Self> {
+    pub(crate) fn nulls_with_runtime(runtime: &Runtime, type_id: TypeId, len: usize) -> Result<Self> {
         Self::nulls_in_domain(type_id, len, runtime.execution_domain(), "column::nulls_with_runtime")
     }
 
@@ -609,7 +604,7 @@ impl Column {
     /// If the input scalar belongs to a different retained provenance, it is
     /// recreated in the target runtime first so placement and execution
     /// resource selection remain honest.
-    pub fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: usize) -> Result<Self> {
+    pub(crate) fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: usize) -> Result<Self> {
         if ExecutionDomain::same_provenance(scalar.execution_domain(), runtime.execution_domain()) {
             return Self::from_scalar(scalar, size);
         }
@@ -622,17 +617,17 @@ impl Column {
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     /// For null rows, the string content is ignored.
-    pub fn from_strings_nullable(data: &[&str], validity: &[bool]) -> Result<Self> {
-        Self::from_strings_impl(data, Some(validity), None, "column::from_strings_nullable")
+    pub fn from_strs_nullable(data: &[&str], validity: &[bool]) -> Result<Self> {
+        Self::from_strs_impl(data, Some(validity), None, "column::from_strs_nullable")
     }
 
     /// Create a nullable STRING type column inside the given explicit runtime.
-    pub fn from_strings_nullable_with_runtime(runtime: &Runtime, data: &[&str], validity: &[bool]) -> Result<Self> {
-        Self::from_strings_impl(
+    pub(crate) fn from_strs_nullable_with_runtime(runtime: &Runtime, data: &[&str], validity: &[bool]) -> Result<Self> {
+        Self::from_strs_impl(
             data,
             Some(validity),
             Some(Arc::clone(runtime.execution_domain())),
-            "column::from_strings_nullable_with_runtime",
+            "column::from_strs_nullable_with_runtime",
         )
     }
 
