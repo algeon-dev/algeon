@@ -56,6 +56,14 @@ typedef struct {
   int64_t device_read_count;
 } cudf_io_remote_parquet_read_evidence_t;
 
+typedef struct {
+  int64_t input_row_groups;
+  int32_t has_row_groups_after_stats_filter;
+  int64_t row_groups_after_stats_filter;
+  int32_t has_row_groups_after_bloom_filter;
+  int64_t row_groups_after_bloom_filter;
+} cudf_io_parquet_pruning_evidence_t;
+
 // ---------------------------------------------------------------------------
 // Parquet
 // ---------------------------------------------------------------------------
@@ -159,6 +167,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
                                                            cudf_table_handle* out_table,
                                                            char*** out_names,
                                                            int32_t* out_num_names,
+                                                           cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
                                                            const cudf_exec_options_t* exec_options);
 
 /// Read remote Parquet through an explicit KvikIO-backed datasource with
@@ -177,6 +186,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   const cudf_exec_options_t* exec_options);
 
 /// Read multiple Parquet files with metadata, explicit execution context, and
@@ -207,6 +217,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   const cudf_exec_options_t* exec_options);
 
 /// Read multiple Parquet files, allowing selected files to use explicit
@@ -230,6 +241,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   const cudf_exec_options_t* exec_options);
 
 /// Read Parquet from a host buffer with metadata, explicit execution context,
@@ -252,6 +264,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   const cudf_exec_options_t* exec_options);
 
 /// Free column name array returned by metadata readers.

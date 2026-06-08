@@ -22,7 +22,7 @@ cudf_handle_provenance cudf_capture_current_handle_provenance() {
 
   int32_t device = 0;
   CUDF_CUDA_TRY(cudaGetDevice(&device));
-  auto *mr_raw = rmm::mr::get_current_device_resource();
+  auto *mr_raw = cudf_tracked_current_device_resource_raw();
   return cudf_handle_provenance{
       device, {}, mr_raw, cudf_memory_resource_lifetime_from_raw(mr_raw)};
 }

@@ -259,6 +259,33 @@ void init_remote_read_evidence(cudf_io_remote_parquet_read_evidence_t* out)
   out->device_read_count    = -1;
 }
 
+void init_parquet_pruning_evidence(cudf_io_parquet_pruning_evidence_t* out)
+{
+  if (out == nullptr) { return; }
+  out->input_row_groups                   = -1;
+  out->has_row_groups_after_stats_filter = 0;
+  out->row_groups_after_stats_filter     = -1;
+  out->has_row_groups_after_bloom_filter = 0;
+  out->row_groups_after_bloom_filter     = -1;
+}
+
+void write_parquet_pruning_evidence(cudf_io_parquet_pruning_evidence_t* out,
+                                    cudf::io::table_metadata const& metadata)
+{
+  if (out == nullptr) { return; }
+  out->input_row_groups = static_cast<int64_t>(metadata.num_input_row_groups);
+  if (metadata.num_row_groups_after_stats_filter.has_value()) {
+    out->has_row_groups_after_stats_filter = 1;
+    out->row_groups_after_stats_filter =
+      static_cast<int64_t>(metadata.num_row_groups_after_stats_filter.value());
+  }
+  if (metadata.num_row_groups_after_bloom_filter.has_value()) {
+    out->has_row_groups_after_bloom_filter = 1;
+    out->row_groups_after_bloom_filter =
+      static_cast<int64_t>(metadata.num_row_groups_after_bloom_filter.value());
+  }
+}
+
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
 bool kvikio_thread_pool_env_configured()
 {
@@ -339,7 +366,7 @@ struct remote_read_counters {
 class counted_remote_parquet_source final : public cudf::io::datasource {
  public:
   counted_remote_parquet_source(kvikio::RemoteHandle&& handle,
-                                std::shared_ptr<rmm::device_async_resource_ref> mr,
+                                std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
                                 std::shared_ptr<void> mr_lifetime)
     : handle_{std::move(handle)}, mr_{std::move(mr)}, mr_lifetime_{std::move(mr_lifetime)}
   {
@@ -479,7 +506,7 @@ class counted_remote_parquet_source final : public cudf::io::datasource {
   };
 
   kvikio::RemoteHandle handle_;
-  std::shared_ptr<rmm::device_async_resource_ref> mr_;
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr_;
   std::shared_ptr<void> mr_lifetime_;
   remote_read_counters counters_;
   std::mutex tail_cache_mutex_;
@@ -552,7 +579,7 @@ std::unique_ptr<kvikio::RemoteEndpoint> make_remote_endpoint(
 std::unique_ptr<counted_remote_parquet_source> make_counted_remote_source(
   const char* uri,
   const cudf_io_remote_parquet_profile_t* profile,
-  std::shared_ptr<rmm::device_async_resource_ref> mr,
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
   std::shared_ptr<void> mr_lifetime)
 {
   configure_remote_parquet_kvikio_defaults_once();
@@ -831,6 +858,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
                                                            cudf_table_handle* out_table,
                                                            char*** out_names,
                                                            int32_t* out_num_names,
+                                                           cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
                                                            cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
@@ -839,6 +867,8 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
   *out_names = nullptr;
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
   *out_num_names = 0;
+  init_parquet_pruning_evidence(out_pruning_evidence);
+  CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   cudf_status_t const args_status =
     validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
@@ -864,6 +894,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
+    write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -898,6 +929,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
@@ -908,6 +940,8 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   *out_num_names = 0;
   init_remote_read_evidence(out_evidence);
   CUDF_RUST_NULL_CHECK(out_evidence, "out_evidence is null");
+  init_parquet_pruning_evidence(out_pruning_evidence);
+  CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(uri, "uri is null");
   cudf_status_t const args_status =
     validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
@@ -941,6 +975,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
       result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
+    write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -975,6 +1010,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
@@ -983,6 +1019,8 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   *out_names = nullptr;
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
   *out_num_names = 0;
+  init_parquet_pruning_evidence(out_pruning_evidence);
+  CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   cudf_status_t const args_status = validate_parquet_multi_reader_args(
     filepaths,
     num_files,
@@ -1040,6 +1078,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
+    write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -1076,6 +1115,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
@@ -1086,6 +1126,8 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   *out_num_names = 0;
   init_remote_read_evidence(out_evidence);
   CUDF_RUST_NULL_CHECK(out_evidence, "out_evidence is null");
+  init_parquet_pruning_evidence(out_pruning_evidence);
+  CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(remote_source_flags, "remote_source_flags is null");
   cudf_status_t const args_status = validate_parquet_multi_reader_args(
     filepaths,
@@ -1118,6 +1160,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
                                                              out_table,
                                                              out_names,
                                                              out_num_names,
+                                                             out_pruning_evidence,
                                                              exec_options);
   }
 
@@ -1184,6 +1227,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
       result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
+    write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -1218,6 +1262,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
@@ -1226,6 +1271,8 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
   *out_names = nullptr;
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
   *out_num_names = 0;
+  init_parquet_pruning_evidence(out_pruning_evidence);
+  CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   cudf_status_t const buffer_status = validate_host_parquet_buffer(host_buffer, host_buffer_len);
   if (buffer_status != CUDF_SUCCESS) { return buffer_status; }
   cudf_status_t const args_status =
@@ -1254,6 +1301,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
+    write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {

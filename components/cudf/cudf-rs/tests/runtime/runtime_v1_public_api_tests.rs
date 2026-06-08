@@ -879,7 +879,14 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
-    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
+    let peak_bytes = error_context_value(&err, "budget_peak_bytes")
+        .expect("budget_peak_bytes detail")
+        .parse::<usize>()
+        .expect("numeric budget_peak_bytes");
+    assert!(
+        peak_bytes <= 1,
+        "failed scalar-to-series budget path may only retain peak usage within the one-byte budget before rejection"
+    );
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
     assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());

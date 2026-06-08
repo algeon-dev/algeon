@@ -41,6 +41,16 @@ pub struct cudf_io_remote_parquet_read_evidence_t {
     pub device_read_count: i64,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_io_parquet_pruning_evidence_t {
+    pub input_row_groups: i64,
+    pub has_row_groups_after_stats_filter: i32,
+    pub row_groups_after_stats_filter: i64,
+    pub has_row_groups_after_bloom_filter: i32,
+    pub row_groups_after_bloom_filter: i64,
+}
+
 extern "C" {
     // -- I/O: Parquet --------------------------------------------------------
 
@@ -113,6 +123,7 @@ extern "C" {
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
+        out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
@@ -132,6 +143,7 @@ extern "C" {
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
         out_evidence: *mut cudf_io_remote_parquet_read_evidence_t,
+        out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
@@ -155,6 +167,7 @@ extern "C" {
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
+        out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
@@ -176,6 +189,7 @@ extern "C" {
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
         out_evidence: *mut cudf_io_remote_parquet_read_evidence_t,
+        out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
@@ -197,6 +211,7 @@ extern "C" {
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
+        out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

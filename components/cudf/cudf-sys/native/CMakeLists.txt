@@ -81,6 +81,31 @@ rapids_cmake_build_type("Release")
 # * CUDF ------------------------------------------------------------------------------------------
 
 set(CUDF_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../../cudf/cpp")
+function(cudf_rust_cache_value cache_path cache_key output_var)
+  file(STRINGS "${cache_path}" cache_line REGEX "^${cache_key}:[^=]*=")
+  if(cache_line)
+    list(GET cache_line 0 cache_line_first)
+    string(REGEX REPLACE "^[^=]*=" "" cache_value "${cache_line_first}")
+    set(${output_var}
+        "${cache_value}"
+        PARENT_SCOPE
+    )
+  else()
+    set(${output_var}
+        ""
+        PARENT_SCOPE
+    )
+  endif()
+endfunction()
+
+set(CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE "")
+set(CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT OFF)
+if(DEFINED ENV{CUDF_CPP_BUILD_DIR})
+  set(CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE "$ENV{CUDF_CPP_BUILD_DIR}")
+  set(CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT ON)
+elseif(EXISTS "${CUDF_SOURCE_DIR}/build/CMakeCache.txt")
+  set(CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE "${CUDF_SOURCE_DIR}/build")
+endif()
 
 # Search for libcudf in CUDF_INSTALL_DIR if specified, otherwise in CUDF_CPP_BUILD_DIR.
 if(DEFINED ENV{CUDF_INSTALL_DIR})
@@ -98,10 +123,56 @@ elseif(DEFINED ENV{CUDF_CPP_BUILD_DIR})
       CACHE STRING "path to libcudf build root"
   )
   set(cudf_ROOT "${CUDF_CPP_BUILD_DIR}")
+  list(PREPEND CMAKE_PREFIX_PATH ${CUDF_CPP_BUILD_DIR} "${CUDF_CPP_BUILD_DIR}/_deps/kvikio-build")
   set(CUDF_RUST_CUDF_DISCOVERY_MODE "build")
   message(STATUS "Using pre-configured libcudf from build path: ${CUDF_CPP_BUILD_DIR}")
 else()
   message(FATAL_ERROR "Either CUDF_INSTALL_DIR or CUDF_CPP_BUILD_DIR must be defined.")
+endif()
+
+set(CUDF_RUST_CUDF_BUILD_DIR "")
+if(CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE
+   AND EXISTS "${CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE}/CMakeCache.txt"
+)
+  set(CUDF_RUST_USE_CUDF_BUILD_DIR_METADATA OFF)
+  if(CUDF_RUST_CUDF_DISCOVERY_MODE STREQUAL "build")
+    set(CUDF_RUST_USE_CUDF_BUILD_DIR_METADATA ON)
+  elseif(CUDF_RUST_CUDF_DISCOVERY_MODE STREQUAL "install")
+    cudf_rust_cache_value(
+      "${CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE}/CMakeCache.txt"
+      "CMAKE_INSTALL_PREFIX"
+      CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX
+    )
+    if(CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX)
+      get_filename_component(CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX_REAL
+                             "${CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX}" REALPATH
+      )
+      get_filename_component(CUDF_RUST_CUDF_INSTALL_DIR_REAL "${CUDF_INSTALL_DIR}" REALPATH)
+      if(CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX_REAL STREQUAL CUDF_RUST_CUDF_INSTALL_DIR_REAL)
+        set(CUDF_RUST_USE_CUDF_BUILD_DIR_METADATA ON)
+      elseif(CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT)
+        message(
+          FATAL_ERROR
+            "CUDF_CPP_BUILD_DIR CMakeCache.txt has CMAKE_INSTALL_PREFIX=${CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX}, which does not match CUDF_INSTALL_DIR=${CUDF_INSTALL_DIR}"
+        )
+      else()
+        message(
+          STATUS
+            "Ignoring sibling libcudf build metadata because CMAKE_INSTALL_PREFIX=${CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX} does not match CUDF_INSTALL_DIR=${CUDF_INSTALL_DIR}"
+        )
+      endif()
+    elseif(CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT)
+      message(
+        FATAL_ERROR
+          "CUDF_CPP_BUILD_DIR CMakeCache.txt does not contain CMAKE_INSTALL_PREFIX; cannot use it as install-prefix capability evidence"
+      )
+    endif()
+  endif()
+
+  if(CUDF_RUST_USE_CUDF_BUILD_DIR_METADATA)
+    set(CUDF_RUST_CUDF_BUILD_DIR "${CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE}")
+    list(PREPEND CMAKE_PREFIX_PATH ${CUDF_RUST_CUDF_BUILD_DIR} "${CUDF_RUST_CUDF_BUILD_DIR}/_deps/kvikio-build")
+  endif()
 endif()
 
 rapids_find_package(cudf REQUIRED)
@@ -132,14 +203,33 @@ if(DEFINED CUDF_KVIKIO_REMOTE_IO)
   else()
     set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
   endif()
-elseif(DEFINED CUDF_CPP_BUILD_DIR AND EXISTS "${CUDF_CPP_BUILD_DIR}/CMakeCache.txt")
-  file(
-    STRINGS "${CUDF_CPP_BUILD_DIR}/CMakeCache.txt" CUDF_RUST_KVIKIO_REMOTE_IO_CACHE
-    REGEX "^CUDF_KVIKIO_REMOTE_IO:BOOL="
+elseif(CUDF_RUST_CUDF_BUILD_DIR AND EXISTS "${CUDF_RUST_CUDF_BUILD_DIR}/CMakeCache.txt")
+  cudf_rust_cache_value(
+    "${CUDF_RUST_CUDF_BUILD_DIR}/CMakeCache.txt"
+    "CUDF_KVIKIO_REMOTE_IO"
+    CUDF_RUST_KVIKIO_REMOTE_IO_CACHE
   )
-  if(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "=(ON|TRUE|1)$")
+  if(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "^(ON|TRUE|1)$")
     set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
-  elseif(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "=(OFF|FALSE|0)$")
+  elseif(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "^(OFF|FALSE|0)$")
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
+  endif()
+elseif(DEFINED KvikIO_REMOTE_SUPPORT)
+  if(KvikIO_REMOTE_SUPPORT)
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
+  else()
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
+  endif()
+elseif(DEFINED KvikIO_REMOTE_SUPPORT)
+  if(KvikIO_REMOTE_SUPPORT)
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
+  else()
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
+  endif()
+elseif(DEFINED KvikIO_REMOTE_SUPPORT)
+  if(KvikIO_REMOTE_SUPPORT)
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
+  else()
     set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
   endif()
 endif()

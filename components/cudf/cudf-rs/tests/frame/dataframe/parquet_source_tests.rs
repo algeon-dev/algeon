@@ -163,7 +163,7 @@ fn assert_decimal_amount_raws(df: &DataFrame, expected: &[i128]) {
     assert_eq!(amount.values().as_ref(), expected);
 }
 
-fn write_pyarrow_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
+fn write_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
     let vals = values.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
     let script = format!(
         "import pyarrow as pa, pyarrow.parquet as pq; \
@@ -181,6 +181,97 @@ fn write_pyarrow_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i
         },
         Err(_) => false,
     }
+}
+
+fn single_i32_source(path: &std::path::Path, stable_id: &str) -> LocalParquetSource {
+    LocalParquetSource::data(
+        [LocalParquetFile::new(path, stable_id, []).unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap()
+}
+
+fn read_single_chunk_with_evidence(
+    rt: &cudf::Runtime,
+    source: &LocalParquetSource,
+) -> cudf::frame::dataframe::ParquetSourceChunkReadOutput {
+    let plan = plan_local_parquet_source_chunks(source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 1);
+    DataFrame::read_parquet_source_chunk_with_evidence(rt, source, &plan.chunks()[0], SourceReadMode::FinalOutput)
+        .unwrap()
+}
+
+#[test]
+fn parquet_read_evidence_reports_no_predicate_pruning_absent() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("no_predicate_pruning.parquet");
+    let rt = sample_runtime();
+    assert!(write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2));
+
+    let output = read_single_chunk_with_evidence(&rt, &single_i32_source(&path, "no-predicate-pruning"));
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(pruning.input_row_groups, 2);
+    assert_eq!(pruning.row_groups_after_stats_filter, None);
+    assert_eq!(pruning.row_groups_after_bloom_filter, None);
+}
+
+#[test]
+fn parquet_read_evidence_reports_stats_pruned_row_groups() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("stats_pruning.parquet");
+    let rt = sample_runtime();
+    assert!(write_i32_parquet_with_row_groups(&path, &[1, 2, 100, 101, 200, 201], 2));
+
+    let predicate = AstExpression::greater(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.scalar(150i32).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let source =
+        single_i32_source(&path, "stats-pruning").with_reader_predicate(std::sync::Arc::new(predicate)).unwrap();
+    let output = read_single_chunk_with_evidence(&rt, &source);
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![200, 201]);
+    assert_eq!(pruning.input_row_groups, 3);
+    assert!(pruning.row_groups_after_stats_filter.is_some_and(|after| after < pruning.input_row_groups));
+}
+
+#[test]
+fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
+    let rt = sample_runtime();
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cudf/python/cudf/cudf/tests/data/parquet/mixed_card_ndv_100_bf_fpp0.1_nostats.snappy.parquet");
+    let predicate = AstExpression::equal(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.string_scalar("FINDME").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "bloom-pruning", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("str", dtype(TypeId::String), false).unwrap()]).unwrap(),
+        ["str"],
+        [SourceOutputColumn::new("str", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap()
+    .with_reader_predicate(std::sync::Arc::new(predicate))
+    .unwrap();
+
+    let output = read_single_chunk_with_evidence(&rt, &source);
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().num_rows(), 2);
+    assert_eq!(pruning.input_row_groups, 5);
+    assert_eq!(pruning.row_groups_after_stats_filter, Some(pruning.input_row_groups));
+    assert!(pruning.row_groups_after_bloom_filter.is_some_and(|after| after < pruning.input_row_groups));
 }
 
 #[test]
@@ -498,8 +589,8 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     let second = dir.path().join("batch-second.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
-        || !write_pyarrow_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
+    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
+        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
     {
         return;
     }
@@ -559,8 +650,8 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     let second = dir.path().join("batch-predicate-second.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
-        || !write_pyarrow_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
+    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
+        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
     {
         return;
     }
@@ -704,7 +795,7 @@ fn read_parquet_source_chunk_honors_selected_row_groups() {
     let path = dir.path().join("row_groups.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
+    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
         return;
     }
 
@@ -736,7 +827,7 @@ fn read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predi
     let path = dir.path().join("host_buffer_row_groups_predicate.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
+    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
         return;
     }
     let filebytes = fs::read(&path).unwrap();
@@ -921,8 +1012,8 @@ fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_
     let source_b_path = dir.path().join("source-b.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&source_a_path, &[1, 2, 3, 4], 2)
-        || !write_pyarrow_i32_parquet_with_row_groups(&source_b_path, &[10, 20, 30, 40], 2)
+    if !write_i32_parquet_with_row_groups(&source_a_path, &[1, 2, 3, 4], 2)
+        || !write_i32_parquet_with_row_groups(&source_b_path, &[10, 20, 30, 40], 2)
     {
         return;
     }
@@ -997,7 +1088,7 @@ fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_fi
     let path = dir.path().join("same-file-row-groups.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
+    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
         return;
     }
 
@@ -1495,7 +1586,7 @@ fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadat
     let path = dir.path().join("source_contract.parquet");
     let rt = sample_runtime();
 
-    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[10, 20, 30, 40], 2) {
+    if !write_i32_parquet_with_row_groups(&path, &[10, 20, 30, 40], 2) {
         return;
     }
 

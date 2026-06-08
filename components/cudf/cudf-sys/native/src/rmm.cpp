@@ -1,25 +1,26 @@
 #include "execution_context_internal.hpp"
 #include "handle_access.hpp"
 #include "memory_resource.h"
+#include "memory_resource_compat.hpp"
 #include "shim_common.h"
 
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/aligned.hpp>
-#include <rmm/detail/error.hpp>
-#include <rmm/detail/format.hpp>
-#include <rmm/error.hpp>
-#include <rmm/mr/cuda_memory_resource.hpp>
-#include <rmm/mr/device_memory_resource.hpp>
-#include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/per_device_resource.hpp>
+#include <rmm/mr/cuda_memory_resource.hpp>
+#include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
+#include <rmm/error.hpp>
 #include <rmm/resource_ref.hpp>
+
+#include <cuda/memory_resource>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <new>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -70,7 +71,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
  public:
   budget_tracking_resource_adaptor(rmm::mr::device_memory_resource* upstream,
                                    std::size_t allocation_limit)
-    : upstream_{rmm::device_async_resource_ref{*upstream}},
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       allocation_limit_{allocation_limit}
   {
   }
@@ -101,17 +102,17 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     update_atomic_peak(largest_failed_allocation_bytes_, bytes);
   }
 
-  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream) override
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, rmm::CUDA_ALLOCATION_ALIGNMENT);
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
     auto old_aligned         = current_aligned_bytes_.load(std::memory_order_relaxed);
     std::size_t new_aligned  = 0;
     while (true) {
       if (old_aligned > allocation_limit_ || aligned_bytes > allocation_limit_ - old_aligned) {
         record_failed_allocation(bytes);
-        auto const msg = std::string("Exceeded memory limit (failed to allocate ") +
-                         rmm::detail::format_bytes(bytes) + ")";
-        RMM_FAIL(msg.c_str(), rmm::out_of_memory);
+        throw std::bad_alloc{};
       }
       new_aligned = old_aligned + aligned_bytes;
       if (current_aligned_bytes_.compare_exchange_weak(
@@ -122,7 +123,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
 
     void* ptr = nullptr;
     try {
-      ptr = upstream_.allocate(stream, bytes);
+      ptr = upstream_.allocate(stream, bytes, alignment);
     } catch (...) {
       current_aligned_bytes_ -= aligned_bytes;
       record_failed_allocation(bytes);
@@ -142,10 +143,13 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     return ptr;
   }
 
-  void do_deallocate(void* ptr, std::size_t bytes, rmm::cuda_stream_view stream) noexcept override
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, rmm::CUDA_ALLOCATION_ALIGNMENT);
-    upstream_.deallocate(stream, ptr, bytes);
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    upstream_.deallocate(stream, ptr, bytes, alignment);
     current_aligned_bytes_ -= aligned_bytes;
     current_bytes_ -= bytes;
     current_allocations_ -= 1;
@@ -156,7 +160,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     return this == std::addressof(other);
   }
 
-  rmm::device_async_resource_ref upstream_;
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
   std::size_t allocation_limit_;
   std::atomic<std::size_t> current_bytes_{0};
   std::atomic<std::size_t> peak_bytes_{0};
@@ -190,7 +194,7 @@ struct reservation_state {
 class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_resource {
  public:
   explicit reservation_aware_resource_adaptor(rmm::mr::device_memory_resource* upstream)
-    : upstream_{rmm::device_async_resource_ref{*upstream}}
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)}
   {
   }
 
@@ -291,9 +295,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (state.current_aligned_bytes > state.allocation_limit ||
         aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
       record_failed_allocation(state, bytes);
-      auto const msg = std::string("Exceeded stream reservation memory limit (failed to allocate ") +
-                       rmm::detail::format_bytes(bytes) + ")";
-      RMM_FAIL(msg.c_str(), rmm::out_of_memory);
+      throw std::bad_alloc{};
     }
     state.current_aligned_bytes += aligned_bytes;
   }
@@ -331,9 +333,11 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       state.current_allocations > 0 ? state.current_allocations - 1 : 0;
   }
 
-  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream) override
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, rmm::CUDA_ALLOCATION_ALIGNMENT);
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
     std::shared_ptr<reservation_state> reservation;
     {
       std::scoped_lock lock{mutex_};
@@ -343,7 +347,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
     void* ptr = nullptr;
     try {
-      ptr = upstream_.allocate(stream, bytes);
+      ptr = upstream_.allocate(stream, bytes, alignment);
     } catch (...) {
       if (reservation != nullptr) {
         std::scoped_lock lock{mutex_};
@@ -360,7 +364,10 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return ptr;
   }
 
-  void do_deallocate(void* ptr, std::size_t bytes, rmm::cuda_stream_view stream) noexcept override
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
   {
     allocation_record record{};
     bool found = false;
@@ -374,7 +381,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       }
     }
 
-    upstream_.deallocate(stream, ptr, bytes);
+    upstream_.deallocate(stream, ptr, bytes, alignment);
 
     if (found && record.reservation != nullptr) {
       std::scoped_lock lock{mutex_};
@@ -387,18 +394,18 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return this == std::addressof(other);
   }
 
-  rmm::device_async_resource_ref upstream_;
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
   std::mutex mutex_;
   std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
   std::unordered_map<void*, allocation_record> allocations_;
 };
 
 struct memory_resource_owner {
-  std::shared_ptr<rmm::mr::cuda_memory_resource> upstream;
+  std::shared_ptr<rmm::mr::device_memory_resource> upstream;
+  std::shared_ptr<rmm::mr::device_memory_resource> pool;
   std::shared_ptr<void> upstream_lifetime;
-  std::shared_ptr<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>> pool;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
-  rmm::mr::statistics_resource_adaptor<rmm::mr::cuda_memory_resource>* stats = nullptr;
+  rmm::mr::statistics_resource_adaptor* stats = nullptr;
   budget_tracking_resource_adaptor* budget_tracker                         = nullptr;
   reservation_aware_resource_adaptor* reservation_adaptor                   = nullptr;
 };
@@ -429,6 +436,40 @@ memory_resource_registry()
 {
   static std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>> registry;
   return registry;
+}
+
+std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>>&
+default_memory_resources()
+{
+  static std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>> resources;
+  return resources;
+}
+
+std::unordered_map<int32_t, rmm::mr::device_memory_resource*>& current_memory_resource_identities()
+{
+  static std::unordered_map<int32_t, rmm::mr::device_memory_resource*> identities;
+  return identities;
+}
+
+int32_t current_cuda_device()
+{
+  int32_t device = 0;
+  CUDF_CUDA_TRY(cudaGetDevice(&device));
+  return device;
+}
+
+rmm::mr::device_memory_resource* default_memory_resource_for_device(int32_t device)
+{
+  auto& resources = default_memory_resources();
+  auto it         = resources.find(device);
+  if (it == resources.end()) {
+    it = resources
+           .emplace(device,
+                    std::make_shared<
+                      rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>())
+           .first;
+  }
+  return it->second.get();
 }
 
 memory_resource_handle_state& memory_resource_state_from_handle(cudf_memory_resource_handle handle)
@@ -478,25 +519,43 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   manager->owner  = std::make_shared<memory_resource_owner>();
 
   auto& owner    = *manager->owner;
-  owner.upstream = std::make_shared<rmm::mr::cuda_memory_resource>();
-  owner.pool =
-    std::make_shared<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(
-      owner.upstream.get(), 0);
+  owner.upstream =
+    std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
+  owner.pool = std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
+    rmm::mr::any_device_resource_from_raw(owner.upstream.get()), 0);
   auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(owner.pool.get());
   owner.reservation_adaptor = adaptor.get();
   owner.mr                  = std::move(adaptor);
   register_memory_resource_lifetime(manager->owner);
 
   std::scoped_lock current_lock{cudf_current_device_resource_mutex()};
-  rmm::mr::set_current_device_resource(owner.mr.get());
+  cudf_set_current_device_resource_raw(owner.mr.get());
   return manager;
 }
 }  // namespace
 
-rmm::device_async_resource_ref cudf_memory_resource_ref_from_handle(
-  cudf_memory_resource_handle handle)
+namespace rmm {
+const char* bad_alloc::what() const noexcept { return _what.c_str(); }
+}  // namespace rmm
+
+rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw()
 {
-  return rmm::device_async_resource_ref{*cudf_memory_resource_raw_from_handle(handle)};
+  auto const device = current_cuda_device();
+  auto& identities  = current_memory_resource_identities();
+  auto const found  = identities.find(device);
+  if (found != identities.end()) { return found->second; }
+
+  auto* initial = default_memory_resource_for_device(device);
+  cudf_set_current_device_resource_raw(initial);
+  return initial;
+}
+
+void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target)
+{
+  auto const device = current_cuda_device();
+  rmm::mr::set_current_device_resource(
+    rmm::mr::any_device_resource_from_raw(target));
+  current_memory_resource_identities()[device] = target;
 }
 
 rmm::mr::device_memory_resource* cudf_memory_resource_raw_from_handle(
@@ -533,7 +592,8 @@ cudf_status_t cudf_memory_resource_create_cuda(cudf_memory_resource_handle* out)
   {
     auto state       = std::make_unique<memory_resource_handle_state>();
     state->owner     = std::make_shared<memory_resource_owner>();
-    state->owner->mr = std::make_unique<rmm::mr::cuda_memory_resource>();
+    state->owner->mr =
+      std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -555,14 +615,18 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
     auto state     = std::make_unique<memory_resource_handle_state>();
     state->owner   = std::make_shared<memory_resource_owner>();
     auto& owner    = *state->owner;
-    owner.upstream = std::make_shared<rmm::mr::cuda_memory_resource>();
+    owner.upstream =
+      std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
+    auto upstream = rmm::mr::any_device_resource_from_raw(owner.upstream.get());
     if (maximum_pool_size > 0) {
-      owner.mr = std::make_unique<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(
-        owner.upstream.get(), initial_pool_size, maximum_pool_size);
+      owner.mr =
+        std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
+          std::move(upstream), initial_pool_size, maximum_pool_size);
 
     } else {
-      owner.mr = std::make_unique<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(
-        owner.upstream.get(), initial_pool_size);
+      owner.mr =
+        std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
+          std::move(upstream), initial_pool_size);
     }
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
@@ -585,8 +649,10 @@ cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle u
     auto& owner                   = *state->owner;
     owner.upstream_lifetime       = cudf_memory_resource_lifetime_from_handle(upstream);
     auto* upstream_mr             = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr = std::make_unique<rmm::mr::limiting_resource_adaptor<rmm::mr::device_memory_resource>>(
-      upstream_mr, allocation_limit);
+    owner.mr =
+      std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
+        rmm::mr::any_device_resource_from_raw(upstream_mr),
+        allocation_limit);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -650,7 +716,7 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     std::scoped_lock lock{cudf_current_device_resource_mutex()};
     auto* state = static_cast<memory_resource_handle_state*>(handle);
     auto& owner = *state->owner;
-    if (!state->non_owning_alias && rmm::mr::get_current_device_resource() == owner.mr.get()) {
+    if (!state->non_owning_alias && cudf_tracked_current_device_resource_raw() == owner.mr.get()) {
       set_error(
         "cannot destroy a memory resource while it is installed as the current device resource");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -818,11 +884,12 @@ cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle
     auto state     = std::make_unique<memory_resource_handle_state>();
     state->owner   = std::make_shared<memory_resource_owner>();
     auto& owner    = *state->owner;
-    owner.upstream = std::make_shared<rmm::mr::cuda_memory_resource>();
+    owner.upstream =
+      std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
     auto stats =
-      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::cuda_memory_resource>>(
-        owner.upstream.get());
-    owner.stats = stats.get();
+      std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::statistics_resource_adaptor>>(
+        rmm::mr::any_device_resource_from_raw(owner.upstream.get()));
+    owner.stats = &stats->resource();
     owner.mr    = std::move(stats);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
@@ -881,7 +948,7 @@ cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle 
   {
     auto& owner = memory_resource_owner_from_handle(handle);
     std::scoped_lock lock{cudf_current_device_resource_mutex()};
-    rmm::mr::set_current_device_resource(owner.mr.get());
+    cudf_set_current_device_resource_raw(owner.mr.get());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -893,7 +960,7 @@ cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr)
   CUDF_RUST_TRY
   {
     std::scoped_lock lock{cudf_current_device_resource_mutex()};
-    rmm::mr::set_current_device_resource(static_cast<rmm::mr::device_memory_resource*>(raw_mr));
+    cudf_set_current_device_resource_raw(static_cast<rmm::mr::device_memory_resource*>(raw_mr));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

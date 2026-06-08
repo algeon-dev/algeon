@@ -1,4 +1,5 @@
 use std::{
+    mem::{align_of, offset_of, size_of},
     os::raw::{c_char, c_void},
     ptr,
 };
@@ -18,6 +19,19 @@ fn io_exec_options() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_o
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
     (stream, mr, exec)
+}
+
+#[test]
+fn test_parquet_pruning_evidence_ffi_layout() {
+    type Evidence = cudf_sys::cudf_io_parquet_pruning_evidence_t;
+
+    assert_eq!(size_of::<Evidence>(), 40);
+    assert_eq!(align_of::<Evidence>(), 8);
+    assert_eq!(offset_of!(Evidence, input_row_groups), 0);
+    assert_eq!(offset_of!(Evidence, has_row_groups_after_stats_filter), 8);
+    assert_eq!(offset_of!(Evidence, row_groups_after_stats_filter), 16);
+    assert_eq!(offset_of!(Evidence, has_row_groups_after_bloom_filter), 24);
+    assert_eq!(offset_of!(Evidence, row_groups_after_bloom_filter), 32);
 }
 
 #[test]
@@ -184,6 +198,13 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
         device_read_bytes: -99,
         device_read_count: -99,
     };
+    let mut pruning_evidence = cudf_sys::cudf_io_parquet_pruning_evidence_t {
+        input_row_groups: -99,
+        has_row_groups_after_stats_filter: -99,
+        row_groups_after_stats_filter: -99,
+        has_row_groups_after_bloom_filter: -99,
+        row_groups_after_bloom_filter: -99,
+    };
 
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
@@ -202,6 +223,7 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
             &mut out_names,
             &mut out_num_names,
             &mut evidence,
+            &mut pruning_evidence,
             &exec,
         )
     };
@@ -212,6 +234,7 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
     assert_eq!(out_num_names, 0);
     assert_eq!(evidence.backend, 0);
     assert_eq!(evidence.fallback_reason, 1);
+    assert_eq!(pruning_evidence.input_row_groups, -1);
 }
 
 #[test]
@@ -222,6 +245,13 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
     let mut out_table = std::ptr::dangling_mut::<c_void>();
     let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
     let mut out_num_names = -1;
+    let mut pruning_evidence = cudf_sys::cudf_io_parquet_pruning_evidence_t {
+        input_row_groups: -99,
+        has_row_groups_after_stats_filter: -99,
+        row_groups_after_stats_filter: -99,
+        has_row_groups_after_bloom_filter: -99,
+        row_groups_after_bloom_filter: -99,
+    };
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
             bytes.as_ptr().cast(),
@@ -236,6 +266,7 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
+            &mut pruning_evidence,
             &exec,
         )
     };
@@ -244,6 +275,7 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
     assert!(out_table.is_null());
     assert!(out_names.is_null());
     assert_eq!(out_num_names, 0);
+    assert_eq!(pruning_evidence.input_row_groups, -1);
 }
 
 #[test]

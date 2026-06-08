@@ -2,19 +2,17 @@
 #define CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP
 
 #include "execution_context.h"
+#include "memory_resource_compat.hpp"
 
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/resource_ref.hpp>
 
+#include <cuda/memory_resource>
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
 #include <memory>
 #include <mutex>
-
-namespace rmm::mr {
-class device_memory_resource;
-}
 
 /// RAII guard that saves the calling thread's current CUDA device and restores
 /// it on destruction. Used inside `cudf_resolve_exec_options()` to activate
@@ -86,10 +84,15 @@ private:
 
 std::recursive_mutex &cudf_current_device_resource_mutex();
 
+rmm::mr::device_memory_resource *cudf_tracked_current_device_resource_raw();
+
+void cudf_set_current_device_resource_raw(
+    rmm::mr::device_memory_resource *target);
+
 struct cudf_exec_context {
   rmm::cuda_stream_view stream;
   std::shared_ptr<void> stream_lifetime;
-  std::shared_ptr<rmm::device_async_resource_ref> mr;
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr;
   rmm::mr::device_memory_resource *mr_raw;
   std::shared_ptr<void> mr_lifetime;
   int32_t device;
@@ -100,7 +103,7 @@ struct cudf_exec_context {
 
   cudf_exec_context(rmm::cuda_stream_view stream,
                     std::shared_ptr<void> stream_lifetime,
-                    std::shared_ptr<rmm::device_async_resource_ref> mr,
+                    std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
                     rmm::mr::device_memory_resource *mr_raw,
                     std::shared_ptr<void> mr_lifetime, int32_t device,
                     cudf_device_guard guard = {});

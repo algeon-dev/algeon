@@ -166,6 +166,14 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
         let expected = format!("cargo:rerun-if-changed={tracked}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {tracked} with `{expected}`");
     }
+    assert!(
+        BUILD_RS.contains("manifest_dir.join(\"../cudf/cpp/build/CMakeCache.txt\")"),
+        "expected build.rs to track the local libcudf CMakeCache used for remote IO capability detection"
+    );
+    assert!(
+        BUILD_RS.contains("PathBuf::from(cudf_cpp_build_dir).join(\"CMakeCache.txt\")"),
+        "expected build.rs to track an env-selected libcudf build cache used for remote IO capability detection"
+    );
 }
 
 #[test]
@@ -272,6 +280,24 @@ fn native_cmakelists_preserves_existing_prefix_path_when_using_install_dir() {
         NATIVE_CMAKELISTS.contains(required_snippet),
         "expected native/CMakeLists.txt to prepend CUDF install paths instead of overwriting CMAKE_PREFIX_PATH"
     );
+}
+
+#[test]
+fn native_cmakelists_gates_build_tree_remote_metadata_to_matching_install_prefix() {
+    for expected in [
+        "cudf_rust_cache_value",
+        "CMAKE_INSTALL_PREFIX",
+        "CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX_REAL",
+        "CUDF_RUST_CUDF_INSTALL_DIR_REAL",
+        "STREQUAL CUDF_RUST_CUDF_INSTALL_DIR_REAL",
+        "CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT",
+        "Ignoring sibling libcudf build metadata",
+    ] {
+        assert!(
+            NATIVE_CMAKELISTS.contains(expected),
+            "expected native/CMakeLists.txt to gate build-tree remote capability evidence with `{expected}`"
+        );
+    }
 }
 
 #[test]
