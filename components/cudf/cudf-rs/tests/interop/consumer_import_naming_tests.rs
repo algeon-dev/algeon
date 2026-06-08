@@ -5,7 +5,10 @@
 use cudf::{
     DataFrame, Runtime, Series,
     core::{Column, Table},
-    interop::{BorrowedColumnView, BorrowedTableView, InteropError, PreparedColumnExport, PreparedTableExport},
+    interop::{
+        BorrowedColumnView, BorrowedTableView, InteropError, PartitionedLocalTableResults,
+        PartitionedPreparedTableExport, PreparedColumnExport, PreparedTableExport,
+    },
 };
 
 use crate::common;
@@ -34,6 +37,18 @@ fn consumer_import_naming_table_borrowed() {
 fn consumer_import_naming_table_prepared() {
     fn assert_sig(_f: for<'a, 'b> fn(&'a PreparedTableExport<'b>, &'a Runtime) -> Result<Table, InteropError>) {}
     assert_sig(Table::try_import_from_prepared_table_export_into_runtime);
+}
+
+#[test]
+fn consumer_import_naming_partitioned_table_prepared() {
+    fn assert_sig(
+        _f: for<'a, 'b> fn(
+            &'a PartitionedPreparedTableExport<'b>,
+            &[&Runtime],
+        ) -> Result<PartitionedLocalTableResults, InteropError>,
+    ) {
+    }
+    assert_sig(Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes);
 }
 
 #[test]

@@ -5,6 +5,7 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f1)(cudf_stream_handle*) = &cudf_stream_create;
   void (*f2)(cudf_stream_handle)           = &cudf_stream_destroy;
   cudf_status_t (*f2b)(cudf_stream_handle, void**) = &cudf_stream_raw;
+  cudf_status_t (*f2b2)(void*) = &cudf_raw_cuda_stream_synchronize;
   cudf_status_t (*f2c)(cudf_event_handle*) = &cudf_event_create;
   void (*f2d)(cudf_event_handle) = &cudf_event_destroy;
   cudf_status_t (*f2e)(cudf_event_handle, cudf_stream_handle) = &cudf_event_record;

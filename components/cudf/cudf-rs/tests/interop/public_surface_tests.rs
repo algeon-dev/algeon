@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use cudf::{
     DataFrame, Runtime, Series,
+    core::Table,
     interop::{
-        ReleaseSynchronization,
+        PartitionedLocalTableResult, PartitionedLocalTableResults, ReleaseSynchronization,
         borrowed::{BorrowedColumnView, BorrowedTableView},
         frame::PartitionedDataFrameExport,
         prepared::{
-            ActiveLeaseActivation, ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError,
-            LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
-            PreparedColumnExport, PreparedTableExport, ReadStartBinding,
+            ActiveLeaseActivation, ActiveLeaseBackend, ActivePartitionedTableReadLease, CompletionBinding,
+            IncompleteDropBehavior, InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult,
+            LeaseExportContext, LeaseReadiness, PreparedColumnExport, PreparedTableExport, ReadStartBinding,
         },
         runtime::cuda_explicit_completion_required_lease_backend,
         transfer::{
@@ -122,6 +123,13 @@ fn cudf_interop_exposes_high_level_consumer_import_adapters() {
         _f: fn(OwnedTableTransfer, Vec<String>) -> std::result::Result<DataFrame, InteropError>,
     ) {
     }
+    fn assert_partitioned_table_prepared_import(
+        _f: for<'a, 'b> fn(
+            &'a rapids_interop::PartitionedPreparedTableExport<'b>,
+            &[&Runtime],
+        ) -> std::result::Result<PartitionedLocalTableResults, InteropError>,
+    ) {
+    }
 
     assert_series_borrowed_import(Series::try_import_from_borrowed_column_view_into_runtime);
     assert_series_prepared_import(Series::try_import_from_prepared_column_export_into_runtime);
@@ -133,6 +141,9 @@ fn cudf_interop_exposes_high_level_consumer_import_adapters() {
     );
     assert_dataframe_owned_import(DataFrame::try_from_owned_device_table_transfer);
     assert_dataframe_owned_import_with_names(DataFrame::try_from_owned_device_table_transfer_and_names);
+    assert_partitioned_table_prepared_import(
+        Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes,
+    );
 }
 
 #[test]
@@ -202,5 +213,8 @@ fn cudf_interop_exposes_high_level_owned_transfer_producers() {
 #[test]
 fn cudf_interop_exposes_grouped_frame_namespace() {
     let _: Option<PartitionedDataFrameExport> = None;
+    let _: Option<PartitionedLocalTableResult> = None;
+    let _: Option<PartitionedLocalTableResults> = None;
     let _: Option<PartitionedRuntimeOwnedTableTransferReleaser> = None;
+    let _: Option<ActivePartitionedTableReadLease<'static, 'static, 'static>> = None;
 }

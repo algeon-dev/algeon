@@ -47,6 +47,18 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle) {
   CUDF_RUST_CATCH
 }
 
+/// Synchronize a raw borrowed CUDA stream pointer.
+cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream) {
+  CUDF_RUST_NULL_CHECK(raw_stream, "raw_stream is null");
+  CUDF_RUST_TRY {
+    auto stream = rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)};
+    stream.synchronize();
+    cudf_record_synchronized_stream(stream);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 /// Check if all operations on the stream have completed (non-blocking).
 /// Sets *out to 1 if ready, 0 if not.
 cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out) {

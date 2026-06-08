@@ -24,6 +24,13 @@ void cudf_stream_destroy(cudf_stream_handle handle);
 /// Synchronize work already enqueued on a CUDA stream handle.
 cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle);
 
+/// Synchronize work already enqueued on a raw borrowed CUDA stream pointer.
+///
+/// `raw_stream` must be a valid borrowed `cudaStream_t` value. This does not
+/// take ownership and is intended for compatibility layers that carry raw CUDA
+/// stream identity rather than a `cudf_stream_handle`.
+cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream);
+
 /// Check whether work already enqueued on a CUDA stream handle has completed
 /// (1 ready, 0 not ready).
 cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out);
