@@ -45,6 +45,9 @@
 //!   shared names for new interop APIs unless you specifically need `cudf-rs`
 //!   runtime handles and producer-owned [`crate::runtime::CudaEvent`]
 //!   witnesses.
+//! - [`RuntimeOwnedColumnTransferReleaser`] and
+//!   [`RuntimeOwnedTableTransferReleaser`] are CUDA-backed release helpers for
+//!   the signal-driven owned-transfer producer path.
 //! - Borrowing and prepared export do not transfer ownership.
 //! - Borrowed compatibility and prepared export both avoid host copies on the
 //!   input path because they describe existing device buffers.
@@ -154,6 +157,7 @@ pub use runtime_lease::{
     RuntimeLeaseCompletionResult, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
     TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
 };
+pub use transfer::{RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser};
 pub mod runtime {
     pub use super::runtime_lease::{
         RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority,

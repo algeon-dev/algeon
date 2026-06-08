@@ -1,3 +1,8 @@
+use std::{
+    mem::ManuallyDrop,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
 pub use rapids_interop::{
     OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
     TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer,
@@ -36,6 +41,176 @@ impl OwnedTableTransferState {
     pub(super) fn into_table(self) -> Table {
         self._table
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeOwnedTransferStatus {
+    Pending,
+    Releasing,
+    Imported,
+    Released,
+}
+
+impl RuntimeOwnedTransferStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Releasing => "releasing",
+            Self::Imported => "imported",
+            Self::Released => "released",
+        }
+    }
+}
+
+struct RuntimeOwnedTransferInner<T> {
+    status: RuntimeOwnedTransferStatus,
+    owner: Option<ManuallyDrop<T>>,
+}
+
+struct RuntimeOwnedTransferState<T> {
+    inner: Mutex<RuntimeOwnedTransferInner<T>>,
+    release_device: i32,
+}
+
+impl<T> RuntimeOwnedTransferState<T> {
+    fn new(owner: T, release_device: i32) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(RuntimeOwnedTransferInner {
+                status: RuntimeOwnedTransferStatus::Pending,
+                owner: Some(ManuallyDrop::new(owner)),
+            }),
+            release_device,
+        })
+    }
+
+    fn lock_inner(&self) -> MutexGuard<'_, RuntimeOwnedTransferInner<T>> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn take_for_import(
+        &self,
+        operation: &'static str,
+        transfer_kind: &'static str,
+    ) -> std::result::Result<T, InteropError> {
+        let mut inner = self.lock_inner();
+        match inner.status {
+            RuntimeOwnedTransferStatus::Pending => {
+                inner.status = RuntimeOwnedTransferStatus::Imported;
+                let owner = inner.owner.take().expect("pending runtime-owned transfer missing retained owner");
+                Ok(ManuallyDrop::into_inner(owner))
+            },
+            status => Err(InteropError::new(
+                InteropErrorKind::ProfileUnsupported,
+                format!("runtime-backed {transfer_kind} no longer has importable native ownership"),
+            )
+            .with_context("operation", operation)
+            .with_context("state", status.as_str())
+            .with_context("release_device", self.release_device.to_string())),
+        }
+    }
+
+    fn release(
+        &self,
+        completion: RuntimeCompletionAuthority<'_>,
+        operation: &'static str,
+        transfer_kind: &'static str,
+    ) -> std::result::Result<(), InteropError> {
+        let owner = {
+            let mut inner = self.lock_inner();
+            match inner.status {
+                RuntimeOwnedTransferStatus::Pending => {
+                    inner.status = RuntimeOwnedTransferStatus::Releasing;
+                    inner.owner.take().expect("pending runtime-owned transfer missing retained owner")
+                },
+                status => {
+                    return Err(InteropError::new(
+                        InteropErrorKind::ProfileUnsupported,
+                        format!("runtime-backed {transfer_kind} release is unavailable after ownership state changed"),
+                    )
+                    .with_context("operation", operation)
+                    .with_context("state", status.as_str())
+                    .with_context("release_device", self.release_device.to_string()));
+                },
+            }
+        };
+
+        if let Err(error) =
+            runtime_lease::synchronize_runtime_release_completion(completion, self.release_device, operation)
+        {
+            let mut inner = self.lock_inner();
+            inner.owner = Some(owner);
+            inner.status = RuntimeOwnedTransferStatus::Pending;
+            return Err(error);
+        }
+
+        let mut owner = owner;
+        unsafe {
+            ManuallyDrop::drop(&mut owner);
+        }
+
+        let mut inner = self.lock_inner();
+        inner.status = RuntimeOwnedTransferStatus::Released;
+        Ok(())
+    }
+}
+
+pub struct RuntimeOwnedColumnTransferReleaser {
+    state: Arc<RuntimeOwnedTransferState<Column>>,
+}
+
+impl RuntimeOwnedColumnTransferReleaser {
+    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+        self.state.release(completion, "interop::RuntimeOwnedColumnTransferReleaser::release", "owned column transfer")
+    }
+}
+
+pub struct RuntimeOwnedTableTransferReleaser {
+    state: Arc<RuntimeOwnedTransferState<Table>>,
+}
+
+impl RuntimeOwnedTableTransferReleaser {
+    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+        self.state.release(completion, "interop::RuntimeOwnedTableTransferReleaser::release", "owned table transfer")
+    }
+}
+
+pub(super) struct RuntimeOwnedColumnTransferOwner {
+    state: Arc<RuntimeOwnedTransferState<Column>>,
+}
+
+impl RuntimeOwnedColumnTransferOwner {
+    pub(super) fn into_column(self, operation: &'static str) -> std::result::Result<Column, InteropError> {
+        self.state.take_for_import(operation, "owned column transfer")
+    }
+}
+
+pub(super) struct RuntimeOwnedTableTransferOwner {
+    state: Arc<RuntimeOwnedTransferState<Table>>,
+}
+
+impl RuntimeOwnedTableTransferOwner {
+    pub(super) fn into_table(self, operation: &'static str) -> std::result::Result<Table, InteropError> {
+        self.state.take_for_import(operation, "owned table transfer")
+    }
+}
+
+pub(super) fn runtime_owned_column_owner_and_releaser(
+    column: Column,
+    release_device: i32,
+) -> (RuntimeOwnedColumnTransferOwner, RuntimeOwnedColumnTransferReleaser) {
+    let state = RuntimeOwnedTransferState::new(column, release_device);
+    (RuntimeOwnedColumnTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedColumnTransferReleaser { state })
+}
+
+pub(super) fn runtime_owned_table_owner_and_releaser(
+    table: Table,
+    release_device: i32,
+) -> (RuntimeOwnedTableTransferOwner, RuntimeOwnedTableTransferReleaser) {
+    let state = RuntimeOwnedTransferState::new(table, release_device);
+    (RuntimeOwnedTableTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedTableTransferReleaser { state })
 }
 
 pub(super) fn to_static_binding(

@@ -181,10 +181,7 @@ fn copy_if_else_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     core::Column,
-///     ops::copying,
-/// };
+/// use cudf::{core::Column, ops::copying};
 ///
 /// let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -197,11 +194,7 @@ fn copy_if_else_impl(
 /// .unwrap();
 /// // result: [10, 2, 30]
 /// ```
-pub fn copy_if_else(
-    lhs: &ColumnView<'_>,
-    rhs: &ColumnView<'_>,
-    boolean_mask: &ColumnView<'_>,
-) -> Result<Column> {
+pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(lhs.execution_domain());
     ExecutionDomain::require_same_device_and_fence_secondary(
         &output_domain,

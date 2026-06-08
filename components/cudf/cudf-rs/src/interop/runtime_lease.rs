@@ -710,6 +710,47 @@ fn synchronize_completion_fallback(completion: RuntimeCompletionAuthority<'_>, o
     }
 }
 
+pub(crate) fn synchronize_runtime_release_completion(
+    completion: RuntimeCompletionAuthority<'_>,
+    release_device: i32,
+    operation: &'static str,
+) -> std::result::Result<(), InteropError> {
+    match completion {
+        RuntimeCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "runtime-backed owned-transfer release requires a consumer signal completion authority",
+        )
+        .with_context("operation", operation)
+        .with_context("completion", "synchronous_by_return")
+        .with_context("release_device", release_device.to_string())),
+        RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+            let stream_device = stream.device().ordinal_raw() as i32;
+            if stream_device != release_device {
+                return Err(InteropError::new(
+                    InteropErrorKind::ReadinessMismatch,
+                    "runtime-backed owned-transfer release stream must live on the release CUDA device",
+                )
+                .with_context("operation", operation)
+                .with_context("completion", "same_device_stream")
+                .with_context("release_device", release_device.to_string())
+                .with_context("stream_device", stream_device.to_string()));
+            }
+            let raw = stream
+                .interop_raw_handle()
+                .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_same_device_stream_raw(raw, stream.device(), operation)
+                .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+        },
+        RuntimeCompletionAuthority::CrossDeviceEvent { event } => {
+            let raw = event
+                .interop_raw_handle()
+                .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_cross_device_event_raw(raw, event.device(), operation)
+                .map_err(|error| super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+        },
+    }
+}
+
 struct SharedCudaLeaseActivation {
     _barrier: Option<CudaEvent>,
 }
