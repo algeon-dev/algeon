@@ -78,6 +78,46 @@ fn prepared_fixed_width_table_export_on_device(
 }
 
 #[test]
+fn prepared_table_export_lookup_helpers_resolve_top_level_names_ids_and_bindings() {
+    let root_src = fixed_width_column(1, 11, 3, 0);
+    let root_neighbors = list_column(2, 12, 3, 3, 0);
+    let child = fixed_width_column(3, 13, 5, 0);
+    let export = PreparedTableExport::try_new_with_semantic_columns(
+        SemanticTable::new(
+            TableId::new(10),
+            3,
+            vec![root_src.id(), root_neighbors.id()],
+            Some(vec!["src".into(), "neighbors".into()]),
+        ),
+        vec![root_src.clone(), root_neighbors.clone()],
+        vec![root_src.clone(), root_neighbors.clone(), child.clone()],
+        vec![
+            device_binding(11, 0x6000, 3 * std::mem::size_of::<i32>(), 0),
+            device_binding(12, 0x6100, 4 * std::mem::size_of::<i32>(), 0),
+            device_binding(13, 0x6200, 5 * std::mem::size_of::<i32>(), 0),
+        ],
+        prepared_readiness(),
+        prepared_diagnostics(),
+    )
+    .unwrap();
+
+    assert_eq!(export.top_level_column(root_src.id()), Some(&root_src));
+    assert_eq!(export.top_level_column_by_name("neighbors"), Some(&root_neighbors));
+    assert_eq!(export.top_level_column(child.id()), None);
+    assert_eq!(export.semantic_column(child.id()), Some(&child));
+    assert_eq!(export.top_level_column_by_name("missing"), None);
+    assert_eq!(export.binding(BufferId::new(12)).map(|binding| binding.id()), Some(BufferId::new(12)));
+    assert_eq!(export.binding(BufferId::new(99)), None);
+}
+
+#[test]
+fn prepared_table_export_name_lookup_requires_schema_names() {
+    let export = prepared_fixed_width_table_export_on_device(10, 1, 11, 0x6000, 0, 3);
+
+    assert_eq!(export.top_level_column_by_name("src"), None);
+}
+
+#[test]
 fn execution_binding_requires_explicit_device_stream_handle() {
     let err = CudaStreamHandle::from_raw(fake_ptr(0x3000) as *mut core::ffi::c_void)
         .map(|stream| {
@@ -463,18 +503,48 @@ fn borrowed_column_view_accepts_dictionary32_with_string_keys_semantic_graph() {
 }
 
 #[test]
-fn borrowed_column_view_rejects_list_semantic_graphs_in_current_slice() {
+fn borrowed_column_view_accepts_list_semantic_graphs() {
     let root = list_column(1, 10, 2, 2, 0);
     let child = fixed_width_column(2, 11, 3, 0);
-    let err = BorrowedColumnView::try_new_with_semantic_columns(
-        root,
-        vec![list_column(1, 10, 2, 2, 0), child],
+    let borrowed = BorrowedColumnView::try_new_with_semantic_columns(
+        root.clone(),
+        vec![root.clone(), child.clone()],
         vec![device_binding(10, 0x6000, 3 * std::mem::size_of::<i32>(), 0), device_binding(11, 0x7000, 12, 0)],
         explicit_binding(),
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::UnsupportedLayout);
+    assert_eq!(borrowed.type_id(), TypeId::List);
+    assert_eq!(borrowed.element_size_bytes(), None);
+    assert_eq!(borrowed.data_ptr(), ptr::null());
+    assert_eq!(borrowed.column(), Some(&root));
+    assert_eq!(borrowed.semantic_columns(), &[root, child]);
+}
+
+#[test]
+fn borrowed_column_view_accepts_struct_semantic_graphs_with_nested_list_children() {
+    let root = struct_column(1, &[2, 3], 2, 0);
+    let nested_list = list_column(2, 10, 4, 2, 0);
+    let label = binary_like_column(3, 11, 12, 2, 0);
+    let leaf = fixed_width_column(4, 13, 3, 0);
+    let borrowed = BorrowedColumnView::try_new_with_semantic_columns(
+        root.clone(),
+        vec![root.clone(), nested_list.clone(), label.clone(), leaf.clone()],
+        vec![
+            device_binding(10, 0x6000, 3 * std::mem::size_of::<i32>(), 0),
+            device_binding(11, 0x7000, 3 * std::mem::size_of::<i32>(), 0),
+            device_binding(12, 0x7100, 9, 0),
+            device_binding(13, 0x7200, 12, 0),
+        ],
+        explicit_binding(),
+    )
+    .unwrap();
+
+    assert_eq!(borrowed.type_id(), TypeId::Struct);
+    assert_eq!(borrowed.element_size_bytes(), None);
+    assert_eq!(borrowed.data_ptr(), ptr::null());
+    assert_eq!(borrowed.column(), Some(&root));
+    assert_eq!(borrowed.semantic_columns(), &[root, nested_list, label, leaf]);
 }
 
 #[test]
@@ -987,6 +1057,91 @@ fn partitioned_prepared_table_export_accepts_two_partitions_on_different_devices
     assert_eq!(export.partitions()[1].top_level_column_indices(), &[1]);
     assert_eq!(export.partitions()[0].export().diagnostics().profile(), ExportProfile::PreparedDeviceExport);
     assert_eq!(export.partitions()[1].export().diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+}
+
+#[test]
+fn partitioned_prepared_table_partition_activates_directly_and_preserves_top_level_indices() {
+    let left = prepared_fixed_width_table_export_on_device(10, 1, 11, 0x6000, 0, 3);
+    let right = prepared_fixed_width_table_export_on_device(11, 2, 12, 0x7000, 1, 3);
+
+    let export = PartitionedPreparedTableExport::try_new(
+        Some(vec!["left".into(), "right".into()]),
+        3,
+        vec![
+            PartitionedPreparedTablePartition::new(vec![0], left),
+            PartitionedPreparedTablePartition::new(vec![1], right),
+        ],
+    )
+    .unwrap();
+
+    let lease = export.partitions()[0]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+
+    assert_eq!(lease.top_level_column_indices(), &[0]);
+    assert_eq!(lease.export().table().id(), TableId::new(10));
+    assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+}
+
+#[test]
+fn partitioned_prepared_table_partition_activation_failure_is_local_to_that_partition() {
+    let left = prepared_fixed_width_table_export_on_device(10, 1, 11, 0x6000, 0, 3);
+    let right = prepared_fixed_width_table_export_on_device(11, 2, 12, 0x7000, 1, 3);
+
+    let export = PartitionedPreparedTableExport::try_new(
+        Some(vec!["left".into(), "right".into()]),
+        3,
+        vec![
+            PartitionedPreparedTablePartition::new(vec![0], left),
+            PartitionedPreparedTablePartition::new(vec![1], right),
+        ],
+    )
+    .unwrap();
+
+    let err = export.partitions()[1]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion_on_device(0))
+        .unwrap_err();
+    assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
+
+    let lease = export.partitions()[0]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion_on_device(0))
+        .unwrap();
+    assert_eq!(
+        lease.complete().unwrap(),
+        LeaseCompletionResult::Completed(rapids_interop::CompletionWitness::new(CompletionWitnessKind::ConsumerStream))
+    );
+}
+
+#[test]
+fn partitioned_prepared_table_partition_drop_fallback_stays_local_to_that_partition() {
+    let (left_backend, left_drop_calls, _left_witness_state) = TestLeaseBackend::guaranteed_drop_fallback();
+    let (right_backend, right_drop_calls, _right_witness_state) = TestLeaseBackend::guaranteed_drop_fallback();
+    let left = prepared_fixed_width_table_export_on_device(10, 1, 11, 0x6000, 0, 3).with_lease_backend(left_backend);
+    let right = prepared_fixed_width_table_export_on_device(11, 2, 12, 0x7000, 1, 3).with_lease_backend(right_backend);
+
+    let export = PartitionedPreparedTableExport::try_new(
+        Some(vec!["left".into(), "right".into()]),
+        3,
+        vec![
+            PartitionedPreparedTablePartition::new(vec![0], left),
+            PartitionedPreparedTablePartition::new(vec![1], right),
+        ],
+    )
+    .unwrap();
+
+    {
+        let _lease = export.partitions()[0]
+            .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion_on_device(0))
+            .unwrap();
+    }
+
+    assert_eq!(left_drop_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(right_drop_calls.load(Ordering::SeqCst), 0);
+
+    let lease = export.partitions()[1]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
 #[test]

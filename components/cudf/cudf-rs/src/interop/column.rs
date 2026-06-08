@@ -142,8 +142,9 @@ impl<'view> ColumnView<'view> {
     ///
     /// This is a borrowed-only projection: it does not transfer ownership and
     /// avoids host copies on the input path. The current borrowed compatibility
-    /// profile accepts fixed-width columns plus the current `STRING` and
-    /// `DICTIONARY32` slice, and preserves the column's execution binding.
+    /// profile accepts fixed-width columns plus the current `STRING`, `LIST`,
+    /// `STRUCT`, and `DICTIONARY32` slice, and preserves the column's
+    /// execution binding.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         <Self as TryBorrowColumnView>::try_borrow_column_view(self)
     }
@@ -256,7 +257,7 @@ impl Column {
     /// `Column` is a convenience adapter, not the ABI itself. The returned
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
-    /// `STRING`, and `DICTIONARY32` support.
+    /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         <Self as TryBorrowColumnView>::try_borrow_column_view(self)
     }

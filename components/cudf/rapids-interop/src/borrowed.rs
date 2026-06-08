@@ -172,6 +172,31 @@ impl<'a> BorrowedColumnView<'a> {
 
         match column.layout() {
             ColumnLayout::FixedWidth { .. } | ColumnLayout::BinaryLike { .. } => Ok(()),
+            ColumnLayout::List { child, .. } => {
+                let child_column = columns.get(child).copied().ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "borrowed compatibility list layout referenced a missing child semantic column",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("child_column_id", child.get().to_string())
+                })?;
+                Self::validate_supported_semantic_subset(child_column, columns, visited)
+            },
+            ColumnLayout::Struct { children } => {
+                for child in children {
+                    let child_column = columns.get(child).copied().ok_or_else(|| {
+                        InteropError::new(
+                            InteropErrorKind::InvalidView,
+                            "borrowed compatibility struct layout referenced a missing child semantic column",
+                        )
+                        .with_context("column_id", column.id().get().to_string())
+                        .with_context("child_column_id", child.get().to_string())
+                    })?;
+                    Self::validate_supported_semantic_subset(child_column, columns, visited)?;
+                }
+                Ok(())
+            },
             ColumnLayout::Dictionary { keys, .. } => {
                 let keys_column = columns.get(keys).copied().ok_or_else(|| {
                     InteropError::new(
@@ -183,12 +208,6 @@ impl<'a> BorrowedColumnView<'a> {
                 })?;
                 Self::validate_supported_semantic_subset(keys_column, columns, visited)
             },
-            ColumnLayout::List { .. } | ColumnLayout::Struct { .. } => Err(InteropError::new(
-                InteropErrorKind::UnsupportedLayout,
-                "borrowed compatibility currently supports fixed-width, string, and dictionary32 semantic layouts only",
-            )
-            .with_context("column_id", column.id().get().to_string())
-            .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase())),
         }
     }
 
@@ -218,8 +237,9 @@ impl<'a> BorrowedColumnView<'a> {
     /// graph plus concrete device bindings.
     ///
     /// This is the borrowed compatibility constructor used for the current
-    /// fixed-width, `STRING`, and `DICTIONARY32` slice. The graph must resolve
-    /// to one CUDA device that matches the provided execution binding.
+    /// fixed-width, `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` slice. The
+    /// graph must resolve to one CUDA device that matches the provided
+    /// execution binding.
     pub fn try_new_with_semantic_columns(
         column: SemanticColumn,
         semantic_columns: Vec<SemanticColumn>,
