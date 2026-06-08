@@ -26,6 +26,13 @@ impl LeaseExportContext {
 }
 
 /// Backend-facing completion authority captured on an active lease.
+///
+/// # Safety
+///
+/// The `raw` pointers are lifetime-erased CUDA stream/event handles.  They
+/// are valid only while the `'consumer` lifetime on the enclosing
+/// `ActiveColumnReadLease` / `ActiveTableReadLease` is alive.  Do not store
+/// these bindings beyond the lease's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionBinding {
     SynchronousByReturn,

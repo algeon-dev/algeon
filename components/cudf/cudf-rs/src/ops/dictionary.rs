@@ -109,6 +109,11 @@ fn match_dictionaries_impl(
     operation: &'static str,
 ) -> Result<Vec<Column>> {
     let n = dict_columns.len();
+    let n_i32 = i32::try_from(n).map_err(|_| {
+        error::Error::new(error::ErrorKind::InvalidArgument, "dictionary column count exceeds i32::MAX")
+            .with_operation(operation)
+            .with_context("num_columns", n.to_string())
+    })?;
     let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
     let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
     let mut out_count: i32 = 0;
@@ -118,7 +123,7 @@ fn match_dictionaries_impl(
             Some(options) => unsafe {
                 cudf_sys::cudf_dictionary_match_dictionaries_ex(
                     handles.as_ptr(),
-                    n as i32,
+                    n_i32,
                     &mut out_columns,
                     &mut out_count,
                     options,
@@ -127,7 +132,7 @@ fn match_dictionaries_impl(
             None => unsafe {
                 cudf_sys::cudf_dictionary_match_dictionaries(
                     handles.as_ptr(),
-                    n as i32,
+                    n_i32,
                     &mut out_columns,
                     &mut out_count,
                 )
@@ -137,7 +142,7 @@ fn match_dictionaries_impl(
         [("num_columns", n.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
 
-    if out_count != n as i32 {
+    if out_count != n_i32 {
         if !out_columns.is_null() {
             let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count.max(0) as usize) };
             for &handle in returned {

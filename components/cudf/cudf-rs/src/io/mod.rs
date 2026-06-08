@@ -60,7 +60,12 @@ unsafe fn collect_column_names(
         }
 
         let cstr = CStr::from_ptr(name_ptr);
-        names.push(cstr.to_string_lossy().into_owned());
+        let name = cstr.to_str().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "column name from FFI is not valid UTF-8")
+                .with_operation(operation)
+                .with_context("name_index", i.to_string())
+        })?;
+        names.push(name.to_owned());
     }
 
     Ok(names)

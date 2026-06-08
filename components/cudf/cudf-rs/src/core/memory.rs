@@ -170,10 +170,12 @@ impl DeviceMemoryResource {
 
 impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
-        // SAFETY: self.raw is valid (NonNull from construction). The shared
-        // handle is destroyed exactly once when the last clone drops.
-        unsafe {
-            cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr());
+        let status = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr(), self.device.ordinal_raw()) };
+        if status != cudf_sys::CUDF_SUCCESS {
+            eprintln!(
+                "[cudf::DeviceMemoryResourceHandle] warning: failed to destroy memory resource on device {}",
+                self.device.ordinal_raw()
+            );
         }
     }
 }

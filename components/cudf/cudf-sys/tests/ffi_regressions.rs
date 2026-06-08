@@ -114,9 +114,10 @@ extern "C" {
 }
 
 use support::{
-    NO_SYNC_RECORDED, OwnedEvent, OwnedStream, current_device_resource_raw, default_stream_value, last_error_message,
-    last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
-    owned_string_value, reset_exec_observation, stream_value,
+    CurrentDeviceRestore, NO_SYNC_RECORDED, OwnedEvent, OwnedStream, current_device, current_device_resource_raw,
+    default_stream_value, last_error_message, last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value,
+    lock_shim_state, make_stats_memory_resource, owned_string_value, reset_exec_observation, set_current_device,
+    stream_value,
 };
 
 fn make_i32_column(data: &[i32]) -> *mut c_void {
@@ -1135,7 +1136,8 @@ fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_spa
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!sliced_ptr.is_null());
     assert_eq!(sliced_ptr, full_ptr);
-    assert_eq!(sliced_size, "zeroonetwo".len());
+    // After the M3 fix, sliced columns report only the active byte span.
+    assert_eq!(sliced_size, "onetwo".len());
 
     unsafe {
         cudf_sys::cudf_column_view_destroy(sliced_view);
@@ -2105,22 +2107,53 @@ fn test_binary_operation_sv_invalid_operator_rejected() {
 
 #[test]
 fn test_memory_resource_pool_create_destroy_smoke() {
+    let device = current_device();
     let mut mr: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
 
-    unsafe { cudf_sys::cudf_memory_resource_destroy(mr) };
+    let status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 }
 
 #[test]
 fn test_memory_resource_cuda_create_destroy_smoke() {
+    let device = current_device();
     let mut mr: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
 
-    unsafe { cudf_sys::cudf_memory_resource_destroy(mr) };
+    let status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+}
+
+#[test]
+fn test_memory_resource_destroy_restores_current_device() {
+    let _shim_state = lock_shim_state();
+    let mut device_count = 0;
+    let status = unsafe { cudf_sys::cudf_cuda_get_device_count(&mut device_count) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    if device_count < 2 {
+        return;
+    }
+
+    let _restore = CurrentDeviceRestore::new();
+    set_current_device(0);
+
+    let mut mr: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!mr.is_null());
+
+    set_current_device(1);
+    let before_destroy = current_device();
+    assert_eq!(before_destroy, 1);
+
+    let status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, 0) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(current_device(), before_destroy);
 }
 
 #[test]

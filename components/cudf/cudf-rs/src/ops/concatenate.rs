@@ -21,11 +21,19 @@ use std::ptr;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Result},
+        error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
 };
+
+fn checked_len_to_i32(len: usize, operation: &'static str, field: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| {
+        Error::new(ErrorKind::InvalidArgument, format!("{field} exceeds i32::MAX"))
+            .with_operation(operation)
+            .with_context(field, len.to_string())
+    })
+}
 
 fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
@@ -82,15 +90,16 @@ pub(crate) fn concatenate_columns_with_exec(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Column> {
     let handles: Vec<*mut std::os::raw::c_void> = columns.iter().map(|c| c.raw_handle()).collect();
+    let num_columns = checked_len_to_i32(handles.len(), "concatenate::concatenate_columns", "num_columns")?;
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: All column view handles are valid (NonNull maintained by ColumnView).
         // handles slice is valid for handles.len() elements.
         match exec_options {
             Some(exec_options) => unsafe {
-                cudf_sys::cudf_concatenate_columns_ex(handles.as_ptr(), handles.len() as i32, exec_options, &mut out)
+                cudf_sys::cudf_concatenate_columns_ex(handles.as_ptr(), num_columns, exec_options, &mut out)
             },
-            None => unsafe { cudf_sys::cudf_concatenate_columns(handles.as_ptr(), handles.len() as i32, &mut out) },
+            None => unsafe { cudf_sys::cudf_concatenate_columns(handles.as_ptr(), num_columns, &mut out) },
         },
         "concatenate::concatenate_columns",
         [("num_columns", handles.len().to_string())],
@@ -113,15 +122,16 @@ pub(crate) fn concatenate_tables_with_exec(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Table> {
     let handles: Vec<*mut std::os::raw::c_void> = tables.iter().map(|t| t.raw_handle()).collect();
+    let num_tables = checked_len_to_i32(handles.len(), "concatenate::concatenate_tables", "num_tables")?;
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: All table view handles are valid (NonNull maintained by TableView).
         // handles slice is valid for handles.len() elements.
         match exec_options {
             Some(exec_options) => unsafe {
-                cudf_sys::cudf_concatenate_tables_ex(handles.as_ptr(), handles.len() as i32, exec_options, &mut out)
+                cudf_sys::cudf_concatenate_tables_ex(handles.as_ptr(), num_tables, exec_options, &mut out)
             },
-            None => unsafe { cudf_sys::cudf_concatenate_tables(handles.as_ptr(), handles.len() as i32, &mut out) },
+            None => unsafe { cudf_sys::cudf_concatenate_tables(handles.as_ptr(), num_tables, &mut out) },
         },
         "concatenate::concatenate_tables",
         [("num_tables", handles.len().to_string())],

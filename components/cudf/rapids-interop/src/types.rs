@@ -6,7 +6,7 @@ pub type Result<T> = core::result::Result<T, InteropError>;
 ///
 /// The legacy raw borrowed constructor validates only the fixed-width subset.
 /// The current semantic borrowed compatibility slice additionally supports
-/// `STRING` and `DICTIONARY32`.
+/// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32`.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeId {
@@ -276,8 +276,7 @@ pub struct DeviceMemoryResourceHandle<'a> {
 }
 
 impl<'a> DeviceMemoryResourceHandle<'a> {
-    /// Construct a borrowed memory-resource handle from a raw non-null
-    /// pointer.
+    /// Construct a borrowed memory-resource handle from a raw non-null pointer.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| {
             InteropError::new(InteropErrorKind::InvalidView, "device memory resource handle must be non-null")
@@ -601,6 +600,13 @@ pub enum CompletionAuthority<'a> {
 
 /// Backend-facing borrowed producer-readiness facts captured on an active
 /// lease.
+///
+/// # Safety
+///
+/// The `raw` pointers are lifetime-erased CUDA stream/event handles.  They
+/// are valid only while the `'consumer` lifetime on the enclosing
+/// `ActiveColumnReadLease` / `ActiveTableReadLease` is alive.  Do not store
+/// these bindings beyond the lease's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaseReadiness {
     HostVisible,
@@ -609,6 +615,10 @@ pub enum LeaseReadiness {
 }
 
 /// Backend-facing read-start authority captured on an active lease.
+///
+/// # Safety
+///
+/// Same lifetime-erasure invariant as [`LeaseReadiness`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadStartBinding {
     SynchronousByReturn,

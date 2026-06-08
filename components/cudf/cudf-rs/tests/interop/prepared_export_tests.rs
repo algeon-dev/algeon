@@ -2384,7 +2384,9 @@ fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span(
     let data_binding = export.bindings().iter().find(|binding| binding.id() == data).unwrap();
     assert_eq!(data_binding.bytes().base_ptr(), base_data_binding.bytes().base_ptr());
     assert_eq!(data_binding.placement(), &Placement::CudaDevice { device: runtime.device().ordinal() as i32 });
-    assert_eq!(data_binding.bytes().byte_len(), "zeroonetwo".len());
+    // After the M3 fix, sliced string columns report only the active byte
+    // span (one + two = 6) instead of the full prefix up to last_offset.
+    assert_eq!(data_binding.bytes().byte_len(), "onetwo".len());
 
     match export.readiness() {
         ProducerReadiness::DeviceStreamOrdered { stream } => {
@@ -2630,7 +2632,11 @@ fn sliced_list_of_strings_prepare_device_export_preserves_binary_like_child_slic
         base_child_export.bindings().iter().find(|binding| binding.id() == *base_child_data).unwrap();
     let child_data_binding = export.bindings().iter().find(|binding| binding.id() == child_data).unwrap();
     assert_eq!(child_data_binding.bytes().base_ptr(), base_child_data_binding.bytes().base_ptr());
-    assert_eq!(child_data_binding.bytes().byte_len(), usize::try_from(host_child_offsets[expected_child_end]).unwrap());
+    // After the M3 fix, the active byte span is (last_offset - first_offset),
+    // not the absolute last_offset from the start of the unsliced chars.
+    let expected_active_bytes =
+        usize::try_from(host_child_offsets[expected_child_end] - host_child_offsets[expected_child_offset]).unwrap();
+    assert_eq!(child_data_binding.bytes().byte_len(), expected_active_bytes);
 
     let lease = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)

@@ -29,8 +29,12 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
                                                 size_t maximum_pool_size,
                                                 cudf_memory_resource_handle* out);
 
-/// Destroy a memory resource handle.
-void cudf_memory_resource_destroy(cudf_memory_resource_handle handle);
+/// Destroy a memory resource handle on the CUDA device that owns it.
+///
+/// The shim temporarily switches the calling thread to `device`, destroys the
+/// resource, then restores the previous device before returning.
+cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle,
+                                           int32_t device);
 
 /// Borrow the underlying `device_memory_resource*` from an owning memory
 /// resource handle.

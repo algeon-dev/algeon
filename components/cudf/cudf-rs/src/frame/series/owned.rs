@@ -299,8 +299,9 @@ impl Series {
     pub fn to_vec_strict<T: CudfType>(&self) -> Result<Vec<T>> {
         let cv = self.column.view()?;
         if cv.null_count()? > 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "to_vec_strict rejects nullable columns")
-                .with_operation("series::to_vec_strict"));
+            return Err(Error::new(ErrorKind::InvalidOperation, "to_vec_strict rejects columns containing nulls")
+                .with_operation("series::to_vec_strict")
+                .with_context("null_count", cv.null_count()?.to_string()));
         }
         cv.to_vec::<T>()
     }
@@ -336,8 +337,9 @@ impl Series {
     pub fn to_strings_strict(&self) -> Result<Vec<String>> {
         let cv = self.column.view()?;
         if cv.null_count()? > 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "to_strings_strict rejects nullable columns")
-                .with_operation("series::to_strings_strict"));
+            return Err(Error::new(ErrorKind::InvalidOperation, "to_strings_strict rejects columns containing nulls")
+                .with_operation("series::to_strings_strict")
+                .with_context("null_count", cv.null_count()?.to_string()));
         }
         cv.to_strings_lossy()
     }
@@ -855,7 +857,7 @@ impl Series {
     pub fn nunique(&self) -> Result<usize> {
         let uniq = self.unique()?;
         // Exclude nulls from the count (matches cuDF Python default).
-        Ok(uniq.len() - uniq.null_count())
+        Ok(uniq.len().saturating_sub(uniq.null_count()))
     }
 
     /// Encode the series as integer codes and a set of unique values.

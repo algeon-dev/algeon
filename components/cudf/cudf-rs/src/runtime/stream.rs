@@ -132,10 +132,28 @@ impl CudaStream {
 
 impl Drop for CudaStreamHandle {
     fn drop(&mut self) {
+        // Switch to the device this stream was created on before destroying it.
+        // In multi-GPU scenarios, destroying a CUDA stream while on the wrong
+        // device is undefined behavior.
+        let mut current: i32 = 0;
+        let get_status = unsafe { cudf_sys::cudf_cuda_get_device(&mut current) };
+        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
+            let set_status = unsafe { cudf_sys::cudf_cuda_set_device(self.device.ordinal_raw()) };
+            if set_status != cudf_sys::CUDF_SUCCESS {
+                eprintln!(
+                    "[cudf::CudaStreamHandle] warning: failed to switch to device {} for stream destruction",
+                    self.device.ordinal_raw()
+                );
+            }
+        }
         // SAFETY: self.raw is valid (NonNull from construction). The shared
         // handle is destroyed exactly once when the last clone drops.
         unsafe {
             cudf_sys::cudf_stream_destroy(self.raw.as_ptr());
+        }
+        // Restore the previous device (best-effort).
+        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
+            unsafe { cudf_sys::cudf_cuda_set_device(current) };
         }
     }
 }

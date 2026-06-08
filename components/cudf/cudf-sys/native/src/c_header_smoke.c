@@ -15,7 +15,7 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f2j)(void*, void*) = &cudf_raw_cuda_stream_wait_event;
   cudf_status_t (*f2k)(cudf_event_handle, void**) = &cudf_event_raw;
   cudf_status_t (*f3)(cudf_memory_resource_handle*) = &cudf_memory_resource_create_cuda;
-  void (*f4)(cudf_memory_resource_handle)           = &cudf_memory_resource_destroy;
+  cudf_status_t (*f4)(cudf_memory_resource_handle, int32_t) = &cudf_memory_resource_destroy;
   cudf_status_t (*f4b)(cudf_memory_resource_handle, void**) = &cudf_memory_resource_raw;
 
   cudf_status_t (*f5)(cudf_type_id_t, cudf_data_type_handle*) = &cudf_data_type_create;

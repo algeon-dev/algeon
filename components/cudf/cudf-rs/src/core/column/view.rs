@@ -90,7 +90,11 @@ impl<'a> ColumnView<'a> {
             unsafe { cudf_sys::cudf_column_view_size(self.handle.as_ptr(), &mut out) },
             "column_view::len",
         )?;
-        Ok(out as usize)
+        usize::try_from(out).map_err(|_| {
+            error::Error::new(error::ErrorKind::InvalidOperation, "FFI returned negative column size")
+                .with_operation("column_view::len")
+                .with_context("raw_size", out.to_string())
+        })
     }
 
     /// Returns `true` if the column has zero elements.
@@ -609,8 +613,18 @@ impl<'a> ColumnView<'a> {
         // Parse strings from offsets + chars
         let mut result = Vec::with_capacity(size);
         for i in 0..size {
-            let start = offsets[i] as usize;
-            let end = offsets[i + 1] as usize;
+            let start = usize::try_from(offsets[i]).map_err(|_| {
+                Error::new(ErrorKind::InvalidOperation, "string offset is negative")
+                    .with_operation(operation)
+                    .with_context("row", i.to_string())
+                    .with_context("offset_value", offsets[i].to_string())
+            })?;
+            let end = usize::try_from(offsets[i + 1]).map_err(|_| {
+                Error::new(ErrorKind::InvalidOperation, "string offset is negative")
+                    .with_operation(operation)
+                    .with_context("row", (i + 1).to_string())
+                    .with_context("offset_value", offsets[i + 1].to_string())
+            })?;
             let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
                 Error::new(ErrorKind::InvalidOperation, format!("invalid UTF-8 in string column at row {}: {}", i, e))
                     .with_operation(operation)

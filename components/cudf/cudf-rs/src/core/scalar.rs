@@ -290,7 +290,12 @@ impl Scalar {
             )?;
         }
         // SAFETY: ptr and len are returned by a successful FFI call.
-        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        let byte_len = usize::try_from(len).map_err(|_| {
+            error::Error::new(error::ErrorKind::InvalidOperation, "FFI returned negative string length")
+                .with_operation("scalar::string_value")
+                .with_context("raw_len", len.to_string())
+        })?;
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len) };
         let value = String::from_utf8_lossy(bytes).into_owned();
         // SAFETY: ptr was allocated by the C shim and must be freed with cudf_string_free.
         unsafe { cudf_sys::cudf_string_free(ptr) };

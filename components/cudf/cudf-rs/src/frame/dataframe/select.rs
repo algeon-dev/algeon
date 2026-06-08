@@ -151,7 +151,18 @@ impl DataFrame {
         I: IntoIterator,
         I::Item: AsRef<str>,
     {
-        let to_drop: FastHashSet<String> = columns.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let mut to_drop: FastHashSet<String> = FastHashSet::default();
+        for name in columns {
+            let name = name.as_ref().to_string();
+            if !to_drop.insert(name.clone()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("duplicate column name '{}' in exclusion list", name),
+                )
+                .with_operation("dataframe::without_columns")
+                .with_context("column_name", name));
+            }
+        }
 
         for name in &to_drop {
             if !self.columns.contains_key(name.as_str()) {

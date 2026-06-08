@@ -85,6 +85,34 @@ pub fn current_device_resource_raw() -> *mut c_void {
     out
 }
 
+pub fn current_device() -> i32 {
+    let mut out = -1;
+    let st = unsafe { cudf_sys::cudf_cuda_get_device(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+pub fn set_current_device(device: i32) {
+    let st = unsafe { cudf_sys::cudf_cuda_set_device(device) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+}
+
+pub struct CurrentDeviceRestore {
+    previous: i32,
+}
+
+impl CurrentDeviceRestore {
+    pub fn new() -> Self {
+        Self { previous: current_device() }
+    }
+}
+
+impl Drop for CurrentDeviceRestore {
+    fn drop(&mut self) {
+        set_current_device(self.previous);
+    }
+}
+
 pub struct OwnedStream {
     raw: cudf_sys::cudf_stream_handle,
 }
@@ -194,31 +222,35 @@ impl Drop for OwnedEvent {
 
 pub struct OwnedMemoryResource {
     raw: cudf_sys::cudf_memory_resource_handle,
+    device: i32,
 }
 
 impl OwnedMemoryResource {
     pub fn new_cuda() -> Self {
+        let device = current_device();
         let mut raw = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut raw) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert!(!raw.is_null());
-        Self { raw }
+        Self { raw, device }
     }
 
     pub fn new_pool(initial_pool_size: usize, maximum_pool_size: usize) -> Self {
+        let device = current_device();
         let mut raw = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut raw) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert!(!raw.is_null());
-        Self { raw }
+        Self { raw, device }
     }
 
     pub fn new_test_stats() -> Self {
+        let device = current_device();
         let mut raw = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_test_memory_resource_create_stats(&mut raw) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert!(!raw.is_null());
-        Self { raw }
+        Self { raw, device }
     }
 
     pub fn as_raw(&self) -> cudf_sys::cudf_memory_resource_handle {
@@ -248,7 +280,8 @@ impl OwnedMemoryResource {
 impl Drop for OwnedMemoryResource {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw) };
+            let st = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw, self.device) };
+            assert_eq!(st, cudf_sys::CUDF_SUCCESS);
             self.raw = ptr::null_mut();
         }
     }

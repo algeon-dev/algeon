@@ -1,4 +1,5 @@
 #include "memory_resource.h"
+#include "execution_context_internal.hpp"
 #include "handle_access.hpp"
 #include "shim_common.h"
 
@@ -79,8 +80,17 @@ cudf_status_t cudf_memory_resource_create_pool(
 }
 
 /// Destroy a memory resource handle.
-void cudf_memory_resource_destroy(cudf_memory_resource_handle handle) {
-  delete static_cast<memory_resource_owner*>(handle);
+cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle,
+                                           int32_t device) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    cudf_device_guard guard;
+    cudf_status_t const status = guard.activate(device);
+    if (status != CUDF_SUCCESS) { return status; }
+    delete static_cast<memory_resource_owner*>(handle);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 
 cudf_status_t cudf_memory_resource_raw(

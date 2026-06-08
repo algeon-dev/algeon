@@ -140,17 +140,19 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
 }
 
 #[test]
-fn test_mixed_domain_binary_operation_sv_uses_scalar_provenance() {
+fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
     let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(904).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 905);
-    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    // After the L11 fix, binary_operation_sv uses the column's (rhs) domain
+    // as primary, consistent with binary_operation_vs.
+    let expected_stream = rhs.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
     let result =
         binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
             .unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_id(), rhs.__debug_execution_domain_id());
     assert_eq!(result.__debug_execution_domain_mr_value(), last_exec_mr_value());
     assert_eq!(last_exec_stream_value(), expected_stream);
 

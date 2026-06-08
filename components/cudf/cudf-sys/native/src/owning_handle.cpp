@@ -149,6 +149,23 @@ class native_table_handle_state final : public cudf_table_handle_state {
   std::unique_ptr<cudf::table> _table;
 };
 
+// ---------------------------------------------------------------------------
+// Foreign (non-owning) handle states.
+//
+// SAFETY INVARIANT: every foreign_*_column_handle_state stores const pointers
+// into GPU buffers whose lifetime is managed by the Rust caller (via
+// Arc<dyn Any + Send + Sync> on Column::retained_owner).  These classes must
+// NEVER free, reallocate, or write through the stored pointers.
+//
+// - is_native() returns false.
+// - view() synthesises a cudf::column_view from the stored pointers.
+// - deep_copy() always allocates fresh device memory via the cudf::column
+//   copy constructor -- it must never return an alias of the foreign buffers.
+// - release_native_column() inherits the base-class default that throws.
+//
+// Violating this invariant causes use-after-free on the Rust side.
+// ---------------------------------------------------------------------------
+
 struct foreign_column_common {
   cudf::data_type dtype;
   cudf::size_type size;

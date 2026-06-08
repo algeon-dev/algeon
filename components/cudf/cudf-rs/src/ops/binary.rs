@@ -389,10 +389,12 @@ pub fn binary_operation_sv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    // Use the column's domain as primary (consistent with binary_operation_vs
+    // which also uses the column's domain).
+    let output_domain = std::sync::Arc::clone(rhs.execution_domain());
     ExecutionDomain::require_same_device_and_fence_secondary(
         &output_domain,
-        rhs.execution_domain(),
+        lhs.execution_domain(),
         "binary::binary_operation_sv",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();

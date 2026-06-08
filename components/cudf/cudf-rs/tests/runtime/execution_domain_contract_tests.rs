@@ -2083,21 +2083,21 @@ fn binary_operation_vs_succeeds_with_mixed_domains() {
 fn binary_operation_sv_succeeds_with_mixed_domains() {
     let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(157).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 158);
-    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    // After the L11 fix, binary_operation_sv uses the column's (rhs) domain
+    // as primary, consistent with binary_operation_vs.
+    let expected_stream = rhs.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
     let result =
         binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
             .unwrap();
 
-    // Output provenance inherits from the left-hand side (scalar).
+    // Output provenance inherits from the right-hand side (column).
     assert_eq!(result.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(result.__debug_execution_domain_id(), 157);
-    // Scalar does not yet expose a debug MR accessor, so at minimum assert
-    // output provenance matches the actual FFI-observed MR.
+    assert_eq!(result.__debug_execution_domain_id(), 158);
     assert_eq!(result.__debug_execution_domain_mr_value(), last_exec_mr_value());
 
-    // Execution used the left-hand side's stream.
+    // Execution used the right-hand side's stream.
     assert_eq!(last_exec_stream_value(), expected_stream);
 
     // Verify correct values.
@@ -2126,11 +2126,13 @@ fn binary_operation_vs_with_same_device_mixed_explicit_domains_fences_scalar_str
 }
 
 #[test]
-fn binary_operation_sv_with_same_device_mixed_explicit_domains_fences_column_stream() {
+fn binary_operation_sv_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
     let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(1582).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 1583);
-    let expected_exec_stream = lhs.__debug_execution_domain_stream_value();
-    let fenced_stream = rhs.__debug_execution_domain_stream_value();
+    // After the L11 fix, the column (rhs) domain is primary, so the scalar
+    // (lhs) domain's stream gets fenced as the secondary.
+    let expected_exec_stream = rhs.__debug_execution_domain_stream_value();
+    let fenced_stream = lhs.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
     reset_sync_observation();
@@ -2140,7 +2142,7 @@ fn binary_operation_sv_with_same_device_mixed_explicit_domains_fences_column_str
 
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_sync_stream_value(), fenced_stream);
-    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_id(), rhs.__debug_execution_domain_id());
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
 }
 

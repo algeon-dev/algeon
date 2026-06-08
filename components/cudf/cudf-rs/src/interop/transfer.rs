@@ -205,12 +205,27 @@ impl<T> RuntimeOwnedTransferState<T> {
             let _ = completion.synchronize_fallback(operation);
         }
 
+        // Switch to the release device before dropping GPU-owning types.
+        // In multi-GPU scenarios the spawned release thread may not be on the
+        // correct device, which would cause CUDA resource destruction on the
+        // wrong device context.
+        let mut previous_device: i32 = -1;
+        let get_ok = unsafe { cudf_sys::cudf_cuda_get_device(&mut previous_device) } == cudf_sys::CUDF_SUCCESS;
+        if get_ok && previous_device != self.release_device {
+            let _ = unsafe { cudf_sys::cudf_cuda_set_device(self.release_device) };
+        }
+
         // Drop the retained owner inside catch_unwind so that a panicking
         // Drop impl on Column/Table does not prevent the state machine from
         // reaching Released.
         let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             ManuallyDrop::drop(&mut owner);
         }));
+
+        // Restore previous device (best-effort).
+        if get_ok && previous_device != self.release_device {
+            unsafe { cudf_sys::cudf_cuda_set_device(previous_device) };
+        }
 
         let mut inner = self.lock_inner();
         inner.status = RuntimeOwnedTransferStatus::Released;
@@ -263,7 +278,18 @@ impl<T> RuntimeOwnedTransferState<T> {
         match state.release_synchronization {
             ReleaseSynchronization::Asynchronous => {
                 let release_state = Arc::clone(state);
-                thread::spawn(move || release_state.finish_release_job(owner, completion, operation));
+                thread::spawn(move || {
+                    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        release_state.finish_release_job(owner, completion, operation);
+                    })) {
+                        let msg = payload
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                            .unwrap_or("unknown panic");
+                        eprintln!("[cudf::interop] async release thread panicked: {msg}");
+                    }
+                });
                 Ok(())
             },
             ReleaseSynchronization::MaySynchronizeInternally => {

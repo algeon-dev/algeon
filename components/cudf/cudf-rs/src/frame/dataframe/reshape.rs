@@ -1416,6 +1416,35 @@ impl DataFrame {
                     .with_operation("dataframe::melt"));
             }
         }
+        // Validate: id_vars and value_vars must not overlap (L5)
+        let id_set: FastHashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
+        for name in &value_vars {
+            if id_set.contains(name.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column '{name}' appears in both id_vars and value_vars"),
+                )
+                .with_operation("dataframe::melt")
+                .with_context("column_name", name.clone()));
+            }
+        }
+        // Validate: var_name and value_name must not collide with id_vars (L6)
+        if id_set.contains(opts.var_name.as_str()) {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("var_name '{}' collides with an id_var column", opts.var_name),
+            )
+            .with_operation("dataframe::melt")
+            .with_context("var_name", opts.var_name.clone()));
+        }
+        if id_set.contains(opts.value_name.as_str()) {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("value_name '{}' collides with an id_var column", opts.value_name),
+            )
+            .with_operation("dataframe::melt")
+            .with_context("value_name", opts.value_name.clone()));
+        }
 
         let n = self.row_count;
         let k = value_vars.len();
