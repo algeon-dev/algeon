@@ -10,13 +10,7 @@ use std::fmt;
 
 use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
 
-/// Typed scalar literal in native expression IR.
-///
-/// Nulls are represented as [`LiteralValue::Null`] with an explicit
-/// [`DataType`], because a SQL null has no value from which its type can be
-/// inferred. Decimal, date, timestamp, duration, and interval literals keep
-/// Arrow-compatible raw encodings in the IR and lowering validation. Actual
-/// execution support depends on the expression context.
+/// Typed scalar literal in native expression IR; nulls carry an explicit [`DataType`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     /// Boolean scalar.

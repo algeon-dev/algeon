@@ -176,32 +176,15 @@ pub enum ServerSessionProfile {
     /// Native-friendly profile that matches the workload harness defaults:
     /// `target_partitions=1`, repartitioning disabled for file scans /
     /// aggregations / joins / sorts, and all dynamic-filter-pushdown variants
-    /// disabled. Required for tables backed by GPU-only planning leaves such
-    /// as `CudfTableFormatScanExec` because the CPU plan that DataFusion would
-    /// otherwise produce is not executable end-to-end.
+    /// disabled. Required for GPU-only table-format leaves.
     Native,
     /// Preserve DataFusion's CPU-style profile derived from
     /// `DATAFUSION_EXECUTION_*` environment variables (single underscores,
     /// matching DataFusion's `SessionConfig::from_env()` mapping).
     ///
-    /// Combine with Iceberg only when this binary is built with the
-    /// `iceberg-cpu` feature. With that feature on, the dynamic catalog wraps
-    /// loaded Iceberg tables in
-    /// `iceberg_datafusion::IcebergStaticTableProvider` (real CPU Arrow
-    /// reader) instead of the GPU-only `CudfIcebergTableProvider`, and
-    /// `target_partitions` > 1 provides real CPU parallelism.
-    ///
-    /// **Without `iceberg-cpu` the Iceberg pairing is testing-only.** The
-    /// catalog still hands out the GPU-only `CudfTableFormatScanExec` leaf
-    /// which has no CPU `execute()`, so plain `ORDER BY` queries hit the
-    /// Milestone 1 leaf guard and fail in planning. The server emits a startup
-    /// WARN flagging this combination; the WARN goes away once `iceberg-cpu`
-    /// is compiled in.
-    ///
-    /// For CPU-only sessions that do not register an Iceberg catalog
-    /// (e.g., a server serving CSV / vanilla Parquet sources), the
-    /// `iceberg-cpu` feature is irrelevant — this profile is the right choice
-    /// regardless.
+    /// For Iceberg, this requires the `iceberg-cpu` feature; otherwise the
+    /// catalog still exposes GPU-only leaves and planning can fail. Non-Iceberg
+    /// CPU sessions do not need that feature.
     CpuFallback,
 }
 
@@ -271,7 +254,7 @@ impl fmt::Debug for IcebergServerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IcebergCatalogBackendConfig {
     Glue(GlueServerBackendConfig),
-    Rest(crate::iceberg::catalog::RestIcebergCatalogConfig),
+    Rest(crate::table_format::iceberg::catalog::RestIcebergCatalogConfig),
 }
 
 /// Glue-backend connection config carried by [`IcebergCatalogBackendConfig::Glue`].
@@ -477,7 +460,7 @@ fn iceberg_source_storage_profile(
 ) -> nexus_query_engine::SourceStorageProfile {
     match &config.backend {
         IcebergCatalogBackendConfig::Glue(glue) => {
-            let mut catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
+            let mut catalog_config = crate::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
                 glue.catalog_handle.clone(),
                 glue.warehouse.clone(),
                 glue.region.clone(),
@@ -720,9 +703,10 @@ fn table_format_parquet_read_strategy_config(
         .or_else(|| values.string(AWS_ENDPOINT_URL_S3_ENV))
         .or_else(|| values.string(AWS_ENDPOINT_URL_ENV))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
-    let has_explicit_s3_credentials = values.string(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV).is_some()
-        || values.string(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV).is_some()
-        || values.string(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV).is_some();
+    let has_explicit_s3_credentials =
+        values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV).is_some()
+            || values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV).is_some()
+            || values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV).is_some();
     let has_storage_region = values.string(NEXUS_ICEBERG_S3_REGION_ENV).is_some();
     let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
         nexus_query_engine::CredentialMode::ScopedResolved
@@ -800,9 +784,11 @@ fn parse_lakehouse_cache_policy(raw: &str) -> Result<TableFormatLakehouseCachePo
 #[cfg(feature = "iceberg")]
 fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<GlueServerBackendConfig> {
     let region = values
-        .string(crate::iceberg::AWS_REGION_ENV)
-        .or_else(|| values.string(crate::iceberg::AWS_DEFAULT_REGION_ENV))
-        .ok_or_else(|| ServerError::invalid_config(crate::iceberg::AWS_REGION_ENV, "is required for Glue Iceberg"))?;
+        .string(crate::table_format::iceberg::AWS_REGION_ENV)
+        .or_else(|| values.string(crate::table_format::iceberg::AWS_DEFAULT_REGION_ENV))
+        .ok_or_else(|| {
+            ServerError::invalid_config(crate::table_format::iceberg::AWS_REGION_ENV, "is required for Glue Iceberg")
+        })?;
 
     // catalog_handle is the internal handle passed to iceberg-rust's
     // GlueCatalogBuilder; it is independent of the DataFusion catalog_name so
@@ -816,7 +802,7 @@ fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<Gl
         warehouse: warehouse.to_string(),
         region,
         catalog_id: values.string(NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV),
-        profile: values.string(crate::iceberg::AWS_PROFILE_ENV),
+        profile: values.string(crate::table_format::iceberg::AWS_PROFILE_ENV),
         uri: values.string(NEXUS_ICEBERG_GLUE_URI_ENV),
         s3_endpoint: values.string(NEXUS_ICEBERG_S3_ENDPOINT_ENV),
         s3_region: values.string(NEXUS_ICEBERG_S3_REGION_ENV),
@@ -828,12 +814,13 @@ fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<Gl
 fn rest_backend_config(
     values: &mut EnvValues<'_>,
     warehouse: String,
-) -> Result<crate::iceberg::catalog::RestIcebergCatalogConfig> {
+) -> Result<crate::table_format::iceberg::catalog::RestIcebergCatalogConfig> {
     let uri = values.required_string(NEXUS_ICEBERG_REST_URI_ENV)?;
     let catalog_handle =
         values.string(NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV).unwrap_or_else(|| DEFAULT_REST_CATALOG_HANDLE.to_string());
 
-    let mut config = crate::iceberg::catalog::RestIcebergCatalogConfig::new(catalog_handle, uri, warehouse);
+    let mut config =
+        crate::table_format::iceberg::catalog::RestIcebergCatalogConfig::new(catalog_handle, uri, warehouse);
     if let Some(prefix) = values.string(NEXUS_ICEBERG_REST_PREFIX_ENV) {
         config = config.with_prefix(prefix);
     }

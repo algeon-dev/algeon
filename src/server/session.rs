@@ -52,17 +52,9 @@ fn cugraph_sql_config(
 /// Build the `SessionConfig` for the Flight SQL server, honoring the
 /// configured [`ServerSessionProfile`].
 ///
-/// The base config is loaded from `DATAFUSION_*` env vars (single-underscore
-/// names matching DataFusion's
-/// [`ConfigOptions::from_env`](datafusion::common::config::ConfigOptions::from_env)
-/// convention) so operators can still tune the CPU-fallback execution profile
-/// through e.g. `DATAFUSION_EXECUTION_BATCH_SIZE`. When the profile is
-/// [`ServerSessionProfile::Native`] the relevant DataFusion settings are
-/// overridden afterwards so the native cudf optimizer rule sees the same
-/// physical-plan shape the workload harnesses already validate. This avoids
-/// the audit scenario in `docs/issue/2026-05-22-flight-sql-server-audit.md`
-/// where DataFusion repartitioning injects a `SortPreservingMergeExec` over a
-/// GPU-only `CudfTableFormatScanExec` and the native rule rejects the root.
+/// Starts from `DATAFUSION_*` env vars, then overrides native-sensitive
+/// DataFusion settings for [`ServerSessionProfile::Native`] so server plans
+/// match the workload harness shape.
 pub fn build_session_config(config: &ServerConfig) -> super::error::Result<SessionConfig> {
     let base = SessionConfig::from_env()
         .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))?;
@@ -75,9 +67,8 @@ pub fn build_session_config(config: &ServerConfig) -> super::error::Result<Sessi
 /// the CPU-fallback profile only enables `information_schema` and leaves the
 /// rest of `base` (e.g. values loaded from `DATAFUSION_*` env vars) untouched.
 ///
-/// Embedders that build their own [`SessionConfig`] (and thus do not want to
-/// inherit `DATAFUSION_*` process env) can call this directly to opt into the
-/// same plan-shape contract the Flight SQL server enforces.
+/// Embedders can call this directly when they do not want to inherit
+/// `DATAFUSION_*` process env.
 pub fn apply_session_profile(base: SessionConfig, profile: ServerSessionProfile) -> SessionConfig {
     let base = base.with_information_schema(true);
     match profile {
@@ -129,10 +120,10 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // Build the catalog backend once; it holds a connected catalog handle that
     // is reused for all namespace/table listing and lazy table loading. The
     // backend kind is selected by the validated config enum.
-    let (backend, catalog_type): (Arc<dyn crate::iceberg::catalog::IcebergCatalogBackend>, &'static str) =
+    let (backend, catalog_type): (Arc<dyn crate::table_format::iceberg::catalog::IcebergCatalogBackend>, &'static str) =
         match &iceberg.backend {
             super::config::IcebergCatalogBackendConfig::Glue(glue) => {
-                let mut catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
+                let mut catalog_config = crate::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
                     glue.catalog_handle.clone(),
                     glue.warehouse.clone(),
                     glue.region.clone(),
@@ -156,7 +147,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                     catalog_config = catalog_config.with_s3_path_style_access(path_style);
                 }
                 let backend =
-                    crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
+                    crate::table_format::iceberg::catalog::GlueIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
                         catalog_config,
                         |name| std::env::var(name).ok(),
                         iceberg.parquet_read_strategy_config.clone(),
@@ -169,7 +160,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             },
             super::config::IcebergCatalogBackendConfig::Rest(rest) => {
                 let backend =
-                    crate::iceberg::catalog::RestIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
+                    crate::table_format::iceberg::catalog::RestIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
                         rest.clone(),
                         |name| std::env::var(name).ok(),
                         iceberg.parquet_read_strategy_config.clone(),
@@ -184,7 +175,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 
     // Discover only the configured namespace scope. Individual tables are
     // loaded lazily on first SQL access through the backend.
-    let catalog_provider = crate::iceberg::catalog::build_scoped_catalog_provider_from_backend(
+    let catalog_provider = crate::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend(
         Arc::clone(&backend),
         catalog_type,
         &iceberg.namespace,
@@ -198,8 +189,9 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // Loading routes through the backend-agnostic IcebergCatalogBackend so the
     // same path serves Glue and REST.
     for table in &iceberg.tables {
-        let table_ident = crate::iceberg::catalog::table_ident_from_flat_name(&iceberg.namespace, &table.table)
-            .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
+        let table_ident =
+            crate::table_format::iceberg::catalog::table_ident_from_flat_name(&iceberg.namespace, &table.table)
+                .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
         let loaded_table = backend
             .load_table(&table_ident)
             .await
@@ -208,13 +200,8 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             build_alias_provider(loaded_table, provider_kind, catalog_type, backend.parquet_read_strategy_config())
                 .await?;
 
-        // Seed the pre-loaded provider into the dynamic schema provider so that:
-        //  - catalog.namespace.real_table_name reuses this load (skips a
-        //    redundant backend round-trip on first query)
-        //  - catalog.namespace.alias also resolves when alias differs from the
-        //    real name
-        // The seed happens before catalog registration so there is no window
-        // where a concurrent query races against the seeding.
+        // Seed both real name and alias before catalog registration so first
+        // queries reuse this load and cannot race the seed.
         match catalog_provider.schema_concrete(&iceberg.namespace) {
             Some(schema) => {
                 schema.seed_table(table.table.clone(), Arc::clone(&provider)).await;
@@ -283,8 +270,10 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 /// startup WARN (see `super::is_testing_profile_active`) covers that
 /// configuration.
 #[cfg(feature = "iceberg")]
-fn iceberg_provider_kind_for(profile: ServerSessionProfile) -> crate::iceberg::catalog::IcebergProviderKind {
-    use crate::iceberg::catalog::IcebergProviderKind;
+fn iceberg_provider_kind_for(
+    profile: ServerSessionProfile,
+) -> crate::table_format::iceberg::catalog::IcebergProviderKind {
+    use crate::table_format::iceberg::catalog::IcebergProviderKind;
     match profile {
         ServerSessionProfile::Native => IcebergProviderKind::Gpu,
         #[cfg(feature = "iceberg-cpu")]
@@ -296,17 +285,17 @@ fn iceberg_provider_kind_for(profile: ServerSessionProfile) -> crate::iceberg::c
 
 /// Builds the [`TableProvider`] used to seed a pre-declared alias.
 ///
-/// Mirrors the dispatch in [`crate::iceberg::catalog::CudfIcebergSchemaProvider`]
+/// Mirrors the dispatch in [`crate::table_format::iceberg::catalog::CudfIcebergSchemaProvider`]
 /// so the dynamic three-part path and the legacy bare-alias path resolve to
 /// the same provider kind.
 #[cfg(feature = "iceberg")]
 async fn build_alias_provider(
     table: iceberg::table::Table,
-    kind: crate::iceberg::catalog::IcebergProviderKind,
+    kind: crate::table_format::iceberg::catalog::IcebergProviderKind,
     catalog_type: &str,
     parquet_read_strategy_config: Option<crate::table_format::scan::TableFormatParquetReadStrategyConfig>,
 ) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
-    use crate::iceberg::catalog::IcebergProviderKind;
+    use crate::table_format::iceberg::catalog::IcebergProviderKind;
     match kind {
         IcebergProviderKind::Gpu => {
             let provider = match parquet_read_strategy_config {

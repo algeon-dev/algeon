@@ -1,29 +1,16 @@
 //! Flight SQL native-planning diagnostics surface.
 //!
-//! The Flight SQL server runs DataFusion planning on every statement. When the
-//! cudf native physical optimizer rule rejects part or all of the plan, the
-//! single stable surface for "why was this not native?" is the
-//! [`crate::report::PlanningReport`] kept by the retained native rule. This
-//! module exposes two helpers that the server's planning path can call without
-//! adding new public reporting surface area:
+//! The retained native optimizer rule keeps the stable
+//! [`crate::report::PlanningReport`] for "why was this not native?". This module
+//! logs that evidence without adding a public reporting API:
 //!
-//! - [`log_native_planning_report`] writes a structured `tracing::debug!` line
-//!   per query that summarises the planning outcomes (rewritten / rejected
-//!   counts, first rejection code, classifier bucket). Operators can flip the
-//!   server's log filter to `debug` and get one line per statement without
-//!   recompiling.
-//! - [`log_leaf_guard_rejection`] writes a `tracing::warn!` line when planning
-//!   fails because the Milestone 1 GPU-only leaf guard fired. The line quotes the
-//!   structured facts attached to the guard's [`crate::Error`] (fallback
-//!   reason, first native rejection, physical plan shape, table format, …) so
-//!   the immediate audit follow-up — "what was the planner trying to lower?" —
-//!   is answerable from server logs alone.
+//! - [`log_native_planning_report`] emits one debug line per query with rewrite
+//!   and rejection counts plus the first rejection class.
+//! - [`log_leaf_guard_rejection`] emits a warn line for the GPU-only leaf guard,
+//!   including the guard error facts needed to inspect the rejected plan.
 //!
-//! The fifth public surface is [`FlightSqlNativeRejectClass`], which buckets
-//! [`FallbackReason`] codes into the four common Flight SQL rejection classes
-//! the Milestone 4 plan calls out plus a residual `Other` bucket. The bucket label
-//! goes onto every log line so an operator can grep for one keyword instead of
-//! enumerating every reject code variant.
+//! [`FlightSqlNativeRejectClass`] buckets common [`FallbackReason`] codes so log
+//! searches do not need to enumerate every variant.
 
 use datafusion::common::DataFusionError;
 
@@ -38,23 +25,16 @@ use crate::{
 /// [`ServerSessionProfile::CpuFallback`]. The string is stable for log-grep
 /// tooling.
 ///
-/// The leaf-guard fires when the GPU-only `CudfTableFormatScanExec` survives
-/// to execution. Under `CpuFallback` that means the catalog handed out the
-/// GPU-only provider — which happens when the binary was built **without**
-/// the `iceberg-cpu` feature. With `iceberg-cpu` compiled in the catalog
-/// routes Iceberg through `iceberg_datafusion::IcebergStaticTableProvider`
-/// and this guard does not fire.
+/// Under `CpuFallback`, this means Iceberg is still using the GPU-only provider
+/// because the binary was built without `iceberg-cpu`.
 const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profile over Iceberg when the \
      `iceberg-cpu` feature was not compiled in — rebuild with --features iceberg-cpu, or switch to \
      NEXUS_SERVER_SESSION_PROFILE=native";
 
 /// Stable bucket for common Flight SQL native-rejection codes.
 ///
-/// The four named variants correspond to the rejection reasons the Milestone 4
-/// plan explicitly listed as common when serving Iceberg-backed Flight SQL
-/// queries. Anything else collapses into [`FlightSqlNativeRejectClass::Other`]
-/// so log queries can grep by class without enumerating the full set of
-/// [`FallbackReason`] codes.
+/// The named variants cover common Iceberg-backed Flight SQL rejections; all
+/// other [`FallbackReason`] codes collapse into [`FlightSqlNativeRejectClass::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlightSqlNativeRejectClass {
     /// DataFusion left a full `SortPreservingMergeExec` (no `fetch`) at the
@@ -131,17 +111,11 @@ pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport
 /// Emit a `tracing::warn!` line when planning fails because the Milestone 1
 /// GPU-only leaf guard fired.
 ///
-/// The function walks the [`DataFusionError`] looking for an adapter
-/// [`Error`] tagged with `fallback_reason=table_format_gpu_only_leaf_not_rewritten`
-/// and quotes its facts (`first_native_rejection`, `physical_plan_shape`,
-/// `physical_plan_root`, `table_format`). It is a no-op for any other error
-/// shape so non-leaf-guard failures keep their existing log line.
+/// Looks for `fallback_reason=table_format_gpu_only_leaf_not_rewritten` and
+/// quotes the relevant adapter error facts. Other error shapes are ignored.
 ///
-/// When `profile` is [`ServerSessionProfile::CpuFallback`], the emitted line
-/// additionally carries a `profile_hint` field pointing operators back to the
-/// native profile — this combination is the testing-only configuration
-/// where the audit shape is reproducible, and the hint short-circuits the
-/// usual "why did this fail?" follow-up.
+/// Under [`ServerSessionProfile::CpuFallback`], also emits a `profile_hint`
+/// explaining the testing-only Iceberg/GPU-leaf combination.
 pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile: ServerSessionProfile) {
     let Some(fields) = leaf_guard_event_fields(error) else {
         return;

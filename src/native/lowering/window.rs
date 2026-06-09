@@ -180,17 +180,12 @@ struct LagLeadArgs {
 /// Parse the (`value`, `offset`, `default`) argument triple for a
 /// `lag` / `lead` window UDF.
 ///
-/// DataFusion's `lag(value, offset, default)` / `lead(value, offset, default)`
-/// constructor always expands missing arguments to typed null literals, so
-/// the physical form carries three expressions on the underlying
-/// [`WindowUDFExpr`]'s `args()` list. `offset` must be a non-negative
-/// signed-integer literal that fits in `u32`, or a typed null (which means
-/// the SQL default of `1`). `default` must be a literal scalar.
+/// DataFusion expands missing `lag`/`lead` arguments to typed null literals.
+/// `offset` must be a non-negative integer literal fitting `u32`, or null for
+/// SQL's default `1`; `default` must be a scalar literal.
 ///
-/// Reading the full argument list from `WindowUDFExpr::args()` is load
-/// bearing: [`StandardWindowFunctionExpr::expressions`] filters lag / lead
-/// down to the value column for batch evaluation, so it does not surface
-/// the literal `offset` / `default` arguments needed by the native IR.
+/// Use `WindowUDFExpr::args()` because
+/// [`StandardWindowFunctionExpr::expressions`] hides `offset` and `default`.
 fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<LagLeadArgs, FallbackReason> {
     let udf = standard
         .get_standard_func_expr()

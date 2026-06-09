@@ -217,13 +217,10 @@ pub(crate) struct ObjectStoreCustomFetchResult<T> {
     pub(crate) elapsed: Duration,
 }
 
-/// How long a resolved default-chain credential may be reused before the
-/// owning provider is consulted again.
+/// Maximum age for reusing a resolved default-chain credential.
 ///
-/// The provider caches and refreshes credentials internally; this window only
-/// bounds how long the engine skips the cross-runtime provider round-trip per
-/// chunk read. It must stay far below the shortest credential lifetime
-/// (instance-role sessions last at least minutes).
+/// The provider owns refresh; this only avoids repeated cross-runtime lookups
+/// and must stay well below the shortest credential lifetime.
 pub(super) const RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW: Duration = Duration::from_secs(60);
 
 struct ResolvedSourceCredential {
@@ -280,11 +277,7 @@ impl SourceObjectStoreRegistry {
         Ok(store)
     }
 
-    /// Returns the credential provider backing the S3 client for `key`.
-    ///
-    /// The provider is shared with host-buffer fetches for the same key, so
-    /// default-chain resolution (env, IMDS instance role, web identity) and its
-    /// internal token caching/refresh behave identically on both read paths.
+    /// Returns the S3 credential provider shared with host-buffer fetches.
     pub(super) fn s3_credential_provider(
         &self,
         key: S3ObjectStoreKey,
@@ -292,8 +285,7 @@ impl SourceObjectStoreRegistry {
         Ok(Arc::clone(self.s3_typed_store(key)?.credentials()))
     }
 
-    /// Returns a recently resolved credential for `key` when it is younger
-    /// than [`RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW`].
+    /// Returns a cached resolved credential still within the reuse window.
     pub(super) fn recently_resolved_s3_credential(
         &self,
         key: &S3ObjectStoreKey,
@@ -307,8 +299,7 @@ impl SourceObjectStoreRegistry {
         }
     }
 
-    /// Records a freshly resolved credential for reuse within
-    /// [`RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW`].
+    /// Records a freshly resolved credential for reuse.
     pub(super) fn record_resolved_s3_credential(
         &self,
         key: S3ObjectStoreKey,

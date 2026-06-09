@@ -746,20 +746,12 @@ impl ExecutionContext {
         self.source_object_stores.profile(id)
     }
 
-    /// Resolves a short-lived AWS credential through the object-store client
-    /// registered for `key`.
+    /// Resolves default-chain AWS credentials from the object-store provider.
     ///
-    /// This is the default-chain resolution used by host-buffer fetches (env,
-    /// IMDSv2 instance role, web identity), exposed so remote-direct reads can
-    /// pass the same identity into lower layers that lack a default chain. The
-    /// provider caches and refreshes tokens internally, and the registry reuses
-    /// a freshly resolved credential for a short window, so calling this per
-    /// chunk read is cheap and instance-role rotation is handled by
-    /// construction.
-    ///
-    /// On a reuse-window miss the future runs on the source-fetch runtime; the
-    /// calling thread blocks until resolution completes, which keeps this
-    /// callable from synchronous chunk-read paths.
+    /// Remote-direct reads use this to pass the host-buffer identity into lower
+    /// layers that lack a default chain. Recent results are reused briefly; on a
+    /// cache miss, resolution runs on the source-fetch runtime while this call
+    /// blocks for the result.
     pub(crate) fn resolve_s3_default_chain_credential(
         &self,
         key: S3ObjectStoreKey,

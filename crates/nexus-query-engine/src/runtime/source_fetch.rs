@@ -24,13 +24,7 @@ pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
 /// Default per-chunk size threshold for selecting future GDS direct-device reads.
 pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Deployment-level source IO substrate preference.
-///
-/// This is a service policy, not a query-planning decision. `Auto` allows the
-/// runtime to choose a future GDS direct-device path only when the deployment
-/// and per-source eligibility checks pass. `HostBuffer` forces the
-/// `SourceFetch + SourceDecode` host-buffer path. `DirectDevice` requires GDS
-/// readiness at service/context construction time.
+/// Service-level source IO substrate preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SourceFetchSubstrate {
     /// Probe deployment capability and choose per-source IO strategy later.

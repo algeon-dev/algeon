@@ -555,15 +555,16 @@ impl GlueIcebergCatalogConfig {
         }
 
         let explicit_s3_credentials = (
-            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
-            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)),
         );
         let aws_credentials = (
-            super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
             super::non_empty(
-                get(crate::iceberg::AWS_SESSION_TOKEN_ENV).or_else(|| get(crate::iceberg::AWS_SECURITY_TOKEN_ENV)),
+                get(crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV)
+                    .or_else(|| get(crate::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)),
             ),
         );
         if let (Some(access_key_id), Some(secret_access_key), session_token) = explicit_s3_credentials {
@@ -618,28 +619,29 @@ fn glue_catalog_props(
     }
 
     if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)),
     ) {
         props.insert(AWS_ACCESS_KEY_ID.to_string(), key_id);
         props.insert(AWS_SECRET_ACCESS_KEY.to_string(), secret);
     }
     if let Some(token) = super::non_empty(
-        get(crate::iceberg::AWS_SESSION_TOKEN_ENV).or_else(|| get(crate::iceberg::AWS_SECURITY_TOKEN_ENV)),
+        get(crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV)
+            .or_else(|| get(crate::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)),
     ) {
         props.insert(AWS_SESSION_TOKEN.to_string(), token);
     }
 
     if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
     ) {
         props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
         props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
         props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
         props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
     }
-    if let Some(token) = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+    if let Some(token) = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
         props.insert(S3_SESSION_TOKEN.to_string(), token);
     }
 
@@ -930,10 +932,10 @@ impl RestIcebergCatalogConfig {
             s3 = s3.with_path_style_access(path_style);
         }
         if let (Some(access_key_id), Some(secret_access_key)) = (
-            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
         ) {
-            let session_token = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV));
+            let session_token = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV));
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
         } else if has_s3_endpoint {
             s3 = s3.with_unsigned_requests();
@@ -953,7 +955,7 @@ impl RestIcebergCatalogConfig {
 ///
 /// Non-empty `s3.access-key-id` and `s3.secret-access-key` are inserted only
 /// when both are present; a session token is inserted from
-/// [`crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV`] when present. Empty
+/// [`crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV`] when present. Empty
 /// optional values are omitted rather than inserted as empty strings.
 ///
 /// S3 credentials come ONLY from the explicit `NEXUS_ICEBERG_S3_*`
@@ -993,13 +995,13 @@ fn rest_catalog_props(
         props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
     }
     if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
     ) {
         props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
         props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
     }
-    if let Some(token) = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+    if let Some(token) = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
         props.insert(S3_SESSION_TOKEN.to_string(), token);
     }
     props
@@ -1208,9 +1210,9 @@ mod rest_tests {
     fn rest_props_resolve_static_s3_credentials_from_env() {
         let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
         let env = |name: &str| match name {
-            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
             _ => None,
         };
         let props = rest_catalog_props(&config, env);
@@ -1224,7 +1226,7 @@ mod rest_tests {
         // Only an access key, no secret: neither should be inserted.
         let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
         let env = |name: &str| match name {
-            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
             _ => None,
         };
         let props = rest_catalog_props(&config, env);
@@ -1325,9 +1327,9 @@ mod rest_tests {
             .with_s3_region("us-east-1")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
             _ => None,
         };
 
@@ -1364,8 +1366,8 @@ mod rest_tests {
             .with_s3_endpoint("http://localhost:9000")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
-            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
             _ => None,
         };
 
@@ -1392,9 +1394,9 @@ mod rest_tests {
     fn glue_source_storage_profile_uses_glue_region_and_aws_static_credentials() {
         let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-west-2");
         let env = |name: &str| match name {
-            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("AKIA_GLUE".to_string()),
-            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("glue-secret".to_string()),
-            crate::iceberg::AWS_SESSION_TOKEN_ENV => Some("glue-token".to_string()),
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("AKIA_GLUE".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("glue-secret".to_string()),
+            crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV => Some("glue-token".to_string()),
             _ => None,
         };
 
@@ -1427,11 +1429,11 @@ mod rest_tests {
             .with_s3_region("us-east-1")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("moto-access".to_string()),
-            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("moto-secret".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("moto-access".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("moto-secret".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
             _ => None,
         };
 
@@ -1457,11 +1459,11 @@ mod rest_tests {
             .with_s3_region("us-west-2")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
-            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
-            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-ignored".to_string()),
-            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-ignored".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-ignored".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-ignored".to_string()),
             _ => None,
         };
 
@@ -1517,8 +1519,8 @@ mod rest_tests {
             .with_s3_endpoint("http://localhost:9000")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
-            crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
             _ => None,
         };
 

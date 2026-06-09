@@ -240,9 +240,7 @@ pub enum CredentialMode {
     None,
     /// Reader uses credentials already configured for the running process.
     SharedProcessEnv,
-    /// Per-profile settings/credentials are resolved by the engine and passed
-    /// scoped into the reader contract. Default-chain credentials are resolved
-    /// through the profile's object-store provider at read time.
+    /// Engine resolves per-profile credentials and scopes them to the reader.
     ScopedResolved,
 }
 
@@ -800,24 +798,15 @@ pub enum SourceColumnRef {
     MissingNull(usize),
 }
 
-/// Local Parquet source accepted by the native query engine.
+/// Frontend-neutral local Parquet scan contract.
 ///
-/// This struct is the frontend-neutral scan contract. Its `schema` is the
-/// schema emitted by the native source node: all read file columns followed by
-/// represented partition columns. Column-role fields separately describe which
-/// source columns are expected to remain after source-adjacent native filter or
-/// projection nodes, and which were emitted only so those filters can evaluate.
-/// Diagnostics explain whether the source can use direct device read.
+/// Carries files, emitted schema, column roles, reader predicate, and IO
+/// diagnostics for native source execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetSource {
     /// Local Parquet files to scan, including per-file metadata and pruning.
     pub files: Vec<LocalParquetFile>,
-    /// Native output schema emitted by the source node.
-    ///
-    /// For local Parquet this is every read file column, including columns used
-    /// only by source-adjacent filters, followed by represented partition
-    /// columns. `projected_output_columns` is role/diagnostic metadata and does
-    /// not by itself define this schema.
+    /// Emitted source schema: read file columns followed by partition columns.
     pub schema: SchemaRef,
     /// Physical Parquet columns that the engine must read.
     ///
@@ -830,13 +819,7 @@ pub struct LocalParquetSource {
     pub read_column_file_indices: Vec<usize>,
     /// Total physical column count in the source Parquet file schema, when known.
     pub file_column_count: Option<usize>,
-    /// Source columns expected to remain after source-adjacent filtering/projection.
-    ///
-    /// These are role and diagnostic metadata, not the full emitted source
-    /// schema. They are distinct from `read_columns`: a column used only by a
-    /// native filter is still emitted by the source so the filter can consume
-    /// it, but it should be removed by a later native projection if it is not
-    /// needed downstream.
+    /// Source columns expected to survive source-adjacent filters/projections.
     pub projected_output_columns: Vec<String>,
     /// Source references for `projected_output_columns`.
     pub projected_output_column_source_refs: Vec<SourceColumnRef>,

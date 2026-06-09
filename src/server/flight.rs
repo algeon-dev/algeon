@@ -252,19 +252,10 @@ impl DatafusionCudfFlightSqlService {
         permit: OwnedSemaphorePermit,
         ticket_kind: StatementTicketKind,
     ) -> Result<FlightInfo, Status> {
-        // Observe the server-wide shutdown token so a slow planning call here
-        // does not keep tonic's graceful drain waiting. There is no per-query
-        // child token yet (the ticket has not been issued), so we watch the
-        // parent directly.
-        //
-        // The native cancellation flag is constructed here so the optimizer-rule
-        // wiring in `query_context` shares it with planning. Until the ticket is
-        // inserted into `self.tickets`, the flag is not reachable via
-        // `do_action_cancel_query` — that's the documented pre-ticket window in
-        // the Bug 9 audit. Only the parent `shutdown_token` arm below or a
-        // failure path can flip the flag during this window, which is sufficient
-        // because no native execution has started yet (this method only runs
-        // logical/physical planning to derive the result schema).
+        // Before ticket issuance there is no per-query token, so planning
+        // observes the server shutdown token directly. The native flag is still
+        // shared with the optimizer rule, but `do_action_cancel_query` cannot
+        // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
         let planning = self.query_planning(native_cancellation.clone());
         let query_ctx = &planning.ctx;
@@ -284,15 +275,9 @@ impl DatafusionCudfFlightSqlService {
         verify_flight_info_plan(&logical_plan, ticket_kind)?;
         let schema = logical_plan.schema().as_arrow().clone();
 
-        // Both ticket variants carry the per-execution `query_id` UTF-8 bytes
-        // in their handle field. For `CommandPreparedStatementQuery` this is a
-        // deliberate reuse of the `prepared_statement_handle` slot to multiplex
-        // the execution key — the protobuf field is documented as the stable
-        // handle from `ActionCreatePreparedStatementResult`, but Flight SQL
-        // does not constrain its contents, and `do_get_prepared_statement`
-        // reads it back as the execution key. The persistent prepared-statement
-        // handle lives in `self.prepared_statements`; it is *not* carried on
-        // the ticket because `do_get` does not need it again.
+        // Both ticket variants carry the per-execution `query_id` bytes. For
+        // prepared statements this reuses `prepared_statement_handle`; the
+        // persistent handle remains in `self.prepared_statements`.
         let ticket_payload = match ticket_kind {
             StatementTicketKind::Statement => {
                 let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
@@ -463,13 +448,8 @@ impl DatafusionCudfFlightSqlService {
             },
         };
         let schema = df.schema().as_arrow().clone();
-        // `df.execute_stream()` calls `create_physical_plan()` internally,
-        // which runs the cudf native physical optimizer rule plus the Milestone 1
-        // GPU-only leaf guard. Both branches below read `last_report` after
-        // that point so the planning report log reflects whatever physical
-        // planning produced. The leaf-guard warn line only fires on the
-        // failure branch because that is where the guard's structured error
-        // surfaces.
+        // `execute_stream()` runs physical planning. Log the retained native
+        // report after that point; leaf-guard facts only surface on failure.
         let stream = tokio::select! {
             result = df.execute_stream() => match result {
                 Ok(stream) => {
@@ -500,12 +480,8 @@ impl DatafusionCudfFlightSqlService {
         let lifecycle_for_body = Arc::clone(&lifecycle);
         let query_id_for_body = query_id.clone();
         let stream_operation = ticket_kind.stream_operation();
-        // The body stream ends either naturally or because the token was
-        // cancelled. `take_until` does not signal an error on the latter, so
-        // a client would see OK end-of-stream with only a prefix of rows.
-        // Chain a one-shot tail that, *after* the body ends, emits a
-        // CANCELLED status if the token fired. This is observed as a gRPC
-        // trailer status rather than a clean stream completion.
+        // `take_until` ends cleanly on cancellation, so append a one-shot tail
+        // that emits CANCELLED as the gRPC trailer when the token fired.
         let body = stream
             .map_err(move |error| {
                 datafusion_error_to_flight_error(error, &query_id_for_body, &lifecycle_for_body, stream_operation)
@@ -1611,9 +1587,10 @@ fn empty_primary_keys_batch() -> Result<arrow::record_batch::RecordBatch, arrow:
     arrow::record_batch::RecordBatch::try_new(schema, columns)
 }
 
-/// Build the single-batch response for `CommandGetTableTypes`. Asserts the
-/// sorted invariant defensively because `FLIGHT_SQL_TABLE_TYPES` is the source
-/// of truth and re-sorting at runtime would hide a future authoring mistake.
+/// Build the single-batch response for `CommandGetTableTypes`.
+///
+/// `FLIGHT_SQL_TABLE_TYPES` is the source of truth; keep it sorted at authoring
+/// time instead of re-sorting here.
 fn build_table_types_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
     debug_assert!(FLIGHT_SQL_TABLE_TYPES.windows(2).all(|w| w[0] < w[1]), "FLIGHT_SQL_TABLE_TYPES must be sorted");
     let column = arrow::array::StringArray::from_iter_values(FLIGHT_SQL_TABLE_TYPES.iter().copied());

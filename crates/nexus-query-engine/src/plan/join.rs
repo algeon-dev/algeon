@@ -20,17 +20,8 @@ pub struct JoinNode {
     pub spec: JoinSpec,
 }
 
-/// Complete semantic and physical contract for a native join node.
-///
-/// Joins intentionally keep four concerns separate: equality keys in
-/// [`JoinSpec::keys`], an optional non-equi residual predicate in
-/// [`JoinSpec::residual_predicate`], output column selection/order in
-/// [`JoinSpec::output_projection`], and physical build/cache choices in
-/// [`JoinSpec::build_side`] plus [`JoinSpec::build_artifact_id`].
-///
-/// A frontend should not encode residual predicates as fake keys, rely on the
-/// executor's default output ordering when column order matters, or treat
-/// build-side selection as changing join semantics.
+/// Native join contract with keys, residual predicate, output projection, null
+/// policy, and physical build/cache choices modeled separately.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JoinSpec {
     /// Logical join type.
@@ -137,11 +128,9 @@ impl JoinSpec {
 
 /// Durable identifier for reusable hash-join build state.
 ///
-/// The executor uses this as a cache key for GPU build artifacts within an
-/// execution context. Frontends are responsible for choosing ids that remain
-/// stable for equivalent build inputs and change when any build-affecting
-/// property changes. This is the native IR's reusable-join-build handle; there
-/// is deliberately no DataFusion dependency in the identifier.
+/// Execution-context cache key for reusable hash-join build artifacts.
+///
+/// Frontends must change it when any build-affecting property changes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HashJoinBuildArtifactId(String);
 

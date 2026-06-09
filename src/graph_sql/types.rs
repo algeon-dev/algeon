@@ -361,23 +361,11 @@ impl CugraphGraphOptions {
 /// Mirrors `cugraph::cudf_interop::GraphConstructionPolicy` and is the public
 /// `construction_policy` option exposed in the cuGraph table-function JSON.
 ///
-/// - [`PythonCugraph`](Self::PythonCugraph): default. Match Python
-///   `cugraph.Graph.from_cudf_edgelist(...)` semantics. The ingress layer
-///   normalizes the edge DataFrame before raw graph construction (drop
-///   duplicate directed edges according to Python cuGraph's direction-sensitive
-///   weighted semantics, and add reverse edges for undirected simple graphs).
-///   Safe for callers whose SQL has not pre-normalized the edge list. Carries
-///   an extra sort + dedup cost and may import borrowed/prepared edge columns
-///   into owned cudf objects, which breaks the zero-copy ingress path documented in
-///   `cugraph::cudf_interop`.
-/// - [`RawLibcugraph`](Self::RawLibcugraph): pass the SQL edge list to
-///   libcugraph without duplicate-edge or reverse-edge normalization. Use when
-///   the query plan (or the caller) already guarantees a well-formed edge list:
-///   no duplicate directed edges in simple-graph mode, and reverse edges
-///   already present for undirected simple graphs. The native graph boundary
-///   still drops rows whose bound edge columns are actually null, because
-///   libcugraph has no valid null-edge semantics. Clean inputs preserve
-///   zero-copy ingress; dirty inputs require a filtering pass.
+/// - [`PythonCugraph`](Self::PythonCugraph): default Python cuGraph semantics;
+///   normalizes duplicate/reverse edges before construction.
+/// - [`RawLibcugraph`](Self::RawLibcugraph): pass already-normalized SQL edges
+///   directly to libcugraph. Null edge rows are still filtered because libcugraph
+///   has no null-edge semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CugraphGraphConstructionPolicy {
     PythonCugraph,

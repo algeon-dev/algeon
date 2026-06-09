@@ -155,9 +155,8 @@ async fn rest_scoped_catalog_provider_discovers_tables_local() {
     assert!(!table_names.is_empty(), "expected at least one table in '{namespace}'");
 }
 
-/// Full read path: register the REST catalog with a CPU Arrow reader and run a
-/// real DataFusion scan (`count(*)` + a `LIMIT` projection) end-to-end through
-/// RustFS. Requires the `iceberg-cpu` feature for a GPU-free reader.
+/// Full CPU-reader path through REST/RustFS: `count(*)` plus a small `LIMIT`.
+/// Requires `iceberg-cpu`.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
@@ -205,12 +204,8 @@ async fn rest_datafusion_scan_local() {
     assert!(rows > 0 && rows <= 3, "LIMIT 3 must return between 1 and 3 rows, got {rows}");
 }
 
-/// Metadata contract: load the `nation` table directly through the REST backend
-/// and assert (1) the Iceberg schema field names match the TPC-H `nation`
-/// columns and (2) the table root and metadata pointer live under `s3://`
-/// (i.e. the write actually landed in RustFS, not on the REST fixture's local
-/// disk). This closes Milestone 3d steps 2 and 4 without needing a GPU or the
-/// `iceberg-cpu` reader.
+/// Metadata contract: `nation` has the expected schema and S3-backed metadata
+/// locations, without requiring GPU or `iceberg-cpu`.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
@@ -250,32 +245,23 @@ async fn rest_table_metadata_contract_local() {
     );
 }
 
-/// Milestone 4: assert the native **planning rewrite** plus **CPU-reader
-/// stability** over a local REST table, with GPU-native correctness as an
-/// explicit opt-in.
+/// Checks native planning rewrite and CPU-reader stability over a local REST
+/// table; GPU-native correctness is opt-in.
 ///
-/// What the default path proves (CPU-only — works wherever the stack is up):
+/// Default CPU-only path proves:
 /// 1. **Planning rewrite.** Register the REST catalog with a GPU provider and
 ///    the `CudfNativePhysicalOptimizerRule`, build the optimized physical plan
 ///    for an aggregate-over-Iceberg shape, and assert the rule rewrote it to a
 ///    `NativeCudfExec` with no leftover `CudfTableFormatScanExec`. This proves
-///    the optimizer *wrapped* the shape — NOT that the lowered native IR or its
-///    GPU execution is semantically correct.
+///    the optimizer wrapped the shape, not GPU result correctness.
 /// 2. **CPU-reader stability.** Two independent CPU-reader runs of the same
-///    query must agree, proving the REST/RustFS read + aggregate path is
-///    deterministic end-to-end.
+///    query must agree.
 ///
-/// The default path does NOT validate the native-rewritten plan's *result*: a
-/// broken `NativeCudfExec` or native Iceberg read path can still pass it. Native
-/// result correctness is only checked under the GPU-parity opt-in below.
-/// GPU parity exercises the native source-storage profile path for the
-/// configured REST/RustFS endpoint, path-style flag, region, and static
-/// credentials.
+/// GPU parity exercises the native source-storage profile path and validates
+/// the native-rewritten result.
 ///
 /// GPU-native parity is gated behind `NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1`.
-/// When set, the test executes the native-rewritten plan and a GPU execution
-/// failure is a real failure — it does NOT silently skip. Enable it for local
-/// validation of the configured S3 endpoint.
+/// When set, GPU execution failures are real failures, not skips.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash

@@ -246,9 +246,9 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
 /// by tests, reports, and callers. Values are stringified with [`ToString`].
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
 ///
-/// Empty keys panic, and inserting the same key twice panics. The native engine
-/// reserves `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and
-/// `cudf_message` for facts copied from an underlying `cudf::Error`.
+/// Empty keys and duplicate inserts panic. The native engine reserves
+/// `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and `cudf_message`
+/// for wrapped `cudf::Error` facts.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
@@ -327,10 +327,9 @@ impl QueryError {
     /// Wraps a `cudf::Error` at the native-engine boundary.
     ///
     /// `operation` should be the stable dotted id for the native operation that
-    /// called cuDF, and `message` should describe the failure for humans. The
-    /// cuDF code, kind, status, operation, and (URI-redacted) message are
-    /// preserved as reserved facts: `cudf_code`, `cudf_kind`, `cudf_status`,
-    /// `cudf_operation`, and `cudf_message`.
+    /// called cuDF, and `message` should describe the failure for humans. cuDF
+    /// classification and a URI-redacted message are preserved as `cudf_*`
+    /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
         let error = Self::new(code, operation, message)
@@ -347,11 +346,9 @@ impl QueryError {
 
     /// Wraps a `cudf::Error` without attaching its display text as a source.
     ///
-    /// Use this for diagnostics that may pass sensitive reader locations into
-    /// lower layers. The stable cuDF classification facts are retained — the
-    /// dependency message is preserved only as the URI-redacted `cudf_message`
-    /// fact — but the unsanitized source is not exposed through this error's
-    /// `Display` or source chain.
+    /// Use this when source text may contain sensitive reader locations. It
+    /// keeps cuDF classification and redacted `cudf_message` facts, but omits
+    /// the unsanitized source chain.
     pub(crate) fn from_cudf_without_source(
         operation: &'static str,
         message: impl Into<String>,
@@ -451,11 +448,7 @@ impl QueryError {
     }
 }
 
-/// Builds the `cudf_message` fact value for a wrapped `cudf::Error`.
-///
-/// The foreign (libcudf/KvikIO) exception text is the most direct evidence of
-/// what a lower layer rejected, so it is preserved as a fact. URI-like tokens
-/// are redacted so reader locations never leak through diagnostics.
+/// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
 fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     let message = source.message().trim();
     if message.is_empty() {
@@ -464,8 +457,7 @@ fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     Some(redact_uri_tokens(message))
 }
 
-/// Replaces whitespace-delimited URI-like tokens (`scheme://...`) with a
-/// stable placeholder. Whitespace is normalized to single spaces.
+/// Redacts whitespace-delimited `scheme://...` tokens and normalizes spaces.
 fn redact_uri_tokens(message: &str) -> String {
     message
         .split_whitespace()
