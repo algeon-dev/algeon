@@ -437,6 +437,7 @@ impl ExecutionPlan for CugraphAlgoExec {
                 (batch, query_metrics)
             };
             metrics.record_query_metrics(&query_metrics);
+            metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
             Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
         })
         .try_filter_map(|batch| async move { Ok(batch) });
@@ -1555,7 +1556,7 @@ fn graph_algorithm_execution_context(context: &ExecutionContext) -> ExecutionCon
     // policy; only the graph-algorithm native IR fragment uses unbounded
     // execution so it reaches the cuGraph executor instead of bounded generic
     // admission.
-    ExecutionContext::from_shared_runtime(context.shared_runtime())
+    context.for_unbounded_fragment()
 }
 
 #[derive(Debug, Clone, Copy)]

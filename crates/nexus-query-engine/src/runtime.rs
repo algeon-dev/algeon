@@ -225,6 +225,13 @@ impl LakehouseCacheFillEventSink {
             Err(_error) => Vec::new(),
         }
     }
+
+    pub(crate) fn drain(&self) -> Vec<LakehouseCacheFillEvent> {
+        match self.events.lock() {
+            Ok(mut events) => events.drain(..).collect(),
+            Err(_error) => Vec::new(),
+        }
+    }
 }
 
 /// Native source scheduling controls.
@@ -357,6 +364,58 @@ pub struct ExecutionContext {
     /// Bounded execution charges retained cache bytes to the reservation ledger
     /// before admitting source or operator work.
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
+    /// Optional owned stream lease kept alive by contexts derived from it.
+    stream_lease_guard: Option<Arc<StreamLease>>,
+}
+
+/// Execution context tied to an owned CUDA stream lease.
+///
+/// This is the preferred API when a caller needs GPU work to run on a leased
+/// service stream. Holding this value keeps the underlying stream lease alive
+/// for at least as long as the borrowed context can be used.
+#[derive(Debug)]
+pub struct LeasedExecutionContext {
+    context: ExecutionContext,
+}
+
+impl LeasedExecutionContext {
+    fn new(context: ExecutionContext) -> Self {
+        Self { context }
+    }
+
+    /// Returns the context backed by the owned stream lease.
+    pub fn context(&self) -> &ExecutionContext {
+        &self.context
+    }
+}
+
+#[derive(Debug)]
+struct ExecutionContextParts {
+    runtime: Arc<cudf::Runtime>,
+    memory_policy: MemoryResourcePolicy,
+    memory_control_policy: MemoryControlPolicy,
+    boundary_policy: ExecutionBoundaryPolicy,
+    source_scheduler_policy: SourceSchedulerPolicy,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
+    source_fetch_config: SourceFetchConfig,
+    service_stream_pool: ServiceStreamPool,
+    host_fetch_budget: HostFetchBudget,
+    source_fetch_concurrency: SourceFetchConcurrencyGate,
+    lakehouse_cache_fill_budget: HostFetchBudget,
+    lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate,
+    lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
+    gds_concurrency: GdsConcurrencyGate,
+    source_fetch_runtime: Arc<tokio::runtime::Runtime>,
+    lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
+    source_object_stores: Arc<SourceObjectStoreRegistry>,
+    deployment_io_capability: DeploymentIoCapability,
+    cancellation: ExecutionCancellation,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
+    stddev_samp_execution_mode: StddevSampExecutionMode,
+    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
+    hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
+    local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
+    stream_lease_guard: Option<Arc<StreamLease>>,
 }
 
 impl ExecutionContext {
@@ -383,7 +442,7 @@ impl ExecutionContext {
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
         let source_fetch_config = SourceFetchConfig::default();
-        Self {
+        Self::from_parts(ExecutionContextParts {
             runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
@@ -411,6 +470,37 @@ impl ExecutionContext {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            stream_lease_guard: None,
+        })
+    }
+
+    fn from_parts(parts: ExecutionContextParts) -> Self {
+        Self {
+            runtime: parts.runtime,
+            memory_policy: parts.memory_policy,
+            memory_control_policy: parts.memory_control_policy,
+            boundary_policy: parts.boundary_policy,
+            source_scheduler_policy: parts.source_scheduler_policy,
+            source_chunk_planning_mode: parts.source_chunk_planning_mode,
+            source_fetch_config: parts.source_fetch_config,
+            service_stream_pool: parts.service_stream_pool,
+            host_fetch_budget: parts.host_fetch_budget,
+            source_fetch_concurrency: parts.source_fetch_concurrency,
+            lakehouse_cache_fill_budget: parts.lakehouse_cache_fill_budget,
+            lakehouse_cache_fill_concurrency: parts.lakehouse_cache_fill_concurrency,
+            lakehouse_cache_fill_events: parts.lakehouse_cache_fill_events,
+            gds_concurrency: parts.gds_concurrency,
+            source_fetch_runtime: parts.source_fetch_runtime,
+            lakehouse_cache_fill_runtime: parts.lakehouse_cache_fill_runtime,
+            source_object_stores: parts.source_object_stores,
+            deployment_io_capability: parts.deployment_io_capability,
+            cancellation: parts.cancellation,
+            native_pipeline_execution_mode: parts.native_pipeline_execution_mode,
+            stddev_samp_execution_mode: parts.stddev_samp_execution_mode,
+            adaptive_memory_history: parts.adaptive_memory_history,
+            hash_join_build_cache: parts.hash_join_build_cache,
+            local_parquet_source_cache: parts.local_parquet_source_cache,
+            stream_lease_guard: parts.stream_lease_guard,
         }
     }
 
@@ -452,7 +542,7 @@ impl ExecutionContext {
     /// the returned context has completed.
     pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
         validate_service_stream_pool_device(stream_lease.pool(), self.runtime.device())?;
-        Ok(Self {
+        Ok(Self::from_parts(ExecutionContextParts {
             runtime: stream_lease.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
@@ -477,7 +567,28 @@ impl ExecutionContext {
             adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
             hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
-        })
+            stream_lease_guard: None,
+        }))
+    }
+
+    /// Builds a context and keeps the stream lease alive in the returned wrapper.
+    pub fn with_owned_stream_lease(&self, stream_lease: StreamLease) -> Result<LeasedExecutionContext> {
+        let stream_lease_guard = Arc::new(stream_lease);
+        let mut context = self.with_stream_lease(stream_lease_guard.as_ref())?;
+        context.stream_lease_guard = Some(stream_lease_guard);
+        Ok(LeasedExecutionContext::new(context))
+    }
+
+    /// Returns a context for an internal fragment that must bypass bounded admission.
+    ///
+    /// Query-local and service-scoped state is preserved; only the engine-level
+    /// memory-control policy is relaxed. This is intentionally narrower than
+    /// rebuilding from the shared cudf runtime, which would drop cancellation,
+    /// source IO profiles, cache handles, and event sinks.
+    pub fn for_unbounded_fragment(&self) -> Self {
+        let mut context = self.clone();
+        context.memory_control_policy = MemoryControlPolicy::Unbounded;
+        context
     }
 
     /// Returns the cooperative cancellation flag for this execution.
@@ -568,6 +679,11 @@ impl ExecutionContext {
     /// Returns credential-free background cache-fill events observed by this context so far.
     pub fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
         self.lakehouse_cache_fill_events.events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
+    }
+
+    /// Drains credential-free background cache-fill events observed by this context so far.
+    pub fn drain_lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
+        self.lakehouse_cache_fill_events.drain().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
     }
 
     /// Maximum future GDS DMA operations admitted concurrently.
@@ -1058,7 +1174,7 @@ impl ExecutionContextBuilder {
                 },
                 None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
             };
-            return Ok(ExecutionContext {
+            return Ok(ExecutionContext::from_parts(ExecutionContextParts {
                 runtime,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
@@ -1083,7 +1199,8 @@ impl ExecutionContextBuilder {
                 adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
-            });
+                stream_lease_guard: None,
+            }));
         }
 
         let mut builder = cudf::Runtime::builder();
@@ -1119,7 +1236,7 @@ impl ExecutionContextBuilder {
             },
             None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
         };
-        Ok(ExecutionContext {
+        Ok(ExecutionContext::from_parts(ExecutionContextParts {
             runtime: Arc::new(runtime),
             memory_policy,
             memory_control_policy: self.memory_control_policy,
@@ -1144,7 +1261,8 @@ impl ExecutionContextBuilder {
             adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
-        })
+            stream_lease_guard: None,
+        }))
     }
 }
 
@@ -1316,6 +1434,65 @@ mod tests {
         assert_eq!(snapshots[0].outcome, "completed");
         assert_eq!(snapshots[0].bytes, Some(8192));
         assert_eq!(snapshots[0].cache_path_hash, "leased-cache-path-hash");
+    }
+
+    #[test]
+    fn lakehouse_cache_fill_event_snapshots_can_be_drained_once() {
+        let context = ExecutionContext::builder().build().unwrap();
+        context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
+            outcome: LakehouseCacheFillOutcome::Completed,
+            bytes: Some(1024),
+            elapsed: Duration::from_millis(2),
+            cache_path_hash: "cache-path-hash".to_string(),
+            stable_id_hash: "stable-id-hash".to_string(),
+            file_index: None,
+            chunk_index: None,
+            error: None,
+        });
+
+        let first = context.drain_lakehouse_cache_fill_event_snapshots();
+        let second = context.drain_lakehouse_cache_fill_event_snapshots();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].outcome, "completed");
+        assert!(second.is_empty());
+        assert!(context.lakehouse_cache_fill_event_snapshots().is_empty());
+    }
+
+    #[test]
+    fn unbounded_fragment_context_preserves_query_state() {
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_cancellation(cancellation.clone())
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 1024 * 1024,
+                max_source_chunk_bytes: 64 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_host_fetch_max_concurrent_ops(7)
+            .build()
+            .unwrap();
+        context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
+            outcome: LakehouseCacheFillOutcome::Completed,
+            bytes: Some(2048),
+            elapsed: Duration::from_millis(3),
+            cache_path_hash: "fragment-cache-path-hash".to_string(),
+            stable_id_hash: "fragment-stable-id-hash".to_string(),
+            file_index: Some(1),
+            chunk_index: Some(2),
+            error: None,
+        });
+        cancellation.cancel();
+
+        let fragment_context = context.for_unbounded_fragment();
+
+        assert_eq!(fragment_context.memory_control_policy(), MemoryControlPolicy::Unbounded);
+        assert!(fragment_context.cancellation().is_cancelled());
+        assert_eq!(fragment_context.host_fetch_max_concurrent_ops(), 7);
+        assert_eq!(fragment_context.lakehouse_cache_fill_event_snapshots().len(), 1);
+        assert_eq!(context.lakehouse_cache_fill_event_snapshots().len(), 1);
     }
 
     #[test]
