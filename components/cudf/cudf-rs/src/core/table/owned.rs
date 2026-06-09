@@ -34,6 +34,15 @@ unsafe impl Send for Table {}
 unsafe impl Sync for Table {}
 
 impl Table {
+    fn empty_requires_runtime_error(operation: &'static str) -> Error {
+        Error::new(
+            ErrorKind::InvalidOperation,
+            "creating an empty table requires an explicit runtime because no authoritative input columns exist",
+        )
+        .with_operation(operation)
+        .with_context("remedy", "use Runtime::empty_table()")
+    }
+
     fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
         Self::from_handle_with_domain_and_owners(handle, domain, None)
     }
@@ -46,30 +55,44 @@ impl Table {
         Self { handle: NonNull::new(handle).expect("null table handle"), domain, retained_owners }
     }
 
-    /// Create a table from a vector of columns.
-    ///
-    /// The columns are *moved* into the table — do not use them afterwards.
-    pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
+    fn from_columns_impl(
+        columns: Vec<Column>,
+        authoritative_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let domain = if let Some(first) = columns.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, column) in columns.iter().enumerate().skip(1) {
                 ExecutionDomain::require_same_provenance(
                     &domain,
                     column.execution_domain(),
-                    "table::from_columns",
+                    operation,
                     "all columns in a table must share one retained provenance",
                     "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table from columns already placed in one Runtime before calling this operation",
                 )
                 .map_err(|e| e.with_context("column_index", index.to_string()))?;
             }
-            domain
+            if let Some(authoritative_domain) = authoritative_domain.as_ref() {
+                ExecutionDomain::require_same_provenance(
+                    authoritative_domain,
+                    &domain,
+                    operation,
+                    "table construction requires all columns to match the authoritative retained provenance",
+                    "use copy_into_runtime(...) to relocate all columns into one Runtime before constructing the table",
+                )?;
+                Arc::clone(authoritative_domain)
+            } else {
+                domain
+            }
+        } else if let Some(authoritative_domain) = authoritative_domain {
+            authoritative_domain
         } else {
-            ExecutionDomain::ambient_default()
+            return Err(Self::empty_requires_runtime_error(operation));
         };
 
         let num_columns = i32::try_from(columns.len()).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "number of columns exceeds i32::MAX")
-                .with_operation("table::from_columns")
+                .with_operation(operation)
                 .with_context("num_columns", columns.len().to_string())
         })?;
         let mut retained_owners = Vec::with_capacity(columns.len());
@@ -95,22 +118,30 @@ impl Table {
                     unsafe { cudf_sys::cudf_column_destroy(h) };
                 }
             }
-            error::check_status_in(status, "table::from_columns")?;
+            error::check_status_in(status, operation)?;
         }
 
         Ok(Self::from_handle_with_domain_and_owners(table_handle, domain, table_retained_owners))
     }
 
+    /// Create a table from a vector of columns.
+    ///
+    /// The columns are *moved* into the table — do not use them afterwards.
+    pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
+        Self::from_columns_impl(columns, None, "table::from_columns")
+    }
+
+    pub(crate) fn empty_in_domain(domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        Self::from_columns_impl(Vec::new(), Some(domain), operation)
+    }
+
     /// Deep-copy this table.
     pub fn deep_copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = self.domain.explicit_exec_options_raw();
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(options) => unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), options, &mut handle) },
-                None => unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) },
-            },
+            unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
             "table::deep_copy",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
@@ -127,13 +158,8 @@ impl Table {
         Ok(TableView::from_raw_handle(view_handle, Arc::clone(&self.domain)))
     }
 
-    /// Construct a `Table` from a raw FFI handle, taking ownership.
-    ///
-    /// # Safety
-    /// The handle must be a valid `cudf_table_handle` and the caller must
-    /// transfer ownership.
-    pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self::from_handle_with_domain(handle, domain)
     }
 
     pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {

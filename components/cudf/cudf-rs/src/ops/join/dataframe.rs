@@ -263,6 +263,7 @@ impl DataFrame {
                 rp_table.table(),
                 null_equality,
                 join_type,
+                &output_domain,
                 Some(exec_options),
                 operation,
             )?
@@ -298,11 +299,8 @@ impl DataFrame {
             build_join_schema_names(right.columns_map(), &right_key_indices, &right_payload_indices);
 
         Ok(DataFrameJoinResult {
-            left: DataFrame::from_table(
-                result.left.with_execution_domain(Arc::clone(&output_domain)),
-                left_schema_names,
-            )?,
-            right: DataFrame::from_table(result.right.with_execution_domain(output_domain), right_schema_names)?,
+            left: DataFrame::from_table(result.left, left_schema_names)?,
+            right: DataFrame::from_table(result.right, right_schema_names)?,
         })
     }
 }
@@ -343,8 +341,7 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     }
 
     let exec_options = output_domain.explicit_exec_options_raw();
-    replace::replace_nulls_column_with_exec_options(&lcv, &rcv, exec_options.as_ref(), operation)
-        .map(|col| col.with_execution_domain(output_domain))
+    replace::replace_nulls_column_with_exec_options(&lcv, &rcv, &output_domain, exec_options.as_ref(), operation)
 }
 
 // ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ use cudf::{
 };
 use static_assertions::assert_not_impl_any;
 
-use crate::common::sample_df;
+use crate::common::{column_from_slice, column_from_strs, sample_df};
 
 // ===========================================================================
 // Category 1: Send+Sync static assertions for owned types
@@ -108,7 +108,7 @@ assert_not_impl_any!(cudf::core::TableView<'static>: Send, Sync);
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and kept here as the authoritative example):
 //
-//   let col = Column::from_slice(&[1i32]).unwrap();
+//   let col = column_from_slice(&[1i32]).unwrap();
 //   let view = col.view().unwrap();
 //   tokio::task::spawn_blocking(move || {
 //       view.len()  // ERROR: ColumnView is !Send
@@ -198,7 +198,7 @@ async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_sort_survives_spawn_blocking() {
-    let series = Series::new::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
+    let series = crate::common::series::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
     let sorted = tokio::task::spawn_blocking(move || series.sort_values(SortOptions::new()))
         .await
         .expect("blocking task panicked")
@@ -210,8 +210,8 @@ async fn series_sort_survives_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_arithmetic_in_spawn_blocking() {
-    let a = Series::new::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
-    let b = Series::new::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
+    let a = crate::common::series::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
+    let b = crate::common::series::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
 
     let result =
         tokio::task::spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
@@ -222,7 +222,7 @@ async fn series_arithmetic_in_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_unique_in_spawn_blocking() {
-    let series = Series::new::<i32>("x", &[1, 2, 2, 3, 3, 3]).unwrap();
+    let series = crate::common::series::<i32>("x", &[1, 2, 2, 3, 3, 3]).unwrap();
     let unique = tokio::task::spawn_blocking(move || series.unique())
         .await
         .expect("blocking task panicked")
@@ -249,10 +249,13 @@ async fn parquet_round_trip_in_spawn_blocking() {
         .expect("write_parquet failed");
 
     // Read from a separate spawn_blocking.
-    let loaded = tokio::task::spawn_blocking(move || DataFrame::read_parquet(&path_clone))
-        .await
-        .expect("blocking task panicked")
-        .expect("read_parquet failed");
+    let loaded = tokio::task::spawn_blocking(move || {
+        let runtime = cudf::Runtime::builder().build().unwrap();
+        DataFrame::read_parquet(&runtime, &path_clone)
+    })
+    .await
+    .expect("blocking task panicked")
+    .expect("read_parquet failed");
 
     assert_eq!(loaded.num_columns(), 2);
     assert_eq!(loaded.num_rows(), 5);
@@ -303,10 +306,13 @@ async fn arrow_round_trip_across_spawn_blocking() {
         .expect("to_record_batch failed");
 
     // host → GPU (DataFrame) in another spawn_blocking.
-    let df2 = tokio::task::spawn_blocking(move || dataframe_from_record_batch(&batch))
-        .await
-        .expect("blocking task panicked")
-        .expect("from_record_batch failed");
+    let df2 = tokio::task::spawn_blocking(move || {
+        let runtime = cudf::Runtime::builder().build().unwrap();
+        dataframe_from_record_batch(&runtime, &batch)
+    })
+    .await
+    .expect("blocking task panicked")
+    .expect("from_record_batch failed");
 
     assert_eq!(df2.num_rows(), 5);
     let ids: Vec<i32> = df2.series("id").unwrap().to_vec_strict::<i32>().unwrap();
@@ -321,8 +327,8 @@ async fn arrow_round_trip_across_spawn_blocking() {
 async fn chained_pipeline_in_spawn_blocking() {
     // Full pipeline: create → sort → head → groupby → materialize.
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
-        let keys = Column::from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
-        let vals = Column::from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
+        let keys = column_from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
+        let vals = column_from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
         let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
@@ -357,12 +363,12 @@ async fn join_inside_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<usize> {
         let left = crate::common::dataframe_from_columns(
             vec!["id".into(), "name".into()],
-            vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_strs(&["Alice", "Bob", "Carol"]).unwrap()],
+            vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_strs(&["Alice", "Bob", "Carol"]).unwrap()],
         )?;
 
         let right = crate::common::dataframe_from_columns(
             vec!["id".into(), "score".into()],
-            vec![Column::from_slice(&[2i32, 3, 4]).unwrap(), Column::from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
+            vec![column_from_slice(&[2i32, 3, 4]).unwrap(), column_from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
         )?;
 
         let opts = cudf::MergeOptions::new().on(["id"]).how_inner();

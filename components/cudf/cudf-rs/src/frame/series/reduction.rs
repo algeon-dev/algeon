@@ -91,9 +91,10 @@ impl Series {
     /// GPU computation plus synchronization for host extraction.
     ///
     /// ```no_run
-    /// use cudf::Series;
+    /// use cudf::Runtime;
     ///
-    /// let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let s = rt.series("x", &[10i32, 20, 30]).unwrap();
     /// let total = s.sum_value::<i64>().unwrap();
     ///
     /// assert_eq!(total, 60);
@@ -117,11 +118,11 @@ impl Series {
     /// Returns `None` when the reduction has no valid element to select.
     ///
     /// ```no_run
-    /// use cudf::Series;
+    /// use cudf::Runtime;
     ///
+    /// let rt = Runtime::new().unwrap();
     /// let s =
-    ///     Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true])
-    ///         .unwrap();
+    ///     rt.nullable_series("x", &[10i32, 0, 30], &[true, false, true]).unwrap();
     /// let min = s.min_value::<i32>().unwrap();
     ///
     /// assert_eq!(min, Some(10));
@@ -161,9 +162,10 @@ impl Series {
     /// Returns `None` when the reduction has no valid element to average.
     ///
     /// ```no_run
-    /// use cudf::Series;
+    /// use cudf::Runtime;
     ///
-    /// let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let s = rt.series("x", &[10i32, 20, 30]).unwrap();
     /// let mean = s.mean_value().unwrap();
     ///
     /// assert_eq!(mean, Some(20.0));
@@ -287,9 +289,10 @@ impl Series {
     /// select.
     ///
     /// ```no_run
-    /// use cudf::Series;
+    /// use cudf::Runtime;
     ///
-    /// let s = Series::new::<i32>("x", &[30, 10, 20]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let s = rt.series("x", &[30i32, 10, 20]).unwrap();
     /// let (min, max) = s.minmax_values::<i32>().unwrap();
     ///
     /// assert_eq!((min, max), (Some(10), Some(30)));

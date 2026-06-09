@@ -1,19 +1,17 @@
 //! Tests for concatenation operations.
 
-use cudf::{
-    core::{Column, Table},
-    ops::concatenate,
-};
+use cudf::{ErrorKind, core::Table, ops::concatenate};
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
 };
 
 #[test]
 fn test_concatenate_columns() {
-    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice(&[4i32, 5]).unwrap();
+    let rt = sample_runtime();
+    let a = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = rt.column_from_slice(&[4i32, 5]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -25,13 +23,22 @@ fn test_concatenate_columns() {
 }
 
 #[test]
+fn test_concatenate_columns_rejects_empty_input() {
+    let err = concatenate::concatenate_columns(&[]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "concatenate::concatenate_columns");
+    assert!(err.message().contains("at least one input column"), "unexpected error: {err}");
+}
+
+#[test]
 fn test_concatenate_tables() {
-    let c0a = Column::from_slice(&[1i32, 2]).unwrap();
-    let c1a = Column::from_slice(&[10.0f64, 20.0]).unwrap();
+    let rt = sample_runtime();
+    let c0a = rt.column_from_slice(&[1i32, 2]).unwrap();
+    let c1a = rt.column_from_slice(&[10.0f64, 20.0]).unwrap();
     let t1 = Table::from_columns(vec![c0a, c1a]).unwrap();
 
-    let c0b = Column::from_slice(&[3i32, 4]).unwrap();
-    let c1b = Column::from_slice(&[30.0f64, 40.0]).unwrap();
+    let c0b = rt.column_from_slice(&[3i32, 4]).unwrap();
+    let c1b = rt.column_from_slice(&[30.0f64, 40.0]).unwrap();
     let t2 = Table::from_columns(vec![c0b, c1b]).unwrap();
 
     let v1 = t1.view().unwrap();
@@ -49,9 +56,18 @@ fn test_concatenate_tables() {
 }
 
 #[test]
+fn test_concatenate_tables_rejects_empty_input() {
+    let err = concatenate::concatenate_tables(&[]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "concatenate::concatenate_tables");
+    assert!(err.message().contains("at least one input table"), "unexpected error: {err}");
+}
+
+#[test]
 fn test_concatenate_nullable_columns() {
-    let a = Column::from_slice_nullable(&[1i32, 2], &[true, false]).unwrap();
-    let b = Column::from_slice_nullable(&[3i32, 4], &[false, true]).unwrap();
+    let rt = sample_runtime();
+    let a = rt.column_from_slice_nullable(&[1i32, 2], &[true, false]).unwrap();
+    let b = rt.column_from_slice_nullable(&[3i32, 4], &[false, true]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -69,8 +85,10 @@ fn test_concatenate_nullable_columns() {
 
 #[test]
 fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenance() {
-    let first = explicit_i32_column(&[1, 2, 3], 940);
-    let second = explicit_i32_column(&[4, 5], 941);
+    let first_rt = sample_runtime();
+    let second_rt = sample_runtime();
+    let first = first_rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = second_rt.column_from_slice(&[4i32, 5]).unwrap();
     let expected_stream = first.__debug_execution_domain_stream_value();
     let expected_mr = first.__debug_execution_domain_mr_value();
 
@@ -89,10 +107,18 @@ fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenanc
 
 #[test]
 fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance() {
-    let first =
-        Table::from_columns(vec![explicit_i32_column(&[1, 2], 942), explicit_i32_column(&[10, 20], 942)]).unwrap();
-    let second =
-        Table::from_columns(vec![explicit_i32_column(&[3, 4], 943), explicit_i32_column(&[30, 40], 943)]).unwrap();
+    let first_rt = sample_runtime();
+    let second_rt = sample_runtime();
+    let first = Table::from_columns(vec![
+        first_rt.column_from_slice(&[1i32, 2]).unwrap(),
+        first_rt.column_from_slice(&[10i32, 20]).unwrap(),
+    ])
+    .unwrap();
+    let second = Table::from_columns(vec![
+        second_rt.column_from_slice(&[3i32, 4]).unwrap(),
+        second_rt.column_from_slice(&[30i32, 40]).unwrap(),
+    ])
+    .unwrap();
     let expected_stream = first.__debug_execution_domain_stream_value();
     let expected_mr = first.__debug_execution_domain_mr_value();
 

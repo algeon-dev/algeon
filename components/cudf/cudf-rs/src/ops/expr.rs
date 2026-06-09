@@ -24,13 +24,14 @@
 //!
 //! ```no_run
 //! use cudf::{
-//!     DataFrame, Expr, Series,
+//!     DataFrame, Expr, Runtime,
 //!     ops::expr::{col, lit},
 //! };
 //!
+//! let rt = Runtime::new().unwrap();
 //! let df = DataFrame::from_series([
-//!     Series::new::<i32>("x", &[1, 2, 3]).unwrap(),
-//!     Series::new::<i32>("y", &[10, 20, 30]).unwrap(),
+//!     rt.series("x", &[1i32, 2, 3]).unwrap(),
+//!     rt.series("y", &[10i32, 20, 30]).unwrap(),
 //! ])
 //! .unwrap();
 //!

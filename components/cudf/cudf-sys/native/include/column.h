@@ -271,6 +271,9 @@ cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
                                           int32_t* out);
 
+/// Force the next column-view metadata read (`size` or `null_count`) to fail.
+void cudf_test_fail_next_column_view_metadata_read();
+
 /// Check if the column_view has a null mask allocated.
 cudf_status_t cudf_column_view_nullable(cudf_column_view_handle handle,
                                         int32_t* out);

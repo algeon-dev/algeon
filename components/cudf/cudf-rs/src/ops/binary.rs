@@ -270,8 +270,15 @@ pub fn binary_operation_vv(
         rhs.execution_domain().fence_stream("binary::binary_operation_vv")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
-    binary_operation_vv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vv")
-        .map(|column| column.with_execution_domain(output_domain))
+    binary_operation_vv_impl(
+        lhs,
+        rhs,
+        op,
+        output_type,
+        &output_domain,
+        exec_options.as_ref(),
+        "binary::binary_operation_vv",
+    )
 }
 
 pub(crate) fn binary_operation_vv_impl(
@@ -279,6 +286,7 @@ pub(crate) fn binary_operation_vv_impl(
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
     output_type: &DataType,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -313,7 +321,7 @@ pub(crate) fn binary_operation_vv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Binary operation: column op scalar.
@@ -333,8 +341,15 @@ pub fn binary_operation_vs(
         "binary::binary_operation_vs",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    binary_operation_vs_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_vs")
-        .map(|column| column.with_execution_domain(output_domain))
+    binary_operation_vs_impl(
+        lhs,
+        rhs,
+        op,
+        output_type,
+        &output_domain,
+        exec_options.as_ref(),
+        "binary::binary_operation_vs",
+    )
 }
 
 pub(crate) fn binary_operation_vs_impl(
@@ -342,6 +357,7 @@ pub(crate) fn binary_operation_vs_impl(
     rhs: &Scalar,
     op: BinaryOperator,
     output_type: &DataType,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -376,7 +392,7 @@ pub(crate) fn binary_operation_vs_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Binary operation: scalar op column.
@@ -398,8 +414,15 @@ pub fn binary_operation_sv(
         "binary::binary_operation_sv",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    binary_operation_sv_impl(lhs, rhs, op, output_type, exec_options.as_ref(), "binary::binary_operation_sv")
-        .map(|column| column.with_execution_domain(output_domain))
+    binary_operation_sv_impl(
+        lhs,
+        rhs,
+        op,
+        output_type,
+        &output_domain,
+        exec_options.as_ref(),
+        "binary::binary_operation_sv",
+    )
 }
 
 fn binary_operation_sv_impl(
@@ -407,6 +430,7 @@ fn binary_operation_sv_impl(
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
     output_type: &DataType,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -441,5 +465,5 @@ fn binary_operation_sv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }

@@ -4,10 +4,12 @@ use std::process::Command;
 
 use cudf::{
     ErrorKind,
-    core::{Column, Table},
+    core::Table,
     io::{csv, parquet},
 };
 use tempfile::TempDir;
+
+use crate::common::{column_from_slice, sample_runtime};
 
 /// Write a Parquet file with the specified row group size using PyArrow.
 ///
@@ -38,10 +40,11 @@ fn write_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_gro
 fn test_parquet_roundtrip() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.parquet");
+    let rt = sample_runtime();
 
     // Write
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
@@ -50,13 +53,15 @@ fn test_parquet_roundtrip() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
+    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
 
     let col0 = read_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -69,10 +74,11 @@ fn test_parquet_roundtrip() {
 fn test_parquet_column_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_select.parquet");
+    let rt = sample_runtime();
 
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[4i32, 5, 6]).unwrap();
-    let c3 = Column::from_slice(&[7i32, 8, 9]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
+    let c3 = column_from_slice(&[7i32, 8, 9]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
@@ -81,7 +87,8 @@ fn test_parquet_column_selection() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only column "b"
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -95,9 +102,10 @@ fn test_parquet_column_selection() {
 fn test_parquet_row_limits() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rows.parquet");
+    let rt = sample_runtime();
 
     let data: Vec<i32> = (0..100).collect();
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -105,7 +113,7 @@ fn test_parquet_row_limits() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only first 10 rows
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).num_rows(10).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).num_rows(10).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -120,16 +128,18 @@ fn test_parquet_row_limits() {
 fn test_parquet_skip_rows_and_row_limits() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_skip_rows.parquet");
+    let rt = sample_runtime();
 
     let data: Vec<i32> = (0..20).collect();
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).skip_rows(5).num_rows(4).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).skip_rows(5).num_rows(4).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -142,10 +152,11 @@ fn test_parquet_skip_rows_and_row_limits() {
 fn test_csv_roundtrip() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.csv");
+    let rt = sample_runtime();
 
     // Write
-    let c1 = Column::from_slice(&[1i64, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c1 = column_from_slice(&[1i64, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
@@ -157,23 +168,26 @@ fn test_csv_roundtrip() {
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(true).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(true).with_runtime(&rt).build();
     let result = csv::read_csv(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
+    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
 }
 
 #[test]
 fn test_csv_read_without_header_returns_no_schema_metadata() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_no_header.csv");
+    let rt = sample_runtime();
 
     std::fs::write(&path, "1,10\n2,20\n").unwrap();
 
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).with_runtime(&rt).build();
     let result = csv::read_csv(&read_opts).unwrap();
 
     assert_eq!(result.column_names, None);
@@ -184,11 +198,12 @@ fn test_csv_read_without_header_returns_no_schema_metadata() {
 fn test_parquet_read_returns_column_names_in_shared_result() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_meta.parquet");
+    let rt = sample_runtime();
 
     // Write a parquet file with known column names
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
-    let c3 = Column::from_slice(&[100i64, 200, 300]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c3 = column_from_slice(&[100i64, 200, 300]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
@@ -197,7 +212,7 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back with metadata
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
 
     // Verify column names
@@ -222,10 +237,11 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
 fn test_parquet_read_column_selection_preserves_projected_names() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_meta_select.parquet");
+    let rt = sample_runtime();
 
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[4i32, 5, 6]).unwrap();
-    let c3 = Column::from_slice(&[7i32, 8, 9]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
+    let c3 = column_from_slice(&[7i32, 8, 9]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
@@ -234,7 +250,8 @@ fn test_parquet_read_column_selection_preserves_projected_names() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only columns "x" and "z"
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["x", "z"]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["x", "z"]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
 
     // Only the selected columns should appear
@@ -253,15 +270,16 @@ fn test_parquet_read_column_selection_preserves_projected_names() {
 fn test_parquet_read_single_column_preserves_name() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_meta_single.parquet");
+    let rt = sample_runtime();
 
-    let c1 = Column::from_slice(&[42i32]).unwrap();
+    let c1 = column_from_slice(&[42i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["only_col"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).build();
+    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
 
     assert_eq!(result.column_names, Some(vec!["only_col".to_string()]));
@@ -272,6 +290,7 @@ fn test_parquet_read_single_column_preserves_name() {
 fn test_parquet_row_group_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg.parquet");
+    let rt = sample_runtime();
 
     // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
     let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
@@ -281,7 +300,8 @@ fn test_parquet_row_group_selection() {
     }
 
     // Read only row group 1 (rows 40, 50, 60)
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[1]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[1]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -295,6 +315,7 @@ fn test_parquet_row_group_selection() {
 fn test_parquet_row_group_multiple_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_multi.parquet");
+    let rt = sample_runtime();
 
     // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
     let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
@@ -304,7 +325,8 @@ fn test_parquet_row_group_multiple_selection() {
     }
 
     // Read row groups 0 and 2 (rows 10,20,30 and 70,80,90)
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0, 2]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0, 2]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -318,8 +340,9 @@ fn test_parquet_row_group_multiple_selection() {
 fn test_parquet_row_group_empty_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_empty.parquet");
+    let rt = sample_runtime();
 
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -327,7 +350,8 @@ fn test_parquet_row_group_empty_selection() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Empty row_groups slice — should read all rows (libcudf treats empty as "all")
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -341,8 +365,9 @@ fn test_parquet_row_group_empty_selection() {
 fn test_parquet_row_groups_with_skip_rows_errors() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_skip_err.parquet");
+    let rt = sample_runtime();
 
-    let col = Column::from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -350,9 +375,16 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Combining row_groups with skip_rows should error (Rust-side validation)
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0]).skip_rows(1).build();
-    let result = parquet::read_parquet_table(&read_opts);
-    let err = result.err().expect("expected error when combining row_groups with skip_rows");
+    let read_opts = parquet::ParquetTableReadOptions::builder()
+        .filepath(&path)
+        .row_groups(&[0])
+        .skip_rows(1)
+        .with_runtime(&rt)
+        .build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("expected error when combining row_groups with skip_rows"),
+        Err(err) => err,
+    };
     assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
@@ -360,8 +392,9 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
 fn test_parquet_row_groups_with_num_rows_errors() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_num_err.parquet");
+    let rt = sample_runtime();
 
-    let col = Column::from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -369,9 +402,16 @@ fn test_parquet_row_groups_with_num_rows_errors() {
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Combining row_groups with num_rows should error (Rust-side validation)
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[0]).num_rows(2).build();
-    let result = parquet::read_parquet_table(&read_opts);
-    let err = result.err().expect("expected error when combining row_groups with num_rows");
+    let read_opts = parquet::ParquetTableReadOptions::builder()
+        .filepath(&path)
+        .row_groups(&[0])
+        .num_rows(2)
+        .with_runtime(&rt)
+        .build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("expected error when combining row_groups with num_rows"),
+        Err(err) => err,
+    };
     assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
@@ -379,16 +419,18 @@ fn test_parquet_row_groups_with_num_rows_errors() {
 fn test_parquet_read_options_can_be_reused_across_calls() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_reuse_opts.parquet");
+    let rt = sample_runtime();
 
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[4i32, 5, 6]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
     parquet::write_parquet(&view, &write_opts).unwrap();
 
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).build();
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).with_runtime(&rt).build();
 
     let first = parquet::read_parquet_table(&read_opts).unwrap();
     let second = parquet::read_parquet_table(&read_opts).unwrap();
@@ -401,7 +443,11 @@ fn test_parquet_read_options_can_be_reused_across_calls() {
 
 #[test]
 fn test_csv_read_nonexistent_file_reports_not_found() {
-    let read_opts = csv::CsvTableReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.csv").build();
+    let rt = sample_runtime();
+    let read_opts = csv::CsvTableReadOptions::builder()
+        .filepath("/tmp/nonexistent_cudf_test_file_12345.csv")
+        .with_runtime(&rt)
+        .build();
     let err = match csv::read_csv(&read_opts) {
         Ok(_) => panic!("missing CSV file should fail"),
         Err(err) => err,
@@ -412,8 +458,11 @@ fn test_csv_read_nonexistent_file_reports_not_found() {
 
 #[test]
 fn test_parquet_read_nonexistent_file_reports_not_found() {
-    let read_opts =
-        parquet::ParquetTableReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.parquet").build();
+    let rt = sample_runtime();
+    let read_opts = parquet::ParquetTableReadOptions::builder()
+        .filepath("/tmp/nonexistent_cudf_test_file_12345.parquet")
+        .with_runtime(&rt)
+        .build();
     let err = match parquet::read_parquet_table(&read_opts) {
         Ok(_) => panic!("missing Parquet file should fail"),
         Err(err) => err,
@@ -426,15 +475,16 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
 fn test_csv_custom_delimiter() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_tab.csv");
+    let rt = sample_runtime();
 
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
     let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
     csv::write_csv(&view, &write_opts).unwrap();
 
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).delimiter(b'\t').build();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).delimiter(b'\t').with_runtime(&rt).build();
     let result = csv::read_csv(&read_opts).unwrap();
     assert_eq!(result.column_names, Some(vec!["x".to_string()]));
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 2);

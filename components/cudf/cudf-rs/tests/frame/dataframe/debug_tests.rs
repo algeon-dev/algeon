@@ -1,12 +1,12 @@
 //! Tests for metadata-only Debug formatting on DataFrame bridge types.
 
-use cudf::core::Column;
+use crate::common::{column_from_slice, column_from_strs};
 
 #[test]
 fn test_dataframe_table_view_debug_reports_table_metadata_without_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "city".to_string()],
-        vec![Column::from_slice(&[7i32, 8, 9]).unwrap(), Column::from_strs(&["tokyo", "paris", "taipei"]).unwrap()],
+        vec![column_from_slice(&[7i32, 8, 9]).unwrap(), column_from_strs(&["tokyo", "paris", "taipei"]).unwrap()],
     )
     .unwrap();
 

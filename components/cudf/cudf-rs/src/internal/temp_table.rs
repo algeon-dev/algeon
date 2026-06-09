@@ -5,7 +5,12 @@
 //! where callers would otherwise need to keep both values alive separately —
 //! callers can hold a single `TempTableView` instead of juggling two values.
 
-use crate::core::{column::ColumnView, error::Result, table::TableView};
+use std::sync::Arc;
+
+use crate::{
+    core::{column::ColumnView, error::Result, table::TableView},
+    runtime::execution_domain::ExecutionDomain,
+};
 
 /// A temporary bundle of column views plus a table view.
 ///
@@ -36,6 +41,16 @@ impl<'a> TempTableView<'a> {
     pub(crate) fn from_column_views(views: Vec<ColumnView<'a>>) -> Result<Self> {
         let view_refs: Vec<&ColumnView<'a>> = views.iter().collect();
         let table = TableView::from_column_views(&view_refs)?;
+        Ok(Self { _views: views, table })
+    }
+
+    pub(crate) fn from_column_views_in_domain(
+        views: Vec<ColumnView<'a>>,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let view_refs: Vec<&ColumnView<'a>> = views.iter().collect();
+        let table = TableView::from_column_views_in_domain(&view_refs, Some(domain), operation)?;
         Ok(Self { _views: views, table })
     }
 

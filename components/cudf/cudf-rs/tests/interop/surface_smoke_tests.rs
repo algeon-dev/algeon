@@ -166,7 +166,7 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: for<'a> fn(&'a Column) -> std::result::Result<BorrowedColumnView<'a>, InteropError>,
     ) {
     }
-    fn assert_column_owned_import(_f: fn(OwnedColumnTransfer) -> std::result::Result<Column, InteropError>) {}
+    fn assert_column_owned_import(_f: fn(OwnedColumnTransfer, &Runtime) -> std::result::Result<Column, InteropError>) {}
     fn assert_table_borrowed_import(
         _f: for<'a, 'b> fn(&'a BorrowedTableView<'b>, &'a Runtime) -> std::result::Result<Table, InteropError>,
     ) {
@@ -177,7 +177,7 @@ fn interop_low_level_adapter_surface_smoke() {
     }
 
     assert_column_borrowed_export(Column::try_borrow_column_view);
-    assert_column_owned_import(Column::try_from_owned_device_column_transfer);
+    assert_column_owned_import(Column::try_import_from_owned_device_column_transfer_into_runtime);
     assert_table_borrowed_import(Table::try_import_from_borrowed_table_view_into_runtime);
     assert_table_prepared_export(Table::try_prepare_device_table_export);
 }

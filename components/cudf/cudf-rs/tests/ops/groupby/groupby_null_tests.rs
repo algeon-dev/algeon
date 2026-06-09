@@ -8,13 +8,15 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{AggSpec, DataFrame, GroupByAgg, core::Column};
+use cudf::{AggSpec, DataFrame, GroupByAgg};
+
+use crate::common::{column_from_slice, column_from_slice_nullable};
 
 /// Helper: build a DataFrame with key and value columns for groupby tests.
 fn df_with_nullable_values() -> DataFrame {
     // key: [1, 1, 2, 2], value: [10, null, 30, 40]
-    let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
-    let vals = Column::from_slice_nullable(&[10i64, 0, 30, 40], &[true, false, true, true]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let vals = column_from_slice_nullable(&[10i64, 0, 30, 40], &[true, false, true, true]).unwrap();
     crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap()
 }
 
@@ -132,8 +134,8 @@ fn test_groupby_count_includes_nulls_when_requested() {
 #[test]
 fn test_groupby_sum_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
-    let keys = Column::from_slice(&[1i32, 1, 2]).unwrap();
-    let vals = Column::from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
+    let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
@@ -156,8 +158,8 @@ fn test_groupby_sum_all_null_group() {
 #[test]
 fn test_groupby_min_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
-    let keys = Column::from_slice(&[1i32, 1, 2]).unwrap();
-    let vals = Column::from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
+    let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
@@ -184,8 +186,8 @@ fn test_groupby_min_all_null_group() {
 #[test]
 fn test_groupby_null_keys_excluded_by_default() {
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]
-    let keys = Column::from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let keys = column_from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
@@ -209,8 +211,8 @@ fn test_groupby_null_keys_included_when_requested() {
     use cudf::GroupByOptions;
 
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]
-    let keys = Column::from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let keys = column_from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 

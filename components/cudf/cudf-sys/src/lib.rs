@@ -2298,6 +2298,10 @@ extern "C" {
     /// Reset the observation state so the next `_ex` call's context is visible.
     pub fn cudf_test_exec_reset_observation();
 
+    /// Force the next column-view metadata read (`size` or `null_count`) to
+    /// fail for panic-elimination regression testing.
+    pub fn cudf_test_fail_next_column_view_metadata_read();
+
     // -- String operations ---------------------------------------------------
 
     /// Convert string column to lowercase.

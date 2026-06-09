@@ -1,23 +1,23 @@
 //! Tests for join operations.
 
 use cudf::{
-    core::{Column, Table},
+    core::Table,
     ops::join::{self, NullEquality},
 };
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    column_from_slice, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 /// Helper to create an empty table (0 columns) for use as an empty payload.
 fn empty_payload() -> Table {
-    Table::from_columns(vec![]).unwrap()
+    sample_runtime().empty_table().unwrap()
 }
 
 fn nullable_i32_table_column(table: &Table, index: usize) -> Vec<Option<i32>> {
     let view = table.view().unwrap();
-    let column = view.column(index.try_into().unwrap()).unwrap();
+    let column = view.column(index).unwrap();
     let values = column.to_vec::<i32>().unwrap();
     let validity = column.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
 
@@ -29,10 +29,10 @@ fn test_inner_join() {
     // Left: keys=[1,2,3], payload=[10,20,30]
     // Right: keys=[2,3,4], payload=[200,300,400]
     // Inner join on keys: matches are 2 and 3.
-    let lk = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let lp = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let rk = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let rp = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let lk = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let lp = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let rk = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let rp = column_from_slice(&[200i32, 300, 400]).unwrap();
 
     let lk_table = Table::from_columns(vec![lk]).unwrap();
     let lp_table = Table::from_columns(vec![lp]).unwrap();
@@ -73,8 +73,8 @@ fn test_inner_join() {
 fn test_left_join() {
     // Left: keys=[1,2,3], Right: keys=[2,4]
     // Left join preserves all left rows.
-    let lk = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let rk = Column::from_slice(&[2i32, 4]).unwrap();
+    let lk = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let rk = column_from_slice(&[2i32, 4]).unwrap();
 
     let lk_table = Table::from_columns(vec![lk]).unwrap();
     let rk_table = Table::from_columns(vec![rk]).unwrap();
@@ -109,8 +109,8 @@ fn test_left_join() {
 fn test_full_join() {
     // Left: keys=[1,2], Right: keys=[2,3]
     // Full join: rows for keys 1, 2, 3.
-    let lk = Column::from_slice(&[1i32, 2]).unwrap();
-    let rk = Column::from_slice(&[2i32, 3]).unwrap();
+    let lk = column_from_slice(&[1i32, 2]).unwrap();
+    let rk = column_from_slice(&[2i32, 3]).unwrap();
 
     let lk_table = Table::from_columns(vec![lk]).unwrap();
     let rk_table = Table::from_columns(vec![rk]).unwrap();
@@ -143,14 +143,14 @@ fn test_full_join() {
 
 #[test]
 fn test_join_error_contains_operation_context() {
-    let lk = Column::from_slice(&[1i32, 2]).unwrap();
-    let rk = Column::from_slice(&[2i32, 3]).unwrap();
+    let lk = column_from_slice(&[1i32, 2]).unwrap();
+    let rk = column_from_slice(&[2i32, 3]).unwrap();
 
     let lk_table = Table::from_columns(vec![lk]).unwrap();
     let rk_table = Table::from_columns(vec![rk]).unwrap();
 
     // Deliberately invalid payload row count for left side.
-    let lp_bad = Table::from_columns(vec![Column::from_slice(&[10i32]).unwrap()]).unwrap();
+    let lp_bad = Table::from_columns(vec![column_from_slice(&[10i32]).unwrap()]).unwrap();
     let rp = empty_payload();
 
     let lkv = lk_table.view().unwrap();
@@ -158,7 +158,10 @@ fn test_join_error_contains_operation_context() {
     let lpv = lp_bad.view().unwrap();
     let rpv = rp.view().unwrap();
 
-    let err = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).err().expect("expected error");
+    let err = match join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal) {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    };
     assert_eq!(err.operation(), "join::inner_join");
     assert!(err.context().iter().any(|(k, _)| *k == "null_equality"));
 }
@@ -166,10 +169,10 @@ fn test_join_error_contains_operation_context() {
 #[test]
 fn test_inner_join_multi_column_keys() {
     // Two key columns.
-    let lk0 = Column::from_slice(&[1i32, 1, 2]).unwrap();
-    let lk1 = Column::from_slice(&[10i32, 20, 10]).unwrap();
-    let rk0 = Column::from_slice(&[1i32, 2, 2]).unwrap();
-    let rk1 = Column::from_slice(&[10i32, 10, 20]).unwrap();
+    let lk0 = column_from_slice(&[1i32, 1, 2]).unwrap();
+    let lk1 = column_from_slice(&[10i32, 20, 10]).unwrap();
+    let rk0 = column_from_slice(&[1i32, 2, 2]).unwrap();
+    let rk1 = column_from_slice(&[10i32, 10, 20]).unwrap();
 
     let lk_table = Table::from_columns(vec![lk0, lk1]).unwrap();
     let rk_table = Table::from_columns(vec![rk0, rk1]).unwrap();
@@ -210,8 +213,8 @@ fn test_inner_join_multi_column_keys() {
 fn test_join_domain_module_exports_documented_surface() {
     use cudf::ops::join::{JoinResult, JoinType, MergeOptions, NullEquality, full_join, inner_join, left_join};
 
-    let left_keys = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let right_keys = Column::from_slice(&[2i32, 3, 4]).unwrap();
+    let left_keys = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let right_keys = column_from_slice(&[2i32, 3, 4]).unwrap();
 
     let left_keys = Table::from_columns(vec![left_keys]).unwrap();
     let right_keys = Table::from_columns(vec![right_keys]).unwrap();

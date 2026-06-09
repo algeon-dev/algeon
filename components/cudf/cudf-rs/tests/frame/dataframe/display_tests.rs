@@ -1,14 +1,14 @@
 //! Smoke tests for DataFrame Display and Debug formatting.
 
-use cudf::core::Column;
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
 #[test]
 fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "city".to_string()],
         vec![
-            Column::from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap(),
-            Column::from_strs(&["tokyo", "paris", "taipei"]).unwrap(),
+            column_from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap(),
+            column_from_strs(&["tokyo", "paris", "taipei"]).unwrap(),
         ],
     )
     .unwrap();
@@ -40,7 +40,7 @@ fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
 fn test_debug_smoke_reports_schema_metadata_without_materializing_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
-        vec![Column::from_slice(&[7i32, 8, 9]).unwrap(), Column::from_slice(&[11.25f64, 22.5, 33.75]).unwrap()],
+        vec![column_from_slice(&[7i32, 8, 9]).unwrap(), column_from_slice(&[11.25f64, 22.5, 33.75]).unwrap()],
     )
     .unwrap();
 

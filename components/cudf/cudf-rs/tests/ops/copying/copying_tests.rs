@@ -1,23 +1,20 @@
 //! Tests for CU-7: gather (take) and conditional copy.
 
-use cudf::{
-    core::{Column, Table},
-    ops::copying,
-};
+use cudf::{core::Table, ops::copying};
 
 use crate::common::{
-    explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, explicit_bool_column, explicit_i32_column, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
 fn test_gather_basic() {
-    let col = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
     // Gather rows 4, 2, 0.
-    let map = Column::from_slice(&[4i32, 2, 0]).unwrap();
+    let map = column_from_slice(&[4i32, 2, 0]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -28,12 +25,12 @@ fn test_gather_basic() {
 
 #[test]
 fn test_gather_multi_column() {
-    let c0 = Column::from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let c1 = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
+    let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
+    let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let tv = table.view().unwrap();
 
-    let map = Column::from_slice(&[3i32, 1]).unwrap();
+    let map = column_from_slice(&[3i32, 1]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -47,11 +44,11 @@ fn test_gather_multi_column() {
 #[test]
 fn test_gather_identity() {
     // Gather in order → identical copy.
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
-    let map = Column::from_slice(&[0i32, 1, 2]).unwrap();
+    let map = column_from_slice(&[0i32, 1, 2]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -62,11 +59,11 @@ fn test_gather_identity() {
 #[test]
 fn test_gather_with_duplicates() {
     // Gather the same row multiple times.
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
-    let map = Column::from_slice(&[1i32, 1, 1, 0]).unwrap();
+    let map = column_from_slice(&[1i32, 1, 1, 0]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -76,11 +73,11 @@ fn test_gather_with_duplicates() {
 
 #[test]
 fn test_gather_empty_map() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
-    let map = Column::from_slice(&[] as &[i32]).unwrap();
+    let map = column_from_slice(&[] as &[i32]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -90,12 +87,12 @@ fn test_gather_empty_map() {
 
 #[test]
 fn test_gather_out_of_bounds_nullify() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
     // Index 5 is out of bounds — should become null.
-    let map = Column::from_slice(&[0i32, 5, 2]).unwrap();
+    let map = column_from_slice(&[0i32, 5, 2]).unwrap();
     let map_view = map.view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
@@ -111,11 +108,11 @@ fn test_gather_out_of_bounds_nullify() {
 
 #[test]
 fn test_gather_unchecked_basic() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
-    let map = Column::from_slice(&[2i32, 0]).unwrap();
+    let map = column_from_slice(&[2i32, 0]).unwrap();
     let map_view = map.view().unwrap();
 
     // SAFETY: indices 2 and 0 are valid for a 3-row table.
@@ -147,9 +144,9 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
 
 #[test]
 fn test_copy_if_else_basic() {
-    let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let mask = Column::from_slice(&[true, false, true]).unwrap();
+    let lhs = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let mask = column_from_slice(&[true, false, true]).unwrap();
 
     let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
@@ -157,9 +154,9 @@ fn test_copy_if_else_basic() {
 
 #[test]
 fn test_copy_if_else_treats_null_mask_as_false() {
-    let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let mask = Column::from_slice_nullable(&[true, false, false], &[true, false, true]).unwrap();
+    let lhs = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let mask = column_from_slice_nullable(&[true, false, false], &[true, false, true]).unwrap();
 
     let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 3]);

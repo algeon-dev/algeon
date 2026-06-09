@@ -21,9 +21,9 @@ fn nullable_bitmask_payload_bytes(len: usize) -> usize {
 }
 
 fn sample_info_frame() -> DataFrame {
-    let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
-    let maybe = Series::new_nullable::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
-    let names = Series::new("names", &["ab", "cde", ""]).unwrap();
+    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let maybe = crate::common::nullable_series::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
+    let names = crate::common::series("names", &["ab", "cde", ""]).unwrap();
 
     DataFrame::from_series([ids, maybe, names]).unwrap()
 }
@@ -170,7 +170,7 @@ fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_
 
 #[test]
 fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
-    let plain = Series::new("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let plain = crate::common::series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&plain.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(dict).unwrap().rename("category");
     let df = DataFrame::from_series([category]).unwrap();

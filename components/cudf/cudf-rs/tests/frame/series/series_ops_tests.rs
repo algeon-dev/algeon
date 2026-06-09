@@ -9,14 +9,16 @@
 
 use cudf::{Series, TypeId};
 
+use crate::common::column_from_slice;
+
 // ===========================================================================
 // Series op Series — Result<Series> contract
 // ===========================================================================
 
 #[test]
 fn test_series_add_operator_returns_result() {
-    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
 
     let result: cudf::Result<Series> = &a + &b;
     let s = result.unwrap();
@@ -27,8 +29,8 @@ fn test_series_add_operator_returns_result() {
 
 #[test]
 fn test_series_sub_operator_returns_result() {
-    let a = Series::new::<i32>("a", &[10, 20, 30]).unwrap();
-    let b = Series::new::<i32>("b", &[1, 2, 3]).unwrap();
+    let a = crate::common::series::<i32>("a", &[10, 20, 30]).unwrap();
+    let b = crate::common::series::<i32>("b", &[1, 2, 3]).unwrap();
 
     let result: cudf::Result<Series> = &a - &b;
     let s = result.unwrap();
@@ -38,8 +40,8 @@ fn test_series_sub_operator_returns_result() {
 
 #[test]
 fn test_series_mul_operator_returns_result() {
-    let a = Series::new::<i32>("a", &[2, 3, 4]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 10, 10]).unwrap();
+    let a = crate::common::series::<i32>("a", &[2, 3, 4]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 10, 10]).unwrap();
 
     let result: cudf::Result<Series> = &a * &b;
     let s = result.unwrap();
@@ -49,8 +51,8 @@ fn test_series_mul_operator_returns_result() {
 
 #[test]
 fn test_series_div_operator_returns_result_f64() {
-    let a = Series::new::<f64>("a", &[10.0, 20.0, 30.0]).unwrap();
-    let b = Series::new::<f64>("b", &[2.0, 4.0, 5.0]).unwrap();
+    let a = crate::common::series::<f64>("a", &[10.0, 20.0, 30.0]).unwrap();
+    let b = crate::common::series::<f64>("b", &[2.0, 4.0, 5.0]).unwrap();
 
     let result: cudf::Result<Series> = &a / &b;
     let s = result.unwrap();
@@ -63,8 +65,8 @@ fn test_series_div_operator_returns_result_f64() {
 
 #[test]
 fn test_series_add_owned_owned() {
-    let a = Series::new::<i32>("a", &[1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = a + b;
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
@@ -72,8 +74,8 @@ fn test_series_add_owned_owned() {
 
 #[test]
 fn test_series_add_owned_ref() {
-    let a = Series::new::<i32>("a", &[1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = a + &b;
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
@@ -81,8 +83,8 @@ fn test_series_add_owned_ref() {
 
 #[test]
 fn test_series_add_ref_owned() {
-    let a = Series::new::<i32>("a", &[1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = &a + b;
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
@@ -92,8 +94,8 @@ fn test_series_add_ref_owned() {
 
 #[test]
 fn test_series_op_series_produces_unnamed_result() {
-    let a = Series::new::<i32>("named_a", &[1, 2, 3]).unwrap();
-    let b = Series::new::<i32>("named_b", &[10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("named_a", &[1, 2, 3]).unwrap();
+    let b = crate::common::series::<i32>("named_b", &[10, 20, 30]).unwrap();
 
     let result = (&a + &b).unwrap();
     assert_eq!(result.name(), None);
@@ -103,8 +105,8 @@ fn test_series_op_series_produces_unnamed_result() {
 
 #[test]
 fn test_series_add_operator_mixed_type_promotion() {
-    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = Series::new::<f64>("b", &[0.5, 0.5, 0.5]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = crate::common::series::<f64>("b", &[0.5, 0.5, 0.5]).unwrap();
 
     let result = (&a + &b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
@@ -117,7 +119,7 @@ fn test_series_add_operator_mixed_type_promotion() {
 
 #[test]
 fn test_series_mul_scalar_f64_operator() {
-    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
     let result: cudf::Result<Series> = &s * 2.0_f64;
     let out = result.unwrap();
@@ -127,7 +129,7 @@ fn test_series_mul_scalar_f64_operator() {
 
 #[test]
 fn test_series_add_scalar_i32_operator() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
 
     let result: cudf::Result<Series> = &s + 10_i32;
     let out = result.unwrap();
@@ -137,7 +139,7 @@ fn test_series_add_scalar_i32_operator() {
 
 #[test]
 fn test_series_sub_scalar_i64_operator() {
-    let s = Series::new::<i64>("x", &[100, 200, 300]).unwrap();
+    let s = crate::common::series::<i64>("x", &[100, 200, 300]).unwrap();
 
     let result: cudf::Result<Series> = &s - 50_i64;
     let out = result.unwrap();
@@ -147,7 +149,7 @@ fn test_series_sub_scalar_i64_operator() {
 
 #[test]
 fn test_series_div_scalar_f32_operator() {
-    let s = Series::new::<f32>("x", &[10.0, 20.0, 30.0]).unwrap();
+    let s = crate::common::series::<f32>("x", &[10.0, 20.0, 30.0]).unwrap();
 
     let result: cudf::Result<Series> = &s / 5.0_f32;
     let out = result.unwrap();
@@ -159,7 +161,7 @@ fn test_series_div_scalar_f32_operator() {
 
 #[test]
 fn test_series_mul_scalar_owned_operator() {
-    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
     let result: cudf::Result<Series> = s * 2.0_f64;
     let out = result.unwrap();
@@ -171,7 +173,7 @@ fn test_series_mul_scalar_owned_operator() {
 
 #[test]
 fn test_series_op_scalar_inherits_name() {
-    let s = Series::new::<f64>("my_col", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("my_col", &[1.0, 2.0, 3.0]).unwrap();
 
     let result = (&s * 2.0_f64).unwrap();
     assert_eq!(result.name(), Some("my_col"));
@@ -180,7 +182,7 @@ fn test_series_op_scalar_inherits_name() {
 #[test]
 fn test_series_op_scalar_unnamed_stays_unnamed() {
     // from_column produces an unnamed Series (name = None).
-    let unnamed = Series::from_column(cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
+    let unnamed = Series::from_column(column_from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
     assert_eq!(unnamed.name(), None);
 
     let result = (&unnamed + 10_i32).unwrap();
@@ -193,7 +195,7 @@ fn test_series_op_scalar_unnamed_stays_unnamed() {
 
 #[test]
 fn test_scalar_mul_series_f64_operator() {
-    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
     let result: cudf::Result<Series> = 2.0_f64 * &s;
     let out = result.unwrap();
@@ -203,7 +205,7 @@ fn test_scalar_mul_series_f64_operator() {
 
 #[test]
 fn test_scalar_add_series_i32_operator() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
 
     let result: cudf::Result<Series> = 10_i32 + &s;
     let out = result.unwrap();
@@ -215,7 +217,7 @@ fn test_scalar_add_series_i32_operator() {
 
 #[test]
 fn test_scalar_sub_series_f64_operator() {
-    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
     let result: cudf::Result<Series> = 10.0_f64 - &s;
     let out = result.unwrap();
@@ -225,7 +227,7 @@ fn test_scalar_sub_series_f64_operator() {
 
 #[test]
 fn test_scalar_sub_series_i32_operator() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
 
     let result: cudf::Result<Series> = 100_i32 - &s;
     let out = result.unwrap();
@@ -237,7 +239,7 @@ fn test_scalar_sub_series_i32_operator() {
 
 #[test]
 fn test_scalar_div_series_f64_operator() {
-    let s = Series::new::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
 
     let result: cudf::Result<Series> = 20.0_f64 / &s;
     let out = result.unwrap();
@@ -247,7 +249,7 @@ fn test_scalar_div_series_f64_operator() {
 
 #[test]
 fn test_scalar_div_series_i64_operator() {
-    let s = Series::new::<i64>("x", &[2, 5, 10]).unwrap();
+    let s = crate::common::series::<i64>("x", &[2, 5, 10]).unwrap();
 
     let result: cudf::Result<Series> = 100_i64 / &s;
     let out = result.unwrap();
@@ -259,7 +261,7 @@ fn test_scalar_div_series_i64_operator() {
 
 #[test]
 fn test_scalar_mul_owned_series_operator() {
-    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
     let result: cudf::Result<Series> = 2.0_f64 * s;
     let out = result.unwrap();
@@ -271,7 +273,7 @@ fn test_scalar_mul_owned_series_operator() {
 
 #[test]
 fn test_scalar_op_series_inherits_name() {
-    let s = Series::new::<f64>("my_col", &[1.0, 2.0]).unwrap();
+    let s = crate::common::series::<f64>("my_col", &[1.0, 2.0]).unwrap();
 
     let result = (2.0_f64 * &s).unwrap();
     assert_eq!(result.name(), Some("my_col"));
@@ -279,7 +281,7 @@ fn test_scalar_op_series_inherits_name() {
 
 #[test]
 fn test_scalar_sub_series_inherits_name() {
-    let s = Series::new::<f64>("revenue", &[100.0, 200.0]).unwrap();
+    let s = crate::common::series::<f64>("revenue", &[100.0, 200.0]).unwrap();
 
     let result = (1000.0_f64 - &s).unwrap();
     assert_eq!(result.name(), Some("revenue"));
@@ -291,8 +293,8 @@ fn test_scalar_sub_series_inherits_name() {
 
 #[test]
 fn test_series_op_series_type_mismatch_returns_err() {
-    let nums = Series::new::<i32>("nums", &[1, 2, 3]).unwrap();
-    let strs = Series::new("strs", &["a", "b", "c"]).unwrap();
+    let nums = crate::common::series::<i32>("nums", &[1, 2, 3]).unwrap();
+    let strs = crate::common::series("strs", &["a", "b", "c"]).unwrap();
 
     let result: cudf::Result<Series> = &nums + &strs;
     assert!(result.is_err(), "Expected Err for type mismatch, got Ok");
@@ -304,10 +306,10 @@ fn test_series_op_series_type_mismatch_returns_err() {
 
 #[test]
 fn test_series_add_all_scalar_types() {
-    let i32s = Series::new::<i32>("x", &[1, 2]).unwrap();
-    let i64s = Series::new::<i64>("x", &[1, 2]).unwrap();
-    let f32s = Series::new::<f32>("x", &[1.0, 2.0]).unwrap();
-    let f64s = Series::new::<f64>("x", &[1.0, 2.0]).unwrap();
+    let i32s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
+    let i64s = crate::common::series::<i64>("x", &[1, 2]).unwrap();
+    let f32s = crate::common::series::<f32>("x", &[1.0, 2.0]).unwrap();
+    let f64s = crate::common::series::<f64>("x", &[1.0, 2.0]).unwrap();
 
     // Series + scalar
     assert!((&i32s + 1_i32).is_ok());
@@ -324,8 +326,8 @@ fn test_series_add_all_scalar_types() {
 
 #[test]
 fn test_series_sub_all_scalar_types() {
-    let i32s = Series::new::<i32>("x", &[10, 20]).unwrap();
-    let f64s = Series::new::<f64>("x", &[10.0, 20.0]).unwrap();
+    let i32s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    let f64s = crate::common::series::<f64>("x", &[10.0, 20.0]).unwrap();
 
     assert!((&i32s - 1_i32).is_ok());
     assert!((&f64s - 1.0_f64).is_ok());
@@ -335,8 +337,8 @@ fn test_series_sub_all_scalar_types() {
 
 #[test]
 fn test_series_div_all_scalar_types() {
-    let i32s = Series::new::<i32>("x", &[10, 20]).unwrap();
-    let f64s = Series::new::<f64>("x", &[10.0, 20.0]).unwrap();
+    let i32s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    let f64s = crate::common::series::<f64>("x", &[10.0, 20.0]).unwrap();
 
     assert!((&i32s / 2_i32).is_ok());
     assert!((&f64s / 2.0_f64).is_ok());
@@ -346,12 +348,12 @@ fn test_series_div_all_scalar_types() {
 
 #[test]
 fn test_series_scalar_operators_support_remaining_integer_types() {
-    let u8s = Series::new::<u8>("u8s", &[1, 2, 3]).unwrap();
-    let u16s = Series::new::<u16>("u16s", &[10, 20, 30]).unwrap();
-    let u32s = Series::new::<u32>("u32s", &[2, 3, 4]).unwrap();
-    let u64s = Series::new::<u64>("u64s", &[20, 40, 60]).unwrap();
-    let i8s = Series::new::<i8>("i8s", &[10, 20, 30]).unwrap();
-    let i16s = Series::new::<i16>("i16s", &[2, 4, 6]).unwrap();
+    let u8s = crate::common::series::<u8>("u8s", &[1, 2, 3]).unwrap();
+    let u16s = crate::common::series::<u16>("u16s", &[10, 20, 30]).unwrap();
+    let u32s = crate::common::series::<u32>("u32s", &[2, 3, 4]).unwrap();
+    let u64s = crate::common::series::<u64>("u64s", &[20, 40, 60]).unwrap();
+    let i8s = crate::common::series::<i8>("i8s", &[10, 20, 30]).unwrap();
+    let i16s = crate::common::series::<i16>("i16s", &[2, 4, 6]).unwrap();
 
     let series_add = (&u8s + 1u8).unwrap();
     assert_eq!(series_add.to_vec_strict::<u8>().unwrap(), vec![2, 3, 4]);
@@ -378,8 +380,8 @@ fn test_series_scalar_operators_support_remaining_integer_types() {
 
 #[test]
 fn test_series_rem_operator_i32() {
-    let a = Series::new::<i32>("a", &[10, 23, 17]).unwrap();
-    let b = Series::new::<i32>("b", &[3, 5, 4]).unwrap();
+    let a = crate::common::series::<i32>("a", &[10, 23, 17]).unwrap();
+    let b = crate::common::series::<i32>("b", &[3, 5, 4]).unwrap();
 
     let result: cudf::Result<Series> = &a % &b;
     let s = result.unwrap();
@@ -390,8 +392,8 @@ fn test_series_rem_operator_i32() {
 
 #[test]
 fn test_series_rem_operator_f64() {
-    let a = Series::new::<f64>("a", &[10.5, 7.0]).unwrap();
-    let b = Series::new::<f64>("b", &[3.0, 2.5]).unwrap();
+    let a = crate::common::series::<f64>("a", &[10.5, 7.0]).unwrap();
+    let b = crate::common::series::<f64>("b", &[3.0, 2.5]).unwrap();
 
     let result: cudf::Result<Series> = &a % &b;
     let s = result.unwrap();
@@ -404,7 +406,7 @@ fn test_series_rem_operator_f64() {
 
 #[test]
 fn test_series_rem_scalar_i32_operator() {
-    let s = Series::new::<i32>("x", &[10, 23, 17]).unwrap();
+    let s = crate::common::series::<i32>("x", &[10, 23, 17]).unwrap();
 
     let result: cudf::Result<Series> = &s % 3_i32;
     let out = result.unwrap();
@@ -414,7 +416,7 @@ fn test_series_rem_scalar_i32_operator() {
 
 #[test]
 fn test_series_rem_scalar_f64_operator() {
-    let s = Series::new::<f64>("x", &[10.5, 7.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[10.5, 7.0]).unwrap();
 
     let result: cudf::Result<Series> = &s % 3.0_f64;
     let out = result.unwrap();
@@ -426,8 +428,8 @@ fn test_series_rem_scalar_f64_operator() {
 
 #[test]
 fn test_series_rem_owned_owned() {
-    let a = Series::new::<i32>("a", &[10, 7]).unwrap();
-    let b = Series::new::<i32>("b", &[3, 4]).unwrap();
+    let a = crate::common::series::<i32>("a", &[10, 7]).unwrap();
+    let b = crate::common::series::<i32>("b", &[3, 4]).unwrap();
 
     let result: cudf::Result<Series> = a % b;
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
@@ -435,8 +437,8 @@ fn test_series_rem_owned_owned() {
 
 #[test]
 fn test_series_rem_produces_unnamed_result() {
-    let a = Series::new::<i32>("named_a", &[10]).unwrap();
-    let b = Series::new::<i32>("named_b", &[3]).unwrap();
+    let a = crate::common::series::<i32>("named_a", &[10]).unwrap();
+    let b = crate::common::series::<i32>("named_b", &[3]).unwrap();
 
     let result = (&a % &b).unwrap();
     assert_eq!(result.name(), None);
@@ -444,7 +446,7 @@ fn test_series_rem_produces_unnamed_result() {
 
 #[test]
 fn test_series_rem_scalar_inherits_name() {
-    let s = Series::new::<i32>("my_col", &[10, 23]).unwrap();
+    let s = crate::common::series::<i32>("my_col", &[10, 23]).unwrap();
 
     let result = (&s % 3_i32).unwrap();
     assert_eq!(result.name(), Some("my_col"));
@@ -452,7 +454,7 @@ fn test_series_rem_scalar_inherits_name() {
 
 #[test]
 fn test_scalar_rem_series_i32() {
-    let s = Series::new::<i32>("x", &[3, 4]).unwrap();
+    let s = crate::common::series::<i32>("x", &[3, 4]).unwrap();
 
     let result: cudf::Result<Series> = 10_i32 % &s;
     let out = result.unwrap();
@@ -462,7 +464,7 @@ fn test_scalar_rem_series_i32() {
 
 #[test]
 fn test_scalar_rem_series_f64() {
-    let s = Series::new::<f64>("x", &[3.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[3.0]).unwrap();
 
     let result: cudf::Result<Series> = 10.0_f64 % &s;
     let out = result.unwrap();
@@ -477,7 +479,7 @@ fn test_scalar_rem_series_f64() {
 
 #[test]
 fn test_series_neg_operator_i32() {
-    let s = Series::new::<i32>("x", &[1, -2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, -2, 3]).unwrap();
 
     let result: cudf::Result<Series> = -&s;
     let out = result.unwrap();
@@ -487,7 +489,7 @@ fn test_series_neg_operator_i32() {
 
 #[test]
 fn test_series_neg_operator_f64() {
-    let s = Series::new::<f64>("x", &[1.5, -2.5]).unwrap();
+    let s = crate::common::series::<f64>("x", &[1.5, -2.5]).unwrap();
 
     let result: cudf::Result<Series> = -&s;
     let out = result.unwrap();
@@ -497,7 +499,7 @@ fn test_series_neg_operator_f64() {
 
 #[test]
 fn test_series_neg_owned() {
-    let s = Series::new::<i32>("x", &[1, -2]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, -2]).unwrap();
 
     let result: cudf::Result<Series> = -s;
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![-1, 2]);
@@ -505,7 +507,7 @@ fn test_series_neg_owned() {
 
 #[test]
 fn test_series_neg_inherits_name() {
-    let s = Series::new::<i32>("my_col", &[1, 2]).unwrap();
+    let s = crate::common::series::<i32>("my_col", &[1, 2]).unwrap();
 
     let result = (-&s).unwrap();
     assert_eq!(result.name(), Some("my_col"));
@@ -517,7 +519,7 @@ fn test_series_neg_inherits_name() {
 
 #[test]
 fn test_series_not_operator_bool() {
-    let s = Series::new::<bool>("x", &[true, false, true]).unwrap();
+    let s = crate::common::series::<bool>("x", &[true, false, true]).unwrap();
 
     let result: cudf::Result<Series> = !&s;
     let out = result.unwrap();
@@ -528,7 +530,7 @@ fn test_series_not_operator_bool() {
 
 #[test]
 fn test_series_not_owned() {
-    let s = Series::new::<bool>("x", &[true, false]).unwrap();
+    let s = crate::common::series::<bool>("x", &[true, false]).unwrap();
 
     let result: cudf::Result<Series> = !s;
     assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![false, true]);
@@ -536,7 +538,7 @@ fn test_series_not_owned() {
 
 #[test]
 fn test_series_not_inherits_name() {
-    let s = Series::new::<bool>("flags", &[true, false]).unwrap();
+    let s = crate::common::series::<bool>("flags", &[true, false]).unwrap();
 
     let result = (!&s).unwrap();
     assert_eq!(result.name(), Some("flags"));
@@ -548,8 +550,8 @@ fn test_series_not_inherits_name() {
 
 #[test]
 fn test_series_bitand_operator_bool() {
-    let a = Series::new::<bool>("lhs", &[true, true, false, false]).unwrap();
-    let b = Series::new::<bool>("rhs", &[true, false, true, false]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, true, false, false]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[true, false, true, false]).unwrap();
 
     let result: cudf::Result<Series> = &a & &b;
     let out = result.unwrap();
@@ -561,8 +563,8 @@ fn test_series_bitand_operator_bool() {
 
 #[test]
 fn test_series_bitor_operator_bool() {
-    let a = Series::new::<bool>("lhs", &[true, true, false, false]).unwrap();
-    let b = Series::new::<bool>("rhs", &[true, false, true, false]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, true, false, false]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[true, false, true, false]).unwrap();
 
     let result: cudf::Result<Series> = &a | &b;
     let out = result.unwrap();
@@ -574,8 +576,8 @@ fn test_series_bitor_operator_bool() {
 
 #[test]
 fn test_series_bitand_owned_owned() {
-    let a = Series::new::<bool>("lhs", &[true, false]).unwrap();
-    let b = Series::new::<bool>("rhs", &[true, true]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, false]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[true, true]).unwrap();
 
     let result: cudf::Result<Series> = a & b;
     assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false]);
@@ -583,8 +585,8 @@ fn test_series_bitand_owned_owned() {
 
 #[test]
 fn test_series_bitor_owned_ref() {
-    let a = Series::new::<bool>("lhs", &[true, false]).unwrap();
-    let b = Series::new::<bool>("rhs", &[false, true]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, false]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[false, true]).unwrap();
 
     let result: cudf::Result<Series> = a | &b;
     assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true]);
@@ -592,8 +594,8 @@ fn test_series_bitor_owned_ref() {
 
 #[test]
 fn test_series_bitand_rejects_non_bool_operands() {
-    let a = Series::new::<i32>("lhs", &[1, 0, 1]).unwrap();
-    let b = Series::new::<i32>("rhs", &[1, 1, 0]).unwrap();
+    let a = crate::common::series::<i32>("lhs", &[1, 0, 1]).unwrap();
+    let b = crate::common::series::<i32>("rhs", &[1, 1, 0]).unwrap();
 
     let err = (&a & &b).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
@@ -602,8 +604,8 @@ fn test_series_bitand_rejects_non_bool_operands() {
 
 #[test]
 fn test_series_bitor_rejects_non_bool_operands() {
-    let a = Series::new::<i32>("lhs", &[1, 0, 1]).unwrap();
-    let b = Series::new::<i32>("rhs", &[1, 1, 0]).unwrap();
+    let a = crate::common::series::<i32>("lhs", &[1, 0, 1]).unwrap();
+    let b = crate::common::series::<i32>("rhs", &[1, 1, 0]).unwrap();
 
     let err = (&a | &b).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
@@ -612,8 +614,8 @@ fn test_series_bitor_rejects_non_bool_operands() {
 
 #[test]
 fn test_series_logical_and_method_bool() {
-    let a = Series::new::<bool>("lhs", &[true, false, true]).unwrap();
-    let b = Series::new::<bool>("rhs", &[true, true, false]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, false, true]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[true, true, false]).unwrap();
 
     let result = a.logical_and(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -623,8 +625,8 @@ fn test_series_logical_and_method_bool() {
 
 #[test]
 fn test_series_logical_or_method_bool() {
-    let a = Series::new::<bool>("lhs", &[true, false, true]).unwrap();
-    let b = Series::new::<bool>("rhs", &[false, true, false]).unwrap();
+    let a = crate::common::series::<bool>("lhs", &[true, false, true]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[false, true, false]).unwrap();
 
     let result = a.logical_or(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -638,8 +640,8 @@ fn test_series_logical_or_method_bool() {
 
 #[test]
 fn test_series_rem_method() {
-    let a = Series::new::<i32>("a", &[10, 23]).unwrap();
-    let b = Series::new::<i32>("b", &[3, 5]).unwrap();
+    let a = crate::common::series::<i32>("a", &[10, 23]).unwrap();
+    let b = crate::common::series::<i32>("b", &[3, 5]).unwrap();
 
     let result = a.rem(&b).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 3]);
@@ -647,7 +649,7 @@ fn test_series_rem_method() {
 
 #[test]
 fn test_series_rem_scalar_method() {
-    let s = Series::new::<i32>("x", &[10, 23]).unwrap();
+    let s = crate::common::series::<i32>("x", &[10, 23]).unwrap();
 
     let result = s.rem_scalar(3i32).unwrap();
     assert_eq!(result.name(), Some("x"));
@@ -660,7 +662,7 @@ fn test_series_rem_scalar_method() {
 
 #[test]
 fn test_scalar_sub_is_not_commutative() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
 
     let forward = (&s - 10_i32).unwrap();
     let reverse = (10_i32 - &s).unwrap();
@@ -674,7 +676,7 @@ fn test_scalar_sub_is_not_commutative() {
 
 #[test]
 fn test_scalar_div_is_not_commutative() {
-    let s = Series::new::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
+    let s = crate::common::series::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
 
     let forward = (&s / 20.0_f64).unwrap();
     let reverse = (20.0_f64 / &s).unwrap();

@@ -5,9 +5,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, DuplicateKeepOption, Series, core::Scalar};
+use cudf::{DataFrame, DuplicateKeepOption};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{assert_missing_column_error, scalar};
 
 // ===========================================================================
 // Helpers
@@ -18,10 +18,15 @@ use crate::common::assert_missing_column_error;
 ///   score: [10.0, ?, 30.0, ?, 50.0]  (f64, nulls at rows 1,3)
 ///   tag:   ["a", "b", ?, "d", ?]      (string, nulls at rows 2,4)
 fn sample_df_with_nulls() -> DataFrame {
-    let ids = Series::new::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
-    let scores =
-        Series::new_nullable::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
-    let tags = Series::new_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
+    let scores = crate::common::nullable_series::<f64>(
+        "score",
+        &[10.0, 0.0, 30.0, 0.0, 50.0],
+        &[true, false, true, false, true],
+    )
+    .unwrap();
+    let tags =
+        crate::common::nullable_series("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
     DataFrame::from_series([ids, scores, tags]).unwrap()
 }
 
@@ -29,8 +34,8 @@ fn sample_df_with_nulls() -> DataFrame {
 ///   a: [1, 2, 1, 2, 3]
 ///   b: [10, 20, 10, 20, 30]
 fn sample_df_with_dupes() -> DataFrame {
-    let a = Series::new::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
     DataFrame::from_series([a, b]).unwrap()
 }
 
@@ -145,8 +150,8 @@ fn test_dropna_invalid_column_name() {
 #[test]
 fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
-    let a = Series::new_nullable::<i32>("a", &[0, 0], &[false, false]).unwrap();
-    let b = Series::new_nullable::<i32>("b", &[0, 0], &[false, false]).unwrap();
+    let a = crate::common::nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
+    let b = crate::common::nullable_series::<i32>("b", &[0, 0], &[false, false]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
@@ -187,8 +192,8 @@ fn test_drop_duplicates_subset() {
 
 #[test]
 fn test_drop_duplicates_keep_first() {
-    let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
@@ -210,8 +215,8 @@ fn test_drop_duplicates_keep_first() {
 
 #[test]
 fn test_drop_duplicates_keep_last() {
-    let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
@@ -232,8 +237,8 @@ fn test_drop_duplicates_keep_last() {
 
 #[test]
 fn test_drop_duplicates_keep_none() {
-    let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
@@ -276,7 +281,7 @@ fn test_drop_duplicates_preserves_schema() {
 #[test]
 fn test_fillna_scalar_single_column() {
     let df = sample_df_with_nulls();
-    let fill = Scalar::from_value(999.0f64).unwrap();
+    let fill = scalar(999.0f64).unwrap();
     let result = df.fillna_with_scalar("score", &fill).unwrap();
 
     // score nulls at rows 1,3 replaced with 999.0
@@ -294,7 +299,7 @@ fn test_fillna_scalar_single_column() {
 #[test]
 fn test_fillna_with_series_single_column() {
     let df = sample_df_with_nulls();
-    let fill_series = Series::new::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
+    let fill_series = crate::common::series::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
     let result = df.fillna_with_series("score", &fill_series).unwrap();
 
     let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
@@ -308,7 +313,7 @@ fn test_fillna_with_series_single_column() {
 #[test]
 fn test_fillna_invalid_column() {
     let df = sample_df_with_nulls();
-    let fill = Scalar::from_value(0i32).unwrap();
+    let fill = scalar(0i32).unwrap();
     let err = df.fillna_with_scalar("nonexistent", &fill).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -316,7 +321,7 @@ fn test_fillna_invalid_column() {
 #[test]
 fn test_fillna_with_series_invalid_column() {
     let df = sample_df_with_nulls();
-    let fill_series = Series::new::<f64>("fill", &[0.0; 5]).unwrap();
+    let fill_series = crate::common::series::<f64>("fill", &[0.0; 5]).unwrap();
     let err = df.fillna_with_series("nonexistent", &fill_series).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -328,7 +333,7 @@ fn test_fillna_with_series_invalid_column() {
 #[test]
 fn test_fillna_preserves_schema() {
     let df = sample_df_with_nulls();
-    let fill = Scalar::from_value(0.0f64).unwrap();
+    let fill = scalar(0.0f64).unwrap();
     let result = df.fillna_with_scalar("score", &fill).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "score", "tag"]);

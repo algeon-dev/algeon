@@ -1,21 +1,21 @@
 //! Tests for groupby operations.
 
 use cudf::{
-    core::{Column, Table},
+    core::Table,
     ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy},
 };
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    column_from_slice, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
 fn test_groupby_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
     // Expected groups: key=1 -> sum=40, key=2 -> sum=60
-    let keys_col = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let vals_col = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals_col = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -45,8 +45,8 @@ fn test_groupby_sum() {
 
 #[test]
 fn test_groupby_multiple_aggregations() {
-    let keys_col = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let vals_col = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals_col = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -77,9 +77,9 @@ fn test_groupby_multiple_aggregations() {
 
 #[test]
 fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
-    let keys_col = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let left_vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let right_vals = Column::from_slice(&[3i64, 4, 1, 2]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let left_vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let right_vals = column_from_slice(&[3i64, 4, 1, 2]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -114,8 +114,8 @@ fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
 
 #[test]
 fn test_groupby_count() {
-    let keys_col = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
-    let vals_col = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
+    let vals_col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -138,8 +138,8 @@ fn test_groupby_count() {
 
 #[test]
 fn test_groupby_rejects_empty_aggregations_in_request() {
-    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals_col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = column_from_slice(&[10i32, 20, 30]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -147,14 +147,17 @@ fn test_groupby_rejects_empty_aggregations_in_request() {
 
     let requests = [AggregationRequest { values: &vals_view, aggregations: &[] }];
 
-    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).err().expect("expected error");
+    let err = match groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude) {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    };
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
-    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals_col = Column::from_slice(&[10f64, 20.0, 30.0]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = column_from_slice(&[10f64, 20.0, 30.0]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -169,8 +172,8 @@ fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
 
 #[test]
 fn test_groupby_error_contains_operation_context() {
-    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals_col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = column_from_slice(&[10i32, 20, 30]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys_col]).unwrap();
     let kv = keys_table.view().unwrap();
@@ -178,7 +181,10 @@ fn test_groupby_error_contains_operation_context() {
 
     let requests = [AggregationRequest { values: &vals_view, aggregations: &[] }];
 
-    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude).err().expect("expected error");
+    let err = match groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude) {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    };
 
     assert_eq!(err.operation(), "groupby::groupby_aggregate");
     let ctx = err.context();
@@ -189,9 +195,9 @@ fn test_groupby_error_contains_operation_context() {
 #[test]
 fn test_groupby_multi_column_keys() {
     // Two key columns.
-    let k0 = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
-    let k1 = Column::from_slice(&[10i32, 20, 10, 20]).unwrap();
-    let vals = Column::from_slice(&[100i64, 200, 300, 400]).unwrap();
+    let k0 = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let k1 = column_from_slice(&[10i32, 20, 10, 20]).unwrap();
+    let vals = column_from_slice(&[100i64, 200, 300, 400]).unwrap();
 
     let keys_table = Table::from_columns(vec![k0, k1]).unwrap();
     let kv = keys_table.view().unwrap();

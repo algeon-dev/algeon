@@ -230,15 +230,20 @@ impl Table {
     }
 
     /// Consume a shared owned device transfer root back into an owned
-    /// `cudf-rs` table.
+    /// `cudf-rs` table inside the provided explicit runtime.
     ///
-    /// This is a zero-copy ownership import. `cudf-rs` round-trips preserve
-    /// the original retained execution provenance, while foreign owner roots
-    /// in the current consumer slice are accepted for the supported foreign
-    /// layout set
-    /// without deep-copying into a destination runtime.
-    pub fn try_from_owned_device_table_transfer(transfer: OwnedTableTransfer) -> Result<Self, InteropError> {
-        import_table_from_owned_transfer(transfer, "interop::Table::try_from_owned_device_table_transfer")
+    /// This is a zero-copy ownership import. The destination runtime must be
+    /// pinned to the same CUDA device as the transfer readiness contract, and
+    /// the imported table is rebound to that runtime's retained provenance.
+    pub fn try_import_from_owned_device_table_transfer_into_runtime(
+        transfer: OwnedTableTransfer,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        import_table_from_owned_transfer(
+            transfer,
+            runtime,
+            "interop::Table::try_import_from_owned_device_table_transfer_into_runtime",
+        )
     }
 
     /// Deep-copy a shared prepared export root into an owned

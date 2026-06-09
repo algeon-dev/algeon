@@ -5,11 +5,13 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Series, core::Column};
+use cudf::Series;
+
+use crate::common::column_from_slice;
 
 #[test]
 fn test_head_basic() {
-    let s = Series::new::<i32>("x", &[10, 20, 30, 40]).unwrap();
+    let s = crate::common::series::<i32>("x", &[10, 20, 30, 40]).unwrap();
     let head = s.head(2).unwrap();
 
     assert_eq!(head.name(), Some("x"));
@@ -18,7 +20,7 @@ fn test_head_basic() {
 
 #[test]
 fn test_tail_clamps_to_len() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let tail = s.tail(99).unwrap();
 
     assert_eq!(tail.name(), Some("x"));
@@ -27,7 +29,7 @@ fn test_tail_clamps_to_len() {
 
 #[test]
 fn test_slice_preserves_unnamed_series() {
-    let column = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
+    let column = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let s = Series::from_column(column).unwrap();
     let sliced = s.slice(1, 2).unwrap();
 
@@ -37,8 +39,9 @@ fn test_slice_preserves_unnamed_series() {
 
 #[test]
 fn test_filter_drops_false_and_null_mask_rows() {
-    let values = Series::new::<i32>("x", &[10, 20, 30, 40]).unwrap();
-    let mask = Series::new_nullable::<bool>("mask", &[true, false, false, true], &[true, true, false, true]).unwrap();
+    let values = crate::common::series::<i32>("x", &[10, 20, 30, 40]).unwrap();
+    let mask = crate::common::nullable_series::<bool>("mask", &[true, false, false, true], &[true, true, false, true])
+        .unwrap();
 
     let filtered = values.filter(&mask).unwrap();
 
@@ -48,8 +51,8 @@ fn test_filter_drops_false_and_null_mask_rows() {
 
 #[test]
 fn test_gather_out_of_bounds_nullifies_rows() {
-    let values = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let indices = Series::new::<i32>("idx", &[2, 99, 0]).unwrap();
+    let values = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[2, 99, 0]).unwrap();
 
     let gathered = values.gather(&indices).unwrap();
 
@@ -59,7 +62,7 @@ fn test_gather_out_of_bounds_nullifies_rows() {
 
 #[test]
 fn test_dropna_removes_null_rows() {
-    let values = Series::from_optional("x", &[Some(10i32), None, Some(30), None]).unwrap();
+    let values = crate::common::series_opt("x", &[Some(10i32), None, Some(30), None]).unwrap();
 
     let cleaned = values.dropna().unwrap();
 
@@ -70,7 +73,7 @@ fn test_dropna_removes_null_rows() {
 
 #[test]
 fn test_drop_duplicates_returns_unique_values() {
-    let values = Series::new::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
+    let values = crate::common::series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
 
     let deduped = values.drop_duplicates().unwrap();
 
@@ -82,7 +85,7 @@ fn test_drop_duplicates_returns_unique_values() {
 
 #[test]
 fn test_value_counts_returns_value_and_count_columns() {
-    let values = Series::from_optional("x", &[Some(2i32), Some(1), None, Some(2), Some(1), Some(2)]).unwrap();
+    let values = crate::common::series_opt("x", &[Some(2i32), Some(1), None, Some(2), Some(1), Some(2)]).unwrap();
 
     let counts = values.value_counts().unwrap();
 
@@ -101,7 +104,7 @@ fn test_value_counts_returns_value_and_count_columns() {
 
 #[test]
 fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
-    let column = Column::from_slice(&[5i32, 5, 7]).unwrap();
+    let column = column_from_slice(&[5i32, 5, 7]).unwrap();
     let values = Series::from_column(column).unwrap();
 
     let counts = values.value_counts().unwrap();

@@ -1,10 +1,13 @@
 //! GPU-accelerated stream compaction: drop_nulls, distinct (deduplicate).
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
-use crate::core::{
-    error::{self, Error, ErrorKind, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        error::{self, Error, ErrorKind, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Policy for which duplicate rows to keep.
@@ -64,9 +67,7 @@ impl NanEquality {
 }
 
 fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'static str) -> Result<Vec<i32>> {
-    let num_columns = usize::try_from(input.num_columns()?).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0").with_operation(operation)
-    })?;
+    let num_columns = input.num_columns()?;
 
     keys.iter()
         .map(|&key| {
@@ -93,6 +94,7 @@ pub(crate) fn drop_nulls_impl(
     input: &TableView<'_>,
     keys: &[usize],
     keep_threshold: i32,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -128,7 +130,7 @@ pub(crate) fn drop_nulls_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw(out) })
+    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 pub(crate) fn distinct_impl(
@@ -137,6 +139,7 @@ pub(crate) fn distinct_impl(
     keep: DuplicateKeepOption,
     null_equality: NullEquality,
     nan_equality: NanEquality,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -187,7 +190,7 @@ pub(crate) fn distinct_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw(out) })
+    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Drop rows from a table where key columns contain nulls.
@@ -198,12 +201,11 @@ pub(crate) fn distinct_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     core::{Column, Table},
-///     ops::stream_compaction,
-/// };
+/// use cudf::{Runtime, core::Table, ops::stream_compaction};
 ///
-/// let c0 = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+/// let rt = Runtime::new().unwrap();
+/// let c0 = rt
+///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
 /// let table = Table::from_columns(vec![c0]).unwrap();
 /// let result =
@@ -213,8 +215,7 @@ pub(crate) fn distinct_impl(
 pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    drop_nulls_impl(input, keys, keep_threshold, exec_options.as_ref(), "stream_compaction::drop_nulls")
-        .map(|table| table.with_execution_domain(output_domain))
+    drop_nulls_impl(input, keys, keep_threshold, &output_domain, exec_options.as_ref(), "stream_compaction::drop_nulls")
 }
 
 /// Create a new table with distinct rows based on key columns.
@@ -225,13 +226,15 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) ->
 /// # Example
 /// ```no_run
 /// use cudf::{
-///     core::{Column, Table},
+///     Runtime,
+///     core::Table,
 ///     ops::stream_compaction::{
 ///         self, DuplicateKeepOption, NanEquality, NullEquality,
 ///     },
 /// };
 ///
-/// let col = Column::from_slice(&[1i32, 2, 1, 3]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let col = rt.column_from_slice(&[1i32, 2, 1, 3]).unwrap();
 /// let table = Table::from_columns(vec![col]).unwrap();
 /// let result = stream_compaction::distinct(
 ///     &table.view().unwrap(),
@@ -252,6 +255,14 @@ pub fn distinct(
 ) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    distinct_impl(input, keys, keep, null_equality, nan_equality, exec_options.as_ref(), "stream_compaction::distinct")
-        .map(|table| table.with_execution_domain(output_domain))
+    distinct_impl(
+        input,
+        keys,
+        keep,
+        null_equality,
+        nan_equality,
+        &output_domain,
+        exec_options.as_ref(),
+        "stream_compaction::distinct",
+    )
 }

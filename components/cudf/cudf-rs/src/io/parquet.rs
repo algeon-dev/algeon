@@ -35,8 +35,8 @@ pub struct ParquetTableReadOptions {
     num_rows: Option<usize>,
     #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 impl ParquetTableReadOptions {
@@ -46,7 +46,7 @@ impl ParquetTableReadOptions {
         skip_rows: usize,
         num_rows: Option<usize>,
         row_groups: Option<Vec<i32>>,
-        runtime: Option<Runtime>,
+        runtime: Runtime,
     ) -> Self {
         Self { filepath, columns, skip_rows, num_rows, row_groups, runtime }
     }
@@ -84,8 +84,8 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableRe
         None => -1,
     };
 
-    let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
-    let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+    let output_domain = Arc::clone(options.runtime.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
@@ -122,36 +122,20 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableRe
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers. rg_ptr is either null
         // or a valid pointer to num_rg i32 values.
-        match exec_options.as_ref() {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_read_parquet_with_metadata_ex(
-                    filepath.as_ptr(),
-                    col_ptrs,
-                    num_cols,
-                    skip_rows,
-                    num_rows,
-                    rg_ptr,
-                    num_rg,
-                    &mut table_handle,
-                    &mut names_ptr,
-                    &mut num_names,
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_read_parquet_with_metadata(
-                    filepath.as_ptr(),
-                    col_ptrs,
-                    num_cols,
-                    skip_rows,
-                    num_rows,
-                    rg_ptr,
-                    num_rg,
-                    &mut table_handle,
-                    &mut names_ptr,
-                    &mut num_names,
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_read_parquet_with_metadata_ex(
+                filepath.as_ptr(),
+                col_ptrs,
+                num_cols,
+                skip_rows,
+                num_rows,
+                rg_ptr,
+                num_rg,
+                &mut table_handle,
+                &mut names_ptr,
+                &mut num_names,
+                &exec_options,
+            )
         },
         OPERATION,
         [
@@ -163,10 +147,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableRe
 
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
     // Wrap early so table is freed via RAII if collect_column_names() fails.
-    let table = match output_domain {
-        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
-        None => unsafe { Table::from_raw(table_handle) },
-    };
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) };
 
     // Convert the C string array into Vec<String> and free the C memory.
     // SAFETY: names_ptr and num_names were returned by a successful FFI call.
@@ -220,7 +201,7 @@ pub(crate) fn write_parquet_with_exec(
 
     // Validate column name count matches the table before the FFI call.
     if let Some(ref names) = options.column_names {
-        let expected = table.num_columns()? as usize;
+        let expected = table.num_columns()?;
         if names.len() != expected {
             return Err(Error::new(
                 ErrorKind::InvalidArgument,

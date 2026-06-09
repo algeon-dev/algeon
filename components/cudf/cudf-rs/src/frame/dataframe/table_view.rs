@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use crate::{
     core::{column::ColumnView, error::Result, table::TableView},
     internal::temp_table::TempTableView,
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Public zero-copy bridge from [`DataFrame`](super::DataFrame) to
@@ -14,8 +17,12 @@ pub struct DataFrameTableView<'a> {
 }
 
 impl<'a> DataFrameTableView<'a> {
-    pub(crate) fn from_column_views(views: Vec<ColumnView<'a>>) -> Result<Self> {
-        Ok(Self { bundle: TempTableView::from_column_views(views)? })
+    pub(crate) fn from_column_views_in_domain(
+        views: Vec<ColumnView<'a>>,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        Ok(Self { bundle: TempTableView::from_column_views_in_domain(views, domain, operation)? })
     }
 
     /// Returns the borrowed low-level [`TableView`].

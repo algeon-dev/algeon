@@ -333,12 +333,7 @@ pub(super) fn prepared_host_column_projection_from_view(
             );
         }
 
-        let child_count = usize::try_from(num_children).map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "struct child count must be >= 0")
-                .with_context("operation", operation)
-                .with_context("type_id", "struct")
-                .with_context("num_children", num_children.to_string())
-        })?;
+        let child_count = num_children;
         if child_count == 0 {
             return Err(InteropError::new(
                 InteropErrorKind::InvalidView,

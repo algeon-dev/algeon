@@ -1,12 +1,14 @@
 use cudf::{
-    DataFrame, JsonReadOptions, Runtime, Series, TypeId,
+    DataFrame, JsonReadOptions, Runtime, TypeId,
     core::{Column, Table},
     interop::borrowed::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
 };
-use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};
+use rapids_interop::{NullMaskKind, TypeId as InteropTypeId};
 use static_assertions::assert_impl_all;
 use tempfile::TempDir;
+
+use crate::common::column_from_slice;
 
 assert_impl_all!(Column: TryBorrowColumnView);
 assert_impl_all!(Table: TryBorrowTableView);
@@ -140,32 +142,38 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
 }
 
 #[test]
-fn ambient_column_view_borrow_is_rejected() {
-    let column = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let err = column.view().unwrap().try_borrow_column_view().unwrap_err();
+fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
+    crate::common::with_test_runtime(|runtime| {
+        let column = column_from_slice(&[1i32, 2, 3]).unwrap();
+        let view = column.view().unwrap();
+        let borrowed = view.try_borrow_column_view().unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-    assert!(
-        err.context()
-            .iter()
-            .any(|(key, value)| *key == "operation" && value == "interop::ColumnView::try_borrow_column_view")
-    );
+        assert_eq!(column.__debug_execution_domain_kind(), "explicit");
+        assert_eq!(borrowed.execution().device(), runtime.device().ordinal() as i32);
+        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().__debug_raw_handle_value());
+        assert_eq!(
+            borrowed.execution().memory_resource().as_raw() as usize,
+            runtime.memory_resource().__debug_raw_handle_value()
+        );
+    });
 }
 
 #[test]
-fn ambient_dataframe_borrow_is_rejected() {
-    let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
-    let vals = Series::new("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([ids, vals]).unwrap();
+fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
+    crate::common::with_test_runtime(|runtime| {
+        let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
+        let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
+        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let borrowed = frame.try_borrow_table_view().unwrap();
 
-    let err = frame.try_borrow_table_view().unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-    assert!(
-        err.context()
-            .iter()
-            .any(|(key, value)| *key == "operation" && value == "interop::DataFrame::try_borrow_table_view")
-    );
+        assert_eq!(frame.__debug_execution_domain_kind(), "explicit");
+        assert_eq!(borrowed.execution().device(), runtime.device().ordinal() as i32);
+        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().__debug_raw_handle_value());
+        assert_eq!(
+            borrowed.execution().memory_resource().as_raw() as usize,
+            runtime.memory_resource().__debug_raw_handle_value()
+        );
+    });
 }
 
 #[test]
@@ -309,7 +317,7 @@ fn dataframe_borrow_supports_list_and_struct_columns() {
 
 #[test]
 fn nested_list_column_construction_is_rejected_before_interop() {
-    let err = match Column::empty(cudf::TypeId::List) {
+    let err = match crate::common::empty_column(cudf::TypeId::List) {
         Ok(_) => panic!("expected nested list column construction to fail"),
         Err(err) => err,
     };
@@ -320,7 +328,7 @@ fn nested_list_column_construction_is_rejected_before_interop() {
 
 #[test]
 fn nested_struct_series_construction_is_rejected_before_interop() {
-    let err = match Series::empty("nested", cudf::TypeId::Struct) {
+    let err = match crate::common::empty_series("nested", cudf::TypeId::Struct) {
         Ok(_) => panic!("expected nested struct series construction to fail"),
         Err(err) => err,
     };

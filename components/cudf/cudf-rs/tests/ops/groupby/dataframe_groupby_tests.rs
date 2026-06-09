@@ -1,8 +1,8 @@
 //! Tests for DataFrame groupby aggregation.
 
-use cudf::{AggSpec, ErrorKind, GroupByAgg, core::Column};
+use cudf::{AggSpec, ErrorKind, GroupByAgg};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{assert_missing_column_error, column_from_slice};
 
 // ---------------------------------------------------------------------------
 // Groupby aggregation
@@ -12,8 +12,8 @@ use crate::common::assert_missing_column_error;
 fn test_groupby_single_key_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
     // Expected: key=1 → sum=40, key=2 → sum=60
-    let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
@@ -43,8 +43,8 @@ fn test_groupby_single_key_sum() {
 fn test_groupby_single_key_multiple_aggregations_same_column() {
     // keys: [1, 2, 1, 2], values: [10.0, 20.0, 30.0, 40.0]
     // Expected: key=1 → min=10, max=30; key=2 → min=20, max=40
-    let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "score".to_string()], vec![keys, vals]).unwrap();
@@ -77,9 +77,9 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
 #[test]
 fn test_groupby_multiple_keys() {
     // Two key columns: (k0, k1) with 4 unique combinations
-    let k0 = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
-    let k1 = Column::from_slice(&[10i32, 20, 10, 20]).unwrap();
-    let vals = Column::from_slice(&[100i64, 200, 300, 400]).unwrap();
+    let k0 = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let k1 = column_from_slice(&[10i32, 20, 10, 20]).unwrap();
+    let vals = column_from_slice(&[100i64, 200, 300, 400]).unwrap();
 
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "value".to_string()],
@@ -101,8 +101,8 @@ fn test_groupby_multiple_keys() {
 
 #[test]
 fn test_groupby_nonexistent_agg_column_returns_error() {
-    let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
@@ -117,8 +117,8 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
 
 #[test]
 fn test_groupby_nonexistent_key_column_returns_error() {
-    let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
@@ -134,8 +134,8 @@ fn test_groupby_nonexistent_key_column_returns_error() {
 #[test]
 fn test_groupby_result_column_naming_convention() {
     // Verify naming: "{column}_{aggregation}"
-    let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let prices = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let prices = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "price".to_string()], vec![keys, prices]).unwrap();
@@ -165,9 +165,9 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
     // Request order intentionally interleaves columns:
     //   a_sum, b_sum, a_min
     // Result columns and values must follow that exact order.
-    let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
-    let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let b = column_from_slice(&[1i64, 2, 3, 4]).unwrap();
 
     let df = crate::common::dataframe_from_columns(
         vec!["key".to_string(), "a".to_string(), "b".to_string()],
@@ -205,8 +205,8 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
 
 #[test]
 fn test_groupby_no_aggregations_returns_error() {
-    let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();

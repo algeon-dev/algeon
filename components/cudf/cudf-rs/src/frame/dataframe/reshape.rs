@@ -1,18 +1,13 @@
 use typed_builder::TypedBuilder;
 
 /// How [`DataFrame::dropna`] decides which rows to drop when `thresh` is unset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropNaHow {
     /// Drop rows when any inspected column is null.
+    #[default]
     Any,
     /// Drop rows only when all inspected columns are null.
     All,
-}
-
-impl Default for DropNaHow {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 /// Options for [`DataFrame::dropna`].
@@ -392,8 +387,7 @@ impl DataFrame {
             cv.execution_domain().fence_stream(operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let mask = ops::search::contains_impl(&cv, &col_view, exec_options.as_ref(), operation)?
-            .with_execution_domain(Arc::clone(&output_domain));
+        let mask = ops::search::contains_impl(&cv, &col_view, &output_domain, exec_options.as_ref(), operation)?;
         let mask_view = mask.view()?;
         self.filter_by_mask_impl(&mask_view, output_domain.explicit_exec_options_raw(), output_domain, operation)
     }
@@ -459,9 +453,10 @@ impl DataFrame {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{DataFrame, Series, SortOptions};
+    /// use cudf::{DataFrame, Runtime, SortOptions};
     ///
-    /// let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let ids = rt.series("id", &[3i32, 1, 2]).unwrap();
     /// let df = DataFrame::from_named_pairs([("id", ids)]).unwrap();
     ///
     /// let sorted = df
@@ -512,6 +507,7 @@ impl DataFrame {
                     Some(&orders),
                     null_order_ref,
                     options.stable,
+                    &output_domain,
                     Some(exec_options),
                     operation,
                 )?
@@ -530,6 +526,7 @@ impl DataFrame {
                     Some(&orders),
                     null_order_ref,
                     options.stable,
+                    &output_domain,
                     Some(exec_options),
                     operation,
                 )?
@@ -697,8 +694,8 @@ impl DataFrame {
             table_refs.push(tv.table());
         }
 
-        let result_table = ops::concatenate::concatenate_tables_with_exec(&table_refs, exec_options.as_ref())?
-            .with_execution_domain(output_domain);
+        let result_table =
+            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, exec_options.as_ref())?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -935,8 +932,13 @@ impl DataFrame {
         )?;
         let cv = col.view()?;
         let exec_options = col.execution_domain().explicit_exec_options_raw();
-        let new_col = replace::replace_nulls_with_exec_options(&cv, value, exec_options.as_ref(), operation)?
-            .with_execution_domain(Arc::clone(col.execution_domain()));
+        let new_col = replace::replace_nulls_with_exec_options(
+            &cv,
+            value,
+            col.execution_domain(),
+            exec_options.as_ref(),
+            operation,
+        )?;
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -1148,8 +1150,13 @@ impl DataFrame {
             fill_cv.execution_domain().fence_stream(operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let new_col = replace::replace_nulls_column_with_exec_options(&cv, &fill_cv, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let new_col = replace::replace_nulls_column_with_exec_options(
+            &cv,
+            &fill_cv,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -1180,10 +1187,10 @@ impl DataFrame {
             keep,
             NullEquality::Equal,
             NanEquality::AllEqual,
+            &output_domain,
             exec_options.as_ref(),
             operation,
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1205,10 +1212,10 @@ impl DataFrame {
             tv.table(),
             &key_indices,
             keep_threshold,
+            &output_domain,
             exec_options.as_ref(),
             operation,
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1236,10 +1243,10 @@ impl DataFrame {
             indices,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
+            &output_domain,
             exec_options.as_ref(),
             operation,
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1260,8 +1267,8 @@ impl DataFrame {
 
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
-        let result_table = filter::apply_boolean_mask_impl(tv.table(), mask, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let result_table =
+            filter::apply_boolean_mask_impl(tv.table(), mask, &output_domain, exec_options.as_ref(), operation)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -1330,10 +1337,10 @@ impl DataFrame {
             &map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
+            &output_domain,
             exec_options.as_ref(),
             operation,
-        )?
-        .with_execution_domain(output_domain);
+        )?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -1354,8 +1361,14 @@ impl DataFrame {
         for (name, col) in &self.columns {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
-            new_columns
-                .insert(name.clone(), Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(&domain))));
+            new_columns.insert(
+                name.clone(),
+                Arc::new(Column::empty_in_domain(
+                    type_id,
+                    Arc::clone(&domain),
+                    "dataframe::empty_with_same_schema_in_domain",
+                )?),
+            );
         }
         Ok(Self { columns: new_columns, row_count: 0, domain })
     }
@@ -1437,9 +1450,11 @@ impl DataFrame {
         for id_name in id_vars {
             let id_series = self.series(id_name)?;
             if k == 0 {
-                let empty = Series::from_column(
-                    Column::empty(id_series.dtype()?.id())?.with_execution_domain(Arc::clone(&self.domain)),
-                )?
+                let empty = Series::from_column(Column::empty_in_domain(
+                    id_series.dtype()?.id(),
+                    Arc::clone(&self.domain),
+                    "dataframe::melt",
+                )?)?
                 .rename(id_name);
                 result_columns.push((id_name, empty));
             } else if k == 1 {
@@ -1461,9 +1476,11 @@ impl DataFrame {
         // Step 3: Concatenate value columns into a single "value" column
         if value_vars.is_empty() {
             // No value vars → empty value column. Use Int32 as default type.
-            let empty_series = Series::from_column(
-                Column::empty(crate::TypeId::Int32)?.with_execution_domain(Arc::clone(&self.domain)),
-            )?
+            let empty_series = Series::from_column(Column::empty_in_domain(
+                crate::TypeId::Int32,
+                Arc::clone(&self.domain),
+                "dataframe::melt",
+            )?)?
             .rename(&opts.value_name);
             result_columns.push((&opts.value_name, empty_series));
         } else {

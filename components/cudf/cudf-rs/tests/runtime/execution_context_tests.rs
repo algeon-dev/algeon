@@ -10,8 +10,8 @@
 //! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
 //! 3. **High-level execution-context contract** — hidden safe-layer hooks
-//!    route explicit-lineage operations through `_ex` entry points and reject
-//!    ambient-default promotion from borrowed overrides.
+//!    route explicit-lineage operations through `_ex` entry points and preserve
+//!    explicit retained provenance under borrowed overrides.
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
@@ -28,6 +28,8 @@ use cudf_sys::{
     cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
     cudf_test_exec_reset_observation, cudf_test_stream_handle_value,
 };
+
+use crate::common::column_from_slice;
 
 // ---------------------------------------------------------------------------
 // Safe wrappers around observation hooks
@@ -292,7 +294,7 @@ fn create_single_column_table_raw(data: &[i32]) -> cudf_sys::cudf_table_handle {
 
 fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -300,7 +302,7 @@ fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series 
 
 fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -308,7 +310,7 @@ fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series 
 
 fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -359,16 +361,6 @@ fn assert_dataframe_mr_override(df: &cudf::DataFrame, expected_domain: u64, expe
 fn assert_dataframe_i32_values(df: &cudf::DataFrame, column: &str, expected: &[i32]) {
     let values: Vec<i32> = df.series(column).unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(values.as_slice(), expected);
-}
-
-fn assert_ambient_default_promotion_error(err: &cudf::Error) {
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
-    );
-    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 
 fn assert_exec_options_copy_validation_error(
@@ -864,16 +856,19 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 }
 
 #[test]
-fn sort_with_execution_context_rejects_ambient_default_promotion() {
-    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
+    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let stream = CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
-    let err = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap_err();
-
-    assert_ambient_default_promotion_error(&err);
+    obs_reset();
+    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    assert_observed_stream(explicit_stream);
+    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_dataframe_i32_values(&sorted, "id", &[1, 2, 3]);
 }
 
 #[test]
@@ -959,17 +954,20 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 }
 
 #[test]
-fn gather_with_execution_context_rejects_ambient_default_promotion() {
-    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
+    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([ids]).unwrap();
-    let indices = cudf::Series::new::<i32>("gather", &[2, 0]).unwrap();
+    let indices = crate::common::series::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
-    let err = df.__debug_gather_in_context(&indices, &ctx).unwrap_err();
-
-    assert_ambient_default_promotion_error(&err);
+    obs_reset();
+    let gathered = df.__debug_gather_in_context(&indices, &ctx).unwrap();
+    assert_observed_stream(explicit_stream);
+    assert_eq!(gathered.__debug_execution_domain_kind(), "explicit");
+    assert_dataframe_i32_values(&gathered, "id", &[2, 3]);
 }
 
 #[test]
@@ -993,17 +991,20 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 }
 
 #[test]
-fn filter_with_execution_context_rejects_ambient_default_promotion() {
-    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
+    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([ids]).unwrap();
-    let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
-    let err = df.__debug_filter_in_context(&mask, &ctx).unwrap_err();
-
-    assert_ambient_default_promotion_error(&err);
+    obs_reset();
+    let filtered = df.__debug_filter_in_context(&mask, &ctx).unwrap();
+    assert_observed_stream(explicit_stream);
+    assert_eq!(filtered.__debug_execution_domain_kind(), "explicit");
+    assert_dataframe_i32_values(&filtered, "id", &[3, 2]);
 }
 
 // ===========================================================================
@@ -1013,21 +1014,18 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
 // by checking the observation hook after a regular operation.
 // ===========================================================================
 
-/// Calling `Column::deep_copy()` (the safe API, which uses `cudf_column_copy`)
-/// results in the default stream being observed.
+/// Calling `Column::deep_copy()` without an override keeps using the source
+/// column's retained runtime stream.
 #[test]
-fn column_deep_copy_default_uses_default_stream() {
-    let col = cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap();
-
-    let default_stream = obs_default_stream();
+fn column_deep_copy_uses_source_runtime_stream_without_override() {
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let source_stream = col.__debug_execution_domain_stream_value();
 
     obs_reset();
     let _copy = col.deep_copy().unwrap();
 
-    // Column::deep_copy() uses cudf_column_copy which internally calls
-    // cudf_column_copy_ex with null options, resolving to default stream.
     let observed = obs_last_stream();
-    assert_eq!(observed, default_stream, "Column::deep_copy() should use the default stream");
+    assert_eq!(observed, source_stream, "Column::deep_copy() should use the source runtime stream");
 }
 
 /// Existing `DataFrame::sort_values` (no context) should produce correct
@@ -1035,7 +1033,7 @@ fn column_deep_copy_default_uses_default_stream() {
 /// `DataFrame::in_context(&ctx).sort_values(...)`.
 #[test]
 fn sort_values_default_produces_correct_results() {
-    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
@@ -1049,12 +1047,12 @@ fn sort_values_default_produces_correct_results() {
 /// This is the default-path baseline for `DataFrame::in_context(&ctx).merge(...)`.
 #[test]
 fn merge_default_produces_correct_results() {
-    let left_ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-    let left_vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
+    let left_ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
+    let left_vals = crate::common::series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
     let left = cudf::DataFrame::from_series([left_ids, left_vals]).unwrap();
 
-    let right_ids = cudf::Series::new::<i32>("id", &[2, 3, 4]).unwrap();
-    let right_scores = cudf::Series::new::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
+    let right_ids = crate::common::series::<i32>("id", &[2, 3, 4]).unwrap();
+    let right_scores = crate::common::series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
     let right = cudf::DataFrame::from_series([right_ids, right_scores]).unwrap();
 
     let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
@@ -1066,8 +1064,8 @@ fn merge_default_produces_correct_results() {
 /// This is the default-path baseline for `GroupBy::in_context(&ctx).agg(...)`.
 #[test]
 fn groupby_agg_default_produces_correct_results() {
-    let keys = cudf::Series::new::<i32>("key", &[1, 1, 2, 2]).unwrap();
-    let vals = cudf::Series::new::<i64>("val", &[10, 20, 30, 40]).unwrap();
+    let keys = crate::common::series::<i32>("key", &[1, 1, 2, 2]).unwrap();
+    let vals = crate::common::series::<i64>("val", &[10, 20, 30, 40]).unwrap();
     let df = cudf::DataFrame::from_series([keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
@@ -1292,7 +1290,11 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     assert_eq!(status, cudf_sys::CUDF_ERROR_CUDA, "invalid explicit device should return CUDF_ERROR_CUDA");
     assert!(out.is_null(), "output handle should remain null on device-selection error");
     assert_eq!(obs_last_device(), -1, "failed device selection should not record execution observation");
-    assert_eq!(DeviceId::current().unwrap(), before, "failed device selection should not change the ambient device");
+    assert_eq!(
+        DeviceId::current().unwrap(),
+        before,
+        "failed device selection should not change the calling thread's current device"
+    );
 
     destroy_column(col);
 }

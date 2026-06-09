@@ -1,13 +1,16 @@
 //! Tests for Column::factorize
 
-use cudf::{TypeId, core::Column};
+use cudf::TypeId;
 
-use crate::common::{last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation};
+use crate::common::{
+    column_from_slice, column_from_slice_nullable, column_from_strs, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation,
+};
 
 #[test]
 fn test_factorize_i32_with_duplicates() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -52,7 +55,7 @@ fn test_factorize_i32_with_duplicates() {
 #[test]
 fn test_factorize_string_column() {
     let strings: &[&str] = &["banana", "apple", "cherry", "apple", "banana"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -84,7 +87,7 @@ fn test_factorize_string_column() {
 fn test_factorize_with_nulls() {
     let data = vec![10i32, 20, 30, 20, 10];
     let validity = vec![true, false, true, true, false];
-    let col = Column::from_slice_nullable(&data, &validity).unwrap();
+    let col = column_from_slice_nullable(&data, &validity).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -114,7 +117,7 @@ fn test_factorize_with_nulls() {
 
 #[test]
 fn test_factorize_empty_column() {
-    let col = Column::from_slice::<i32>(&[]).unwrap();
+    let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -128,7 +131,7 @@ fn test_factorize_empty_column() {
 
 #[test]
 fn test_factorize_single_element() {
-    let col = Column::from_slice(&[42i32]).unwrap();
+    let col = column_from_slice(&[42i32]).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -149,7 +152,7 @@ fn test_factorize_single_element() {
 #[test]
 fn test_factorize_already_unique() {
     let data = vec![10i32, 20, 30, 40, 50];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -172,7 +175,7 @@ fn test_factorize_already_unique() {
 #[test]
 fn test_factorize_f64_column() {
     let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let (codes, uniques) = view.factorize().unwrap();
@@ -206,7 +209,7 @@ fn test_factorize_codes_are_owned_independent_of_input() {
     // Verify codes and uniques are owned (deep-copied), not borrowing from input.
     let (codes, uniques) = {
         let data = vec![1i32, 2, 1, 3, 2];
-        let col = Column::from_slice(&data).unwrap();
+        let col = column_from_slice(&data).unwrap();
         let view = col.view().unwrap();
         view.factorize().unwrap()
         // col is dropped here
@@ -224,7 +227,7 @@ fn test_factorize_codes_are_owned_independent_of_input() {
 
 #[test]
 fn test_dataframe_factorize_by_name() {
-    let col = Column::from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
     let (codes, uniques) = df.factorize("values").unwrap();
@@ -238,7 +241,7 @@ fn test_dataframe_factorize_by_name() {
 
 #[test]
 fn test_dataframe_factorize_missing_column() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let result = df.factorize("nonexistent");
@@ -247,7 +250,7 @@ fn test_dataframe_factorize_missing_column() {
 
 #[test]
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
-    let input = Column::from_slice(&[9i32, 7, 9, 8]).unwrap().__debug_rebind_execution_domain_explicit(605).unwrap();
+    let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().__debug_rebind_execution_domain_explicit(605).unwrap();
     let expected_stream = input.__debug_execution_domain_stream_value();
 
     reset_exec_observation();

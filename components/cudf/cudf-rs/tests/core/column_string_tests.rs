@@ -1,11 +1,13 @@
 //! Tests for string column creation and reading.
 
-use cudf::{Series, TypeId, core::Column};
+use cudf::TypeId;
+
+use crate::common::{column_from_slice, column_from_strs, column_from_strs_nullable};
 
 #[test]
 fn test_from_strs_basic() {
     let strings = &["hello", "world", "foo"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
@@ -16,7 +18,7 @@ fn test_from_strs_basic() {
 #[test]
 fn test_from_strs_roundtrip() {
     let strings = &["hello", "world", "foo"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     let result = view.to_strings_lossy().unwrap();
@@ -26,7 +28,7 @@ fn test_from_strs_roundtrip() {
 #[test]
 fn test_from_strs_empty_strings() {
     let strings = &["", "hello", "", "world", ""];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 5);
@@ -37,7 +39,7 @@ fn test_from_strs_empty_strings() {
 #[test]
 fn test_from_strs_single() {
     let strings = &["only"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 1);
@@ -48,7 +50,7 @@ fn test_from_strs_single() {
 #[test]
 fn test_from_strs_empty_column() {
     let strings: &[&str] = &[];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 0);
@@ -63,7 +65,7 @@ fn test_from_strs_empty_column() {
 fn test_from_strs_nullable_basic() {
     let strings = &["hello", "world", "foo"];
     let validity = &[true, false, true];
-    let col = Column::from_strs_nullable(strings, validity).unwrap();
+    let col = column_from_strs_nullable(strings, validity).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
@@ -79,7 +81,7 @@ fn test_from_strs_nullable_basic() {
 fn test_from_strs_nullable_roundtrip() {
     let strings = &["alpha", "beta", "gamma", "delta"];
     let validity = &[true, false, true, false];
-    let col = Column::from_strs_nullable(strings, validity).unwrap();
+    let col = column_from_strs_nullable(strings, validity).unwrap();
     let view = col.view().unwrap();
 
     // Lossy materialization maps nulls to empty strings.
@@ -95,7 +97,7 @@ fn test_from_strs_nullable_roundtrip() {
 
 #[test]
 fn test_validity_for_sliced_nullable_string_column_is_normalized_to_slice() {
-    let col = Column::from_strs_nullable(&["alpha", "beta", "gamma", "delta"], &[true, false, true, false]).unwrap();
+    let col = column_from_strs_nullable(&["alpha", "beta", "gamma", "delta"], &[true, false, true, false]).unwrap();
     let sliced = col.slice_view(1, 3).unwrap();
 
     let validity = sliced.validity().unwrap().unwrap();
@@ -106,7 +108,7 @@ fn test_validity_for_sliced_nullable_string_column_is_normalized_to_slice() {
 fn test_from_strs_nullable_mismatched_lengths() {
     let strings = &["a", "b", "c"];
     let validity = &[true, false]; // wrong length
-    let result = Column::from_strs_nullable(strings, validity);
+    let result = column_from_strs_nullable(strings, validity);
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
@@ -115,7 +117,7 @@ fn test_from_strs_nullable_mismatched_lengths() {
 #[test]
 fn test_from_strs_utf8() {
     let strings = &["héllo", "wörld", "日本語", "🦀"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
@@ -126,14 +128,14 @@ fn test_from_strs_utf8() {
 #[test]
 fn test_from_strs_column_has_children() {
     // String columns have at least 1 child (offsets)
-    let col = Column::from_strs(&["a", "b"]).unwrap();
+    let col = column_from_strs(&["a", "b"]).unwrap();
     let view = col.view().unwrap();
     assert!(view.num_children().unwrap() >= 1);
 }
 
 #[test]
 fn test_to_strings_rejects_non_string_column() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
 
     let result = view.to_strings_lossy();
@@ -144,7 +146,7 @@ fn test_to_strings_rejects_non_string_column() {
 
 #[test]
 fn test_to_strings_lossy_maps_nulls_to_empty_strings() {
-    let col = Column::from_strs_nullable(&["", "placeholder", "suffix"], &[true, false, true]).unwrap();
+    let col = column_from_strs_nullable(&["", "placeholder", "suffix"], &[true, false, true]).unwrap();
     let view = col.view().unwrap();
 
     let result = view.to_strings_lossy().unwrap();
@@ -153,7 +155,7 @@ fn test_to_strings_lossy_maps_nulls_to_empty_strings() {
 
 #[test]
 fn test_to_optional_strings_distinguishes_null_from_empty() {
-    let col = Column::from_strs_nullable(&["", "placeholder", ""], &[true, false, true]).unwrap();
+    let col = column_from_strs_nullable(&["", "placeholder", ""], &[true, false, true]).unwrap();
     let view = col.view().unwrap();
 
     let result = view.to_optional_strings().unwrap();
@@ -162,7 +164,7 @@ fn test_to_optional_strings_distinguishes_null_from_empty() {
 
 #[test]
 fn test_series_to_optional_strings_distinguishes_null_from_empty() {
-    let series = Series::new_nullable("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
+    let series = crate::common::nullable_series("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
 
     let result = series.to_optional_strings().unwrap();
     assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
@@ -170,7 +172,7 @@ fn test_series_to_optional_strings_distinguishes_null_from_empty() {
 
 #[test]
 fn test_to_optional_strings_rejects_non_string_column() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
 
     let result = view.to_optional_strings();
@@ -182,7 +184,7 @@ fn test_to_optional_strings_rejects_non_string_column() {
 #[test]
 fn test_from_strs_deep_copy_roundtrip() {
     let strings = &["deep", "copy", "test"];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let copy = col.deep_copy().unwrap();
 
     // Original can be dropped; copy should still be valid
@@ -195,7 +197,7 @@ fn test_from_strs_deep_copy_roundtrip() {
 #[test]
 fn test_from_strs_all_empty() {
     let strings = &["", "", ""];
-    let col = Column::from_strs(strings).unwrap();
+    let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
@@ -207,7 +209,7 @@ fn test_from_strs_all_empty() {
 fn test_from_strs_nullable_all_null() {
     let strings = &["a", "b", "c"];
     let validity = &[false, false, false];
-    let col = Column::from_strs_nullable(strings, validity).unwrap();
+    let col = column_from_strs_nullable(strings, validity).unwrap();
     let view = col.view().unwrap();
 
     assert_eq!(view.null_count().unwrap(), 3);
@@ -219,7 +221,7 @@ fn test_from_strs_nullable_all_null() {
 fn test_from_strs_nullable_no_nulls() {
     let strings = &["x", "y", "z"];
     let validity = &[true, true, true];
-    let col = Column::from_strs_nullable(strings, validity).unwrap();
+    let col = column_from_strs_nullable(strings, validity).unwrap();
     let view = col.view().unwrap();
 
     // null_count should be 0, but column is still nullable (has mask)

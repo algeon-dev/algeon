@@ -41,8 +41,8 @@
 //!   and dictionary slices on one CUDA device.
 //! - Consumer algorithms may still allocate or copy for outputs; this crate
 //!   does not promise zero-copy output.
-//! - `cudf-rs` producer adapters require explicit execution provenance and
-//!   reject ambient/default-only objects at the interop boundary.
+//! - `cudf-rs` producer adapters require explicit execution provenance at the
+//!   interop boundary.
 //! - User-facing types such as `cudf::Series` and `cudf::DataFrame` may
 //!   provide convenience adapters, but they are not the shared contract.
 //!

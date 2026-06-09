@@ -5,9 +5,8 @@
 //! semantics. It intentionally avoids one near-identical test per public API.
 
 use cudf::{
-    AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, DeviceId, ErrorKind, ExecutionContext, GroupByAgg,
-    JsonWriteOptions, MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId,
-    core::Scalar, runtime::CudaStream,
+    AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, DeviceId, ExecutionContext, GroupByAgg, JsonWriteOptions,
+    MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId, runtime::CudaStream,
 };
 use tempfile::TempDir;
 
@@ -30,6 +29,12 @@ fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usi
     assert_eq!(df.__debug_execution_domain_id(), expected_id);
     assert_eq!(df.__debug_execution_domain_stream_value(), expected_stream);
     assert_eq!(df.__debug_execution_domain_mr_value(), expected_mr);
+}
+
+fn assert_scalar_residency(scalar: &cudf::core::Scalar, expected_id: u64, expected_stream: usize) {
+    assert_eq!(scalar.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(scalar.__debug_execution_domain_id(), expected_id);
+    assert_eq!(scalar.__debug_execution_domain_stream_value(), expected_stream);
 }
 
 fn sorted_i32_i32_rows(df: &DataFrame, left: &str, right: &str) -> Vec<(i32, i32)> {
@@ -59,11 +64,11 @@ fn runtime_and_execution_context_are_public_and_send_sync() {
 
 #[test]
 fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
-    let ambient_device = DeviceId::current().unwrap();
+    let current_device = DeviceId::current().unwrap();
     let via_new = Runtime::new().unwrap();
     let via_builder = Runtime::builder().build().unwrap();
-    assert_eq!(via_new.device(), ambient_device);
-    assert_eq!(via_builder.device(), ambient_device);
+    assert_eq!(via_new.device(), current_device);
+    assert_eq!(via_builder.device(), current_device);
     assert_ne!(via_new.__debug_execution_domain_id(), 0);
     assert_ne!(via_builder.__debug_execution_domain_id(), 0);
 
@@ -94,7 +99,37 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     assert_eq!(nulls.null_count(), 3);
 
     reset_exec_observation();
-    let seeded = rt.series_from_scalar("seed", &Scalar::from_value(7i32).unwrap(), 2).unwrap();
+    let scalar = rt.scalar(7i32).unwrap();
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_scalar_residency(&scalar, expected_id, expected_stream);
+    assert_eq!(scalar.value::<i32>().unwrap(), 7);
+
+    reset_exec_observation();
+    let string_scalar = rt.string_scalar("alice").unwrap();
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_scalar_residency(&string_scalar, expected_id, expected_stream);
+    assert_eq!(string_scalar.string_value().unwrap(), "alice");
+
+    reset_exec_observation();
+    let null_scalar = rt.null_scalar::<i32>().unwrap();
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_scalar_residency(&null_scalar, expected_id, expected_stream);
+    assert!(!null_scalar.is_valid().unwrap());
+
+    reset_exec_observation();
+    let null_string_scalar = rt.null_string_scalar().unwrap();
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_scalar_residency(&null_string_scalar, expected_id, expected_stream);
+    assert!(!null_string_scalar.is_valid().unwrap());
+
+    reset_exec_observation();
+    let seed_scalar = rt.scalar(7i32).unwrap();
+    reset_exec_observation();
+    let seeded = rt.series_from_scalar("seed", &seed_scalar, 2).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&seeded, expected_id, expected_stream, expected_mr);
@@ -106,6 +141,18 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_eq!(column.__debug_execution_domain_id(), expected_id);
     assert_eq!(column.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+
+    let empty_table = rt.empty_table().unwrap();
+    assert_eq!(empty_table.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(empty_table.__debug_execution_domain_id(), expected_id);
+    assert_eq!(empty_table.view().unwrap().num_columns().unwrap(), 0);
+    assert_eq!(empty_table.view().unwrap().num_rows().unwrap(), 0);
+
+    let empty_df = rt.empty_dataframe();
+    assert_eq!(empty_df.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(empty_df.__debug_execution_domain_id(), expected_id);
+    assert_eq!(empty_df.num_columns(), 0);
+    assert_eq!(empty_df.num_rows(), 0);
 }
 
 #[test]
@@ -221,19 +268,45 @@ fn series_in_context_routes_representative_operation_families_through_context_ex
 }
 
 #[test]
-fn in_context_rejects_ambient_default_promotion_for_dataframe_and_series() {
-    let series = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+fn in_context_accepts_runtime_seeded_dataframe_and_series() {
+    let series = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = DataFrame::from_series([series.clone()]).unwrap();
     let override_stream = CudaStream::new().unwrap();
     let ctx = ExecutionContext::new().with_stream(&override_stream);
 
-    let err = series.in_context(&ctx).sort_values(SortOptions::default()).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    let sorted_series = series.in_context(&ctx).sort_values(SortOptions::default()).unwrap();
+    assert_eq!(sorted_series.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(sorted_series.as_column().__debug_execution_domain_kind(), "explicit");
 
-    let err = df.in_context(&ctx).sort_values(["id"], SortOptions::default()).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    let sorted_df = df.in_context(&ctx).sort_values(["id"], SortOptions::default()).unwrap();
+    assert_eq!(sorted_df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(sorted_df.__debug_execution_domain_kind(), "explicit");
+}
+
+#[test]
+fn explicit_runtime_operations_use_explicit_domain_only() {
+    let rt = sample_runtime();
+    let df = DataFrame::from_series([
+        rt.series("id", &[3i32, 1, 2]).unwrap(),
+        rt.series("value", &[30i32, 10, 20]).unwrap(),
+    ])
+    .unwrap();
+
+    let sorted = df.sort_values(["id"], SortOptions::default()).unwrap();
+    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(sorted.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+
+    let dir = TempDir::new().unwrap();
+    let csv_path = dir.path().join("strict_runtime_seed.csv");
+    std::fs::write(&csv_path, "id,value\n1,10\n2,20\n3,30\n").unwrap();
+
+    let read =
+        DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&csv_path).with_runtime(&rt).build())
+            .unwrap();
+    assert_eq!(read.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(read.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(read.series("id").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -241,9 +314,10 @@ fn runtime_seeded_readers_use_runtime_stream() {
     let dir = TempDir::new().unwrap();
 
     let parquet_path = dir.path().join("runtime_seed.parquet");
+    let seed_rt = sample_runtime();
     DataFrame::from_series([
-        Series::new::<i32>("id", &[1, 2, 3]).unwrap(),
-        Series::new::<i32>("value", &[10, 20, 30]).unwrap(),
+        seed_rt.series("id", &[1i32, 2, 3]).unwrap(),
+        seed_rt.series("value", &[10i32, 20, 30]).unwrap(),
     ])
     .unwrap()
     .write_parquet(&parquet_path)

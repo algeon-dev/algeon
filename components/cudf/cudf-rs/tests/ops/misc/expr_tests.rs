@@ -18,8 +18,8 @@ use cudf::{
 
 /// Build a simple 3-row DataFrame with columns "x" (i32) and "y" (i32).
 fn xy_df() -> DataFrame {
-    let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
+    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
     DataFrame::from_series([x, y]).unwrap()
 }
 
@@ -28,23 +28,23 @@ fn df_with_series(series: Series) -> DataFrame {
 }
 
 fn i32_df(name: &str, data: &[i32]) -> DataFrame {
-    df_with_series(Series::new::<i32>(name, data).unwrap())
+    df_with_series(crate::common::series::<i32>(name, data).unwrap())
 }
 
 fn nullable_i32_df(name: &str, data: &[i32], validity: &[bool]) -> DataFrame {
-    df_with_series(Series::new_nullable::<i32>(name, data, validity).unwrap())
+    df_with_series(crate::common::nullable_series::<i32>(name, data, validity).unwrap())
 }
 
 fn f64_df(name: &str, data: &[f64]) -> DataFrame {
-    df_with_series(Series::new::<f64>(name, data).unwrap())
+    df_with_series(crate::common::series::<f64>(name, data).unwrap())
 }
 
 fn bool_df(name: &str, data: &[bool]) -> DataFrame {
-    df_with_series(Series::new::<bool>(name, data).unwrap())
+    df_with_series(crate::common::series::<bool>(name, data).unwrap())
 }
 
 fn str_df(name: &str, data: &[&str]) -> DataFrame {
-    df_with_series(Series::new(name, data).unwrap())
+    df_with_series(crate::common::series(name, data).unwrap())
 }
 
 fn eval(expr: Expr, df: &DataFrame) -> Series {
@@ -188,8 +188,8 @@ fn neg_expr() {
 
 #[test]
 fn bitand_bool() {
-    let a = Series::new::<bool>("a", &[true, true, false, false]).unwrap();
-    let b = Series::new::<bool>("b", &[true, false, true, false]).unwrap();
+    let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
+    let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -206,8 +206,8 @@ fn bitand_bool_scalar_lhs_without_lit() {
 
 #[test]
 fn bitor_bool() {
-    let a = Series::new::<bool>("a", &[true, true, false, false]).unwrap();
-    let b = Series::new::<bool>("b", &[true, false, true, false]).unwrap();
+    let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
+    let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
     let result = (col("a") | col("b")).alias("or").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -273,8 +273,8 @@ fn gt_scalar_without_lit_produces_bool() {
 
 #[test]
 fn eq_col_col() {
-    let x = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
-    let y = Series::new::<i32>("b", &[1, 99, 3]).unwrap();
+    let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
     let df = DataFrame::from_series([x, y]).unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
@@ -288,8 +288,8 @@ fn lt_lit_with_alias() {
 
 #[test]
 fn ne_col_col() {
-    let x = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
-    let y = Series::new::<i32>("b", &[1, 99, 3]).unwrap();
+    let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
     let df = DataFrame::from_series([x, y]).unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
@@ -519,8 +519,8 @@ fn fillna_scalar_preserves_output_name() {
 
 #[test]
 fn fillna_with_column_path() {
-    let v = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let backup = Series::new::<i32>("backup", &[10, 20, 30]).unwrap();
+    let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
+    let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([v, backup]).unwrap();
     let result = col("v").fillna_with(col("backup")).alias("filled").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
@@ -780,9 +780,9 @@ fn when_then_otherwise_scalar_literals_without_lit() {
 
 #[test]
 fn when_then_otherwise_column_branches() {
-    let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
-    let flag = Series::new::<bool>("f", &[true, false, true]).unwrap();
+    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
+    let flag = crate::common::series::<bool>("f", &[true, false, true]).unwrap();
     let df = DataFrame::from_series([x, y, flag]).unwrap();
     let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
@@ -791,9 +791,9 @@ fn when_then_otherwise_column_branches() {
 #[test]
 fn when_then_otherwise_with_nulls_in_condition() {
     // libcudf copy_if_else: null mask positions produce the false_val
-    let cond = Series::new_nullable::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
-    let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
+    let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
+    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([cond, x, y]).unwrap();
     let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
     // row 0: cond valid & true  → x[0]=10

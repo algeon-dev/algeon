@@ -1,28 +1,28 @@
-use cudf::{DataFrame, MergeOptions, core::Column};
+use cudf::{DataFrame, MergeOptions};
 
-use crate::allocation::allocation_count_delta;
+use crate::{allocation::allocation_count_delta, common::column_from_slice};
 
 fn left_df() -> DataFrame {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
     crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df() -> DataFrame {
-    let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let values = column_from_slice(&[200i32, 300, 400]).unwrap();
     crate::common::dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn left_df_asym() -> DataFrame {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
     crate::common::dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df_asym() -> DataFrame {
-    let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let values = column_from_slice(&[200i32, 300, 400]).unwrap();
     crate::common::dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 

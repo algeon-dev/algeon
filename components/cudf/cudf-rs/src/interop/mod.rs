@@ -82,8 +82,9 @@
 //!   and dictionary slices on one CUDA device.
 //! - [`crate::Series`] and [`crate::DataFrame`] are convenience adapters, not
 //!   the contract itself.
-//! - Explicit execution provenance is required for producer projection.
-//! - Ambient/default-only objects are rejected at the interop boundary.
+//! - Producer projection requires explicit retained provenance.
+//! - Public `cudf-rs` object construction now satisfies that contract through
+//!   explicit [`crate::Runtime`] ownership.
 //!
 //! # Module Position
 //!

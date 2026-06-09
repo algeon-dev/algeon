@@ -6,7 +6,7 @@
 
 use cudf::{
     DataFrame, DataType, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
-    core::{Column, Scalar, Table},
+    core::{Column, Table},
     ops::{
         binary::{self, BinaryOperator},
         concatenate, copying, dictionary, filter,
@@ -20,23 +20,21 @@ use cudf::{
 use tempfile::TempDir;
 
 use crate::common::{
-    dataframe_from_columns, explicit_i32_column, explicit_i32_series, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
+    column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns, explicit_i32_column,
+    explicit_i32_series, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation, sample_runtime, scalar,
 };
 
 fn explicit_nullable_i32_series(name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {
     Series::from_column(
-        Column::from_slice_nullable(data, validity)
-            .unwrap()
-            .__debug_rebind_execution_domain_explicit(identity)
-            .unwrap(),
+        column_from_slice_nullable(data, validity).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
 }
 
 fn explicit_str_series(name: &str, data: &[&str], identity: u64) -> Series {
-    Series::from_column(Column::from_strs(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap())
+    Series::from_column(column_from_strs(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap())
         .unwrap()
         .rename(name)
 }
@@ -49,24 +47,25 @@ fn assert_column_exec_contract(column: &Column, expected_id: u64, expected_strea
 }
 
 #[test]
-fn owned_constructors_seed_ambient_default_domain() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    assert_eq!(col.__debug_execution_domain_kind(), "ambient_default");
-    assert_eq!(col.__debug_execution_domain_id(), 0);
+fn helper_constructors_seed_explicit_runtime_domain() {
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let expected_id = col.__debug_execution_domain_id();
+    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
+    assert_ne!(expected_id, 0);
 
-    let scalar = Scalar::from_value(7i32).unwrap();
-    assert_eq!(scalar.__debug_execution_domain_kind(), "ambient_default");
-    assert_eq!(scalar.__debug_execution_domain_id(), 0);
+    let scalar = scalar(7i32).unwrap();
+    assert_eq!(scalar.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(scalar.__debug_execution_domain_id(), expected_id);
 
-    let table = Table::from_columns(vec![Column::from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
-    assert_eq!(table.__debug_execution_domain_kind(), "ambient_default");
-    assert_eq!(table.__debug_execution_domain_id(), 0);
+    let table = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    assert_eq!(table.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(table.__debug_execution_domain_id(), expected_id);
 
-    let series = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
+    let series = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([series]).unwrap();
-    assert_eq!(df.__debug_execution_domain_kind(), "ambient_default");
-    assert_eq!(df.__debug_execution_domain_id(), 0);
-    assert_eq!(df.series("id").unwrap().as_column().__debug_execution_domain_id(), 0);
+    assert_eq!(df.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(df.__debug_execution_domain_id(), expected_id);
+    assert_eq!(df.series("id").unwrap().as_column().__debug_execution_domain_id(), expected_id);
 }
 
 #[test]
@@ -155,7 +154,7 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
     assert_eq!(strings.to_strings_strict().unwrap(), vec!["alice".to_string(), "bob".to_string()]);
     assert_eq!(last_sync_stream_value(), strings.as_column().__debug_execution_domain_stream_value());
 
-    let scalar = Scalar::from_value(7i32).unwrap().__debug_rebind_execution_domain_explicit(62).unwrap();
+    let scalar = scalar(7i32).unwrap().__debug_rebind_execution_domain_explicit(62).unwrap();
     reset_sync_observation();
     assert_eq!(scalar.value::<i32>().unwrap(), 7);
     assert_eq!(last_sync_stream_value(), scalar.__debug_execution_domain_stream_value());
@@ -227,7 +226,7 @@ fn sort_filter_and_gather_families_use_data_provenance_for_mixed_domains() {
     assert_eq!(sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
     assert_eq!(last_sync_stream_value(), values_stream);
 
-    let mask = Column::from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(152).unwrap();
+    let mask = column_from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(152).unwrap();
     reset_exec_observation();
     let filtered = filter::apply_boolean_mask(&values.view().unwrap(), &mask.view().unwrap()).unwrap();
     assert_eq!(last_exec_stream_value(), values_stream);

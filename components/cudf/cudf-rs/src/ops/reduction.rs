@@ -3,9 +3,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{DataType, TypeId, core::Column, ops::reduction};
+//! use cudf::{DataType, Runtime, TypeId, ops::reduction};
 //!
-//! let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+//! let rt = Runtime::new().unwrap();
+//! let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
 //! let view = col.view().unwrap();
 //!
 //! // Reduce to a single scalar.
@@ -219,14 +220,14 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
 pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    reduce_impl(input, agg, output_type, exec_options.as_ref(), "reduction::reduce")
-        .map(|scalar| scalar.with_execution_domain(output_domain))
+    reduce_impl(input, agg, output_type, &output_domain, exec_options.as_ref(), "reduction::reduce")
 }
 
 pub(crate) fn reduce_impl(
     input: &ColumnView<'_>,
     agg: &ReduceAgg,
     output_type: &DataType,
+    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Scalar> {
@@ -261,15 +262,14 @@ pub(crate) fn reduce_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Scalar::from_raw(out) })
+    Ok(unsafe { Scalar::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Compute a prefix scan (cumulative operation) on a column.
 pub fn scan(input: &ColumnView<'_>, agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    scan_impl(input, agg, scan_type, null_policy, exec_options.as_ref(), "reduction::scan")
-        .map(|column| column.with_execution_domain(output_domain))
+    scan_impl(input, agg, scan_type, null_policy, &output_domain, exec_options.as_ref(), "reduction::scan")
 }
 
 pub(crate) fn scan_impl(
@@ -277,6 +277,7 @@ pub(crate) fn scan_impl(
     agg: ScanAgg,
     scan_type: ScanType,
     null_policy: NullPolicy,
+    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -317,20 +318,19 @@ pub(crate) fn scan_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Compute the min and max of a column simultaneously.
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    minmax_impl(input, exec_options.as_ref(), "reduction::minmax").map(|(min, max)| {
-        (min.with_execution_domain(std::sync::Arc::clone(&output_domain)), max.with_execution_domain(output_domain))
-    })
+    minmax_impl(input, &output_domain, exec_options.as_ref(), "reduction::minmax")
 }
 
 pub(crate) fn minmax_impl(
     input: &ColumnView<'_>,
+    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<(Scalar, Scalar)> {
@@ -346,5 +346,10 @@ pub(crate) fn minmax_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out_min/out_max were returned by a successful FFI call.
-    Ok(unsafe { (Scalar::from_raw(out_min), Scalar::from_raw(out_max)) })
+    Ok(unsafe {
+        (
+            Scalar::from_raw_with_domain(out_min, std::sync::Arc::clone(output_domain)),
+            Scalar::from_raw_with_domain(out_max, std::sync::Arc::clone(output_domain)),
+        )
+    })
 }

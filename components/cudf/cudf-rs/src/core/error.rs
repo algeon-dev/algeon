@@ -346,7 +346,6 @@ fn map_interop_error_kind(kind: InteropErrorKind) -> ErrorKind {
             ErrorKind::InvalidOperation
         },
         InteropErrorKind::UnsupportedLayout
-        | InteropErrorKind::AmbientInteropUnsupported
         | InteropErrorKind::PlacementUnsupported
         | InteropErrorKind::MixedDeviceUnsupported
         | InteropErrorKind::ProfileUnsupported => ErrorKind::NotSupported,

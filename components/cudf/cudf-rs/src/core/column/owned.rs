@@ -51,6 +51,15 @@ impl Column {
         Self::from_handle_with_domain_and_owner(handle, domain, None)
     }
 
+    fn create_empty_in_domain(type_id: TypeId, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
+            operation,
+        )?;
+        Ok(Self::from_handle_with_domain(handle, domain))
+    }
+
     fn from_handle_with_domain_and_owner(
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
@@ -61,27 +70,20 @@ impl Column {
 
     pub(crate) fn copy_into_domain(&self, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw();
+        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(options) => unsafe { cudf_sys::cudf_column_copy_ex(self.handle.as_ptr(), options, &mut handle) },
-                None => unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
-            },
+            unsafe { cudf_sys::cudf_column_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
             operation,
         )?;
         Ok(Self::from_handle_with_domain(handle, domain))
     }
 
-    /// Create an empty column of the given type.
-    pub fn empty(type_id: TypeId) -> Result<Self> {
-        let mut handle = ptr::null_mut();
-        // SAFETY: type_id.to_raw() produces a valid cudf_type_id_t. handle is
-        // initialized to null and set by the C shim on success.
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
-            "column::empty",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+    pub(crate) fn empty_in_domain(
+        type_id: TypeId,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        Self::create_empty_in_domain(type_id, domain, operation)
     }
 
     /// Create an empty column of the given type inside the given explicit
@@ -92,43 +94,29 @@ impl Column {
     /// mixed-provenance rejection. No device memory is allocated for the
     /// column data itself.
     pub(crate) fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
-        let mut handle = ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
-            "column::empty_with_runtime",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(runtime.execution_domain())))
+        Self::create_empty_in_domain(type_id, Arc::clone(runtime.execution_domain()), "column::empty_with_runtime")
     }
 
     /// Create a column from a host slice of fixed-width elements.
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::core::Column;
-    /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    /// use cudf::Runtime;
+    /// let rt = Runtime::new().unwrap();
+    /// let col = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
     /// ```
-    pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
-        Self::from_slice_impl(data, None, None, "column::from_slice")
-    }
-
-    /// Create a column from a host slice inside the given explicit runtime.
     pub(crate) fn from_slice_with_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
-        Self::from_slice_impl(
-            data,
-            None,
-            Some(Arc::clone(runtime.execution_domain())),
-            "column::from_slice_with_runtime",
-        )
+        Self::from_slice_impl(data, None, Arc::clone(runtime.execution_domain()), "column::from_slice_with_runtime")
     }
 
     pub(crate) fn from_slice_in_domain<T: CudfType>(data: &[T], domain: &Arc<ExecutionDomain>) -> Result<Self> {
-        Self::from_slice_impl(data, None, Some(Arc::clone(domain)), "column::from_slice_in_domain")
+        Self::from_slice_impl(data, None, Arc::clone(domain), "column::from_slice_in_domain")
     }
 
     fn from_slice_impl<T: CudfType>(
         data: &[T],
         validity: Option<&[bool]>,
-        domain: Option<Arc<ExecutionDomain>>,
+        domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         if let Some(validity) = validity {
@@ -147,45 +135,28 @@ impl Column {
         let size = usize_to_i32_len(data.len(), "data", operation)?;
         let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
-        let exec_options = domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         // SAFETY: data and optional null_mask are valid for the reported sizes.
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(options) => unsafe {
-                    cudf_sys::cudf_column_create_numeric_ex(
-                        T::TYPE_ID.to_raw(),
-                        data.as_ptr() as *const c_void,
-                        size,
-                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
-                        null_count,
-                        options,
-                        &mut handle,
-                    )
-                },
-                None => unsafe {
-                    cudf_sys::cudf_column_create_numeric(
-                        T::TYPE_ID.to_raw(),
-                        data.as_ptr() as *const c_void,
-                        size,
-                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
-                        null_count,
-                        &mut handle,
-                    )
-                },
+            unsafe {
+                cudf_sys::cudf_column_create_numeric_ex(
+                    T::TYPE_ID.to_raw(),
+                    data.as_ptr() as *const c_void,
+                    size,
+                    null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
+                    null_count,
+                    &exec_options,
+                    &mut handle,
+                )
             },
             operation,
         )?;
-        Ok(Self::from_handle_with_domain(handle, domain.unwrap_or_else(ExecutionDomain::ambient_default)))
+        Ok(Self::from_handle_with_domain(handle, domain))
     }
 
     /// Create a nullable column from host data and a validity mask.
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
-    pub fn from_slice_nullable<T: CudfType>(data: &[T], validity: &[bool]) -> Result<Self> {
-        Self::from_slice_impl(data, Some(validity), None, "column::from_slice_nullable")
-    }
-
-    /// Create a nullable column from host data inside the given explicit runtime.
     pub(crate) fn from_slice_nullable_with_runtime<T: CudfType>(
         runtime: &Runtime,
         data: &[T],
@@ -194,7 +165,7 @@ impl Column {
         Self::from_slice_impl(
             data,
             Some(validity),
-            Some(Arc::clone(runtime.execution_domain())),
+            Arc::clone(runtime.execution_domain()),
             "column::from_slice_nullable_with_runtime",
         )
     }
@@ -258,14 +229,9 @@ impl Column {
 
     pub(crate) fn payload_size_bytes(&self) -> Result<usize> {
         let mut out = 0usize;
-        let exec_options = self.domain.explicit_exec_options_raw();
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(options) => unsafe {
-                    cudf_sys::cudf_column_payload_size_ex(self.handle.as_ptr(), options, &mut out)
-                },
-                None => unsafe { cudf_sys::cudf_column_payload_size(self.handle.as_ptr(), &mut out) },
-            },
+            unsafe { cudf_sys::cudf_column_payload_size_ex(self.handle.as_ptr(), &exec_options, &mut out) },
             "column::payload_size_bytes",
         )?;
         Ok(out)
@@ -287,15 +253,6 @@ impl Column {
         let retained_owner = unsafe { std::ptr::read(&this.retained_owner) };
         let _domain = unsafe { std::ptr::read(&this.domain) };
         (handle, retained_owner)
-    }
-
-    /// Construct a `Column` from a raw FFI handle, taking ownership.
-    ///
-    /// # Safety
-    /// The handle must be a valid `cudf_column_handle` and the caller must
-    /// transfer ownership.
-    pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
     }
 
     /// Construct a `Column` from a raw FFI handle and an explicit retained domain.
@@ -331,42 +288,14 @@ impl Column {
     /// ordering if writes occurred on a different stream).
     ///
     /// Only fixed-width types are supported.
-    pub unsafe fn from_device_ptr(device_ptr: *const c_void, len: usize, type_id: TypeId) -> Result<Self> {
-        if type_id.size_in_bytes()?.is_none() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "from_device_ptr only supports fixed-width types")
-                .with_operation("column::from_device_ptr")
-                .with_context("len", len.to_string())
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
-        }
-
-        if len > 0 && device_ptr.is_null() {
-            return Err(Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
-                .with_operation("column::from_device_ptr")
-                .with_context("len", len.to_string())
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
-        }
-
-        let size = usize_to_i32_len(len, "data", "column::from_device_ptr")?;
-        let mut handle = ptr::null_mut();
-        // SAFETY: caller guarantees device_ptr is valid for `size` elements.
-        // Null-ptr + zero-len case is checked above.
-        error::check_status_in_with(
-            unsafe { cudf_sys::cudf_column_create_from_device_data(type_id.to_raw(), device_ptr, size, &mut handle) },
-            "column::from_device_ptr",
-            [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
-        )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
-    }
-
     /// Create a column by copying from a borrowed device pointer inside the
     /// given explicit runtime.
     ///
     /// Uses `cudf_column_create_from_device_data_ex` which routes the copy
-    /// through the runtime's stream and memory resource. Unlike
-    /// [`from_device_ptr`](Self::from_device_ptr), **this variant does NOT
-    /// synchronize before returning**. The caller must keep `device_ptr`
-    /// valid until the runtime's stream has completed the copy — e.g. by
-    /// calling [`Runtime::synchronize`].
+    /// through the runtime's stream and memory resource. This variant does
+    /// not synchronize before returning. The caller must keep `device_ptr`
+    /// valid until the runtime's stream has completed the copy, for example
+    /// by calling [`Runtime::synchronize`].
     ///
     /// Only fixed-width types are supported.
     ///
@@ -404,8 +333,7 @@ impl Column {
 
         let size = usize_to_i32_len(len, "data", operation)?;
         let output_domain = Arc::clone(runtime.execution_domain());
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let opts_ptr = exec_options.as_ref().map_or(ptr::null(), |o| o as *const _);
+        let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         let mut handle = ptr::null_mut();
         // SAFETY: caller guarantees device_ptr is valid for `size` elements.
         // The _ex variant does NOT synchronize — caller must keep device_ptr
@@ -416,7 +344,7 @@ impl Column {
                     type_id.to_raw(),
                     device_ptr,
                     size,
-                    opts_ptr,
+                    &exec_options,
                     &mut handle,
                 )
             },
@@ -432,26 +360,22 @@ impl Column {
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::core::Column;
-    /// let col = Column::from_strs(&["hello", "world"]).unwrap();
+    /// use cudf::Runtime;
+    /// let rt = Runtime::new().unwrap();
+    /// let col = rt.column_from_strs(&["hello", "world"]).unwrap();
     /// ```
-    pub fn from_strs(data: &[&str]) -> Result<Self> {
-        Self::from_strs_impl(data, None, None, "column::from_strs")
-    }
-
-    /// Create a STRING type column from host string data inside the given explicit runtime.
     pub(crate) fn from_strs_with_runtime(runtime: &Runtime, data: &[&str]) -> Result<Self> {
-        Self::from_strs_impl(data, None, Some(Arc::clone(runtime.execution_domain())), "column::from_strs_with_runtime")
+        Self::from_strs_impl(data, None, Arc::clone(runtime.execution_domain()), "column::from_strs_with_runtime")
     }
 
     pub(crate) fn from_strs_in_domain(data: &[&str], domain: &Arc<ExecutionDomain>) -> Result<Self> {
-        Self::from_strs_impl(data, None, Some(Arc::clone(domain)), "column::from_strs_in_domain")
+        Self::from_strs_impl(data, None, Arc::clone(domain), "column::from_strs_in_domain")
     }
 
     fn from_strs_impl(
         data: &[&str],
         validity: Option<&[bool]>,
-        domain: Option<Arc<ExecutionDomain>>,
+        domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         if let Some(validity) = validity {
@@ -473,47 +397,26 @@ impl Column {
             data.iter().map(|s| usize_to_i32_len(s.len(), "string_element", operation)).collect::<Result<Vec<_>>>()?;
         let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
-        let exec_options = domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
         let mut handle = ptr::null_mut();
         // SAFETY: ptrs and lengths are derived from valid &str slices and have
         // num_strings elements. No null mask (ptr::null(), 0).
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(exec_options) => unsafe {
-                    cudf_sys::cudf_column_create_strings_ex(
-                        ptrs.as_ptr(),
-                        lengths.as_ptr(),
-                        num_strings,
-                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
-                        null_count,
-                        exec_options,
-                        &mut handle,
-                    )
-                },
-                None => unsafe {
-                    cudf_sys::cudf_column_create_strings(
-                        ptrs.as_ptr(),
-                        lengths.as_ptr(),
-                        num_strings,
-                        null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
-                        null_count,
-                        &mut handle,
-                    )
-                },
+            unsafe {
+                cudf_sys::cudf_column_create_strings_ex(
+                    ptrs.as_ptr(),
+                    lengths.as_ptr(),
+                    num_strings,
+                    null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
+                    null_count,
+                    &exec_options,
+                    &mut handle,
+                )
             },
             operation,
         )?;
-        Ok(Self::from_handle_with_domain(handle, domain.unwrap_or_else(ExecutionDomain::ambient_default)))
-    }
-
-    /// Create an all-null column of the given type and length.
-    ///
-    /// Every element is null (invalid). For `len == 0` this is equivalent
-    /// to [`Column::empty`].
-    pub fn nulls(type_id: TypeId, len: usize) -> Result<Self> {
-        let domain = ExecutionDomain::ambient_default();
-        Self::nulls_in_domain(type_id, len, &domain, "column::nulls")
+        Ok(Self::from_handle_with_domain(handle, domain))
     }
 
     fn nulls_in_domain(
@@ -524,14 +427,14 @@ impl Column {
     ) -> Result<Self> {
         let size = usize_to_i32_len(len, "data", operation)?;
         if len == 0 {
-            return Ok(Self::empty(type_id)?.with_execution_domain(Arc::clone(domain)));
+            return Self::create_empty_in_domain(type_id, Arc::clone(domain), operation);
         }
 
         match type_id {
             TypeId::String => {
                 let dummy: Vec<&str> = vec![""; len];
                 let validity = vec![false; len];
-                Self::from_strs_impl(&dummy, Some(&validity), Some(Arc::clone(domain)), operation)
+                Self::from_strs_impl(&dummy, Some(&validity), Arc::clone(domain), operation)
             },
             _ => {
                 let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
@@ -554,34 +457,22 @@ impl Column {
                 let validity = vec![false; len];
                 let null_mask = validity_to_ffi_bitmask(&validity);
                 let null_count = size;
-                let exec_options = domain.explicit_exec_options_raw();
+                let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
                 let mut handle = ptr::null_mut();
                 // SAFETY: data is zeroed bytes of the correct size, null_mask marks
                 // all elements null. type_id.to_raw() is valid for fixed-width types.
                 error::check_status_in_with(
-                    match exec_options.as_ref() {
-                        Some(options) => unsafe {
-                            cudf_sys::cudf_column_create_numeric_ex(
-                                type_id.to_raw(),
-                                data.as_ptr() as *const c_void,
-                                size,
-                                null_mask.as_ptr(),
-                                null_count,
-                                options,
-                                &mut handle,
-                            )
-                        },
-                        None => unsafe {
-                            cudf_sys::cudf_column_create_numeric(
-                                type_id.to_raw(),
-                                data.as_ptr() as *const c_void,
-                                size,
-                                null_mask.as_ptr(),
-                                null_count,
-                                &mut handle,
-                            )
-                        },
+                    unsafe {
+                        cudf_sys::cudf_column_create_numeric_ex(
+                            type_id.to_raw(),
+                            data.as_ptr() as *const c_void,
+                            size,
+                            null_mask.as_ptr(),
+                            null_count,
+                            &exec_options,
+                            &mut handle,
+                        )
                     },
                     operation,
                     [("type_id", format!("{:?}", type_id).to_lowercase()), ("len", len.to_string())],
@@ -620,16 +511,11 @@ impl Column {
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     /// For null rows, the string content is ignored.
-    pub fn from_strs_nullable(data: &[&str], validity: &[bool]) -> Result<Self> {
-        Self::from_strs_impl(data, Some(validity), None, "column::from_strs_nullable")
-    }
-
-    /// Create a nullable STRING type column inside the given explicit runtime.
     pub(crate) fn from_strs_nullable_with_runtime(runtime: &Runtime, data: &[&str], validity: &[bool]) -> Result<Self> {
         Self::from_strs_impl(
             data,
             Some(validity),
-            Some(Arc::clone(runtime.execution_domain())),
+            Arc::clone(runtime.execution_domain()),
             "column::from_strs_nullable_with_runtime",
         )
     }
@@ -647,12 +533,10 @@ impl Column {
             Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX").with_operation("column::from_scalar")
         })?;
         let mut handle = ptr::null_mut();
-        let exec_options = scalar.domain.explicit_exec_options_raw();
-        let opts_ptr = exec_options.as_ref().map_or(ptr::null(), |o| o as *const _);
+        let exec_options = scalar.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
-        // opts_ptr is either null (ambient default) or a valid exec_options pointer.
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size_i32, &mut handle, opts_ptr) },
+            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size_i32, &mut handle, &exec_options) },
             "column::from_scalar",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&scalar.domain)))
@@ -698,6 +582,25 @@ impl Column {
 // Zero-copy device buffer adoption
 // ---------------------------------------------------------------------------
 
+fn require_runtime_matches_buffer_device(
+    runtime: &Runtime,
+    device_snapshot: i32,
+    operation: &'static str,
+) -> Result<Arc<ExecutionDomain>> {
+    let runtime_device = runtime.device();
+    if runtime_device.ordinal() as i32 != device_snapshot {
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "device buffer belongs to a different CUDA device than the target runtime",
+        )
+        .with_operation(operation)
+        .with_context("runtime_device", runtime_device.ordinal().to_string())
+        .with_context("buffer_device", device_snapshot.to_string()));
+    }
+
+    Ok(Arc::clone(runtime.execution_domain()))
+}
+
 impl Column {
     /// Create a column by adopting (moving) an existing [`DeviceBuffer`].
     ///
@@ -711,29 +614,29 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{
-    ///     TypeId,
-    ///     core::{Column, DeviceBuffer},
-    /// };
+    /// use cudf::{Runtime, TypeId, core::DeviceBuffer};
     ///
-    /// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
-    /// let col = Column::from_device_buffer(buf, 3, TypeId::Int32).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let buf = rt.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
+    /// let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
     /// assert_eq!(col.view().unwrap().len().unwrap(), 3);
     /// ```
-    pub fn from_device_buffer(buffer: super::DeviceBuffer, row_count: usize, type_id: TypeId) -> Result<Self> {
-        let operation = "column::from_device_buffer";
+    pub(crate) fn from_device_buffer_with_runtime(
+        runtime: &Runtime,
+        buffer: super::DeviceBuffer,
+        row_count: usize,
+        type_id: TypeId,
+    ) -> Result<Self> {
+        let operation = "column::from_device_buffer_with_runtime";
 
-        // Only fixed-width types.
         let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, "from_device_buffer only supports fixed-width types")
                 .with_operation(operation)
                 .with_context("type_id", format!("{:?}", type_id).to_lowercase())
         })?;
 
-        // row_count → i32 for FFI.
         let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
 
-        // Byte-size check: buffer must hold exactly row_count elements.
         let expected_bytes = row_count * (elem_size as usize);
         let actual_bytes = buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_bytes != expected_bytes {
@@ -745,19 +648,22 @@ impl Column {
                 .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
         }
 
-        // Extract raw handle — ownership transfers to FFI on success.
         let (raw_buf, device_snapshot) = buffer.into_raw_parts();
-        let domain = ExecutionDomain::ambient_default_for_device_snapshot(device_snapshot);
+        let output_domain = match require_runtime_matches_buffer_device(runtime, device_snapshot, operation) {
+            Ok(domain) => domain,
+            Err(err) => {
+                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, device_snapshot) };
+                return Err(err);
+            },
+        };
 
         let mut handle = ptr::null_mut();
         let status =
             unsafe { cudf_sys::cudf_column_adopt_device_buffer(type_id.to_raw(), raw_buf, row_count_i32, &mut handle) };
 
         match error::check_status_in(status, operation) {
-            Ok(()) => Ok(Self::from_handle_with_domain(handle, domain)),
+            Ok(()) => Ok(Self::from_handle_with_domain(handle, output_domain)),
             Err(err) => {
-                // SAFETY: FFI guarantees the buffer handle remains valid on failure.
-                // Reconstruct so Drop cleans up.
                 let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, device_snapshot) };
                 Err(err)
             },
@@ -778,35 +684,34 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{
-    ///     TypeId,
-    ///     core::{Column, DeviceBuffer},
-    /// };
+    /// use cudf::{Runtime, TypeId, core::DeviceBuffer};
     ///
-    /// let data_buf = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let data_buf = rt.device_buffer_from_host_data(&[10i32, 20, 30]).unwrap();
     /// // Bitmask: bits 0 and 2 set → rows 0 and 2 are valid, row 1 is null.
     /// let mut mask = [0u8; 64];
     /// mask[0] = 0x05;
-    /// let mask_buf = DeviceBuffer::from_host_data(&mask).unwrap();
-    /// let col = Column::from_device_buffer_nullable(
-    ///     data_buf,
-    ///     mask_buf,
-    ///     1,
-    ///     3,
-    ///     TypeId::Int32,
-    /// )
-    /// .unwrap();
+    /// let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
+    /// let col = rt
+    ///     .column_from_device_buffer_nullable(
+    ///         data_buf,
+    ///         mask_buf,
+    ///         1,
+    ///         3,
+    ///         TypeId::Int32,
+    ///     )
+    ///     .unwrap();
     /// ```
-    pub fn from_device_buffer_nullable(
+    pub(crate) fn from_device_buffer_nullable_with_runtime(
+        runtime: &Runtime,
         data_buffer: super::DeviceBuffer,
         null_mask_buffer: super::DeviceBuffer,
         null_count: usize,
         row_count: usize,
         type_id: TypeId,
     ) -> Result<Self> {
-        let operation = "column::from_device_buffer_nullable";
+        let operation = "column::from_device_buffer_nullable_with_runtime";
 
-        // Only fixed-width types.
         let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, "from_device_buffer_nullable only supports fixed-width types")
                 .with_operation(operation)
@@ -821,7 +726,6 @@ impl Column {
                 .with_context("null_count", null_count.to_string())
         })?;
 
-        // null_count must not exceed row_count.
         if null_count > row_count {
             return Err(Error::new(ErrorKind::InvalidOperation, "null_count exceeds row_count")
                 .with_operation(operation)
@@ -829,7 +733,6 @@ impl Column {
                 .with_context("row_count", row_count.to_string()));
         }
 
-        // Byte-size check for data buffer.
         let expected_data_bytes = row_count * (elem_size as usize);
         let actual_data_bytes = data_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_data_bytes != expected_data_bytes {
@@ -842,8 +745,6 @@ impl Column {
             .with_context("expected_bytes", expected_data_bytes.to_string()));
         }
 
-        // Mask buffer must satisfy cudf's bitmask allocation size: 64-byte aligned.
-        // cudf::bitmask_allocation_size_bytes(n) = ceil(n / 8) rounded up to 64 bytes.
         let min_mask_bytes = cudf_null_mask_allocation_size_bytes(row_count);
         let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_mask_bytes < min_mask_bytes {
@@ -866,11 +767,16 @@ impl Column {
             .with_context("mask_device", mask_device_snapshot.to_string()));
         }
 
-        // Extract raw handles. The resulting column retains the data buffer's
-        // creation-time device provenance.
         let (raw_data, data_device_snapshot) = data_buffer.into_raw_parts();
         let (raw_mask, mask_device_snapshot) = null_mask_buffer.into_raw_parts();
-        let domain = ExecutionDomain::ambient_default_for_device_snapshot(data_device_snapshot);
+        let output_domain = match require_runtime_matches_buffer_device(runtime, data_device_snapshot, operation) {
+            Ok(domain) => domain,
+            Err(err) => {
+                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_device_snapshot) };
+                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_device_snapshot) };
+                return Err(err);
+            },
+        };
 
         let mut handle = ptr::null_mut();
         let status = unsafe {
@@ -885,9 +791,8 @@ impl Column {
         };
 
         match error::check_status_in(status, operation) {
-            Ok(()) => Ok(Self::from_handle_with_domain(handle, domain)),
+            Ok(()) => Ok(Self::from_handle_with_domain(handle, output_domain)),
             Err(err) => {
-                // SAFETY: FFI guarantees both handles remain valid on failure.
                 let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_device_snapshot) };
                 let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_device_snapshot) };
                 Err(err)
@@ -946,10 +851,11 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::core::Column;
+    /// use cudf::Runtime;
     ///
-    /// let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    /// let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let a = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+    /// let b = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
     /// let sum = a.add(&b).unwrap();
     /// // sum: [11, 22, 33]
     ///
@@ -1125,10 +1031,11 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::core::{Column, Scalar};
+    /// use cudf::Runtime;
     ///
-    /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    /// let offset = Scalar::from_value(100i32).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let col = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+    /// let offset = rt.scalar(100i32).unwrap();
     /// let result = col.add_scalar(&offset).unwrap();
     /// // result: [101, 102, 103]
     ///

@@ -33,25 +33,18 @@ pub struct CsvReadOptions {
     has_header: bool,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
     column_names: Option<Vec<String>>,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 impl CsvReadOptions {
     fn to_table_options(&self) -> CsvTableReadOptions {
-        match self.runtime.as_ref() {
-            Some(rt) => CsvTableReadOptions::builder()
-                .filepath(&self.filepath)
-                .delimiter(self.delimiter)
-                .has_header(self.has_header)
-                .with_runtime(rt)
-                .build(),
-            None => CsvTableReadOptions::builder()
-                .filepath(&self.filepath)
-                .delimiter(self.delimiter)
-                .has_header(self.has_header)
-                .build(),
-        }
+        CsvTableReadOptions::builder()
+            .filepath(&self.filepath)
+            .delimiter(self.delimiter)
+            .has_header(self.has_header)
+            .with_runtime(&self.runtime)
+            .build()
     }
 
     fn column_names(&self) -> Option<&[String]> {
@@ -114,8 +107,8 @@ pub struct ParquetReadOptions {
     num_rows: Option<usize>,
     #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 impl ParquetReadOptions {
@@ -146,8 +139,8 @@ pub struct JsonReadOptions {
     filepath: PathBuf,
     #[builder(default = true)]
     lines: bool,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 impl JsonReadOptions {
@@ -160,7 +153,7 @@ fn resolve_csv_column_names(options: &CsvReadOptions, result: &IoTableResult) ->
     let operation = "dataframe::read_csv_with_options";
     let num_columns = {
         let view = result.table.view()?;
-        view.num_columns()? as usize
+        view.num_columns()?
     };
 
     if let Some(names) = options.column_names() {
@@ -223,8 +216,8 @@ impl DataFrame {
     /// Same as [`read_csv_with_options`](Self::read_csv_with_options):
     /// host file I/O, GPU allocation for the decoded columns, and host-to-
     /// device transfer of parsed field data.
-    pub fn read_csv(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_csv_with_options(CsvReadOptions::builder().filepath(path).build())
+    pub fn read_csv(runtime: &Runtime, path: impl AsRef<Path>) -> Result<Self> {
+        Self::read_csv_with_options(CsvReadOptions::builder().filepath(path).with_runtime(runtime).build())
     }
 
     /// Read a CSV file into a `DataFrame` using caller-provided options.
@@ -292,8 +285,8 @@ impl DataFrame {
     /// Same as [`read_parquet_with_options`](Self::read_parquet_with_options):
     /// host file I/O, GPU allocation for the decoded columns, and host-to-
     /// device transfer of decoded column data.
-    pub fn read_parquet(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_parquet_with_options(ParquetReadOptions::builder().filepath(path).build())
+    pub fn read_parquet(runtime: &Runtime, path: impl AsRef<Path>) -> Result<Self> {
+        Self::read_parquet_with_options(ParquetReadOptions::builder().filepath(path).with_runtime(runtime).build())
     }
 
     /// Read a Parquet file into a `DataFrame` using caller-provided
@@ -365,8 +358,8 @@ impl DataFrame {
     /// Same as [`read_json_with_options`](Self::read_json_with_options):
     /// host file I/O, GPU allocation for the decoded columns, and host-to-
     /// device transfer of decoded field data.
-    pub fn read_json(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_json_with_options(JsonReadOptions::builder().filepath(path).build())
+    pub fn read_json(runtime: &Runtime, path: impl AsRef<Path>) -> Result<Self> {
+        Self::read_json_with_options(JsonReadOptions::builder().filepath(path).with_runtime(runtime).build())
     }
 
     /// Read a JSON file into a `DataFrame` using caller-provided

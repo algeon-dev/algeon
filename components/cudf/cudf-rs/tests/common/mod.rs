@@ -5,8 +5,8 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, Error, ErrorKind, Runtime, Series,
-    core::{Column, memory::DeviceMemoryResource},
+    DataFrame, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
+    core::{Column, CudfType, DeviceBuffer, Scalar, memory::DeviceMemoryResource},
     runtime::CudaStream,
 };
 use cudf_sys::{
@@ -16,9 +16,120 @@ use cudf_sys::{
 
 #[allow(dead_code)]
 pub fn sample_df() -> DataFrame {
-    let ids = Column::from_slice(&[3i32, 1, 4, 1, 5]).unwrap();
-    let scores = Column::from_slice(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap();
+    let ids = column_from_slice(&[3i32, 1, 4, 1, 5]).unwrap();
+    let scores = column_from_slice(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap();
     dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+}
+
+thread_local! {
+    static TEST_RUNTIME: Runtime = sample_runtime();
+}
+
+#[allow(dead_code)]
+pub fn with_test_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> T {
+    TEST_RUNTIME.with(f)
+}
+
+#[allow(dead_code)]
+pub fn column_from_slice<T: CudfType>(data: &[T]) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.column_from_slice(data))
+}
+
+#[allow(dead_code)]
+pub fn column_from_slice_nullable<T: CudfType>(data: &[T], validity: &[bool]) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.column_from_slice_nullable(data, validity))
+}
+
+#[allow(dead_code)]
+pub fn column_from_strs(data: &[&str]) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.column_from_strs(data))
+}
+
+#[allow(dead_code)]
+pub fn column_from_strs_nullable(data: &[&str], validity: &[bool]) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.column_from_strs_nullable(data, validity))
+}
+
+#[allow(dead_code)]
+pub fn null_column(type_id: TypeId, len: usize) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.null_column(type_id, len))
+}
+
+#[allow(dead_code)]
+pub fn empty_column(type_id: TypeId) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.empty_column(type_id))
+}
+
+#[allow(dead_code)]
+pub unsafe fn column_from_device_ptr(device_ptr: *const c_void, len: usize, type_id: TypeId) -> cudf::Result<Column> {
+    with_test_runtime(|rt| unsafe { rt.column_from_device_ptr(device_ptr, len, type_id) })
+}
+
+#[allow(dead_code)]
+pub fn column_from_device_buffer(buffer: DeviceBuffer, row_count: usize, type_id: TypeId) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.column_from_device_buffer(buffer, row_count, type_id))
+}
+
+#[allow(dead_code)]
+pub fn column_from_device_buffer_nullable(
+    data_buffer: DeviceBuffer,
+    null_mask_buffer: DeviceBuffer,
+    null_count: usize,
+    row_count: usize,
+    type_id: TypeId,
+) -> cudf::Result<Column> {
+    with_test_runtime(|rt| {
+        rt.column_from_device_buffer_nullable(data_buffer, null_mask_buffer, null_count, row_count, type_id)
+    })
+}
+
+#[allow(dead_code)]
+pub fn scalar<T: CudfType>(value: T) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.scalar(value))
+}
+
+#[allow(dead_code)]
+pub fn string_scalar(value: &str) -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.string_scalar(value))
+}
+
+#[allow(dead_code)]
+pub fn null_scalar<T: CudfType>() -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.null_scalar::<T>())
+}
+
+#[allow(dead_code)]
+pub fn null_string_scalar() -> cudf::Result<Scalar> {
+    with_test_runtime(|rt| rt.null_string_scalar())
+}
+
+#[allow(dead_code)]
+pub fn series<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.series(name, data))
+}
+
+#[allow(dead_code)]
+pub fn nullable_series<T: HostColumnData>(
+    name: impl Into<String>,
+    data: &[T],
+    validity: &[bool],
+) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.nullable_series(name, data, validity))
+}
+
+#[allow(dead_code)]
+pub fn series_opt<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.series_opt(name, data))
+}
+
+#[allow(dead_code)]
+pub fn null_series(name: impl Into<String>, type_id: TypeId, len: usize) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.nulls(name, type_id, len))
+}
+
+#[allow(dead_code)]
+pub fn empty_series(name: impl Into<String>, type_id: TypeId) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.empty_series(name, type_id))
 }
 
 #[allow(dead_code)]
@@ -30,6 +141,10 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
             .with_operation(operation)
             .with_context("names_count", names.len().to_string())
             .with_context("columns_count", columns.len().to_string()));
+    }
+
+    if names.is_empty() {
+        return Ok(sample_runtime().empty_dataframe());
     }
 
     let pairs = names
@@ -56,6 +171,11 @@ pub fn series_device_ptr(series: &Series) -> *const c_void {
 #[allow(dead_code)]
 pub fn reset_exec_observation() {
     unsafe { cudf_test_exec_reset_observation() };
+}
+
+#[allow(dead_code)]
+pub fn fail_next_column_view_metadata_read() {
+    unsafe { cudf_sys::cudf_test_fail_next_column_view_metadata_read() };
 }
 
 #[allow(dead_code)]
@@ -136,7 +256,7 @@ pub fn last_sync_stream_value() -> usize {
 
 #[allow(dead_code)]
 pub fn explicit_i32_column(data: &[i32], identity: u64) -> Column {
-    Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
+    column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
 }
 
 #[allow(dead_code)]
@@ -146,7 +266,7 @@ pub fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> Series {
 
 #[allow(dead_code)]
 pub fn explicit_bool_column(data: &[bool], identity: u64) -> Column {
-    Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
+    column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
 }
 
 #[allow(dead_code)]

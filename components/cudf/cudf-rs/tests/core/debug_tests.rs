@@ -1,10 +1,12 @@
 //! Smoke tests for metadata-only Debug formatting on core types.
 
-use cudf::core::{Column, Scalar, Table};
+use cudf::core::Table;
+
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
 #[test]
 fn test_column_and_view_debug_smoke_report_metadata_without_values() {
-    let column = Column::from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap();
+    let column = column_from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap();
     let view = column.view().unwrap();
 
     let column_output = format!("{:?}", column);
@@ -38,8 +40,8 @@ fn test_column_and_view_debug_smoke_report_metadata_without_values() {
 #[test]
 fn test_table_and_view_debug_smoke_report_schema_without_values() {
     let table = Table::from_columns(vec![
-        Column::from_slice(&[11i32, 22, 33]).unwrap(),
-        Column::from_strs(&["alpha", "beta", "gamma"]).unwrap(),
+        column_from_slice(&[11i32, 22, 33]).unwrap(),
+        column_from_strs(&["alpha", "beta", "gamma"]).unwrap(),
     ])
     .unwrap();
     let view = table.view().unwrap();
@@ -66,7 +68,7 @@ fn test_table_and_view_debug_smoke_report_schema_without_values() {
 
 #[test]
 fn test_scalar_debug_smoke_reports_type_and_validity_without_value() {
-    let scalar = Scalar::from_str("secret-debug-payload").unwrap();
+    let scalar = crate::common::string_scalar("secret-debug-payload").unwrap();
 
     let output = format!("{:?}", scalar);
 

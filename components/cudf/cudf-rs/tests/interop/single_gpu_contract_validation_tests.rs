@@ -125,6 +125,7 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
     let producer_runtime = Runtime::builder().build().unwrap();
     let edges = sample_edge_list(&producer_runtime);
     let export = edges.try_prepare_device_table_export().unwrap();
+    let _event_lock = common::lock_event_observation();
 
     let consumer_runtime = common::sample_runtime();
     let imported = DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime).unwrap();

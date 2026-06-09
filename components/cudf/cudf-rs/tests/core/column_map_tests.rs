@@ -1,12 +1,14 @@
 //! Tests for ColumnView::map() — value mapping via left join.
 
-use cudf::{TypeId, core::Column};
+use cudf::TypeId;
+
+use crate::common::{column_from_slice, column_from_strs};
 
 #[test]
 fn test_map_string_to_int() {
-    let input = Column::from_strs(&["a", "b", "c", "a"]).unwrap();
-    let keys = Column::from_strs(&["a", "b", "c"]).unwrap();
-    let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let input = column_from_strs(&["a", "b", "c", "a"]).unwrap();
+    let keys = column_from_strs(&["a", "b", "c"]).unwrap();
+    let values = column_from_slice(&[1i32, 2, 3]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
@@ -17,9 +19,9 @@ fn test_map_string_to_int() {
 
 #[test]
 fn test_map_missing_keys_become_null() {
-    let input = Column::from_slice(&[1i32, 2, 3, 1]).unwrap();
-    let keys = Column::from_slice(&[1i32, 2]).unwrap();
-    let values = Column::from_slice(&[10i32, 20]).unwrap();
+    let input = column_from_slice(&[1i32, 2, 3, 1]).unwrap();
+    let keys = column_from_slice(&[1i32, 2]).unwrap();
+    let values = column_from_slice(&[10i32, 20]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
@@ -40,9 +42,9 @@ fn test_map_missing_keys_become_null() {
 
 #[test]
 fn test_map_empty_input() {
-    let input = Column::from_strs(&[]).unwrap();
-    let keys = Column::from_strs(&["a"]).unwrap();
-    let values = Column::from_slice(&[1i32]).unwrap();
+    let input = column_from_strs(&[]).unwrap();
+    let keys = column_from_strs(&["a"]).unwrap();
+    let values = column_from_slice(&[1i32]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
@@ -51,10 +53,25 @@ fn test_map_empty_input() {
 }
 
 #[test]
+fn test_map_empty_input_preserves_explicit_input_provenance() {
+    let runtime = cudf::Runtime::builder().build().unwrap();
+    let input = runtime.column_from_strs(&[]).unwrap();
+    let keys = runtime.column_from_strs(&["a"]).unwrap();
+    let values = runtime.column_from_slice(&[1i32]).unwrap();
+
+    let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_stream_value(), input.__debug_execution_domain_stream_value());
+    assert_eq!(result.view().unwrap().len().unwrap(), 0);
+}
+
+#[test]
 fn test_map_int_to_int() {
-    let input = Column::from_slice(&[1i32, 2, 3, 1]).unwrap();
-    let keys = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let values = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let input = column_from_slice(&[1i32, 2, 3, 1]).unwrap();
+    let keys = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let values = column_from_slice(&[100i32, 200, 300]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
@@ -64,9 +81,9 @@ fn test_map_int_to_int() {
 
 #[test]
 fn test_map_preserves_output_type() {
-    let input = Column::from_slice(&[1i32, 2]).unwrap();
-    let keys = Column::from_slice(&[1i32, 2]).unwrap();
-    let values = Column::from_slice(&[1.5f64, 2.5]).unwrap();
+    let input = column_from_slice(&[1i32, 2]).unwrap();
+    let keys = column_from_slice(&[1i32, 2]).unwrap();
+    let values = column_from_slice(&[1.5f64, 2.5]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
@@ -77,9 +94,9 @@ fn test_map_preserves_output_type() {
 
 #[test]
 fn test_map_rejects_duplicate_keys() {
-    let input = Column::from_slice(&[1i32, 2, 1]).unwrap();
-    let keys = Column::from_slice(&[1i32, 1, 2]).unwrap();
-    let values = Column::from_slice(&[10i32, 11, 20]).unwrap();
+    let input = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
+    let values = column_from_slice(&[10i32, 11, 20]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap());
     let err = match result {

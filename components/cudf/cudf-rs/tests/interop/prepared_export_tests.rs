@@ -12,7 +12,6 @@ use std::sync::{
 
 use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
-    core::Column,
     interop::{
         borrowed::{
             BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle, InteropTypeId,
@@ -34,7 +33,7 @@ use cudf::{
 };
 use tempfile::TempDir;
 
-use crate::common::{self, lock_event_observation};
+use crate::common::{self, column_from_slice, lock_event_observation};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -768,25 +767,30 @@ mod device_export_contracts {
     use super::*;
 
     #[test]
-    fn ambient_and_mixed_device_exports_are_rejected() {
-        let column = Column::from_slice(&[1i32, 2, 3]).unwrap();
-        let err = column.view().unwrap().try_prepare_device_column_export().unwrap_err();
-        assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-        assert!(err.context().iter().any(
-            |(key, value)| *key == "operation" && value == "interop::ColumnView::try_prepare_device_column_export"
-        ));
+    fn helper_built_exports_use_explicit_runtime_binding_and_mixed_device_exports_are_rejected() {
+        crate::common::with_test_runtime(|runtime| {
+            let column = column_from_slice(&[1i32, 2, 3]).unwrap();
+            let view = column.view().unwrap();
+            let column_export = view.try_prepare_device_column_export().unwrap();
+            assert_eq!(column_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+            assert_device_stream_readiness(
+                column_export.readiness(),
+                runtime.stream().__debug_raw_handle_value(),
+                runtime.device(),
+            );
 
-        let ids = cudf::Series::new("id", &[1i32, 2, 3]).unwrap();
-        let vals = cudf::Series::new("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
-        let err = frame.try_prepare_device_table_export().unwrap_err();
-        assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-        assert!(
-            err.context()
-                .iter()
-                .any(|(key, value)| *key == "operation"
-                    && value == "interop::DataFrame::try_prepare_device_table_export")
-        );
+            let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
+            let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
+            let frame = DataFrame::from_series([ids, vals]).unwrap();
+            let frame_export = frame.try_prepare_device_table_export().unwrap();
+            assert_eq!(frame_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+            assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
+            assert_device_stream_readiness(
+                frame_export.readiness(),
+                runtime.stream().__debug_raw_handle_value(),
+                runtime.device(),
+            );
+        });
 
         if !should_run_multi_gpu_test() {
             return;

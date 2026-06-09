@@ -1,15 +1,7 @@
 use std::sync::Arc;
 
 use super::owned::Series;
-use crate::{
-    core::{
-        column::Column,
-        error::Result,
-        scalar::Scalar,
-        types::{CudfType, TypeId},
-    },
-    frame::series::HostColumnData,
-};
+use crate::core::{column::Column, error::Result, scalar::Scalar, types::CudfType};
 
 impl Series {
     pub(crate) fn split_optional_host_values<T: CudfType>(data: &[Option<T>]) -> (Vec<T>, Vec<bool>, bool) {
@@ -42,47 +34,6 @@ impl Series {
         Ok(s)
     }
 
-    /// Create a `Series` from a host slice.
-    ///
-    /// This allocates a new GPU-backed column and copies `data` from host
-    /// memory into device memory.
-    ///
-    /// # Cost
-    /// - Fixed-width inputs: one device allocation plus one host-to-device
-    ///   transfer of `len * size_of::<T>()` bytes.
-    /// - UTF-8 string inputs: string-specific host marshaling plus device-side
-    ///   STRING column construction.
-    pub fn new<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> Result<Self> {
-        let column = T::create_column(data)?;
-        Self::from_named_column(name, column)
-    }
-
-    /// Create a nullable `Series` from host data and a validity mask.
-    ///
-    /// `validity[i]` is `true` if element `i` is valid (non-null).
-    ///
-    /// This allocates a new GPU-backed column and copies host values plus
-    /// nullable validity information into device memory. Fixed-width and
-    /// string inputs use their respective low-level construction paths.
-    pub fn new_nullable<T: HostColumnData>(name: impl Into<String>, data: &[T], validity: &[bool]) -> Result<Self> {
-        let column = T::create_column_nullable(data, validity)?;
-        Self::from_named_column(name, column)
-    }
-
-    /// Create a nullable `Series` from a host slice of optional fixed-width values.
-    ///
-    /// `Some(value)` becomes a valid row; `None` becomes a null row. If every
-    /// element is `Some`, this uses the non-nullable constructor path and does
-    /// not allocate a null mask.
-    ///
-    /// This consumes host data and copies the resulting values, and when
-    /// needed their null-mask representation, into a newly allocated GPU
-    /// column.
-    pub fn from_optional<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> Result<Self> {
-        let (values, validity, has_nulls) = Self::split_optional_host_values(data);
-        if has_nulls { Self::new_nullable(name, &values, &validity) } else { Self::new(name, &values) }
-    }
-
     /// Wrap an owned `Column` as an unnamed `Series`.
     ///
     /// This reads column metadata (length, null count) via FFI at construction
@@ -95,33 +46,15 @@ impl Series {
     ///
     /// This reads column metadata (length, null count) via FFI at construction
     /// time and caches the values for infallible metadata access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if column metadata cannot be read via FFI. This should never
-    /// happen for a well-formed `Column` (e.g. one already stored in a
-    /// `DataFrame`).
-    pub(crate) fn from_column_arc(column: Arc<Column>) -> Self {
+    pub(crate) fn from_column_arc(column: Arc<Column>) -> Result<Self> {
         let (cached_len, cached_null_count) = {
-            let cv = column.view().expect("Column must have a valid view");
+            let cv = column.view().map_err(|e| e.with_operation("series::from_column_arc"))?;
             (
-                cv.len().expect("Column view must report length"),
-                cv.null_count().expect("Column view must report null count"),
+                cv.len().map_err(|e| e.with_operation("series::from_column_arc"))?,
+                cv.null_count().map_err(|e| e.with_operation("series::from_column_arc"))?,
             )
         };
-        Self { name: None, column, cached_len, cached_null_count }
-    }
-
-    /// Create an all-null `Series` of the given type and length.
-    ///
-    /// Every element is null (invalid). The underlying column is allocated on
-    /// the GPU with a zeroed data buffer and an all-null validity mask.
-    ///
-    /// # Cost
-    /// GPU-allocating: one device allocation.
-    pub fn nulls(name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Self> {
-        let column = Column::nulls(type_id, len)?;
-        Self::from_named_column(name, column)
+        Ok(Self { name: None, column, cached_len, cached_null_count })
     }
 
     /// Create a `Series` by repeating a scalar value `size` times.
@@ -132,15 +65,6 @@ impl Series {
     /// GPU-allocating: one device allocation of `size` elements.
     pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
         let column = Column::from_scalar(scalar, size)?;
-        Self::from_named_column(name, column)
-    }
-
-    /// Create an empty (zero-length) `Series` of the given type.
-    ///
-    /// This is equivalent to `Series::nulls(name, type_id, 0)` but may be
-    /// slightly cheaper.
-    pub fn empty(name: impl Into<String>, type_id: TypeId) -> Result<Self> {
-        let column = Column::empty(type_id)?;
         Self::from_named_column(name, column)
     }
 

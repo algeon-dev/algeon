@@ -1,11 +1,8 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{
-    DataFrame, ErrorKind, Series,
-    core::{Column, Table},
-};
+use cudf::{DataFrame, ErrorKind, core::Table};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{assert_missing_column_error, column_from_slice};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
@@ -13,8 +10,8 @@ use crate::common::assert_missing_column_error;
 
 #[test]
 fn test_new_from_named_columns() {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
@@ -25,8 +22,8 @@ fn test_new_from_named_columns() {
 
 #[test]
 fn test_column_by_name() {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
     let df =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
@@ -40,8 +37,8 @@ fn test_column_by_name() {
 
 #[test]
 fn test_reject_duplicate_column_names() {
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
-    let c2 = Column::from_slice(&[3i32, 4]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
+    let c2 = column_from_slice(&[3i32, 4]).unwrap();
 
     let result = crate::common::dataframe_from_columns(vec!["x".to_string(), "x".to_string()], vec![c1, c2]);
 
@@ -52,7 +49,7 @@ fn test_reject_duplicate_column_names() {
 
 #[test]
 fn test_reject_mismatched_names_columns_count() {
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
 
     let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
 
@@ -63,7 +60,7 @@ fn test_reject_mismatched_names_columns_count() {
 
 #[test]
 fn test_column_nonexistent_name_returns_error() {
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
 
     let result = df.series("nonexistent");
@@ -74,9 +71,9 @@ fn test_column_nonexistent_name_returns_error() {
 
 #[test]
 fn test_column_names_preserves_insertion_order() {
-    let c1 = Column::from_slice(&[1i32]).unwrap();
-    let c2 = Column::from_slice(&[2i32]).unwrap();
-    let c3 = Column::from_slice(&[3i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
+    let c2 = column_from_slice(&[2i32]).unwrap();
+    let c3 = column_from_slice(&[3i32]).unwrap();
 
     let df = crate::common::dataframe_from_columns(
         vec!["zebra".to_string(), "apple".to_string(), "mango".to_string()],
@@ -90,8 +87,8 @@ fn test_column_names_preserves_insertion_order() {
 
 #[test]
 fn test_column_index() {
-    let c1 = Column::from_slice(&[1i32]).unwrap();
-    let c2 = Column::from_slice(&[2i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
+    let c2 = column_from_slice(&[2i32]).unwrap();
 
     let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1, c2]).unwrap();
 
@@ -102,8 +99,8 @@ fn test_column_index() {
 
 #[test]
 fn test_column_names_and_index_give_equivalent_info() {
-    let c1 = Column::from_slice(&[1i32]).unwrap();
-    let c2 = Column::from_slice(&[2.0f64]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
+    let c2 = column_from_slice(&[2.0f64]).unwrap();
 
     let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![c1, c2]).unwrap();
 
@@ -117,7 +114,7 @@ fn test_column_names_and_index_give_equivalent_info() {
 
 #[test]
 fn test_column_accessor_validates_data() {
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
 
     let col = df.series("x").unwrap();
@@ -129,8 +126,8 @@ fn test_column_accessor_validates_data() {
 #[test]
 fn test_from_table_round_trip() {
     // Build a Table directly, then wrap it in a DataFrame.
-    let c1 = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let c2 = Column::from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
+    let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
 
     let df = DataFrame::from_table(table, vec!["a".to_string(), "b".to_string()]).unwrap();
@@ -147,7 +144,7 @@ fn test_from_table_round_trip() {
 
 #[test]
 fn test_from_table_mismatched_names_count() {
-    let c1 = Column::from_slice(&[1i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
     let result = DataFrame::from_table(table, vec!["a".to_string(), "b".to_string()]);
@@ -159,8 +156,8 @@ fn test_from_table_mismatched_names_count() {
 
 #[test]
 fn test_into_table() {
-    let c1 = Column::from_slice(&[1i32, 2]).unwrap();
-    let c2 = Column::from_slice(&[3.0f64, 4.0]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2]).unwrap();
+    let c2 = column_from_slice(&[3.0f64, 4.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
     let (table, names) = df.try_into_table().unwrap();
@@ -184,8 +181,8 @@ fn test_empty_dataframe() {
 
 #[test]
 fn test_dataframe_macro_basic() {
-    let x = Series::new::<i32>("source_x", &[1, 2, 3]).unwrap();
-    let y = Series::new::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
+    let x = crate::common::series::<i32>("source_x", &[1, 2, 3]).unwrap();
+    let y = crate::common::series::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 
     let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 
@@ -197,7 +194,7 @@ fn test_dataframe_macro_basic() {
 
 #[test]
 fn test_dataframe_macro_single_column() {
-    let series = Series::new::<i32>("source_only", &[1, 2]).unwrap();
+    let series = crate::common::series::<i32>("source_only", &[1, 2]).unwrap();
 
     let df = cudf::dataframe! { "only" => series }.unwrap();
 
@@ -207,8 +204,8 @@ fn test_dataframe_macro_single_column() {
 
 #[test]
 fn test_dataframe_macro_trailing_comma() {
-    let a = Series::new::<i32>("source_a", &[1]).unwrap();
-    let b = Series::new::<i32>("source_b", &[2]).unwrap();
+    let a = crate::common::series::<i32>("source_a", &[1]).unwrap();
+    let b = crate::common::series::<i32>("source_b", &[2]).unwrap();
 
     let df = cudf::dataframe! {
         "a" => a,
@@ -222,7 +219,7 @@ fn test_dataframe_macro_trailing_comma() {
 
 #[test]
 fn test_dataframe_macro_uses_pair_names_not_series_names() {
-    let source = Series::new::<i32>("upstream_name", &[11, 22]).unwrap();
+    let source = crate::common::series::<i32>("upstream_name", &[11, 22]).unwrap();
 
     let df = cudf::dataframe! { "renamed" => source }.unwrap();
 

@@ -9,13 +9,15 @@ use std::collections::HashMap;
 
 use cudf::{
     JsonReadOptions, Runtime, Series,
-    core::{DataType, Scalar, TypeId},
+    core::{DataType, TypeId},
     interop::{
         borrowed::{BufferBinding, ColumnLayout, InteropTypeId, PhysicalValidity, SchemaNullability, SemanticColumn},
         prepared::ExportProfile,
     },
 };
 use tempfile::TempDir;
+
+use crate::common::scalar;
 
 fn sample_runtime() -> Runtime {
     Runtime::builder().build().unwrap()
@@ -31,7 +33,7 @@ fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a Buffer
     bindings.iter().map(|binding| (binding.id().get(), binding)).collect()
 }
 
-fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> HashMap<u32, &'a SemanticColumn> {
+fn semantic_column_map(columns: &[SemanticColumn]) -> HashMap<u32, &SemanticColumn> {
     columns.iter().map(|column| (column.id().get(), column)).collect()
 }
 
@@ -263,13 +265,13 @@ fn read_json_series(rt: &Runtime, filename: &str, rows: &str, column_name: &str)
 #[test]
 fn copy_into_domain_timestamp_microseconds() {
     let rt = sample_runtime();
-    let s = Series::new::<i64>("t", &[1_000_000]).unwrap();
+    let s = crate::common::series::<i64>("t", &[1_000_000]).unwrap();
     let dur = s.astype(TypeId::DurationMicroseconds).unwrap();
     let ts = dur.astype(TypeId::TimestampMicroseconds).unwrap();
     let scalar = ts.min().unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected = Series::new::<i64>("out", &[1_000_000, 1_000_000])
+    let expected = crate::common::series::<i64>("out", &[1_000_000, 1_000_000])
         .unwrap()
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
@@ -281,13 +283,13 @@ fn copy_into_domain_timestamp_microseconds() {
 #[test]
 fn copy_into_domain_timestamp_days() {
     let rt = sample_runtime();
-    let s = Series::new::<i32>("t", &[100]).unwrap();
+    let s = crate::common::series::<i32>("t", &[100]).unwrap();
     let dur = s.astype(TypeId::DurationDays).unwrap();
     let ts = dur.astype(TypeId::TimestampDays).unwrap();
     let scalar = ts.min().unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected = Series::new::<i32>("out", &[100, 100])
+    let expected = crate::common::series::<i32>("out", &[100, 100])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -299,12 +301,12 @@ fn copy_into_domain_timestamp_days() {
 #[test]
 fn copy_into_domain_duration_seconds() {
     let rt = sample_runtime();
-    let s = Series::new::<i64>("d", &[42]).unwrap();
+    let s = crate::common::series::<i64>("d", &[42]).unwrap();
     let dur = s.astype(TypeId::DurationSeconds).unwrap();
     let scalar = dur.min().unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected = Series::new::<i64>("out", &[42, 42]).unwrap().astype(TypeId::DurationSeconds).unwrap();
+    let expected = crate::common::series::<i64>("out", &[42, 42]).unwrap().astype(TypeId::DurationSeconds).unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
 
@@ -312,13 +314,13 @@ fn copy_into_domain_duration_seconds() {
 fn copy_into_domain_null_timestamp() {
     let rt = sample_runtime();
     // Create a nullable timestamp column where the only element is null, so min() is null
-    let s = Series::new_nullable::<i64>("t", &[0], &[false]).unwrap();
+    let s = crate::common::nullable_series::<i64>("t", &[0], &[false]).unwrap();
     let ts = s.astype(TypeId::DurationMicroseconds).unwrap().astype(TypeId::TimestampMicroseconds).unwrap();
     let scalar = ts.min().unwrap();
 
     // series_from_scalar with a null scalar produces a column of all nulls
     let result = rt.series_from_scalar("out", &scalar, 3).unwrap();
-    let expected = Series::new_nullable::<i64>("out", &[0, 0, 0], &[false, false, false])
+    let expected = crate::common::nullable_series::<i64>("out", &[0, 0, 0], &[false, false, false])
         .unwrap()
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
@@ -332,26 +334,30 @@ fn copy_into_domain_null_timestamp() {
 #[test]
 fn copy_into_domain_decimal64() {
     let rt = sample_runtime();
-    let s = Series::new::<i64>("d", &[100]).unwrap();
+    let s = crate::common::series::<i64>("d", &[100]).unwrap();
     let dec = s.astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
     let scalar = dec.min().unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected =
-        Series::new::<i64>("out", &[100, 100]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let expected = crate::common::series::<i64>("out", &[100, 100])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
 
 #[test]
 fn copy_into_domain_decimal128() {
     let rt = sample_runtime();
-    let s = Series::new::<i64>("d", &[200]).unwrap();
+    let s = crate::common::series::<i64>("d", &[200]).unwrap();
     let dec = s.astype(DataType::fixed_point(TypeId::Decimal128, -3)).unwrap();
     let scalar = dec.min().unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected =
-        Series::new::<i64>("out", &[200, 200]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -3)).unwrap();
+    let expected = crate::common::series::<i64>("out", &[200, 200])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal128, -3))
+        .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
 
@@ -360,7 +366,7 @@ fn copy_into_domain_decimal128() {
 #[test]
 fn copy_into_domain_numeric_i32_regression() {
     let rt = sample_runtime();
-    let scalar = Scalar::from_value(42i32).unwrap();
+    let scalar = scalar(42i32).unwrap();
 
     let result = rt.series_from_scalar("out", &scalar, 1).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
@@ -369,7 +375,7 @@ fn copy_into_domain_numeric_i32_regression() {
 #[test]
 fn copy_into_domain_string_regression() {
     let rt = sample_runtime();
-    let scalar = Scalar::from_str("hello").unwrap();
+    let scalar = crate::common::string_scalar("hello").unwrap();
 
     // count=2 so an offsets-buffer replication bug (e.g. [0,5,0,5] vs [0,5,10]) is caught.
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
@@ -381,7 +387,7 @@ fn copy_into_domain_string_regression() {
 #[test]
 fn scalar_copy_dataframe_round_trip() {
     let rt = sample_runtime();
-    let s = Series::new::<i64>("t", &[1_000_000]).unwrap();
+    let s = crate::common::series::<i64>("t", &[1_000_000]).unwrap();
     let ts = s.astype(TypeId::DurationMicroseconds).unwrap().astype(TypeId::TimestampMicroseconds).unwrap();
     let scalar = ts.min().unwrap();
 
@@ -389,7 +395,7 @@ fn scalar_copy_dataframe_round_trip() {
     let df = cudf::DataFrame::from_series([series]).unwrap();
     let retrieved = df.series("ts_col").unwrap();
 
-    let expected = Series::new::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
+    let expected = crate::common::series::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
         .unwrap()
         .astype(TypeId::DurationMicroseconds)
         .unwrap()

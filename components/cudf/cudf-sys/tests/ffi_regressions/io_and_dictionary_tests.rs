@@ -10,7 +10,7 @@ use crate::{
 
 #[test]
 fn test_table_view_null_handle_clears_out() {
-    let mut out = 1usize as *mut c_void;
+    let mut out = std::ptr::dangling_mut::<c_void>();
     let status = unsafe { cudf_sys::cudf_table_view(ptr::null_mut(), &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -20,7 +20,7 @@ fn test_table_view_null_handle_clears_out() {
 #[test]
 fn test_io_read_csv_missing_file_clears_out() {
     let path = unique_missing_path("csv");
-    let mut out = 1usize as *mut c_void;
+    let mut out = std::ptr::dangling_mut::<c_void>();
     let status = unsafe { cudf_sys::cudf_io_read_csv(path.as_ptr(), b',' as c_char, 1, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
@@ -30,7 +30,7 @@ fn test_io_read_csv_missing_file_clears_out() {
 #[test]
 fn test_io_read_parquet_missing_file_clears_out() {
     let path = unique_missing_path("parquet");
-    let mut out = 1usize as *mut c_void;
+    let mut out = std::ptr::dangling_mut::<c_void>();
     let status =
         unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -1, ptr::null(), 0, &mut out) };
 
@@ -68,8 +68,8 @@ fn test_invalid_argument_maps_to_invalid_argument() {
 #[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     let path = unique_missing_path("parquet");
-    let mut out_table = 1usize as *mut c_void;
-    let mut out_names = 1usize as *mut *mut c_char;
+    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
     let mut out_num_names = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata(
@@ -228,8 +228,8 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
 fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
     let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
-    let mut out_table: *mut c_void = 1usize as *mut c_void;
-    let mut out_names: *mut *mut i8 = 1usize as *mut *mut i8;
+    let mut out_table: *mut c_void = std::ptr::dangling_mut::<c_void>();
+    let mut out_names: *mut *mut i8 = std::ptr::dangling_mut::<*mut i8>();
     let mut out_num_names: i32 = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata(

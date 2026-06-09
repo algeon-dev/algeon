@@ -3,7 +3,7 @@
 //! Verifies that all cast entry points accept `DataType` (the canonical type),
 //! while `TypeId` remains accepted via `Into<DataType>` for convenience.
 
-use cudf::{DataFrame, DataType, Series, TypeId, ops::expr::col};
+use cudf::{DataFrame, DataType, TypeId, ops::expr::col};
 
 // ===========================================================================
 // Series::astype — accepts DataType directly
@@ -11,7 +11,7 @@ use cudf::{DataFrame, DataType, Series, TypeId, ops::expr::col};
 
 #[test]
 fn series_astype_accepts_datatype() {
-    let s = Series::new::<i32>("x", &[100, 200, 300]).unwrap();
+    let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
     let dt = DataType::fixed_point(TypeId::Decimal128, -2);
     let result = s.astype(dt).unwrap();
     assert_eq!(result.dtype().unwrap(), dt);
@@ -20,7 +20,7 @@ fn series_astype_accepts_datatype() {
 #[test]
 fn series_astype_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
@@ -33,7 +33,7 @@ fn series_astype_accepts_typeid() {
 fn expr_cast_accepts_datatype() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2);
     let expr = col("x").cast(dt).alias("x");
-    let s = Series::new::<i32>("x", &[100, 200, 300]).unwrap();
+    let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = expr.eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap(), dt);
@@ -43,7 +43,7 @@ fn expr_cast_accepts_datatype() {
 fn expr_cast_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
     let expr = col("x").cast(TypeId::Float64).alias("xf");
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = expr.eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
@@ -57,7 +57,7 @@ fn expr_cast_accepts_typeid() {
 #[test]
 fn cast_symmetry() {
     let dt = DataType::new(TypeId::Float64);
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([s.clone()]).unwrap();
 
     let via_series = s.astype(dt).unwrap();

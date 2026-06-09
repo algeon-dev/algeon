@@ -9,7 +9,7 @@ mod private {
     pub trait Sealed {}
 
     impl<T: CudfType> Sealed for T {}
-    impl<'a> Sealed for &'a str {}
+    impl Sealed for &str {}
 }
 
 /// Host slice element types supported by the high-level `Series` and `Runtime`
@@ -18,14 +18,6 @@ mod private {
 /// This trait is sealed because host-to-device construction semantics are part
 /// of cudf-rs's safety and performance contract.
 pub trait HostColumnData: private::Sealed {
-    /// Create a GPU-backed column from a non-null host slice.
-    fn create_column(data: &[Self]) -> Result<Column>
-    where Self: Sized;
-
-    /// Create a GPU-backed column from a host slice plus validity mask.
-    fn create_column_nullable(data: &[Self], validity: &[bool]) -> Result<Column>
-    where Self: Sized;
-
     /// Create a GPU-backed column inside an explicit runtime.
     fn create_column_in_runtime(runtime: &Runtime, data: &[Self]) -> Result<Column>
     where Self: Sized;
@@ -36,14 +28,6 @@ pub trait HostColumnData: private::Sealed {
 }
 
 impl<T: CudfType> HostColumnData for T {
-    fn create_column(data: &[Self]) -> Result<Column> {
-        Column::from_slice(data)
-    }
-
-    fn create_column_nullable(data: &[Self], validity: &[bool]) -> Result<Column> {
-        Column::from_slice_nullable(data, validity)
-    }
-
     fn create_column_in_runtime(runtime: &Runtime, data: &[Self]) -> Result<Column> {
         Column::from_slice_with_runtime(runtime, data)
     }
@@ -53,15 +37,7 @@ impl<T: CudfType> HostColumnData for T {
     }
 }
 
-impl<'a> HostColumnData for &'a str {
-    fn create_column(data: &[Self]) -> Result<Column> {
-        Column::from_strs(data)
-    }
-
-    fn create_column_nullable(data: &[Self], validity: &[bool]) -> Result<Column> {
-        Column::from_strs_nullable(data, validity)
-    }
-
+impl HostColumnData for &str {
     fn create_column_in_runtime(runtime: &Runtime, data: &[Self]) -> Result<Column> {
         Column::from_strs_with_runtime(runtime, data)
     }

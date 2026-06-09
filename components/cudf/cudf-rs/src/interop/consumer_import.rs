@@ -25,8 +25,64 @@ use super::{
 use crate::{
     core::{column::Column, error, table::Table},
     frame::{dataframe::DataFrame, series::Series},
-    runtime::Runtime,
+    runtime::{CudaEvent, Runtime, device_guard::DeviceGuard},
 };
+
+struct OwnedTransferImportRetention<T> {
+    _retained_transfer: T,
+    _readiness_barrier: Option<CudaEvent>,
+}
+
+fn order_runtime_stream_after_owned_transfer_readiness(
+    readiness: &ProducerReadiness<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Option<CudaEvent>, InteropError> {
+    let _guard = DeviceGuard::new(runtime.device())
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let consumer_stream_raw = runtime
+        .stream()
+        .interop_raw_handle()
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    match readiness {
+        ProducerReadiness::DeviceStreamOrdered { stream } => {
+            let barrier = CudaEvent::new()
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            let barrier_raw = barrier
+                .interop_raw_handle()
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            error::check_status_in_with(
+                unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, stream.as_raw()) },
+                operation,
+                [("readiness", "device_stream_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            error::check_status_in_with(
+                unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(consumer_stream_raw, barrier_raw) },
+                operation,
+                [("readiness", "device_stream_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            Ok(Some(barrier))
+        },
+        ProducerReadiness::DeviceEventOrdered { event } => {
+            error::check_status_in_with(
+                unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(consumer_stream_raw, event.as_raw()) },
+                operation,
+                [("readiness", "device_event_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            Ok(None)
+        },
+        ProducerReadiness::HostVisible => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "owned device transfer import requires device-backed readiness",
+        )
+        .with_context("operation", operation)
+        .with_context("readiness", "host_visible")
+        .with_context("profile", "owned_device_transfer")),
+    }
+}
 
 fn prepared_import_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<(), InteropError> {
     match profile {
@@ -240,9 +296,7 @@ pub(super) fn import_table_from_borrowed_view(
             .with_context("num_rows", borrowed.num_rows().to_string()));
         }
 
-        return Table::from_columns(Vec::new())
-            .map(|table| table.with_execution_domain(Arc::clone(runtime.execution_domain())))
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
+        return runtime.empty_table().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
     }
 
     let columns = borrowed
@@ -256,12 +310,25 @@ pub(super) fn import_table_from_borrowed_view(
 
 pub(super) fn import_column_from_owned_transfer(
     transfer: OwnedColumnTransfer,
+    runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Column, InteropError> {
+    let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+    validate_runtime_device(
+        operation,
+        "producer_device",
+        "owned device transfer import requires the destination runtime to use the same CUDA device",
+        producer_device,
+        runtime,
+    )?;
+    let readiness_barrier =
+        order_runtime_stream_after_owned_transfer_readiness(transfer.readiness(), runtime, operation)?;
     match transfer.try_into_owner::<OwnedColumnTransferState>() {
-        Ok(state) => Ok(state.into_column()),
+        Ok(state) => Ok(state.into_column().with_execution_domain(Arc::clone(runtime.execution_domain()))),
         Err(mismatch) => match mismatch.into_transfer().try_into_owner::<RuntimeOwnedColumnTransferOwner>() {
-            Ok(owner) => owner.into_column(operation),
+            Ok(owner) => {
+                Ok(owner.into_column(operation)?.with_execution_domain(Arc::clone(runtime.execution_domain())))
+            },
             Err(mismatch) => {
                 let transfer = mismatch.into_transfer();
                 let graph = prepared_device_import_column_graph_from_parts(
@@ -272,19 +339,16 @@ pub(super) fn import_column_from_owned_transfer(
                 let num_semantic_columns =
                     checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
                 let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
-                let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
                 let root_column_id = transfer.column().id().get();
-                let domain =
-                    crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
-                        .map_err(|error| {
-                            map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
-                        })?;
                 // SAFETY: The C++ handle produced by
                 // cudf_column_create_from_owned_device_transfer wraps a foreign
                 // view-only handle state. It never frees or reallocates the
                 // underlying GPU buffers; ownership lives exclusively in
                 // `retained_owner`.
-                let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+                let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(OwnedTransferImportRetention {
+                    _retained_transfer: transfer,
+                    _readiness_barrier: readiness_barrier,
+                });
                 let mut handle = std::ptr::null_mut();
                 error::check_status_in(
                     unsafe {
@@ -301,7 +365,13 @@ pub(super) fn import_column_from_owned_transfer(
                 )
                 .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-                Ok(unsafe { Column::from_raw_with_domain_and_owner(handle, domain, retained_owner) })
+                Ok(unsafe {
+                    Column::from_raw_with_domain_and_owner(
+                        handle,
+                        Arc::clone(runtime.execution_domain()),
+                        retained_owner,
+                    )
+                })
             },
         },
     }
@@ -309,17 +379,34 @@ pub(super) fn import_column_from_owned_transfer(
 
 pub(super) fn import_table_from_owned_transfer(
     transfer: OwnedTableTransfer,
+    runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Table, InteropError> {
     const MAX_OWNED_TABLE_TRANSFER_NESTING: usize = 32;
 
+    let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+    validate_runtime_device(
+        operation,
+        "producer_device",
+        "owned device transfer import requires the destination runtime to use the same CUDA device",
+        producer_device,
+        runtime,
+    )?;
+    let readiness_barrier =
+        order_runtime_stream_after_owned_transfer_readiness(transfer.readiness(), runtime, operation)?;
     let mut nesting = 0usize;
     let mut current = transfer;
     loop {
         match current.try_into_owner::<OwnedTableTransferState>() {
-            Ok(state) => return Ok(state.into_table()),
+            Ok(state) => {
+                return Ok(state.into_table().with_execution_domain(Arc::clone(runtime.execution_domain())));
+            },
             Err(mismatch) => match mismatch.into_transfer().try_into_owner::<RuntimeOwnedTableTransferOwner>() {
-                Ok(owner) => return owner.into_table(operation),
+                Ok(owner) => {
+                    return Ok(owner
+                        .into_table(operation)?
+                        .with_execution_domain(Arc::clone(runtime.execution_domain())));
+                },
                 Err(mismatch) => match mismatch.into_transfer().try_into_owner::<OwnedTableTransfer>() {
                     Ok(inner_transfer) => {
                         nesting += 1;
@@ -342,18 +429,14 @@ pub(super) fn import_table_from_owned_transfer(
                         let num_semantic_columns =
                             checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
                         let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
-                        let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
                         let owner_count = transfer.table().columns().len();
-                        let domain = crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(
-                            producer_device,
-                        )
-                        .map_err(|error| {
-                            map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
-                        })?;
                         // SAFETY: Same invariant as the column path. The C++
                         // table handle is foreign and view-only, and ownership
                         // lives exclusively in `shared_owner`.
-                        let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+                        let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(OwnedTransferImportRetention {
+                            _retained_transfer: transfer,
+                            _readiness_barrier: readiness_barrier,
+                        });
                         let retained_owners = (0..owner_count).map(|_| Some(Arc::clone(&shared_owner))).collect();
                         let mut handle = std::ptr::null_mut();
                         error::check_status_in(
@@ -370,7 +453,13 @@ pub(super) fn import_table_from_owned_transfer(
                             operation,
                         )
                         .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-                        return Ok(unsafe { Table::from_raw_with_domain_and_owners(handle, domain, retained_owners) });
+                        return Ok(unsafe {
+                            Table::from_raw_with_domain_and_owners(
+                                handle,
+                                Arc::clone(runtime.execution_domain()),
+                                retained_owners,
+                            )
+                        });
                     },
                 },
             },
@@ -518,8 +607,7 @@ pub(super) fn import_table_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported =
-                unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
             let completion = lease
                 .complete()
                 .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
@@ -560,8 +648,7 @@ pub(super) fn import_table_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported =
-                unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
             let completion = lease
                 .complete()
                 .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
@@ -640,7 +727,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
                 .with_context("partition_index", partition_index.to_string())
         })?;
 
-        let table = unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+        let table = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
         let completion = lease.complete().map_err(|error| {
             map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error)
                 .with_context("partition_index", partition_index.to_string())

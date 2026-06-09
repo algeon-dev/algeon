@@ -5,13 +5,17 @@ use std::sync::Arc;
 use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::ExecutionDomain, stream::CudaStream};
 use crate::{
     core::{
-        column::Column,
+        column::{Column, DeviceBuffer},
         error::{Error, ErrorKind, Result},
         memory::DeviceMemoryResource,
         scalar::Scalar,
+        table::Table,
         types::{CudfType, TypeId},
     },
-    frame::series::{HostColumnData, Series},
+    frame::{
+        dataframe::DataFrame,
+        series::{HostColumnData, Series},
+    },
 };
 
 /// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
@@ -23,8 +27,8 @@ use crate::{
 /// **Multi-GPU execution guarantee:** when an operation is invoked through
 /// this runtime, the runtime's device is re-entered at the FFI boundary before
 /// any GPU work is enqueued. This ensures that compute runs on the correct
-/// device regardless of the calling thread's ambient CUDA device. The ambient
-/// device is restored after each FFI call.
+/// device regardless of the calling thread's current CUDA device. The
+/// previous device is restored after each FFI call.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
@@ -110,6 +114,26 @@ impl Runtime {
         Column::nulls_with_runtime(self, type_id, len)
     }
 
+    /// Create a fixed-width scalar inside this runtime.
+    pub fn scalar<T: CudfType>(&self, value: T) -> Result<Scalar> {
+        Scalar::from_value_in_domain(value, self.execution_domain())
+    }
+
+    /// Create a UTF-8 scalar inside this runtime.
+    pub fn string_scalar(&self, value: &str) -> Result<Scalar> {
+        Scalar::from_str_in_domain(value, self.execution_domain())
+    }
+
+    /// Create a null fixed-width scalar inside this runtime.
+    pub fn null_scalar<T: CudfType>(&self) -> Result<Scalar> {
+        Scalar::null_numeric_in_domain::<T>(self.execution_domain())
+    }
+
+    /// Create a null UTF-8 scalar inside this runtime.
+    pub fn null_string_scalar(&self) -> Result<Scalar> {
+        Scalar::null_string_in_domain(self.execution_domain())
+    }
+
     /// Create an empty low-level `Column` inside this runtime.
     pub fn empty_column(&self, type_id: TypeId) -> Result<Column> {
         Column::empty_with_runtime(self, type_id)
@@ -120,13 +144,31 @@ impl Runtime {
         Column::from_scalar_with_runtime(self, scalar, size)
     }
 
+    /// Create an empty low-level `Table` inside this runtime.
+    pub fn empty_table(&self) -> Result<Table> {
+        Table::empty_in_domain(Arc::clone(self.execution_domain()), "runtime::empty_table")
+    }
+
+    /// Allocate an owned device buffer on this runtime's CUDA device.
+    ///
+    /// The contents are uninitialized. For `size_bytes == 0`, the buffer is
+    /// valid but empty.
+    pub fn device_buffer(&self, size_bytes: usize) -> Result<DeviceBuffer> {
+        DeviceBuffer::new_in_runtime(self, size_bytes)
+    }
+
+    /// Allocate an owned device buffer on this runtime's CUDA device and copy
+    /// a host slice into it.
+    pub fn device_buffer_from_host_data<T: CudfType>(&self, data: &[T]) -> Result<DeviceBuffer> {
+        DeviceBuffer::from_host_data_in_runtime(self, data)
+    }
+
     /// Create a low-level `Column` by copying from a borrowed device pointer
     /// into this runtime.
     ///
-    /// Uses the runtime's stream and memory resource. Unlike the ambient
-    /// `Column::from_device_ptr` path, this does not synchronize before
-    /// returning; the caller must keep `device_ptr` valid until this runtime's
-    /// stream has completed the copy.
+    /// Uses the runtime's stream and memory resource and does not synchronize
+    /// before returning; the caller must keep `device_ptr` valid until this
+    /// runtime's stream has completed the copy.
     ///
     /// # Safety
     ///
@@ -143,6 +185,32 @@ impl Runtime {
         type_id: TypeId,
     ) -> Result<Column> {
         Column::from_device_ptr_with_runtime(self, device_ptr, len, type_id)
+    }
+
+    /// Create a low-level `Column` by adopting an owned `DeviceBuffer`
+    /// inside this runtime without a device-to-device copy.
+    pub fn column_from_device_buffer(&self, buffer: DeviceBuffer, row_count: usize, type_id: TypeId) -> Result<Column> {
+        Column::from_device_buffer_with_runtime(self, buffer, row_count, type_id)
+    }
+
+    /// Create a nullable low-level `Column` by adopting owned data and null
+    /// mask `DeviceBuffer`s inside this runtime without a device-to-device copy.
+    pub fn column_from_device_buffer_nullable(
+        &self,
+        data_buffer: DeviceBuffer,
+        null_mask_buffer: DeviceBuffer,
+        null_count: usize,
+        row_count: usize,
+        type_id: TypeId,
+    ) -> Result<Column> {
+        Column::from_device_buffer_nullable_with_runtime(
+            self,
+            data_buffer,
+            null_mask_buffer,
+            null_count,
+            row_count,
+            type_id,
+        )
     }
 
     /// Create a `Series` from a host slice inside this runtime.
@@ -194,6 +262,11 @@ impl Runtime {
     /// subclass exists for dictionary-encoded scalars).
     pub fn series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
         Series::from_named_column(name, self.column_from_scalar(scalar, size)?)
+    }
+
+    /// Create an empty `DataFrame` inside this runtime.
+    pub fn empty_dataframe(&self) -> DataFrame {
+        DataFrame::empty_in_domain(Arc::clone(self.execution_domain()))
     }
 
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
@@ -257,13 +330,6 @@ impl RuntimeBuilder {
             None => DeviceMemoryResource::cuda()?,
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr)?;
-        if domain.debug_id() == 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "runtime must not use the ambient-default retained provenance",
-            )
-            .with_operation("runtime::RuntimeBuilder::build"));
-        }
         Ok(Runtime { domain })
     }
 

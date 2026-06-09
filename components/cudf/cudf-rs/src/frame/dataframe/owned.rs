@@ -63,12 +63,21 @@ pub struct DataFrameJoinResult {
     pub right: DataFrame,
 }
 
+fn empty_dataframe_requires_runtime_error(operation: &'static str) -> Error {
+    Error::new(
+        ErrorKind::InvalidOperation,
+        "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
+    )
+    .with_operation(operation)
+    .with_context("remedy", "use Runtime::empty_dataframe()")
+}
+
 pub(crate) fn derive_frame_domain_from_columns(
     columns: &FastIndexMap<String, Arc<Column>>,
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
     let Some((first_name, first_column)) = columns.iter().next() else {
-        return Ok(ExecutionDomain::ambient_default());
+        return Err(empty_dataframe_requires_runtime_error(operation));
     };
 
     let domain = Arc::clone(first_column.execution_domain());
@@ -119,6 +128,10 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
 }
 
 impl DataFrame {
+    pub(crate) fn empty_in_domain(domain: Arc<ExecutionDomain>) -> Self {
+        Self { columns: fast_index_map(), row_count: 0, domain }
+    }
+
     /// Crate-private constructor from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
@@ -142,7 +155,7 @@ impl DataFrame {
         validate_no_duplicate_names(&names, "dataframe::new")?;
 
         if columns.is_empty() {
-            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+            return Err(empty_dataframe_requires_runtime_error("dataframe::new"));
         }
 
         // Validate all columns have the same row count.
@@ -205,7 +218,8 @@ impl DataFrame {
 
     /// Create a `DataFrame` from an iterator of named [`Series`](crate::Series).
     ///
-    /// Each `Series` must carry a name (constructed via `Series::new`, etc.).
+    /// Each `Series` must carry a name (constructed via
+    /// [`Runtime::series`](crate::Runtime::series), etc.).
     /// The Series name becomes the DataFrame
     /// column name. GPU data is shared via `Arc` — no device copy.
     ///
@@ -239,7 +253,7 @@ impl DataFrame {
         }
 
         if map.is_empty() {
-            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+            return Err(empty_dataframe_requires_runtime_error("dataframe::from_series"));
         }
 
         // Validate all columns have the same row count.
@@ -306,7 +320,7 @@ impl DataFrame {
         }
 
         if map.is_empty() {
-            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+            return Err(empty_dataframe_requires_runtime_error("dataframe::from_named_pairs"));
         }
 
         // Validate all columns have the same row count.
@@ -402,7 +416,11 @@ impl DataFrame {
             cols.push(col);
         }
 
-        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))?;
+        let table = if cols.is_empty() {
+            Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")?
+        } else {
+            Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))?
+        };
         Ok(table.with_execution_domain(Arc::clone(&self.domain)))
     }
 
@@ -445,7 +463,11 @@ impl DataFrame {
             cols.push(col);
         }
 
-        let table = Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?;
+        let table = if cols.is_empty() {
+            Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::try_into_table")?
+        } else {
+            Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?
+        };
         let table = table.with_execution_domain(Arc::clone(&self.domain));
         Ok((table, names))
     }
@@ -475,7 +497,7 @@ impl DataFrame {
     /// outlive the table view.
     pub(crate) fn build_table_view(&self) -> Result<DataFrameTableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
-        DataFrameTableView::from_column_views(views)
+        DataFrameTableView::from_column_views_in_domain(views, Arc::clone(&self.domain), "dataframe::build_table_view")
     }
 
     /// Create a DataFrame from a Table and column names, decomposing the
@@ -578,9 +600,10 @@ impl DataFrame {
     /// # Example
     ///
     /// ```no_run
-    /// # use cudf::{GroupByAgg, AggSpec, DataFrame, Series};
-    /// # let keys = Series::new::<i32>("key", &[1, 2]).unwrap();
-    /// # let vals = Series::new::<i64>("val", &[10, 20]).unwrap();
+    /// # use cudf::{GroupByAgg, AggSpec, DataFrame, Runtime};
+    /// # let rt = Runtime::new().unwrap();
+    /// # let keys = rt.series("key", &[1i32, 2]).unwrap();
+    /// # let vals = rt.series("val", &[10i64, 20]).unwrap();
     /// # let df = DataFrame::from_named_pairs([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
@@ -603,17 +626,19 @@ impl DataFrame {
 /// # Example
 ///
 /// ```no_run
-/// use cudf::Series;
+/// use cudf::Runtime;
 ///
-/// let x = Series::new::<i32>("source_x", &[1, 2, 3]).unwrap();
-/// let y = Series::new::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let x = rt.series("source_x", &[1i32, 2, 3]).unwrap();
+/// let y = rt.series("source_y", &[10.0f64, 20.0, 30.0]).unwrap();
 /// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 /// ```
 ///
 /// ```compile_fail
-/// use cudf::core::Column;
+/// use cudf::Runtime;
 ///
-/// let x = Column::from_slice(&[1i32, 2, 3]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let x = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
 /// let _ = cudf::dataframe! { "x" => x }.unwrap();
 /// ```
 #[macro_export]

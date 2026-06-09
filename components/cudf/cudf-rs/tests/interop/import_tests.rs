@@ -33,7 +33,7 @@ fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a Buffer
     bindings.iter().map(|binding| (binding.id().get(), binding)).collect()
 }
 
-fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> HashMap<u32, &'a SemanticColumn> {
+fn semantic_column_map(columns: &[SemanticColumn]) -> HashMap<u32, &SemanticColumn> {
     columns.iter().map(|column| (column.id().get(), column)).collect()
 }
 
@@ -380,6 +380,7 @@ mod column_import_contracts {
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
         let export = source.try_prepare_device_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
             Column::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap()
@@ -395,6 +396,7 @@ mod column_import_contracts {
         let source = source_runtime.column_from_strs(&["one", "two", "three"]).unwrap();
         let export = source.try_prepare_device_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
             Series::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap()
@@ -428,17 +430,16 @@ mod column_import_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
         let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
-        let expected_stream = column.__debug_execution_domain_stream_value();
-        let expected_mr = column.__debug_execution_domain_mr_value();
+        let destination_runtime = common::sample_runtime();
 
         let transfer = column.try_into_owned_transfer().unwrap();
-        let imported = Series::try_from_owned_device_column_transfer(transfer).unwrap();
+        let imported =
+            Series::try_import_from_owned_device_column_transfer_into_runtime(transfer, &destination_runtime).unwrap();
 
         assert_eq!(imported.name(), None);
         assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
         assert_eq!(imported.as_column().view().unwrap().device_data_ptr().unwrap(), expected_ptr);
-        assert_eq!(imported.as_column().__debug_execution_domain_stream_value(), expected_stream);
-        assert_eq!(imported.as_column().__debug_execution_domain_mr_value(), expected_mr);
+        assert_column_bound_to_runtime(imported.as_column(), &destination_runtime);
     }
 
     #[test]
@@ -523,6 +524,7 @@ mod column_import_contracts {
         let sliced = source.slice_view(1, 2).unwrap();
         let export = sliced.try_prepare_device_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
             Column::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap()
@@ -622,6 +624,7 @@ mod table_import_contracts {
         let (source, _names) = frame.try_into_table().unwrap();
         let export = source.try_prepare_device_table_export().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
             Table::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap()
@@ -656,7 +659,7 @@ mod table_import_contracts {
         let frame = read_json_dataframe(
             "prepared_and_owned_import_nested.jsonl",
             "{\"name\":\"alice\",\"lists\":[1,2],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"category\":\"beta\"}\n\
-             {\"name\":\"bob\",\"lists\":[3],\"point\":{\"coords\":[],\"label\":\"two\"},\"category\":\"alpha\"}\n\
+            {\"name\":\"bob\",\"lists\":[3],\"point\":{\"coords\":[],\"label\":\"two\"},\"category\":\"alpha\"}\n\
              {\"name\":\"cara\",\"lists\":[],\"point\":{\"coords\":[3],\"label\":\"three\"},\"category\":\"beta\"}\n",
         );
         let name = frame.series("name").unwrap();
@@ -672,6 +675,7 @@ mod table_import_contracts {
 
         let prepared_source = frame.clone();
         let prepared_export = prepared_source.try_prepare_device_table_export().unwrap();
+        let _event_lock = common::lock_event_observation();
         let prepared_import =
             DataFrame::try_import_from_prepared_table_export_into_runtime(&prepared_export, &destination_runtime)
                 .unwrap();
@@ -682,7 +686,9 @@ mod table_import_contracts {
             transfer_table.try_into_owned_transfer().unwrap(),
             expected_names.clone(),
         );
-        let owned_import = DataFrame::try_from_owned_device_table_transfer(transfer).unwrap();
+        let owned_import =
+            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime)
+                .unwrap();
 
         let (prepared_table, prepared_names) = prepared_import.try_into_table().unwrap();
         let (owned_table, owned_names) = owned_import.try_into_table().unwrap();
@@ -731,6 +737,7 @@ mod dataframe_import_contracts {
         let export = export_frame.try_prepare_device_table_export().unwrap();
         let (source_table, source_names) = frame.try_into_table().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
             DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap()
@@ -747,6 +754,7 @@ mod dataframe_import_contracts {
         let frame = named_numeric_frame(&runtime);
         let export = frame.try_prepare_device_table_export().unwrap();
         let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
 
         let imported = DataFrame::try_import_from_prepared_table_export_into_runtime_and_names(
             &export,
@@ -783,10 +791,12 @@ mod dataframe_import_contracts {
     fn dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names() {
         let runtime = Runtime::builder().build().unwrap();
         let table = two_numeric_columns_table(&runtime);
+        let destination_runtime = common::sample_runtime();
 
         let transfer = table.try_into_owned_transfer().unwrap();
-        let imported = DataFrame::try_from_owned_device_table_transfer_and_names(
+        let imported = DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names(
             transfer,
+            &destination_runtime,
             vec!["left".to_string(), "right".to_string()],
         )
         .unwrap();
@@ -798,13 +808,16 @@ mod dataframe_import_contracts {
     fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_present() {
         let runtime = Runtime::builder().build().unwrap();
         let frame = named_numeric_frame(&runtime);
+        let destination_runtime = common::sample_runtime();
 
         let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
         let (transfer_table, _) = frame.try_into_table().unwrap();
         let transfer = transfer_table.try_into_owned_transfer().unwrap();
         let named_transfer = owned_table_transfer_with_root_names(transfer, expected_names.clone());
 
-        let imported = DataFrame::try_from_owned_device_table_transfer(named_transfer).unwrap();
+        let imported =
+            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(named_transfer, &destination_runtime)
+                .unwrap();
         let (imported_table, imported_names) = imported.try_into_table().unwrap();
 
         assert_eq!(imported_names, expected_names);
@@ -815,16 +828,21 @@ mod dataframe_import_contracts {
     fn dataframe_import_from_owned_device_table_transfer_without_root_names_fails() {
         let runtime = Runtime::builder().build().unwrap();
         let table = two_numeric_columns_table(&runtime);
+        let destination_runtime = common::sample_runtime();
 
         let transfer = table.try_into_owned_transfer().unwrap();
-        let err = DataFrame::try_from_owned_device_table_transfer(transfer).unwrap_err();
+        let err = DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime)
+            .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert!(
             err.to_string().contains("high-level DataFrame import requires schema names"),
             "unexpected error: {err}"
         );
-        assert!(err.to_string().contains("try_from_owned_device_table_transfer_and_names"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("try_import_from_owned_device_table_transfer_into_runtime_and_names"),
+            "unexpected error: {err}"
+        );
     }
 }
 

@@ -5,6 +5,8 @@
 //! one scoped control-plane smoke test, and one advanced low-level access
 //! smoke test.
 
+use crate::common::column_from_slice;
+
 #[test]
 fn crate_root_doc_workflow_smoke() {
     use cudf::{DataFrame, Runtime};
@@ -27,7 +29,7 @@ fn host_column_data_is_publicly_reexported() {
     use cudf::{HostColumnData, Series};
 
     fn build_series<T: HostColumnData>(name: &str, data: &[T]) -> cudf::Result<Series> {
-        Series::new(name, data)
+        crate::common::series(name, data)
     }
 
     let strings = build_series("names", &["alice", "bob"]).unwrap();
@@ -36,14 +38,14 @@ fn host_column_data_is_publicly_reexported() {
 
 #[test]
 fn runtime_first_factories_smoke() {
-    use cudf::{Runtime, TypeId, core::Scalar};
+    use cudf::{Runtime, TypeId};
 
     let rt = Runtime::builder().build().unwrap();
     let ints = rt.series("ints", &[1i32, 2, 3]).unwrap();
     let nullable = rt.nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
     let strings = rt.series("names", &["alice", "bob"]).unwrap();
     let nulls = rt.nulls("missing", TypeId::Int32, 2).unwrap();
-    let repeated = rt.series_from_scalar("seed", &Scalar::from_value(7i32).unwrap(), 3).unwrap();
+    let repeated = rt.series_from_scalar("seed", &rt.scalar(7i32).unwrap(), 3).unwrap();
 
     assert_eq!(ints.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(nullable.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
@@ -76,12 +78,12 @@ fn scoped_control_plane_smoke() {
 
 #[test]
 fn advanced_core_and_low_level_ops_smoke() {
-    use cudf::{DataFrame, Series, ops::copying};
+    use cudf::{DataFrame, ops::copying};
 
-    let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
-    let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[10, 20, 30]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
     let df = DataFrame::from_series([ids, scores]).unwrap();
-    let gather_map = cudf::core::Column::from_slice(&[2i32, 0]).unwrap();
+    let gather_map = column_from_slice(&[2i32, 0]).unwrap();
 
     let table_view = df.table_view().unwrap();
     let gathered = copying::gather(table_view.table(), &gather_map.view().unwrap()).unwrap();
@@ -93,10 +95,14 @@ fn advanced_core_and_low_level_ops_smoke() {
 
 #[test]
 fn frame_module_reexports_high_level_option_types() {
-    use cudf::frame::{JsonReadOptions, MeltOptions, ParquetReadOptions};
+    use cudf::{
+        Runtime,
+        frame::{JsonReadOptions, MeltOptions, ParquetReadOptions},
+    };
 
-    let _json = JsonReadOptions::builder().filepath("data.jsonl").build();
-    let _parquet = ParquetReadOptions::builder().filepath("data.parquet").build();
+    let rt = Runtime::builder().build().unwrap();
+    let _json = JsonReadOptions::builder().filepath("data.jsonl").with_runtime(&rt).build();
+    let _parquet = ParquetReadOptions::builder().filepath("data.parquet").with_runtime(&rt).build();
     let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
 }
 

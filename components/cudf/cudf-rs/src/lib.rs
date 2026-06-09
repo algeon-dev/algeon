@@ -91,9 +91,9 @@
 //! libcudf, where callers pass a stream to each function call and are
 //! responsible for all cross-stream ordering themselves.
 //!
-//! **Single-stream (default) path:** Objects created without an explicit
-//! [`Runtime`] use the process-global default stream. No synchronization
-//! overhead is incurred.
+//! **Single-runtime path:** Objects created inside the same explicit
+//! [`Runtime`] share one retained-provenance bundle. No cross-runtime
+//! synchronization overhead is incurred.
 //!
 //! **Mixed-provenance operations:** When inputs from different [`Runtime`]
 //! instances are combined (e.g. `merge`, `concat`), cudf-rs automatically
@@ -116,7 +116,7 @@
 //! Each [`Runtime`] is pinned to one CUDA device. When an operation is
 //! invoked through a device-pinned runtime, the FFI layer re-enters the
 //! runtime's device before enqueuing GPU work, and restores the calling
-//! thread's ambient device afterward.
+//! thread's previous CUDA device afterward.
 //!
 //! ```no_run
 //! use cudf::{DeviceId, Runtime, Series};
@@ -134,11 +134,6 @@
 //! let s0 = rt0.series("a", &[1i32, 2, 3]).unwrap();
 //! let s1 = rt1.series("b", &[4i32, 5, 6]).unwrap();
 //! ```
-//!
-//! Objects created without an explicit [`Runtime`] use the *ambient default*
-//! path, which snapshots the calling thread's current CUDA device. The
-//! ambient path is suitable for single-GPU use but does not pin device
-//! selection at execution time — use [`Runtime`] for multi-GPU correctness.
 
 pub mod core;
 pub mod frame;

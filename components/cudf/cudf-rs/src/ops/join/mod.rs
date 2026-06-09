@@ -7,15 +7,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{
-//!     core::{Column, Table},
-//!     ops::join,
-//! };
+//! use cudf::{Runtime, core::Table, ops::join};
 //!
-//! let left_key = Column::from_slice(&[1i32, 2, 3]).unwrap();
-//! let left_val = Column::from_slice(&[10i32, 20, 30]).unwrap();
-//! let right_key = Column::from_slice(&[2i32, 3, 4]).unwrap();
-//! let right_val = Column::from_slice(&[200i32, 300, 400]).unwrap();
+//! let rt = Runtime::new().unwrap();
+//! let left_key = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+//! let left_val = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
+//! let right_key = rt.column_from_slice(&[2i32, 3, 4]).unwrap();
+//! let right_val = rt.column_from_slice(&[200i32, 300, 400]).unwrap();
 //!
 //! let lk = Table::from_columns(vec![left_key]).unwrap();
 //! let lv = Table::from_columns(vec![left_val]).unwrap();
@@ -63,6 +61,7 @@ pub(crate) fn join_impl(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
     join_type: JoinType,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<JoinResult> {
@@ -150,7 +149,10 @@ pub(crate) fn join_impl(
         ],
     )?;
 
-    Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
+    Ok(JoinResult {
+        left: unsafe { Table::from_raw_with_domain(out_left, std::sync::Arc::clone(output_domain)) },
+        right: unsafe { Table::from_raw_with_domain(out_right, std::sync::Arc::clone(output_domain)) },
+    })
 }
 
 fn compatible_join_domain(
@@ -197,13 +199,10 @@ pub fn inner_join(
         right_payload,
         null_equality,
         JoinType::Inner,
+        &output_domain,
         exec_options.as_ref(),
         "join::inner_join",
     )
-    .map(|result| JoinResult {
-        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
-        right: result.right.with_execution_domain(output_domain),
-    })
 }
 
 /// Left join: all left rows are preserved; right side is null-padded
@@ -224,13 +223,10 @@ pub fn left_join(
         right_payload,
         null_equality,
         JoinType::Left,
+        &output_domain,
         exec_options.as_ref(),
         "join::left_join",
     )
-    .map(|result| JoinResult {
-        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
-        right: result.right.with_execution_domain(output_domain),
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -255,11 +251,8 @@ pub fn full_join(
         right_payload,
         null_equality,
         JoinType::Full,
+        &output_domain,
         exec_options.as_ref(),
         "join::full_join",
     )
-    .map(|result| JoinResult {
-        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
-        right: result.right.with_execution_domain(output_domain),
-    })
 }

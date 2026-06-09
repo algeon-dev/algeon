@@ -1,10 +1,11 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 
-use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, core::Column};
+use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions};
 
 use crate::common::{
-    assert_duplicate_name_error, assert_missing_column_error, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
+    assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -13,27 +14,27 @@ use crate::common::{
 
 fn left_df() -> DataFrame {
     // id: [1, 2, 3], score: [10, 20, 30]
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
     crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df() -> DataFrame {
     // id: [2, 3, 4], value: [200, 300, 400]
-    let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let values = column_from_slice(&[200i32, 300, 400]).unwrap();
     crate::common::dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn left_df_asym() -> DataFrame {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
     crate::common::dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df_asym() -> DataFrame {
-    let ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let values = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let values = column_from_slice(&[200i32, 300, 400]).unwrap();
     crate::common::dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
@@ -198,8 +199,8 @@ fn test_left_merge_asymmetric_keys() {
 fn test_merge_suffix_overlapping_payload() {
     // Both sides have "score" as payload.
     let left = left_df();
-    let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let right_scores = column_from_slice(&[200i32, 300, 400]).unwrap();
     let right = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![right_ids, right_scores],
@@ -224,8 +225,8 @@ fn test_merge_suffix_overlapping_payload() {
 #[test]
 fn test_merge_custom_suffixes() {
     let left = left_df();
-    let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let right_scores = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let right_scores = column_from_slice(&[200i32, 300, 400]).unwrap();
     let right = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![right_ids, right_scores],
@@ -506,16 +507,16 @@ fn test_merge_no_keys_specified() {
 
 #[test]
 fn test_merge_rejects_duplicate_output_names_after_reassembly() {
-    let left_ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let left_conflicting = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let left_ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let left_conflicting = column_from_slice(&[10i32, 20, 30]).unwrap();
     let left = crate::common::dataframe_from_columns(
         vec!["left_id".to_string(), "right_id".to_string()],
         vec![left_ids, left_conflicting],
     )
     .unwrap();
 
-    let right_ids = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let right_values = Column::from_slice(&[200i32, 300, 400]).unwrap();
+    let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let right_values = column_from_slice(&[200i32, 300, 400]).unwrap();
     let right = crate::common::dataframe_from_columns(
         vec!["right_id".to_string(), "value".to_string()],
         vec![right_ids, right_values],
@@ -535,18 +536,18 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
 
 #[test]
 fn test_merge_multi_key_inner() {
-    let lk0 = Column::from_slice(&[1i32, 1, 2]).unwrap();
-    let lk1 = Column::from_slice(&[10i32, 20, 10]).unwrap();
-    let lp = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let lk0 = column_from_slice(&[1i32, 1, 2]).unwrap();
+    let lk1 = column_from_slice(&[10i32, 20, 10]).unwrap();
+    let lp = column_from_slice(&[100i32, 200, 300]).unwrap();
     let left = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "val".to_string()],
         vec![lk0, lk1, lp],
     )
     .unwrap();
 
-    let rk0 = Column::from_slice(&[1i32, 2, 2]).unwrap();
-    let rk1 = Column::from_slice(&[10i32, 10, 20]).unwrap();
-    let rp = Column::from_slice(&[1000i32, 2000, 3000]).unwrap();
+    let rk0 = column_from_slice(&[1i32, 2, 2]).unwrap();
+    let rk1 = column_from_slice(&[10i32, 10, 20]).unwrap();
+    let rp = column_from_slice(&[1000i32, 2000, 3000]).unwrap();
     let right = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "rval".to_string()],
         vec![rk0, rk1, rp],
@@ -577,14 +578,14 @@ fn test_merge_multi_key_inner() {
 #[test]
 fn test_merge_null_equality_unequal() {
     // With null_equality(Unequal), null keys should NOT match.
-    let left_ids = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
-    let left_vals = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let left_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let left_vals = column_from_slice(&[10i32, 20, 30]).unwrap();
     let left =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals])
             .unwrap();
 
-    let right_ids = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
-    let right_vals = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let right_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let right_vals = column_from_slice(&[100i32, 200, 300]).unwrap();
     let right =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals])
             .unwrap();

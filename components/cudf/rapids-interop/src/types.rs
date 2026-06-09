@@ -101,7 +101,6 @@ pub enum InteropErrorKind {
     UnsupportedType,
     UnsupportedLayout,
     ExecutionBindingUnavailable,
-    AmbientInteropUnsupported,
     ExecutionBindingMismatch,
     NullMaskUnsupported,
     InvalidView,

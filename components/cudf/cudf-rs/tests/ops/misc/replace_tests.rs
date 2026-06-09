@@ -2,15 +2,16 @@
 
 use cudf::{
     Series,
-    core::{Column, Scalar},
     ops::replace::{self, FillPolicy},
 };
+
+use crate::common::{column_from_slice, column_from_slice_nullable, scalar};
 
 #[test]
 fn test_replace_nulls_with_scalar_i32() {
     // Column with nulls at positions 1 and 3.
-    let col = Column::from_slice_nullable(&[10i32, 0, 30, 0], &[true, false, true, false]).unwrap();
-    let replacement = Scalar::from_value(99i32).unwrap();
+    let col = column_from_slice_nullable(&[10i32, 0, 30, 0], &[true, false, true, false]).unwrap();
+    let replacement = scalar(99i32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
     let rv = result.view().unwrap();
@@ -21,8 +22,8 @@ fn test_replace_nulls_with_scalar_i32() {
 #[test]
 fn test_replace_nulls_no_nulls() {
     // Column without nulls — output should be identical.
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let replacement = Scalar::from_value(0i32).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let replacement = scalar(0i32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
     let rv = result.view().unwrap();
@@ -33,8 +34,8 @@ fn test_replace_nulls_no_nulls() {
 #[test]
 fn test_replace_nulls_all_null() {
     // All-null column — all values should be replaced.
-    let col = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
-    let replacement = Scalar::from_value(42i32).unwrap();
+    let col = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let replacement = scalar(42i32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
     let rv = result.view().unwrap();
@@ -44,8 +45,8 @@ fn test_replace_nulls_all_null() {
 
 #[test]
 fn test_replace_nulls_float32() {
-    let col = Column::from_slice_nullable(&[1.0f32, 0.0, 3.0], &[true, false, true]).unwrap();
-    let replacement = Scalar::from_value(0.0f32).unwrap();
+    let col = column_from_slice_nullable(&[1.0f32, 0.0, 3.0], &[true, false, true]).unwrap();
+    let replacement = scalar(0.0f32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
     let rv = result.view().unwrap();
@@ -54,8 +55,8 @@ fn test_replace_nulls_float32() {
 
 #[test]
 fn test_replace_nulls_empty_column() {
-    let col = Column::from_slice(&[] as &[i32]).unwrap();
-    let replacement = Scalar::from_value(0i32).unwrap();
+    let col = column_from_slice(&[] as &[i32]).unwrap();
+    let replacement = scalar(0i32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
     let rv = result.view().unwrap();
@@ -66,8 +67,8 @@ fn test_replace_nulls_empty_column() {
 
 #[test]
 fn test_replace_nulls_column_basic() {
-    let left = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
-    let right = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let left = column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
+    let right = column_from_slice(&[10i32, 20, 30]).unwrap();
     let lv = left.view().unwrap();
     let rv = right.view().unwrap();
     let result = replace::replace_nulls_column(&lv, &rv).unwrap();
@@ -78,8 +79,8 @@ fn test_replace_nulls_column_basic() {
 
 #[test]
 fn test_replace_nulls_column_both_null() {
-    let left = Column::from_slice_nullable(&[0i32], &[false]).unwrap();
-    let right = Column::from_slice_nullable(&[0i32], &[false]).unwrap();
+    let left = column_from_slice_nullable(&[0i32], &[false]).unwrap();
+    let right = column_from_slice_nullable(&[0i32], &[false]).unwrap();
     let lv = left.view().unwrap();
     let rv = right.view().unwrap();
     let result = replace::replace_nulls_column(&lv, &rv).unwrap();
@@ -92,7 +93,7 @@ fn test_replace_nulls_column_both_null() {
 #[test]
 fn test_replace_nulls_policy_ffill_basic() {
     // [1, null, null, 4] → [1, 1, 1, 4]
-    let col = Column::from_slice_nullable(&[1i32, 0, 0, 4], &[true, false, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 0, 0, 4], &[true, false, false, true]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let rv = result.view().unwrap();
@@ -103,7 +104,7 @@ fn test_replace_nulls_policy_ffill_basic() {
 #[test]
 fn test_replace_nulls_policy_ffill_leading_nulls_remain() {
     // [null, null, 3, null, 5] → [null, null, 3, 3, 5]
-    let col = Column::from_slice_nullable(&[0i32, 0, 3, 0, 5], &[false, false, true, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[0i32, 0, 3, 0, 5], &[false, false, true, false, true]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let s = Series::from_column(result).unwrap();
@@ -114,7 +115,7 @@ fn test_replace_nulls_policy_ffill_leading_nulls_remain() {
 
 #[test]
 fn test_replace_nulls_policy_ffill_no_nulls() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let rv = result.view().unwrap();
@@ -123,7 +124,7 @@ fn test_replace_nulls_policy_ffill_no_nulls() {
 
 #[test]
 fn test_replace_nulls_policy_ffill_all_null() {
-    let col = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let col = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let rv = result.view().unwrap();
@@ -132,7 +133,7 @@ fn test_replace_nulls_policy_ffill_all_null() {
 
 #[test]
 fn test_replace_nulls_policy_ffill_empty() {
-    let col = Column::from_slice(&[] as &[i32]).unwrap();
+    let col = column_from_slice(&[] as &[i32]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let rv = result.view().unwrap();
@@ -144,7 +145,7 @@ fn test_replace_nulls_policy_ffill_empty() {
 #[test]
 fn test_replace_nulls_policy_bfill_basic() {
     // [1, null, null, 4] → [1, 4, 4, 4]
-    let col = Column::from_slice_nullable(&[1i32, 0, 0, 4], &[true, false, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 0, 0, 4], &[true, false, false, true]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Following).unwrap();
     let rv = result.view().unwrap();
@@ -155,7 +156,7 @@ fn test_replace_nulls_policy_bfill_basic() {
 #[test]
 fn test_replace_nulls_policy_bfill_trailing_nulls_remain() {
     // [1, null, 3, null, null] → [1, 3, 3, null, null]
-    let col = Column::from_slice_nullable(&[1i32, 0, 3, 0, 0], &[true, false, true, false, false]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 0, 3, 0, 0], &[true, false, true, false, false]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Following).unwrap();
     let s = Series::from_column(result).unwrap();
@@ -166,7 +167,7 @@ fn test_replace_nulls_policy_bfill_trailing_nulls_remain() {
 
 #[test]
 fn test_replace_nulls_policy_bfill_all_null() {
-    let col = Column::from_slice_nullable(&[0i32, 0], &[false, false]).unwrap();
+    let col = column_from_slice_nullable(&[0i32, 0], &[false, false]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Following).unwrap();
     let rv = result.view().unwrap();
@@ -176,7 +177,7 @@ fn test_replace_nulls_policy_bfill_all_null() {
 #[test]
 fn test_replace_nulls_policy_float64() {
     // [1.0, null, 3.0] → ffill → [1.0, 1.0, 3.0]
-    let col = Column::from_slice_nullable(&[1.0f64, 0.0, 3.0], &[true, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[1.0f64, 0.0, 3.0], &[true, false, true]).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let rv = result.view().unwrap();

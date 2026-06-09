@@ -28,8 +28,9 @@ impl DataFrame {
     /// Returns an error if `name` is not in the schema.
     pub fn series(&self, name: &str) -> Result<Series> {
         let col = self.columns.get(name).ok_or_else(|| missing_column_error("dataframe::series", name))?;
-
-        Ok(Series::from_column_arc(Arc::clone(col)).rename(name))
+        Series::from_column_arc(Arc::clone(col))
+            .map(|series| series.rename(name))
+            .map_err(|e| e.with_operation("dataframe::series").with_context("column_name", name.to_string()))
     }
 
     /// Look up the positional index of a column by name.
@@ -37,7 +38,7 @@ impl DataFrame {
         self.columns.get_index_of(name)
     }
 
-    /// Probe for a column by name, returning `None` on miss.
+    /// Probe for a column by name, returning `Ok(None)` on miss.
     ///
     /// Use this when a missing column is a normal case, not an error.
     /// For strict access that errors on miss, use [`series()`](Self::series).
@@ -46,8 +47,13 @@ impl DataFrame {
     ///
     /// Metadata-only, no GPU data copy: returns a new `Series` sharing the
     /// underlying `Column` via `Arc`.
-    pub fn get(&self, name: &str) -> Option<Series> {
-        self.columns.get(name).map(|col| Series::from_column_arc(Arc::clone(col)).rename(name))
+    pub fn get(&self, name: &str) -> Result<Option<Series>> {
+        match self.columns.get(name) {
+            Some(col) => Series::from_column_arc(Arc::clone(col))
+                .map(|series| Some(series.rename(name)))
+                .map_err(|e| e.with_operation("dataframe::get").with_context("column_name", name.to_string())),
+            None => Ok(None),
+        }
     }
 
     /// Returns `true` if a column with the given name exists in the schema.
@@ -59,8 +65,12 @@ impl DataFrame {
     ///
     /// Each item is an owned `Series` sharing the underlying `Column` via
     /// `Arc`. No GPU data is copied.
-    pub fn iter_series(&self) -> impl Iterator<Item = Series> + '_ {
-        self.columns.iter().map(|(name, col)| Series::from_column_arc(Arc::clone(col)).rename(name))
+    pub fn iter_series(&self) -> impl Iterator<Item = Result<Series>> + '_ {
+        self.columns.iter().map(|(name, col)| {
+            Series::from_column_arc(Arc::clone(col))
+                .map(|series| series.rename(name))
+                .map_err(|e| e.with_operation("dataframe::iter_series").with_context("column_name", name.clone()))
+        })
     }
 
     /// Factorize a named column into integer codes and unique values.

@@ -179,7 +179,7 @@ impl Series {
         let series = df.series(column_name).map_err(|e| e.with_operation(operation))?;
         match self.name() {
             Some(name) => Ok(series.rename(name)),
-            None => Ok(Series::from_column_arc(series.into_inner())),
+            None => Series::from_column_arc(series.into_inner()).map_err(|e| e.with_operation(operation)),
         }
     }
 
@@ -738,7 +738,7 @@ impl Series {
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
         let column =
             Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
-        let mut series = Self::from_column_arc(column);
+        let mut series = Self::from_column_arc(column).map_err(|e| e.with_operation("series::copy_into_runtime"))?;
         series.name = self.name.clone();
         Ok(series)
     }
@@ -848,8 +848,13 @@ impl Series {
         let cv = self.column.view()?;
         let scalar = self.scalar_from_value_in_domain(value)?;
         let exec_options = self.column.execution_domain().explicit_exec_options_raw();
-        let col = replace::replace_nulls_with_exec_options(&cv, &scalar, exec_options.as_ref(), "series::fillna")?
-            .with_execution_domain(Arc::clone(self.column.execution_domain()));
+        let col = replace::replace_nulls_with_exec_options(
+            &cv,
+            &scalar,
+            self.column.execution_domain(),
+            exec_options.as_ref(),
+            "series::fillna",
+        )?;
         self.with_inherited_name(col)
     }
 
@@ -874,8 +879,13 @@ impl Series {
             other.column.execution_domain().fence_stream(operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_column_with_exec_options(&cv, &other_cv, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = replace::replace_nulls_column_with_exec_options(
+            &cv,
+            &other_cv,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
         self.with_inherited_name(col)
     }
 
@@ -893,10 +903,10 @@ impl Series {
         let col = replace::replace_nulls_policy_with_exec_options(
             &cv,
             FillPolicy::Preceding,
+            self.column.execution_domain(),
             exec_options.as_ref(),
             "series::ffill",
-        )?
-        .with_execution_domain(Arc::clone(self.column.execution_domain()));
+        )?;
         self.with_inherited_name(col)
     }
 
@@ -914,10 +924,10 @@ impl Series {
         let col = replace::replace_nulls_policy_with_exec_options(
             &cv,
             FillPolicy::Following,
+            self.column.execution_domain(),
             exec_options.as_ref(),
             "series::bfill",
-        )?
-        .with_execution_domain(Arc::clone(self.column.execution_domain()));
+        )?;
         self.with_inherited_name(col)
     }
 

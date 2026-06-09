@@ -413,12 +413,7 @@ pub(super) fn prepared_column_projection_from_view<'a>(
     if map_data_type(data_type).id() == InteropTypeId::Struct {
         let mut next_buffer_id = next_buffer_id;
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let child_count = usize::try_from(num_children).map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "struct child count must be >= 0")
-                .with_context("operation", operation)
-                .with_context("type_id", "struct")
-                .with_context("num_children", num_children.to_string())
-        })?;
+        let child_count = num_children;
         if child_count == 0 {
             return Err(InteropError::new(
                 InteropErrorKind::InvalidView,

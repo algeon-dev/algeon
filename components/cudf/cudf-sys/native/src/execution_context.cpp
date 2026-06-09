@@ -74,7 +74,7 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options,
     return CUDF_ERROR_NULL;
   }
 
-  // Step 1: Null-options fast path — use ambient defaults and return.
+  // Step 1: Null-options fast path — resolve the current device's defaults and return.
   // This must come before any struct-field access since there is no struct.
   if (options == nullptr) {
     int32_t dev = 0;

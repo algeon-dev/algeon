@@ -105,7 +105,7 @@ impl RuntimeOwnedReleaseCompletion {
             .with_context("completion", "synchronous_by_return")
             .with_context("release_device", release_device.to_string())),
             RuntimeCompletionAuthority::SameDeviceStream { stream } => {
-                let stream_device = stream.device().ordinal_raw() as i32;
+                let stream_device = stream.device().ordinal_raw();
                 if stream_device != release_device {
                     return Err(InteropError::new(
                         InteropErrorKind::ReadinessMismatch,
