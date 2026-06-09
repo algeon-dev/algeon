@@ -16,7 +16,7 @@ pub(super) fn attach_join_source_read_resource_facts(
         .with_fact_if_absent("chunk_index", chunk.chunk_index)
         .with_fact_if_absent("file_index", chunk.file_index)
         .with_fact_if_absent("path", chunk_path_fact(chunk))
-        .with_fact_if_absent("row_groups", format_row_groups(chunk))
+        .with_row_group_facts_if_absent(chunk)
 }
 
 pub(super) fn join_source_read_reservation_request(

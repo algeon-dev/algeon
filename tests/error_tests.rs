@@ -172,7 +172,8 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
     assert_eq!(adapter_error.fact_value("node_id"), Some("n5"));
     assert_eq!(adapter_error.fact_value("stage"), Some("final_sort"));
     assert_eq!(adapter_error.fact_value("chunk_index"), Some("7"));
-    assert_eq!(adapter_error.fact_value("row_groups"), Some("3,5"));
+    assert_eq!(adapter_error.fact_value("row_group_indexes"), Some("3,5"));
+    assert_eq!(adapter_error.fact_value("row_group_count"), Some("2"));
     assert_eq!(adapter_error.fact_value("attempt"), Some("1"));
     assert_eq!(adapter_error.fact_value("max_attempts"), Some("3"));
 }

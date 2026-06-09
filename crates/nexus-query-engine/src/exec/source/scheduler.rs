@@ -156,7 +156,7 @@ impl ScheduledLocalParquetRead {
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("path", chunk_path_fact(&chunk))
-            .with_fact("row_groups", format_row_groups(&chunk))
+            .with_row_group_facts(&chunk)
         })?;
         metrics.record_source_read_queue_wait(wait_timer.elapsed());
         metrics.merge_from(result.metrics);

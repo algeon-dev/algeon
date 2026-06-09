@@ -1,4 +1,5 @@
 use super::*;
+use crate::exec::source::SourceChunkRowGroupFacts;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::exec) struct RuntimeResourceFacts<'a> {
@@ -47,7 +48,7 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
         return error;
     }
 
-    let mut error = RuntimeResourceFacts {
+    let error = RuntimeResourceFacts {
         memory_boundary,
         stage: memory_boundary,
         node_id: chunk.source_node_id,
@@ -60,10 +61,7 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
     .with_fact_if_absent("chunk_index", chunk.chunk_index)
     .with_fact_if_absent("file_index", chunk.file_index)
     .with_fact_if_absent("path", chunk_path_fact(chunk));
-    if !chunk.reads_all_row_groups {
-        error = error.with_fact_if_absent("row_groups", comma_separated_usize(&chunk.row_group_indexes));
-    }
-    error
+    error.with_row_group_facts_if_absent(chunk)
 }
 
 fn chunk_path_fact(chunk: &SourceChunk) -> String {

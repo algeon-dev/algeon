@@ -364,7 +364,8 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     );
     assert_eq!(adapter_error.fact_value("path"), None);
     assert_eq!(adapter_error.fact_value("file_index"), None);
-    assert_eq!(adapter_error.fact_value("row_groups"), None);
+    assert_eq!(adapter_error.fact_value("row_group_indexes"), None);
+    assert_eq!(adapter_error.fact_value("row_group_count"), None);
     assert_eq!(adapter_error.fact_value("chunk_index"), None);
 }
 

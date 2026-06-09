@@ -15,7 +15,7 @@ use crate::{
             try_read_cached_local_parquet_chunk,
         },
         source::{
-            ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk_batch,
+            ScheduledLocalParquetRead, SourceChunkRowGroupFacts, read_local_parquet_chunk_batch,
             read_local_parquet_chunk_with_reader_dynamic_filter_count, read_local_parquet_source,
         },
     },

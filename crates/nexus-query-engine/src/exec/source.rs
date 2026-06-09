@@ -27,7 +27,7 @@ use cudf_contract::{
 };
 pub use gpu_resident::read_gpu_resident_source;
 use host_buffer::*;
-pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
+pub(super) use metrics::{SourceChunkRowGroupFacts, format_row_groups, record_bounded_parquet_source_metrics};
 use partition::inject_partition_columns;
 use read::read_local_parquet_file;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
@@ -441,7 +441,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             .with_fact("path", chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
-            .with_fact("row_groups", format_row_groups(chunk))
+            .with_row_group_facts(chunk)
         })?;
         return zero_column_count_chunk_frame_with_budget(context, row_count, budget_bytes, budget_boundary, metrics)
             .map_err(|error| {
@@ -449,7 +449,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                     .with_fact("path", chunk_path_fact(chunk))
                     .with_fact("chunk_index", chunk.chunk_index)
                     .with_fact("file_index", chunk.file_index)
-                    .with_fact("row_groups", format_row_groups(chunk))
+                    .with_row_group_facts(chunk)
             });
     }
 
@@ -471,7 +471,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("budget_bytes", budget_bytes)
-        .with_fact("row_groups", format_row_groups(chunk))
+        .with_row_group_facts(chunk)
     })?;
     let token = context
         .runtime()
@@ -487,7 +487,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("read_columns", chunk.read_columns.len())
-            .with_fact("row_groups", format_row_groups(chunk))
+            .with_row_group_facts(chunk)
         })?;
     let read_timer = Instant::now();
     let (outcome, observed_row_group_count, host_buffer_fetch) = if chunk.resolved_source.uses_host_buffer() {
@@ -519,7 +519,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                     .with_fact("chunk_index", chunk.chunk_index)
                     .with_fact("file_index", chunk.file_index)
                     .with_fact("read_columns", chunk.read_columns.len())
-                    .with_fact("row_groups", format_row_groups(chunk))
+                    .with_row_group_facts(chunk)
                 })?;
                 record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
                 outcome
@@ -1246,7 +1246,7 @@ fn validate_local_parquet_chunk_batch(
             .with_fact("path", chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
-            .with_fact("row_groups", format_row_groups(chunk)));
+            .with_row_group_facts(chunk));
         }
     }
     Ok(())

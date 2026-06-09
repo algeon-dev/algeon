@@ -247,8 +247,8 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
 ///
 /// Empty keys panic, and inserting the same key twice panics. The native engine
-/// reserves `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation` for
-/// facts copied from an underlying `cudf::Error`.
+/// reserves `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and
+/// `cudf_message` for facts copied from an underlying `cudf::Error`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
@@ -328,35 +328,45 @@ impl QueryError {
     ///
     /// `operation` should be the stable dotted id for the native operation that
     /// called cuDF, and `message` should describe the failure for humans. The
-    /// cuDF code, kind, status, and operation are preserved as reserved facts:
-    /// `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation`.
+    /// cuDF code, kind, status, operation, and (URI-redacted) message are
+    /// preserved as reserved facts: `cudf_code`, `cudf_kind`, `cudf_status`,
+    /// `cudf_operation`, and `cudf_message`.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
-        Self::new(code, operation, message)
+        let error = Self::new(code, operation, message)
             .with_fact("cudf_code", source.code())
             .with_fact("cudf_kind", source.kind())
             .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation())
-            .with_source(source)
+            .with_fact("cudf_operation", source.operation());
+        match cudf_message_fact(&source) {
+            Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
+            None => error,
+        }
+        .with_source(source)
     }
 
     /// Wraps a `cudf::Error` without attaching its display text as a source.
     ///
     /// Use this for diagnostics that may pass sensitive reader locations into
-    /// lower layers. The stable cuDF classification facts are retained, but
-    /// potentially unsanitized dependency messages are not exposed through this
-    /// error's `Display` or source chain.
+    /// lower layers. The stable cuDF classification facts are retained — the
+    /// dependency message is preserved only as the URI-redacted `cudf_message`
+    /// fact — but the unsanitized source is not exposed through this error's
+    /// `Display` or source chain.
     pub(crate) fn from_cudf_without_source(
         operation: &'static str,
         message: impl Into<String>,
         source: &cudf::Error,
     ) -> Self {
         let code = code_for_cudf_error(source);
-        Self::new(code, operation, message)
+        let error = Self::new(code, operation, message)
             .with_fact("cudf_code", source.code())
             .with_fact("cudf_kind", source.kind())
             .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation())
+            .with_fact("cudf_operation", source.operation());
+        match cudf_message_fact(source) {
+            Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
+            None => error,
+        }
     }
 
     pub(crate) fn from_cudf_without_source_with_budget_details(
@@ -439,6 +449,29 @@ impl QueryError {
         }
         None
     }
+}
+
+/// Builds the `cudf_message` fact value for a wrapped `cudf::Error`.
+///
+/// The foreign (libcudf/KvikIO) exception text is the most direct evidence of
+/// what a lower layer rejected, so it is preserved as a fact. URI-like tokens
+/// are redacted so reader locations never leak through diagnostics.
+fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
+    let message = source.message().trim();
+    if message.is_empty() {
+        return None;
+    }
+    Some(redact_uri_tokens(message))
+}
+
+/// Replaces whitespace-delimited URI-like tokens (`scheme://...`) with a
+/// stable placeholder. Whitespace is normalized to single spaces.
+fn redact_uri_tokens(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|token| if token.contains("://") { "<redacted-uri>" } else { token })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn cudf_budget_details(source: &cudf::Error) -> Vec<(&'static str, String)> {
@@ -549,5 +582,54 @@ fn quote(value: &str) -> String {
         value.to_string()
     } else {
         format!("{value:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_cudf_error() -> cudf::Error {
+        cudf::io::parquet::RemoteParquetSource::s3("gs://bucket/key.parquet")
+            .expect_err("non-s3 scheme must be rejected")
+    }
+
+    #[test]
+    fn from_cudf_preserves_foreign_message_as_cudf_message_fact() {
+        let source = sample_cudf_error();
+        let expected_message = redact_uri_tokens(source.message().trim());
+
+        let error = QueryError::from_cudf("nexus_query_engine.test.from_cudf", "wrapped cudf failure", source);
+
+        assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
+        assert!(error.source_error().is_some());
+    }
+
+    #[test]
+    fn from_cudf_without_source_preserves_foreign_message_without_source_chain() {
+        let source = sample_cudf_error();
+        let expected_message = redact_uri_tokens(source.message().trim());
+
+        let error = QueryError::from_cudf_without_source(
+            "nexus_query_engine.test.from_cudf_without_source",
+            "wrapped cudf failure",
+            &source,
+        );
+
+        assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
+        assert!(error.source_error().is_none());
+    }
+
+    #[test]
+    fn redact_uri_tokens_replaces_uri_like_tokens_only() {
+        assert_eq!(
+            redact_uri_tokens("S3: must provide `aws_access_key` if AWS_ACCESS_KEY_ID isn't set."),
+            "S3: must provide `aws_access_key` if AWS_ACCESS_KEY_ID isn't set."
+        );
+        assert_eq!(
+            redact_uri_tokens("failed to open s3://bucket/secret/key.parquet for read"),
+            "failed to open <redacted-uri> for read"
+        );
+        assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
     }
 }

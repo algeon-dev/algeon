@@ -186,7 +186,8 @@ fn memory_reservation_failure_is_temporary_resource_exhaustion() {
     assert_eq!(error.fact_value("chunk_index"), Some("3"));
     assert_eq!(error.fact_value("file_index"), Some("1"));
     assert_eq!(error.fact_value("path"), Some("/tmp/input.parquet"));
-    assert_eq!(error.fact_value("row_groups"), Some("4,5"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("4,5"));
+    assert_eq!(error.fact_value("row_group_count"), Some("2"));
     assert_eq!(error.fact_value("attempt"), Some("2"));
     assert_eq!(error.fact_value("max_attempts"), Some("4"));
     assert_eq!(error.fact_value("memory_space"), None);

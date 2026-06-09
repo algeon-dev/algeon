@@ -175,7 +175,8 @@ fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::QueryError
     assert!(error.facts().iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
     assert_eq!(error.fact_value("path"), None);
     assert_eq!(error.fact_value("file_index"), None);
-    assert_eq!(error.fact_value("row_groups"), None);
+    assert_eq!(error.fact_value("row_group_indexes"), None);
+    assert_eq!(error.fact_value("row_group_count"), None);
     assert_eq!(error.fact_value("chunk_index"), None);
     assert!(error.source_error().is_none());
 }

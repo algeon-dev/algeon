@@ -24,7 +24,7 @@ pub(super) fn read_zero_column_count_source(
                 .with_fact("path", chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
-                .with_fact("row_groups", format_row_groups(chunk))
+                .with_row_group_facts(chunk)
             })
         })
         .collect::<Result<Vec<_>>>()?;

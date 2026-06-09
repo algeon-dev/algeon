@@ -217,14 +217,33 @@ pub(crate) struct ObjectStoreCustomFetchResult<T> {
     pub(crate) elapsed: Duration,
 }
 
+/// How long a resolved default-chain credential may be reused before the
+/// owning provider is consulted again.
+///
+/// The provider caches and refreshes credentials internally; this window only
+/// bounds how long the engine skips the cross-runtime provider round-trip per
+/// chunk read. It must stay far below the shortest credential lifetime
+/// (instance-role sessions last at least minutes).
+pub(super) const RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW: Duration = Duration::from_secs(60);
+
+struct ResolvedSourceCredential {
+    resolved_at: std::time::Instant,
+    credential: Arc<object_store::aws::AwsCredential>,
+}
+
 pub(super) struct SourceObjectStoreRegistry {
     profiles: HashMap<String, SourceStorageProfile>,
-    stores: Mutex<HashMap<S3ObjectStoreKey, Arc<dyn object_store::ObjectStore>>>,
+    stores: Mutex<HashMap<S3ObjectStoreKey, Arc<object_store::aws::AmazonS3>>>,
+    resolved_credentials: Mutex<HashMap<S3ObjectStoreKey, ResolvedSourceCredential>>,
 }
 
 impl SourceObjectStoreRegistry {
     pub(super) fn new() -> Self {
-        Self { profiles: HashMap::new(), stores: Mutex::new(HashMap::new()) }
+        Self {
+            profiles: HashMap::new(),
+            stores: Mutex::new(HashMap::new()),
+            resolved_credentials: Mutex::new(HashMap::new()),
+        }
     }
 
     pub(super) fn with_profiles(profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Result<Self> {
@@ -249,10 +268,59 @@ impl SourceObjectStoreRegistry {
                 .with_fact("reason", "duplicate_profile_id"));
             }
         }
-        Ok(Self { profiles: by_id, stores: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            profiles: by_id,
+            stores: Mutex::new(HashMap::new()),
+            resolved_credentials: Mutex::new(HashMap::new()),
+        })
     }
 
     pub(super) fn s3_store(&self, key: S3ObjectStoreKey) -> Result<Arc<dyn object_store::ObjectStore>> {
+        let store: Arc<dyn object_store::ObjectStore> = self.s3_typed_store(key)?;
+        Ok(store)
+    }
+
+    /// Returns the credential provider backing the S3 client for `key`.
+    ///
+    /// The provider is shared with host-buffer fetches for the same key, so
+    /// default-chain resolution (env, IMDS instance role, web identity) and its
+    /// internal token caching/refresh behave identically on both read paths.
+    pub(super) fn s3_credential_provider(
+        &self,
+        key: S3ObjectStoreKey,
+    ) -> Result<object_store::aws::AwsCredentialProvider> {
+        Ok(Arc::clone(self.s3_typed_store(key)?.credentials()))
+    }
+
+    /// Returns a recently resolved credential for `key` when it is younger
+    /// than [`RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW`].
+    pub(super) fn recently_resolved_s3_credential(
+        &self,
+        key: &S3ObjectStoreKey,
+    ) -> Option<Arc<object_store::aws::AwsCredential>> {
+        let resolved_credentials = self.resolved_credentials.lock().ok()?;
+        let resolved = resolved_credentials.get(key)?;
+        if resolved.resolved_at.elapsed() < RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW {
+            Some(Arc::clone(&resolved.credential))
+        } else {
+            None
+        }
+    }
+
+    /// Records a freshly resolved credential for reuse within
+    /// [`RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW`].
+    pub(super) fn record_resolved_s3_credential(
+        &self,
+        key: S3ObjectStoreKey,
+        credential: Arc<object_store::aws::AwsCredential>,
+    ) {
+        if let Ok(mut resolved_credentials) = self.resolved_credentials.lock() {
+            resolved_credentials
+                .insert(key, ResolvedSourceCredential { resolved_at: std::time::Instant::now(), credential });
+        }
+    }
+
+    fn s3_typed_store(&self, key: S3ObjectStoreKey) -> Result<Arc<object_store::aws::AmazonS3>> {
         let mut stores = self.stores.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -277,8 +345,7 @@ impl SourceObjectStoreRegistry {
                 })
             })
             .transpose()?;
-        let store = build_s3_store(&key, profile)?;
-        let store: Arc<dyn object_store::ObjectStore> = Arc::new(store);
+        let store = Arc::new(build_s3_store(&key, profile)?);
         stores.insert(key, Arc::clone(&store));
         Ok(store)
     }
@@ -512,6 +579,56 @@ mod tests {
         assert!(error.source_error().is_none());
         assert!(!rendered.contains("user:password"));
         assert!(!rendered.contains("password"));
+    }
+
+    #[test]
+    fn s3_credential_provider_is_shared_with_host_buffer_store_and_resolves_static_credentials() {
+        let registry = SourceObjectStoreRegistry::with_profiles([SourceStorageProfile::s3(
+            "static",
+            S3SourceStorageProfile::default_chain().with_region("us-east-1").with_static_credentials(
+                "access-key-value",
+                "secret-key-value",
+                Some("session-token-value".to_string()),
+            ),
+        )])
+        .expect("registry builds");
+        let key = S3ObjectStoreKey {
+            bucket: "bucket".to_string(),
+            region: "us-east-1".to_string(),
+            storage_profile_id: Some("static".to_string()),
+        };
+
+        let _host_buffer_store = registry.s3_store(key.clone()).expect("host-buffer store builds");
+        let provider = registry.s3_credential_provider(key).expect("credential provider resolves");
+        let credential =
+            default_source_fetch_runtime().block_on(provider.get_credential()).expect("credential resolves");
+
+        assert_eq!(credential.key_id, "access-key-value");
+        assert_eq!(credential.secret_key, "secret-key-value");
+        assert_eq!(credential.token.as_deref(), Some("session-token-value"));
+    }
+
+    #[test]
+    fn resolved_s3_credentials_are_reused_per_key_within_the_reuse_window() {
+        let registry = SourceObjectStoreRegistry::new();
+        let key = S3ObjectStoreKey {
+            bucket: "bucket".to_string(),
+            region: "us-east-1".to_string(),
+            storage_profile_id: Some("glue".to_string()),
+        };
+        let other_key = S3ObjectStoreKey { bucket: "other-bucket".to_string(), ..key.clone() };
+        assert!(registry.recently_resolved_s3_credential(&key).is_none());
+
+        let credential = Arc::new(object_store::aws::AwsCredential {
+            key_id: "resolved-access-key".to_string(),
+            secret_key: "resolved-secret-key".to_string(),
+            token: None,
+        });
+        registry.record_resolved_s3_credential(key.clone(), Arc::clone(&credential));
+
+        let reused = registry.recently_resolved_s3_credential(&key).expect("fresh credential is reused");
+        assert!(Arc::ptr_eq(&reused, &credential));
+        assert!(registry.recently_resolved_s3_credential(&other_key).is_none());
     }
 
     #[test]

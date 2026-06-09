@@ -48,8 +48,7 @@ pub(super) use object_store_fetch::ScheduledHostParquetFetch;
 use object_store_fetch::{HostParquetBuffer, start_host_parquet_buffer_fetch};
 #[cfg(test)]
 use object_store_safety::object_store_bucket_fact;
-#[cfg(test)]
-use object_store_safety::parse_s3_source_uri;
+pub(super) use object_store_safety::parse_s3_source_uri;
 #[cfg(test)]
 use ranged_parquet::RangedParquetFetchDiagnostics;
 use ranged_parquet::{
@@ -245,7 +244,7 @@ pub(super) fn read_object_store_parquet_chunk(
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("read_columns", chunk.read_columns.len())
-        .with_fact("row_groups", format_row_groups(chunk));
+        .with_row_group_facts(chunk);
         if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
             attach_ranged_fetch_facts(error, ranged_fetch, chunk)
         } else {

@@ -746,6 +746,66 @@ impl ExecutionContext {
         self.source_object_stores.profile(id)
     }
 
+    /// Resolves a short-lived AWS credential through the object-store client
+    /// registered for `key`.
+    ///
+    /// This is the default-chain resolution used by host-buffer fetches (env,
+    /// IMDSv2 instance role, web identity), exposed so remote-direct reads can
+    /// pass the same identity into lower layers that lack a default chain. The
+    /// provider caches and refreshes tokens internally, and the registry reuses
+    /// a freshly resolved credential for a short window, so calling this per
+    /// chunk read is cheap and instance-role rotation is handled by
+    /// construction.
+    ///
+    /// On a reuse-window miss the future runs on the source-fetch runtime; the
+    /// calling thread blocks until resolution completes, which keeps this
+    /// callable from synchronous chunk-read paths.
+    pub(crate) fn resolve_s3_default_chain_credential(
+        &self,
+        key: S3ObjectStoreKey,
+        operation: &'static str,
+    ) -> Result<Arc<::object_store::aws::AwsCredential>> {
+        if let Some(credential) = self.source_object_stores.recently_resolved_s3_credential(&key) {
+            return Ok(credential);
+        }
+        let storage_profile_id = key.storage_profile_id.clone();
+        let provider = self.source_object_stores.s3_credential_provider(key.clone())?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.source_fetch_runtime.spawn(async move {
+            let credential = provider.get_credential().await;
+            let _ = sender.send(credential);
+        });
+        let credential_unavailable = |query_error: QueryError| {
+            let query_error = query_error
+                .with_fact("resource", "remote_parquet_source")
+                .with_fact("credential_source", "default_chain")
+                .with_fact("reason", "default_chain_credentials_unavailable");
+            match storage_profile_id.as_deref() {
+                Some(profile_id) => query_error.with_fact("storage_profile_id", profile_id),
+                None => query_error,
+            }
+        };
+        let credential = receiver.recv().map_err(|_error| {
+            credential_unavailable(QueryError::new(
+                QueryErrorCode::Internal,
+                operation,
+                "source credential resolution worker stopped before returning a result",
+            ))
+        })?;
+        let credential = credential.map_err(|error| {
+            credential_unavailable(
+                QueryError::new(
+                    QueryErrorCode::CudfDependencyFailure,
+                    operation,
+                    "failed to resolve AWS default-chain credentials for native remote-direct read",
+                )
+                .with_source(error),
+            )
+        })?;
+        self.source_object_stores.record_resolved_s3_credential(key, Arc::clone(&credential));
+        Ok(credential)
+    }
+
     pub(crate) fn spawn_object_store_fetch(
         &self,
         store: Arc<dyn ::object_store::ObjectStore>,

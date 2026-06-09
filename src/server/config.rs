@@ -644,7 +644,7 @@ fn iceberg_parquet_read_strategy_config(
         config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
     }
     if iceberg_backend_requires_scoped_remote_direct_profile(backend) {
-        config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+        config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
     }
     Ok(config)
 }
@@ -725,7 +725,7 @@ fn table_format_parquet_read_strategy_config(
         || values.string(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV).is_some();
     let has_storage_region = values.string(NEXUS_ICEBERG_S3_REGION_ENV).is_some();
     let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
-        nexus_query_engine::CredentialMode::FutureTenantScoped
+        nexus_query_engine::CredentialMode::ScopedResolved
     } else {
         nexus_query_engine::CredentialMode::SharedProcessEnv
     };

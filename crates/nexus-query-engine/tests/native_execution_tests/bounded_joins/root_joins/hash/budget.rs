@@ -152,7 +152,8 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
+    assert_eq!(error.fact_value("row_group_count"), Some("1"));
 
     fs::remove_dir_all(dir).unwrap();
 }

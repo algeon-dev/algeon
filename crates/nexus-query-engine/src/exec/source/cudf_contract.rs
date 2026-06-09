@@ -107,7 +107,7 @@ pub(super) fn cudf_local_parquet_source_chunk(
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
                 .with_fact("read_columns", chunk.read_columns.len())
-                .with_fact("row_groups", format_row_groups(chunk))
+                .with_row_group_facts(chunk)
             })?;
     let cudf_source = attach_cudf_source_reader_predicate(
         context,
@@ -182,7 +182,7 @@ pub(super) fn cudf_local_parquet_source_chunk_batch(
                 .with_fact("file_index", chunk.file_index)
                 .with_fact("batch_file_index", batch_file_index)
                 .with_fact("read_columns", chunk.read_columns.len())
-                .with_fact("row_groups", format_row_groups(chunk))
+                .with_row_group_facts(chunk)
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -558,7 +558,7 @@ fn cudf_local_parquet_source_for_chunk(
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("read_columns", chunk.read_columns.len())
-            .with_fact("row_groups", format_row_groups(chunk))
+            .with_row_group_facts(chunk)
     })
 }
 
@@ -646,7 +646,7 @@ fn attach_cudf_source_reader_predicate(
             .with_fact("chunk_index", chunk_index)
             .with_fact("file_index", file_index)
             .with_fact("read_columns", read_columns);
-            if let Some(row_groups) = row_groups { error.with_fact("row_groups", row_groups) } else { error }
+            if let Some(row_groups) = row_groups { error.with_fact("row_group_indexes", row_groups) } else { error }
         })?;
     }
     Ok(cudf_source)
@@ -676,7 +676,7 @@ fn attach_cudf_source_reader_batch_predicate(
             .with_fact("chunk_index", chunk_index)
             .with_fact("file_index", file_index)
             .with_fact("read_columns", read_columns);
-            if let Some(row_groups) = row_groups { error.with_fact("row_groups", row_groups) } else { error }
+            if let Some(row_groups) = row_groups { error.with_fact("row_group_indexes", row_groups) } else { error }
         })?;
     }
     Ok(cudf_source)
@@ -803,15 +803,66 @@ fn cudf_remote_parquet_profile(
     resolved_source: &crate::source::ResolvedParquetSource,
 ) -> Result<cudf::io::parquet::RemoteParquetProfile> {
     let Some(profile_id) = resolved_source.storage_profile_id.as_deref() else {
-        return Ok(cudf_remote_parquet_profile_from_storage(None, None));
+        return Ok(cudf_remote_parquet_profile_from_storage(None, None, None));
     };
     let storage_profile = context.source_storage_profile(profile_id)?;
-    Ok(cudf_remote_parquet_profile_from_storage(Some(profile_id), Some(storage_profile)))
+    let default_chain_credential =
+        resolve_remote_direct_default_chain_credential(context, resolved_source, storage_profile)?;
+    Ok(cudf_remote_parquet_profile_from_storage(
+        Some(profile_id),
+        Some(storage_profile),
+        default_chain_credential.as_deref(),
+    ))
+}
+
+/// Resolves short-lived default-chain AWS credentials for a remote-direct read.
+///
+/// KvikIO supports only static credentials, so when the storage profile defers
+/// to the default chain the engine resolves a credential through the same
+/// object-store provider host-buffer fetches use and passes it into the typed
+/// remote contract. Resolution happens on every profile build (per chunk/file
+/// read); the provider caches and refreshes tokens internally, so instance-role
+/// rotation is handled by construction and the two read substrates cannot
+/// diverge on credential behavior.
+fn resolve_remote_direct_default_chain_credential(
+    context: &ExecutionContext,
+    resolved_source: &crate::source::ResolvedParquetSource,
+    storage_profile: &crate::runtime::SourceStorageProfile,
+) -> Result<Option<std::sync::Arc<::object_store::aws::AwsCredential>>> {
+    const OPERATION: &str = "nexus_query_engine.remote_parquet_profile.default_chain_credentials";
+    if resolved_source.read_strategy != crate::source::ParquetReadStrategy::RemoteDirect
+        || !matches!(storage_profile.s3_profile().credential, crate::runtime::S3SourceStorageCredential::DefaultChain)
+    {
+        return Ok(None);
+    }
+    let attach_resolution_facts = |error: QueryError| {
+        error
+            .with_fact_if_absent("resource", "remote_parquet_source")
+            .with_fact_if_absent("uri_scheme", resolved_remote_uri_scheme(resolved_source))
+            .with_fact_if_absent("read_strategy", resolved_source.read_strategy.as_str())
+            .with_fact_if_absent("remote_read_mode", resolved_source.remote_read_mode.as_str())
+            .with_fact_if_absent("credential_mode", resolved_source.credential_mode.as_str())
+    };
+    let location =
+        parse_s3_source_uri(resolved_source.reader_location.as_str(), resolved_source.storage_profile_id.clone())
+            .map_err(attach_resolution_facts)?;
+    context
+        .resolve_s3_default_chain_credential(
+            crate::runtime::S3ObjectStoreKey {
+                bucket: location.bucket,
+                region: location.region,
+                storage_profile_id: location.storage_profile_id,
+            },
+            OPERATION,
+        )
+        .map(Some)
+        .map_err(attach_resolution_facts)
 }
 
 fn cudf_remote_parquet_profile_from_storage(
     profile_id: Option<&str>,
     storage_profile: Option<&crate::runtime::SourceStorageProfile>,
+    default_chain_credential: Option<&::object_store::aws::AwsCredential>,
 ) -> cudf::io::parquet::RemoteParquetProfile {
     let mut profile = cudf::io::parquet::RemoteParquetProfile::shared_process_env();
     if let Some(profile_id) = profile_id {
@@ -834,7 +885,15 @@ fn cudf_remote_parquet_profile_from_storage(
         profile = profile.with_path_style_access(!virtual_hosted_style_request);
     }
     match &s3_profile.credential {
-        crate::runtime::S3SourceStorageCredential::DefaultChain => {},
+        crate::runtime::S3SourceStorageCredential::DefaultChain => {
+            if let Some(credential) = default_chain_credential {
+                profile = profile.with_static_credentials(
+                    credential.key_id.clone(),
+                    credential.secret_key.clone(),
+                    credential.token.clone(),
+                );
+            }
+        },
         crate::runtime::S3SourceStorageCredential::Unsigned => {
             profile = profile.with_unsigned_requests();
         },
@@ -1335,7 +1394,7 @@ mod tests {
                 .with_static_credentials("access", "secret", Some("token".to_string())),
         );
 
-        let profile = cudf_remote_parquet_profile_from_storage(Some("rest-s3"), Some(&storage));
+        let profile = cudf_remote_parquet_profile_from_storage(Some("rest-s3"), Some(&storage), None);
 
         assert_eq!(profile.profile_id(), Some("rest-s3"));
         assert_eq!(profile.region(), Some("us-west-2"));
@@ -1345,13 +1404,41 @@ mod tests {
     }
 
     #[test]
+    fn remote_parquet_profile_passes_resolved_default_chain_credentials_as_scoped_static() {
+        let storage = crate::runtime::SourceStorageProfile::s3(
+            "glue-default-chain",
+            crate::runtime::S3SourceStorageProfile::default_chain().with_region("us-east-1"),
+        );
+        let credential = ::object_store::aws::AwsCredential {
+            key_id: "resolved-access-key".to_string(),
+            secret_key: "resolved-secret-key".to_string(),
+            token: Some("resolved-session-token".to_string()),
+        };
+
+        let profile =
+            cudf_remote_parquet_profile_from_storage(Some("glue-default-chain"), Some(&storage), Some(&credential));
+
+        assert_eq!(profile.profile_id(), Some("glue-default-chain"));
+        assert_eq!(profile.region(), Some("us-east-1"));
+        assert_eq!(profile.credential_mode(), cudf::io::parquet::RemoteCredentialMode::ScopedProfile);
+        let rendered = format!("{profile:?}");
+        assert!(
+            rendered.contains("Static"),
+            "resolved default-chain credential must become a scoped static credential"
+        );
+        assert!(!rendered.contains("resolved-access-key"));
+        assert!(!rendered.contains("resolved-secret-key"));
+        assert!(!rendered.contains("resolved-session-token"));
+    }
+
+    #[test]
     fn remote_parquet_profile_treats_region_override_as_scoped_hint() {
         let storage = crate::runtime::SourceStorageProfile::s3(
             "glue-region",
             crate::runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
         );
 
-        let profile = cudf_remote_parquet_profile_from_storage(Some("glue-region"), Some(&storage));
+        let profile = cudf_remote_parquet_profile_from_storage(Some("glue-region"), Some(&storage), None);
 
         assert_eq!(profile.profile_id(), Some("glue-region"));
         assert_eq!(profile.region(), Some("us-west-2"));
@@ -1368,7 +1455,7 @@ mod tests {
         );
         let file = cudf_file
             .with_remote_parquet_contract(
-                cudf_remote_parquet_profile_from_storage(None, None),
+                cudf_remote_parquet_profile_from_storage(None, None, None),
                 cudf::io::parquet::RemoteReadMode::PreferDirect,
             )
             .expect("remote contract attaches");
@@ -1395,7 +1482,7 @@ mod tests {
         .with_remote_read_mode(crate::source::RemoteParquetReadMode::RequireDirect);
         let file = cudf_file
             .with_remote_parquet_contract(
-                cudf_remote_parquet_profile_from_storage(None, None),
+                cudf_remote_parquet_profile_from_storage(None, None, None),
                 cudf_remote_read_mode(resolved.remote_read_mode),
             )
             .expect("remote contract attaches");

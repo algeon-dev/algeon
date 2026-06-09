@@ -531,7 +531,7 @@ impl GlueIcebergCatalogConfig {
             || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
             || self.s3_path_style_access.is_some()
         {
-            config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
         }
         if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
             && self.s3_path_style_access == Some(false)
@@ -905,7 +905,7 @@ impl RestIcebergCatalogConfig {
             || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
             || self.s3_path_style_access.is_some()
         {
-            config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
         }
         if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
             && self.s3_path_style_access == Some(false)
@@ -1383,7 +1383,7 @@ mod rest_tests {
         let profile = config.source_storage_profile_with_env(|_| None);
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::FutureTenantScoped);
+        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::ScopedResolved);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         assert!(profile.requires_scoped_remote_direct_profile());
     }
@@ -1402,7 +1402,7 @@ mod rest_tests {
         let profile = config.source_storage_profile_with_env(env);
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::FutureTenantScoped);
+        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::ScopedResolved);
         assert_eq!(profile.id(), DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         match &profile.s3_profile().credential {
