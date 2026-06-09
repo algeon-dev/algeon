@@ -284,10 +284,26 @@ impl From<TypeId> for DataType {
     }
 }
 
+mod private {
+    pub trait Sealed {}
+
+    impl Sealed for i8 {}
+    impl Sealed for i16 {}
+    impl Sealed for i32 {}
+    impl Sealed for i64 {}
+    impl Sealed for u8 {}
+    impl Sealed for u16 {}
+    impl Sealed for u32 {}
+    impl Sealed for u64 {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
+    impl Sealed for bool {}
+}
+
 /// Trait for Rust types that map to a cudf `TypeId`.
 ///
 /// This enables generic column construction: `Column::from_slice::<i32>(&data)`.
-pub trait CudfType: Copy + 'static {
+pub trait CudfType: private::Sealed + Copy + 'static {
     /// The corresponding cudf type identifier.
     const TYPE_ID: TypeId;
 }
@@ -428,6 +444,16 @@ pub(crate) fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
             mask[i / 8] |= 1 << (i % 8);
         }
     }
+    mask
+}
+
+pub(crate) fn cudf_null_mask_allocation_size_bytes(len: usize) -> usize {
+    if len == 0 { 0 } else { len.div_ceil(8).div_ceil(64) * 64 }
+}
+
+pub(crate) fn validity_to_ffi_bitmask(validity: &[bool]) -> Vec<u8> {
+    let mut mask = validity_to_bitmask(validity);
+    mask.resize(cudf_null_mask_allocation_size_bytes(validity.len()), 0);
     mask
 }
 

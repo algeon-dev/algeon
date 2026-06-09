@@ -52,3 +52,11 @@ pub fn parse_cmake_bool(var_name: &str, value: &str) -> Result<&'static str, Str
         _ => Err(format!("{var_name} must be one of 1, 0, ON, OFF, TRUE, FALSE, YES, or NO; got {value:?}")),
     }
 }
+
+pub fn ensure_supported_target_os(target_os: &str) -> Result<(), String> {
+    if target_os == "linux" {
+        return Ok(());
+    }
+
+    Err(format!("cudf-rs currently supports Linux only; unsupported target OS: {target_os}"))
+}

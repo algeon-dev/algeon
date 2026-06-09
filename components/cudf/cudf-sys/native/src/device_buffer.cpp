@@ -1,4 +1,5 @@
 #include "device_buffer.h"
+#include "device.h"
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
@@ -159,6 +160,23 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
     if (mask_buf->size() < min_mask) {
       set_error("null mask buffer is too small");
       return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    if (expected_data > 0 && min_mask > 0) {
+      int32_t data_device = -1;
+      cudf_status_t const data_device_status =
+          cudf_cuda_pointer_get_device(data_buf->data(), &data_device);
+      if (data_device_status != CUDF_SUCCESS) { return data_device_status; }
+
+      int32_t mask_device = -1;
+      cudf_status_t const mask_device_status =
+          cudf_cuda_pointer_get_device(mask_buf->data(), &mask_device);
+      if (mask_device_status != CUDF_SUCCESS) { return mask_device_status; }
+
+      if (data_device != mask_device) {
+        set_error("data buffer and null mask buffer must belong to the same CUDA device");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
     }
 
     // Move both rmm::device_buffers into the column — zero copy.

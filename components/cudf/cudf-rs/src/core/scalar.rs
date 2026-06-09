@@ -89,9 +89,8 @@ impl Scalar {
 
     /// Create a null scalar of the given numeric type.
     pub fn null_numeric<T: CudfType>() -> Result<Self> {
-        // SAFETY: All CudfType implementors (i8, i16, i32, i64, u8, u16, u32, u64,
-        // f32, f64, bool) have valid all-zero bit patterns. The trait is sealed by
-        // its pub-in-private location, so no external types can implement it.
+        // SAFETY: `CudfType` is sealed to the built-in fixed-width cudf Rust
+        // primitives, all of which have valid all-zero bit patterns.
         let zero = unsafe { std::mem::zeroed::<T>() };
         let mut handle = ptr::null_mut();
         // SAFETY: &zero is a valid pointer. is_valid=0 marks this as null.
@@ -109,7 +108,10 @@ impl Scalar {
         Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
-    /// Create a valid string scalar.
+    /// Create a valid string scalar from host string data.
+    ///
+    /// This allocates a GPU-backed string scalar and copies the UTF-8 bytes
+    /// from host memory into device-managed storage.
     pub fn from_str(value: &str) -> Result<Self> {
         let domain = ExecutionDomain::ambient_default();
         Self::from_str_in_domain(value, &domain).map_err(|e| e.with_operation("scalar::from_str"))
@@ -211,6 +213,10 @@ impl Scalar {
     }
 
     /// Returns `true` if this scalar holds a valid (non-null) value.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning a host-visible boolean result.
     pub fn is_valid(&self) -> Result<bool> {
         let mut out: i32 = 0;
         if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
@@ -233,6 +239,10 @@ impl Scalar {
     /// Extract the value as type `T`.
     ///
     /// Returns an error if the scalar's type doesn't match `T::TYPE_ID`.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
     pub fn value<T: CudfType>(&self) -> Result<T> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
@@ -241,7 +251,8 @@ impl Scalar {
                 .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
                 .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
-        // SAFETY: All CudfType implementors have valid all-zero bit patterns.
+        // SAFETY: `CudfType` is sealed to built-in primitives with valid
+        // all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
         if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
             // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
@@ -271,6 +282,10 @@ impl Scalar {
     /// Extract the value as a string.
     ///
     /// Returns an error if the scalar is not a string type.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible string.
     pub fn string_value(&self) -> Result<String> {
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;

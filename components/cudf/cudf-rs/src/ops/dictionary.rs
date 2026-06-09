@@ -130,12 +130,7 @@ fn match_dictionaries_impl(
                 )
             },
             None => unsafe {
-                cudf_sys::cudf_dictionary_match_dictionaries(
-                    handles.as_ptr(),
-                    n_i32,
-                    &mut out_columns,
-                    &mut out_count,
-                )
+                cudf_sys::cudf_dictionary_match_dictionaries(handles.as_ptr(), n_i32, &mut out_columns, &mut out_count)
             },
         },
         operation,

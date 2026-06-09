@@ -57,6 +57,12 @@ void cudf_test_event_block_synchronize();
 /// Release any test-only block applied to `cudaEventSynchronize` shim calls.
 void cudf_test_event_unblock_synchronize();
 
+/// Force subsequent observed `cudaEventSynchronize` calls to fail.
+void cudf_test_event_fail_synchronize();
+
+/// Clear any forced failure applied to observed `cudaEventSynchronize` calls.
+void cudf_test_event_allow_synchronize();
+
 /// Read the number of `cudaEventSynchronize` calls observed through the shim.
 cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out);
 

@@ -2,6 +2,7 @@ use super::{
     table_export::{
         transfer_from_owned_table_with_runtime_release, transfer_from_owned_table_with_runtime_release_synchronization,
     },
+    table_support::checked_column_index,
     *,
 };
 

@@ -1330,6 +1330,12 @@ extern "C" {
     /// Release any test-only block applied to observed `cudaEventSynchronize` calls.
     pub fn cudf_test_event_unblock_synchronize();
 
+    /// Force subsequent observed `cudaEventSynchronize` calls to fail.
+    pub fn cudf_test_event_fail_synchronize();
+
+    /// Clear any forced failure applied to observed `cudaEventSynchronize` calls.
+    pub fn cudf_test_event_allow_synchronize();
+
     /// Read the number of observed `cudaEventSynchronize` calls.
     pub fn cudf_test_event_synchronize_call_count(out: *mut i32) -> cudf_status_t;
 

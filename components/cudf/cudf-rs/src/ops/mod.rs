@@ -1,10 +1,30 @@
-//! Low-level operation modules and expression DSL entry points.
+//! Low-level operation modules plus the expression DSL entry points.
 //!
-//! `cudf::ops` is intentionally namespaced by operation domain. Most APIs live
-//! under submodules such as [`join`], [`groupby`], [`sorting`], or [`filter`].
-//! The root keeps only the high-frequency expression DSL entry points
-//! ([`Expr`], [`col`], [`lit`], and [`when`]) plus the standard arithmetic trait
-//! implementations for [`Column`](crate::core::column::Column).
+//! Most users should start from high-level [`crate::DataFrame`] and
+//! [`crate::Series`] methods. `cudf::ops` is the lower-level operation layer:
+//! it groups domain-specific kernels under namespaced modules such as
+//! [`join`], [`groupby`], [`sorting`], [`filter`], [`strings`], and
+//! [`reduction`].
+//!
+//! The root keeps only the high-frequency expression DSL surface
+//! ([`Expr`], [`col`], [`lit`], and [`when`]) plus the standard arithmetic
+//! trait implementations for borrowed
+//! [`Column`](crate::core::column::Column) values.
+//!
+//! # Ownership and Evaluation
+//!
+//! Most low-level functions in this module family take borrowed
+//! [`ColumnView`](crate::core::column::ColumnView) or
+//! [`TableView`](crate::core::table::TableView) inputs and return newly owned
+//! [`Column`](crate::core::column::Column) or
+//! [`Table`](crate::core::table::Table) outputs. This is the advanced API
+//! boundary where callers opt into explicit low-level data layout and
+//! operation selection.
+//!
+//! The expression DSL is eager when evaluated against a
+//! [`crate::DataFrame`]; it builds a declarative expression tree, but it is not
+//! a lazy query optimizer. See [`expr`] for the row-aligned broadcast-reduction
+//! semantics and naming rules around [`Expr::agg`].
 
 pub mod binary;
 pub mod concatenate;

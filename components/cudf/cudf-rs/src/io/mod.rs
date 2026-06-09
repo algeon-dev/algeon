@@ -1,4 +1,38 @@
-//! I/O operations for reading and writing tables to various file formats.
+//! Low-level I/O entry points and format-specific modules.
+//!
+//! Most users should start with the high-level [`crate::DataFrame`] helpers
+//! such as `DataFrame::read_csv`, `DataFrame::read_json`,
+//! `DataFrame::read_parquet`, `DataFrame::write_csv`,
+//! `DataFrame::write_json`, or `DataFrame::write_parquet`. `cudf::io` is the
+//! lower-level table-oriented layer that those conveniences build on.
+//!
+//! # Module Shape
+//!
+//! - [`csv`], [`json`], and [`parquet`] expose file-format readers and writers
+//!   over low-level [`Table`](crate::core::table::Table) and
+//!   [`TableView`](crate::core::table::TableView) values.
+//! - [`arrow`] exposes Arrow conversion helpers for [`crate::DataFrame`].
+//!   That path is host-copy interop, not zero-copy external GPU interop.
+//!
+//! # Naming and Ownership
+//!
+//! Low-level file readers return [`IoTableResult`] instead of a bare
+//! [`Table`](crate::core::table::Table) because `Table` itself is unnamed.
+//! When a format can report schema names, they are returned separately via
+//! `column_names` so callers can decide whether to rebuild a named
+//! [`crate::DataFrame`] or keep working at the low-level table boundary.
+//!
+//! Writers borrow [`TableView`](crate::core::table::TableView) inputs and do
+//! not rename or otherwise mutate the source table. Any output names supplied
+//! through write options only affect the serialized file format.
+//!
+//! # Runtime Placement
+//!
+//! CSV, JSON, and Parquet option types may carry an explicit [`crate::Runtime`].
+//! For reads, that runtime determines the execution provenance retained by the
+//! returned low-level table. For writes, it controls the explicit execution
+//! context used for the I/O operation itself while the input table remains a
+//! borrow.
 
 use std::{
     ffi::{CStr, CString, c_char},

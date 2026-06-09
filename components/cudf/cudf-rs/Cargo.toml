@@ -1,6 +1,6 @@
 [package]
 name = "cudf"
-description = "Safe Rust bindings to libcudf — GPU-accelerated DataFrames"
+description = "Linux-only safe Rust bindings to libcudf — GPU-accelerated DataFrames"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,4 +30,3 @@ serde_json = "1"
 static_assertions = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-trybuild = "1"

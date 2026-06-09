@@ -1,6 +1,6 @@
 [package]
 name = "cudf-sys"
-description = "Low-level FFI bindings to libcudf"
+description = "Linux-only low-level FFI bindings to libcudf"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

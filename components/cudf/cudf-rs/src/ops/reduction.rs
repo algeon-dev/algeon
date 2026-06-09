@@ -289,7 +289,14 @@ pub(crate) fn scan_impl(
     // successful FFI call.
     let status = match exec_options {
         Some(options) => unsafe {
-            cudf_sys::cudf_scan_ex(input.raw_handle(), agg_handle, scan_type_ffi, null_policy.to_raw() as i32, &mut out, options)
+            cudf_sys::cudf_scan_ex(
+                input.raw_handle(),
+                agg_handle,
+                scan_type_ffi,
+                null_policy.to_raw() as i32,
+                &mut out,
+                options,
+            )
         },
         None => unsafe {
             cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type_ffi, null_policy.to_raw() as i32, &mut out)
