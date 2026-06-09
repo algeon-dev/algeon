@@ -1,7 +1,8 @@
 //! Integration tests for `Series` convenience methods.
 //!
 //! Methods under test: `astype`, `fillna`, `fillna_with_series`, `isin`,
-//! `unique`, `nunique`, `factorize`, `sort_values`, `is_null`, `is_not_null`.
+//! `unique`, `nunique`, `factorize`, `sort_values`, `is_null`, `is_not_null`,
+//! `log`.
 //!
 //! All tests require a GPU.
 
@@ -125,6 +126,19 @@ fn test_astype_same_type_is_no_op_copy() {
 
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(casted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_log_f64() {
+    let s = crate::common::series::<f64>("x", &[1.0, std::f64::consts::E, std::f64::consts::E.powi(2)]).unwrap();
+    let logged = s.log().unwrap();
+    let values = logged.to_vec_strict::<f64>().unwrap();
+
+    assert_eq!(logged.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(logged.name(), Some("x"));
+    assert!((values[0] - 0.0).abs() < 1e-10);
+    assert!((values[1] - 1.0).abs() < 1e-10);
+    assert!((values[2] - 2.0).abs() < 1e-10);
 }
 
 // ===========================================================================
@@ -343,12 +357,14 @@ fn test_nunique_all_unique() {
 #[test]
 fn test_factorize_basic() {
     let s = crate::common::series::<i32>("x", &[10, 20, 10, 30, 20]).unwrap();
-    let (codes, uniques) = s.factorize().unwrap();
+    let factorized = s.factorize().unwrap();
+    let codes = factorized.row_codes();
+    let keys = factorized.codebook().keys();
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 5);
     assert_eq!(codes.name(), Some("x_codes"));
-    assert_eq!(uniques.name(), Some("x_uniques"));
+    assert_eq!(keys.name(), Some("x_keys"));
 
     // Verify round-trip: same input values get same codes.
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
@@ -362,26 +378,31 @@ fn test_factorize_basic() {
     assert_ne!(code_vals[0], code_vals[3]);
 
     // Uniques should contain exactly {10, 20, 30}.
-    let mut uniq_vals = uniques.to_vec_strict::<i32>().unwrap();
+    let mut uniq_vals = keys.to_vec_strict::<i32>().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec![10, 20, 30]);
+
+    let decoded = factorized.codebook().decode(factorized.row_codes()).unwrap();
+    assert_eq!(decoded.to_vec_strict::<i32>().unwrap(), vec![10, 20, 10, 30, 20]);
 }
 
 #[test]
 fn test_factorize_strings() {
     let s = crate::common::series("x", &["a", "b", "a", "c"]).unwrap();
-    let (codes, uniques) = s.factorize().unwrap();
+    let factorized = s.factorize().unwrap();
+    let codes = factorized.row_codes();
+    let keys = factorized.codebook().keys();
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 4);
     assert_eq!(codes.name(), Some("x_codes"));
-    assert_eq!(uniques.name(), Some("x_uniques"));
+    assert_eq!(keys.name(), Some("x_keys"));
 
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
     // codes[0] == codes[2] (both map to "a")
     assert_eq!(code_vals[0], code_vals[2]);
 
-    let mut uniq_vals = uniques.to_strings_strict().unwrap();
+    let mut uniq_vals = keys.to_strings_strict().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec!["a", "b", "c"]);
 }
@@ -390,10 +411,39 @@ fn test_factorize_strings() {
 fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
     let column = column_from_slice(&[10i32, 20, 10, 30]).unwrap();
     let s = Series::from_column(column).unwrap();
-    let (codes, uniques) = s.factorize().unwrap();
+    let factorized = s.factorize().unwrap();
+    let codes = factorized.row_codes();
+    let keys = factorized.codebook().keys();
 
     assert_eq!(codes.name(), None);
-    assert_eq!(uniques.name(), None);
+    assert_eq!(keys.name(), None);
+}
+
+#[test]
+fn test_codebook_can_encode_and_decode_new_queries() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let query = crate::common::series("query", &["c", "a"]).unwrap();
+
+    let encoded = codebook.encode(&query).unwrap();
+    assert_eq!(encoded.name(), Some("query_codes"));
+    assert_eq!(encoded.to_vec_strict::<i32>().unwrap().len(), 2);
+
+    let decoded = codebook.decode(&encoded).unwrap();
+    assert_eq!(decoded.name(), Some("query"));
+    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
+}
+
+#[test]
+fn test_codebook_can_decode_plain_series_from_external_code_columns() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let encoded = codebook.encode(&crate::common::series("vertex", &["a", "c"]).unwrap()).unwrap();
+    let external_codes = encoded.into_series().rename("vertex");
+
+    let decoded = codebook.decode_series(&external_codes).unwrap();
+    assert_eq!(decoded.name(), Some("x"));
+    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
 }
 
 // ===========================================================================

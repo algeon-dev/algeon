@@ -6,8 +6,12 @@ mod cast_spec_tests;
 mod concatenate_tests;
 #[path = "../ops/copying/copying_tests.rs"]
 mod copying_tests;
+#[path = "../ops/filter/dataframe_filter_expr_tests.rs"]
+mod dataframe_filter_expr_tests;
 #[path = "../ops/filter/dataframe_filter_sort_tests.rs"]
 mod dataframe_filter_sort_tests;
+#[path = "../ops/groupby/dataframe_group_cumcount_tests.rs"]
+mod dataframe_group_cumcount_tests;
 #[path = "../ops/groupby/dataframe_groupby_tests.rs"]
 mod dataframe_groupby_tests;
 #[path = "../ops/filter/dataframe_high_level_filter_tests.rs"]

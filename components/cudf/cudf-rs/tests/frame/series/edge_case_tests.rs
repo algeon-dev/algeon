@@ -100,9 +100,9 @@ fn test_nunique_single_element() {
 #[test]
 fn test_factorize_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
-    let (codes, uniques) = s.factorize().unwrap();
-    assert_eq!(codes.len(), 1);
-    assert_eq!(uniques.len(), 1);
+    let factorized = s.factorize().unwrap();
+    assert_eq!(factorized.row_codes().len(), 1);
+    assert_eq!(factorized.codebook().len(), 1);
 }
 
 // ===========================================================================
@@ -240,7 +240,9 @@ fn test_fillna_empty_series() {
 fn test_factorize_with_nulls() {
     // [1, null, 2, null, 1] -> codes should map nulls consistently
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
-    let (codes, uniques) = s.factorize().unwrap();
+    let factorized = s.factorize().unwrap();
+    let codes = factorized.row_codes();
+    let keys = factorized.codebook().keys();
     assert_eq!(codes.len(), 5);
     // The codes for valid values of 1 should be the same
     let code_vals = codes.to_optional_vec::<i32>().unwrap();
@@ -250,8 +252,8 @@ fn test_factorize_with_nulls() {
     assert_eq!(code_vals[1], code_vals[3]);
     // Codes for value 1 and value 2 should differ
     assert_ne!(code_vals[0], code_vals[2]);
-    // uniques should include distinct valid values
-    assert!(uniques.len() >= 2);
+    // codebook keys should include distinct valid values
+    assert!(keys.len() >= 2);
 }
 
 // ===========================================================================

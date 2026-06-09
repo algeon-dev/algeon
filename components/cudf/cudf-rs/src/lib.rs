@@ -40,12 +40,17 @@
 //! - [`DataFrame`] — A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
 //! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
+//! - [`Factorized`] / [`Codebook`] / [`EncodedSeries`] — typed factorization
+//!   results that distinguish row-aligned encoded indices from reusable
+//!   dictionary mappings.
 //!
 //! # High-Level Operations
 //!
 //! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
 //! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
+//! - [`Series::factorize`] / [`Series::codebook`] — typed categorical encoding
+//!   and reusable value↔code mappings.
 //! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
 //!   — high-level reductions that return host values directly.
 //!
@@ -157,6 +162,7 @@ pub use frame::{
         DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
         InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
     },
+    factorization::{Codebook, EncodedSeries, Factorized},
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —

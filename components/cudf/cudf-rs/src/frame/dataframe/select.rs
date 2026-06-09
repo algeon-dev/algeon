@@ -3,7 +3,10 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
-    frame::series::Series,
+    frame::{
+        factorization::{Codebook, Factorized},
+        series::Series,
+    },
     internal::{
         hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
         resolve::missing_column_error,
@@ -73,27 +76,35 @@ impl DataFrame {
         })
     }
 
-    /// Factorize a named column into integer codes and unique values.
+    /// Build a reusable codebook from a named column's distinct values.
     ///
-    /// Returns `(codes, uniques)` where `codes[i]` maps to `uniques[codes[i]]`.
-    /// The `codes` Series is named `"{column}_codes"` and `uniques` is named
-    /// `"{column}_uniques"`.
-    ///
-    /// This is equivalent to `pandas.factorize()` but GPU-accelerated.
+    /// The returned [`Codebook`] owns both the distinct key series and an
+    /// explicit positional code series, so it can be reused safely across
+    /// later `encode` / `decode` calls.
     ///
     /// # Errors
     ///
     /// Returns an error if `column` is not in the schema.
-    pub fn factorize(&self, column: &str) -> Result<(Series, Series)> {
-        let col = self.columns.get(column).ok_or_else(|| missing_column_error("dataframe::factorize", column))?;
-        let cv = col.view()?;
-        let (codes_col, uniques_col) = cv.factorize().map_err(|e| {
-            let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
-            err.with_context("column_name", column.to_string())
-        })?;
-        let codes = Series::from_column(codes_col)?.rename(format!("{column}_codes"));
-        let uniques = Series::from_column(uniques_col)?.rename(format!("{column}_uniques"));
-        Ok((codes, uniques))
+    pub fn codebook(&self, column: &str) -> Result<Codebook> {
+        let series = self.series(column).map_err(|e| e.with_operation("dataframe::codebook"))?;
+        series
+            .codebook()
+            .map_err(|e| e.with_operation("dataframe::codebook").with_context("column_name", column.to_string()))
+    }
+
+    /// Factorize a named column into row-aligned encoded indices plus a reusable codebook.
+    ///
+    /// This is equivalent to `pandas.factorize()` but returns a typed
+    /// [`Factorized`] result instead of a raw `(codes, uniques)` tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
+    pub fn factorize(&self, column: &str) -> Result<Factorized> {
+        let series = self.series(column).map_err(|e| e.with_operation("dataframe::factorize"))?;
+        series
+            .factorize()
+            .map_err(|e| e.with_operation("dataframe::factorize").with_context("column_name", column.to_string()))
     }
     /// Return a new DataFrame containing only the specified columns.
     ///

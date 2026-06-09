@@ -42,6 +42,8 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f14d)(cudf_column_handle, size_t*) = &cudf_column_device_allocated_size;
   cudf_status_t (*f15)(cudf_type_id_t, const void*, int32_t, const uint8_t*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
     &cudf_column_create_numeric_ex;
+  cudf_status_t (*f15b)(cudf_scalar_handle, cudf_scalar_handle, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
+    &cudf_column_create_sequence_ex;
   cudf_status_t (*f16)(cudf_table_handle, const cudf_exec_options_t*, cudf_table_handle*) =
     &cudf_table_copy_ex;
   cudf_status_t (*f16b)(cudf_table_handle, size_t*) = &cudf_table_payload_size;
@@ -60,6 +62,9 @@ int cudf_rust_c_header_smoke(void)
     &cudf_replace_nulls_column_ex;
   cudf_status_t (*f21)(cudf_table_view_handle, cudf_column_view_handle, cudf_table_handle*, const cudf_exec_options_t*) =
     &cudf_apply_boolean_mask_ex;
+  cudf_status_t (*f21b)(cudf_table_view_handle, const cudf_row_predicate_node_t*, int32_t,
+                        int32_t, cudf_table_handle*, const cudf_exec_options_t*) =
+    &cudf_filter_rows_by_predicate_ex;
   cudf_status_t (*f22)(cudf_table_view_handle, cudf_column_view_handle, cudf_out_of_bounds_policy_t, cudf_table_handle*, const cudf_exec_options_t*) =
     &cudf_gather_ex;
   cudf_status_t (*f22b)(cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
@@ -171,6 +176,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f14c;
   (void)f14d;
   (void)f15;
+  (void)f15b;
   (void)f16;
   (void)f16b;
   (void)f16c;

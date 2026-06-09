@@ -11,6 +11,7 @@ use crate::{
         scalar::Scalar,
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
+    frame::factorization::{Codebook, EncodedSeries, Factorized},
     internal::temp_table::TempTableView,
     ops::{
         binary::{self, BinaryOperator},
@@ -340,7 +341,31 @@ impl Series {
         }
     }
 
-    fn factorize_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<(Series, Series)> {
+    pub(crate) fn build_codebook_in_domain(
+        &self,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Codebook> {
+        let cv = self.column.view()?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let dict = dictionary::encode_impl(&cv, TypeId::Int32, &output_domain, exec_options.as_ref(), operation)?;
+        let dict_view = dict.view()?;
+        let keys_view = dictionary::keys(&dict_view)?;
+        let keys = Series::from_column(copy_view_to_owned(&keys_view)?)?;
+        let keys = match self.name() {
+            Some(name) => keys.rename(format!("{name}_keys")),
+            None => keys,
+        };
+        Codebook::from_keys(keys, self.name().map(str::to_string))
+    }
+
+    fn codebook_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<Codebook> {
+        let operation = "series::in_context::codebook";
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        self.build_codebook_in_domain(output_domain, operation)
+    }
+
+    fn factorize_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<Factorized> {
         let operation = "series::in_context::factorize";
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
@@ -350,13 +375,15 @@ impl Series {
         let indices_view = dictionary::indices(&dict_view)?;
         let keys_view = dictionary::keys(&dict_view)?;
 
-        let codes = Series::from_column(copy_view_to_owned(&indices_view)?)?;
-        let uniques = Series::from_column(copy_view_to_owned(&keys_view)?)?;
-        if let Some(name) = self.name() {
-            Ok((codes.rename(format!("{name}_codes")), uniques.rename(format!("{name}_uniques"))))
-        } else {
-            Ok((codes, uniques))
-        }
+        let row_codes = Series::from_column(copy_view_to_owned(&indices_view)?)?;
+        let keys = Series::from_column(copy_view_to_owned(&keys_view)?)?;
+        let (row_codes, keys) = match self.name() {
+            Some(name) => (row_codes.rename(format!("{name}_codes")), keys.rename(format!("{name}_keys"))),
+            None => (row_codes, keys),
+        };
+        let row_codes = EncodedSeries::new(row_codes, self.name().map(str::to_string));
+        let codebook = Codebook::from_keys(keys, self.name().map(str::to_string))?;
+        Ok(Factorized::new(row_codes, codebook))
     }
 
     fn fillna_policy_in_context(&self, policy: FillPolicy, ctx: &ExecutionContext<'_>) -> Result<Series> {
@@ -727,8 +754,11 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
         /// Remove duplicates using the borrowed execution override.
         fn unique() -> Result<Series> => unique_in_context;
 
+        /// Build a reusable codebook using the borrowed execution override.
+        fn codebook() -> Result<Codebook> => codebook_in_context;
+
         /// Factorize using the borrowed execution override.
-        fn factorize() -> Result<(Series, Series)> => factorize_in_context;
+        fn factorize() -> Result<Factorized> => factorize_in_context;
     );
 
     series_scope_forward_generic!(

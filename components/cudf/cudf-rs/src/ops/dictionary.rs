@@ -4,6 +4,12 @@
 //! by a sorted, unique key set — equivalent to `pandas.factorize()` or
 //! `pandas.Categorical`.
 //!
+//! The returned indices are row-aligned with the encoded input. They are not,
+//! by themselves, a reusable key-to-code dictionary for some separately
+//! deduplicated key set. If you need a stable lookup mapping for later
+//! `map()`/`gather()` calls, pair [`keys`] with an explicit positional code
+//! column `0..keys.len()`.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -20,6 +26,9 @@
 //! // Access keys and indices without copying to host.
 //! let keys = dictionary::keys(&dict_view).unwrap();
 //! let indices = dictionary::indices(&dict_view).unwrap();
+//!
+//! // For a reusable lookup mapping, pair keys with explicit positional codes
+//! // instead of reusing the row-aligned `indices`.
 //! ```
 
 use std::ptr;

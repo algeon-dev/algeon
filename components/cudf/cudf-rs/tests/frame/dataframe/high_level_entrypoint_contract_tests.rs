@@ -5,7 +5,7 @@
 //! through `table_view()` plus `cudf::ops::*`.
 
 use cudf::{
-    DataFrame, Series,
+    DataFrame,
     ops::{copying, filter as low_level_filter, search},
 };
 
@@ -175,18 +175,17 @@ fn test_fillna_rejects_missing_column() {
 }
 
 // ===========================================================================
-// 4. factorize returns (Series, Series)
+// 4. factorize returns typed factorization results
 // ===========================================================================
 
 #[test]
-fn test_factorize_returns_series() {
+fn test_factorize_returns_typed_result() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let (codes, uniques): (Series, Series) = df.factorize("id").unwrap();
-    assert_eq!(codes.len(), 5);
-    assert_eq!(uniques.len(), 5); // all values are unique
-    // codes should have a name reflecting the source column
-    assert!(codes.name().is_some());
-    assert!(uniques.name().is_some());
+    let factorized = df.factorize("id").unwrap();
+    assert_eq!(factorized.row_codes().len(), 5);
+    assert_eq!(factorized.codebook().len(), 5); // all values are unique
+    assert_eq!(factorized.row_codes().name(), Some("id_codes"));
+    assert_eq!(factorized.codebook().keys().name(), Some("id_keys"));
 }
 
 // ===========================================================================
@@ -235,4 +234,28 @@ fn test_advanced_filter_isin_still_works_via_table_view_and_ops() {
     assert_eq!(ids, vec![10, 30, 50]);
     // Schema preserved.
     assert_eq!(result.column_names(), vec!["id", "score"]);
+}
+
+// ===========================================================================
+// 7. runtime.sequence(name, start, step, len)
+// ===========================================================================
+
+#[test]
+fn test_runtime_sequence_creates_device_side_fixed_width_series() {
+    let rt = sample_runtime();
+
+    let seq = rt.sequence("row_idx", 0i32, 1i32, 5).unwrap();
+
+    assert_eq!(seq.name(), Some("row_idx"));
+    assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn test_runtime_sequence_uses_runtime_execution_domain() {
+    let rt = sample_runtime();
+
+    let seq = rt.sequence("row_idx", 3i32, 2i32, 4).unwrap();
+
+    assert_eq!(seq.as_column().__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![3, 5, 7, 9]);
 }

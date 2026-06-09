@@ -93,6 +93,25 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
                                             const cudf_exec_options_t* options,
                                             cudf_column_handle* out);
 
+/// Create a fixed-width column filled with a device-side arithmetic sequence.
+///
+/// The output is `[init, init + step, init + 2*step, ...]` with `size` rows.
+/// `init` and `step` must be valid fixed-width scalars of the same type.
+cudf_status_t cudf_column_create_sequence(cudf_scalar_handle init,
+                                          cudf_scalar_handle step,
+                                          int32_t size,
+                                          cudf_column_handle* out);
+
+/// Create a fixed-width sequence column with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
+                                             cudf_scalar_handle step,
+                                             int32_t size,
+                                             const cudf_exec_options_t* options,
+                                             cudf_column_handle* out);
+
 /// Deep-copy a column.
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out);

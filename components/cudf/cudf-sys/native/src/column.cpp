@@ -10,6 +10,7 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/detail/null_mask.hpp>
+#include <cudf/filling.hpp>
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/strings/detail/utilities.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -178,6 +179,43 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     exec.stream.synchronize();
     cudf_record_synchronized_stream(exec.stream);
 
+    *out = cudf_release_column_handle(std::move(col));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_sequence(cudf_scalar_handle init,
+                                          cudf_scalar_handle step,
+                                          int32_t size,
+                                          cudf_column_handle* out) {
+  return cudf_column_create_sequence_ex(init, step, size, nullptr, out);
+}
+
+cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
+                                             cudf_scalar_handle step,
+                                             int32_t size,
+                                             cudf_exec_options_t const* options,
+                                             cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(init, "init is null");
+  CUDF_RUST_NULL_CHECK(step, "step is null");
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY {
+    auto const& init_scalar = *static_cast<cudf::scalar const*>(init);
+    auto const& step_scalar = *static_cast<cudf::scalar const*>(step);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto col = cudf::sequence(
+        static_cast<cudf::size_type>(size), init_scalar, step_scalar, exec.stream, exec.mr);
     *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }

@@ -676,34 +676,47 @@ impl ColumnView<'_> {
     ///   in the `uniques` column
     /// - `uniques`: Column of unique values from this column
     ///
+    /// Contract:
+    /// - for every input row `i`, `uniques[codes[i]] == input[i]`
+    /// - `codes` are defined only for the rows of this factorized input
+    /// - callers must not assume the returned `codes` column itself is a
+    ///   reusable lookup table for some separately deduplicated key set
+    ///
+    /// Common pitfall:
+    /// if you need a reusable key/value mapping for later `map()` or
+    /// `gather()` calls, build it from `uniques` plus an explicit positional
+    /// code column `0..uniques.len()`. Reusing this method's returned `codes`
+    /// as generic lookup values can corrupt round-trip mappings.
+    ///
     /// Null positions in the input produce null entries in `codes`.
-    pub fn factorize(&self) -> Result<(Column, Column)> {
+    pub fn factorize_parts(&self) -> Result<(Column, Column)> {
         let output_domain = Arc::clone(&self.domain);
         let input_type_id = match self.data_type() {
             Ok(dt) => dt.id(),
-            Err(e) => return Err(e.with_operation("column_view::factorize")),
+            Err(e) => return Err(e.with_operation("column_view::factorize_parts")),
         };
         let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
 
         let dict = dictionary::encode(self, TypeId::Int32).map_err(|e| {
-            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
         })?;
         let dict_view = dict.view().map_err(|e| {
-            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
         })?;
 
         let indices_view = dictionary::indices(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
         })?;
         let keys_view = dictionary::keys(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
         })?;
 
         let codes = copy_view_to_owned(&indices_view).map_err(|e| {
-            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
         })?;
-        let uniques = copy_view_to_owned(&keys_view)
-            .map_err(|e| e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str))?;
+        let uniques = copy_view_to_owned(&keys_view).map_err(|e| {
+            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str)
+        })?;
 
         Ok((codes.with_execution_domain(Arc::clone(&output_domain)), uniques.with_execution_domain(output_domain)))
     }

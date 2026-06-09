@@ -7,7 +7,10 @@ use crate::{
         scalar::Scalar,
         types::{CudfType, DataType, TimestampResolution, TypeId},
     },
-    frame::dataframe::{DataFrame, DropDuplicatesOptions, DropNaOptions},
+    frame::{
+        dataframe::{DataFrame, DropDuplicatesOptions, DropNaOptions},
+        factorization::{Codebook, EncodedSeries, Factorized},
+    },
     internal::temp_table::TempTableView,
     ops::{
         binary, concatenate,
@@ -15,7 +18,7 @@ use crate::{
         replace::{self, FillPolicy},
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
-        unary,
+        unary::{self, UnaryOperator},
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
@@ -838,6 +841,18 @@ impl Series {
         self.astype(target)
     }
 
+    /// Element-wise natural logarithm. Inherits the source Series' name.
+    ///
+    /// Equivalent to cuDF Python's `Series.log()` / `np.log(series)`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with the transformed values.
+    pub fn log(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let col = unary::unary_operation(&cv, UnaryOperator::Log)?;
+        self.with_inherited_name(col)
+    }
+
     /// Replace null values with a scalar. Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.fillna(scalar)`.
@@ -982,29 +997,44 @@ impl Series {
         Ok(uniq.len().saturating_sub(uniq.null_count()))
     }
 
-    /// Encode the series as integer codes and a set of unique values.
+    /// Build a reusable codebook from the distinct values in this series.
     ///
-    /// Returns `(codes, uniques)` where `codes` is an `Int32` Series mapping
-    /// each element to its index in `uniques`.
-    ///
-    /// Name behavior:
-    /// - named input => `"{name}_codes"` and `"{name}_uniques"`
-    /// - unnamed input => both outputs stay unnamed
-    ///
-    /// Equivalent to cuDF Python's `Series.factorize()`.
+    /// The returned [`Codebook`] owns both the distinct key series and an
+    /// explicit positional code series `0..keys.len()`, making it safe to
+    /// reuse for later [`Codebook::encode`] / [`Codebook::decode`] calls.
     ///
     /// # Cost
-    /// GPU-allocating: produces two new columns (codes + uniques).
-    pub fn factorize(&self) -> Result<(Series, Series)> {
+    /// GPU-allocating: produces the distinct key series plus positional code
+    /// storage for the reusable codebook.
+    pub fn codebook(&self) -> Result<Codebook> {
+        self.build_codebook_in_domain(Arc::clone(self.column.execution_domain()), "series::codebook")
+    }
+
+    /// Encode this series as row-aligned integer codes plus a reusable codebook.
+    ///
+    /// Unlike the old tuple API, this returns a typed [`Factorized`] result
+    /// that distinguishes row-aligned encoded indices from the reusable
+    /// [`Codebook`] used to encode and decode arbitrary series later.
+    ///
+    /// Equivalent to cuDF Python's `Series.factorize()`, but with an explicit
+    /// reusable codebook type.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces row codes plus the codebook keys/codes.
+    pub fn factorize(&self) -> Result<Factorized> {
         let cv = self.column.view()?;
-        let (codes, uniques) = cv.factorize()?;
-        let codes = Self::from_column(codes)?;
-        let uniques = Self::from_column(uniques)?;
-        if let Some(name) = self.name() {
-            Ok((codes.rename(format!("{name}_codes")), uniques.rename(format!("{name}_uniques"))))
-        } else {
-            Ok((codes, uniques))
-        }
+        let (row_codes, keys) = cv.factorize_parts()?;
+        let row_codes = Self::from_column(row_codes)?;
+        let keys = Self::from_column(keys)?;
+
+        let (row_codes, keys) = match self.name() {
+            Some(name) => (row_codes.rename(format!("{name}_codes")), keys.rename(format!("{name}_keys"))),
+            None => (row_codes, keys),
+        };
+
+        let row_codes = EncodedSeries::new(row_codes, self.name().map(str::to_string));
+        let codebook = Codebook::from_keys(keys, self.name().map(str::to_string))?;
+        Ok(Factorized::new(row_codes, codebook))
     }
 
     /// Sort the series according to the given options. Inherits the source

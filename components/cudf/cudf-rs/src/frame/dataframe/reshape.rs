@@ -140,7 +140,9 @@ use crate::{
         resolve::{missing_column_error, resolve_column_names},
     },
     ops::{
-        self, copying, filter, replace,
+        self, copying, filter,
+        join::MergeOptions,
+        replace,
         sorting::{self, SortOptions},
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         unary,
@@ -336,12 +338,18 @@ impl DataFrame {
 
     // -- Filter, sort, deduplicate -------------------------------------------
 
-    /// Filter rows using a `Series` boolean mask (cuDF-style high-level API).
+    /// Filter rows using a precomputed `Series` boolean mask.
     ///
     /// Rows where `mask` is `true` are kept; `false` or null rows are
     /// dropped. The schema is preserved.
     ///
-    /// Advanced low-level workflows should use [`DataFrame::table_view`]
+    /// This is the low-level primitive for callers that already have a mask.
+    /// For multi-condition row filtering, prefer
+    /// [`DataFrame::filter_expr`], [`DataFrame::filter_all`], or
+    /// [`DataFrame::filter_any`] so the library can avoid chained
+    /// intermediate `DataFrame` materializations.
+    ///
+    /// Advanced low-level workflows can also use [`DataFrame::table_view`]
     /// together with [`crate::ops::filter::apply_boolean_mask`] directly.
     ///
     /// # Errors
@@ -560,6 +568,59 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema.
     pub fn nsmallest(&self, n: usize, column: &str) -> Result<Self> {
         self.sort_values([column], SortOptions::new())?.head(n)
+    }
+
+    /// Return a zero-based per-group row number for already-sorted rows.
+    ///
+    /// This is the dataframe-space equivalent of Python cuDF's
+    /// `groupby(keys).cumcount()` when the input has already been sorted into
+    /// the intended within-group order.
+    ///
+    /// The returned [`Series`] preserves the current row order of `self`, so it
+    /// can be attached back via [`DataFrame::with_column`] and filtered
+    /// directly.
+    pub fn group_cumcount<I, S>(&self, keys: I, name: &str) -> Result<Series>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::group_cumcount";
+        let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
+            keys.into_iter().map(|key| key.as_ref().to_string()).collect();
+        if keys.is_empty() {
+            return Err(
+                Error::new(ErrorKind::InvalidOperation, "at least one group key is required").with_operation(operation)
+            );
+        }
+
+        let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
+        resolve_column_names(&self.columns, &key_refs, operation)?;
+
+        let row_idx_name = unique_temp_column_name(self, "__cudf_group_cumcount_row_idx__");
+        let group_start_name = unique_temp_column_name(self, "__cudf_group_cumcount_group_start__");
+        let row_idx = Series::from_named_column(
+            row_idx_name.clone(),
+            Column::from_sequence_in_domain(0i32, 1i32, self.row_count, Arc::clone(&self.domain), operation)?,
+        )?;
+        let with_row_idx = self.with_column(&row_idx_name, row_idx)?;
+
+        let first_rows = with_row_idx.drop_duplicates(
+            DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepFirst).build(),
+        )?;
+        let mut first_row_columns: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY + 1]> = SmallVec::new();
+        first_row_columns.extend(key_refs.iter().copied());
+        first_row_columns.push(row_idx_name.as_str());
+        let first_rows = first_rows.select(first_row_columns)?;
+        let first_rows = first_rows
+            .with_column(&group_start_name, first_rows.series(&row_idx_name)?.rename(&group_start_name))?
+            .without_columns([row_idx_name.as_str()])?;
+
+        let aligned = with_row_idx
+            .merge(&first_rows, MergeOptions::new().how_left().on(key_refs.iter().copied()))?
+            .sort_values([row_idx_name.as_str()], SortOptions::new().with_stable(true))?;
+
+        let rank = aligned.series(&row_idx_name)?.sub(&aligned.series(&group_start_name)?)?;
+        Ok(rank.rename(name))
     }
 
     /// Remove duplicate rows based on a subset of columns (internal).
@@ -1166,6 +1227,21 @@ impl DataFrame {
     }
 }
 
+fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
+    if !df.contains(base) {
+        return base.to_string();
+    }
+
+    let mut suffix = 1usize;
+    loop {
+        let candidate = format!("{base}{suffix}");
+        if !df.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 impl DataFrame {
     fn distinct_impl(
         &self,
@@ -1352,19 +1428,19 @@ impl DataFrame {
     /// such as empty gathers or zero-length slices. Unlike schema-only
     /// operations such as [`select`](Self::select) and [`drop`](Self::drop),
     /// it intentionally resets the logical row count to zero.
-    fn empty_with_same_schema(&self) -> Result<Self> {
+    pub(crate) fn empty_with_same_schema(&self) -> Result<Self> {
         self.empty_with_same_schema_in_domain(Arc::clone(&self.domain))
     }
 
-    fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {
         let mut new_columns = fast_index_map_with_capacity(self.columns.len());
         for (name, col) in &self.columns {
             let cv = col.view()?;
-            let type_id = cv.data_type()?.id();
+            let dtype = cv.data_type()?;
             new_columns.insert(
                 name.clone(),
-                Arc::new(Column::empty_in_domain(
-                    type_id,
+                Arc::new(Column::empty_with_dtype_in_domain(
+                    dtype,
                     Arc::clone(&domain),
                     "dataframe::empty_with_same_schema_in_domain",
                 )?),

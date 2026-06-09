@@ -1,6 +1,6 @@
 use super::{DataFrame, DataFrameJoinResult, DropDuplicatesOptions, DropNaOptions};
 use crate::{
-    Result,
+    Expr, Result,
     frame::series::Series,
     ops::{join::MergeOptions, sorting::SortOptions},
     runtime::ExecutionContext,
@@ -48,6 +48,23 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         S: AsRef<str>,
     {
         self.df.sort_values_in_context(by, options, self.ctx)
+    }
+
+    /// Filter rows with a fused expression using the borrowed execution override.
+    pub fn filter_expr(&self, predicate: Expr) -> Result<DataFrame> {
+        self.df.filter_expr_in_context(predicate, self.ctx)
+    }
+
+    /// Filter rows where all predicates are true using the borrowed execution override.
+    pub fn filter_all<I>(&self, predicates: I) -> Result<DataFrame>
+    where I: IntoIterator<Item = Expr> {
+        self.df.filter_all_in_context(predicates, self.ctx)
+    }
+
+    /// Filter rows where any predicate is true using the borrowed execution override.
+    pub fn filter_any<I>(&self, predicates: I) -> Result<DataFrame>
+    where I: IntoIterator<Item = Expr> {
+        self.df.filter_any_in_context(predicates, self.ctx)
     }
 
     dataframe_scope_forward!(
