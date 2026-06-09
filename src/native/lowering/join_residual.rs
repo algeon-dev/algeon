@@ -76,6 +76,7 @@ struct JoinFilterLoweringContext<'a> {
     bindings: Option<JoinResidualInputBindings<'a>>,
 }
 
+/// Executable join inputs available when residual expressions reference columns.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct JoinResidualInputBindings<'a> {
     pub(super) left: &'a LoweredNativeInput,

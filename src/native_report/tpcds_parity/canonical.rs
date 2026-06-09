@@ -25,11 +25,13 @@ pub(super) fn collect_canonical_rows(schema: &Schema, batches: &[RecordBatch]) -
     Ok(rows)
 }
 
+/// Sortable row representation used for order-insensitive parity comparison.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct CanonicalRow {
     pub(super) fields: Vec<CanonicalField>,
 }
 
+/// Value representation that preserves Arrow type distinctions in fingerprints.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CanonicalField {
     Null,
@@ -47,6 +49,7 @@ pub(super) enum CanonicalField {
     Unsupported(String),
 }
 
+/// Comparable timestamp unit tag, kept independent of Arrow's enum ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum TimeUnitTag {
     Second,

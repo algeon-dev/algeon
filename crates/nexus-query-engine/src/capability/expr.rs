@@ -5,6 +5,7 @@
 
 use super::{model::*, *};
 
+// Stable report facts for an expression capability miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ExpressionCapabilityRejection {
     reason: &'static str,

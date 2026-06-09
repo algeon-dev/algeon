@@ -2,6 +2,7 @@ use std::path::Path;
 
 use super::{LocalParquetFile, PartitionColumn, SourceColumnRef};
 
+// Borrowed column-layout snapshot used to build source diagnostics.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LocalParquetDiagnosticColumns<'a> {
     pub(super) read_columns: &'a [String],

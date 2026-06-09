@@ -136,12 +136,14 @@ fn graph_input_null_edge_rows_dropped(metrics: &QueryMetrics, input: NodeId) -> 
         .sum()
 }
 
+// Common return envelope for algorithm-specific cuGraph executors.
 #[cfg(feature = "cugraph")]
 pub(super) struct GraphAlgorithmExecutionResult {
     pub(super) frame: DataFrame,
     pub(super) algorithm_metadata: String,
 }
 
+// Shared graph inputs after edge-list preparation and side-input materialization.
 #[cfg(feature = "cugraph")]
 pub(super) struct GraphAlgorithmExecutionInputs {
     pub(super) edge_list: GpuDataFrame,

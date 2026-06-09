@@ -765,6 +765,7 @@ fn lower_timestamp_second_integer_cast_raw(expr: &Expr) -> Result<cudf::Expr> {
     Ok(lower_expr(expr)?.cast(cudf::DataType::new(cudf::TypeId::Int64)))
 }
 
+// cuDF-ready sort keys split into the parallel vectors expected by execution.
 pub(super) struct LoweredSort {
     pub(super) columns: Vec<String>,
     pub(super) descending: Vec<bool>,

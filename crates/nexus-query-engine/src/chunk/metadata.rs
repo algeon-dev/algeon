@@ -392,6 +392,7 @@ fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -
     })
 }
 
+// Cache identity for footer metadata, including source resolution contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SourceMetadataCacheKey {
     location: ParquetSourceLocation,
@@ -417,6 +418,7 @@ impl SourceMetadataCacheKey {
     }
 }
 
+// Footer metadata result plus the load evidence reported to callers.
 pub(super) struct FooterMetadataLoad {
     pub(super) metadata: Option<Arc<ParquetMetaData>>,
     pub(super) load_time: Duration,

@@ -294,6 +294,7 @@ fn chunk_with_reader_decimal_types(
     chunk
 }
 
+// Source descriptor for a rewritten mini-Parquet buffer handed to host-buffer reads.
 pub(super) struct MiniParquetHostBufferDescriptor<'a> {
     path: &'a Path,
     location: &'a crate::source::ParquetSourceLocation,
@@ -308,6 +309,7 @@ pub(super) struct MiniParquetHostBufferDescriptor<'a> {
     pub(super) mini_row_group_rows: &'a [u64],
 }
 
+// Footer-verified decimal metadata carried with rewritten mini-Parquet buffers.
 pub(super) struct MiniParquetHostBufferReaderDecimalTypes(Vec<crate::source::ParquetReaderDecimalType>);
 
 impl MiniParquetHostBufferReaderDecimalTypes {

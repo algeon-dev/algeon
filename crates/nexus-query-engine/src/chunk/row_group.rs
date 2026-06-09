@@ -4,6 +4,7 @@ use parquet::file::metadata::ParquetMetaData;
 
 use crate::source::{LocalParquetFile, LocalParquetSource};
 
+// Optional per-row-group sizing evidence gathered from Parquet footers.
 #[derive(Debug, Clone)]
 pub(super) struct RowGroupMetadata {
     row_group_bytes: Option<Vec<u64>>,

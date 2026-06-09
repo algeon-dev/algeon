@@ -42,6 +42,7 @@ use crate::{
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
 };
 
+/// Optimizer attempt output, including the replacement plan and all report evidence.
 #[derive(Debug, Clone)]
 pub(super) struct NativeOptimizationAttempt {
     pub(super) plan: Arc<dyn ExecutionPlan>,

@@ -163,6 +163,7 @@ pub(super) fn add_source_filter_projection(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
+/// Scan projection expression retained because downstream native nodes need it.
 pub(super) struct RequiredScanProjectionExpr<'a> {
     pub(super) output_index: usize,
     pub(super) expr: &'a Arc<dyn PhysicalExpr>,

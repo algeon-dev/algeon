@@ -24,6 +24,7 @@ pub(super) struct JoinOutputColumns {
     pub(super) mark_column_name: Option<String>,
 }
 
+/// DataFusion output slots requested from a join before native side remapping.
 pub(super) struct JoinOutputRequests {
     pub(super) outputs: Vec<JoinOutputRequest>,
     schema: SchemaRef,
@@ -147,6 +148,7 @@ fn first_binding_for_side<'a>(
     }
 }
 
+/// One non-mark join output slot expressed in DataFusion input coordinates.
 pub(super) struct JoinOutputRequest {
     pub(super) datafusion_side: DataFusionJoinSide,
     pub(super) input_index: usize,

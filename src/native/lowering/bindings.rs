@@ -52,6 +52,7 @@ impl LoweredNativeInput {
     }
 }
 
+/// Mapping from a DataFusion output field to its executable native field name.
 #[derive(Debug, Clone)]
 pub(super) struct FieldBinding {
     pub(super) frontend_index: usize,
@@ -59,6 +60,7 @@ pub(super) struct FieldBinding {
     pub(super) native_name: String,
 }
 
+/// Frontend field set required by a parent plan fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RequiredFields {
     All,

@@ -1078,6 +1078,7 @@ pub(super) fn lakehouse_cache_read_pin_path(cache_path: &Path) -> PathBuf {
     cache_path.with_file_name(format!(".{file_name}.read.{}.{}.{}.pin", std::process::id(), nonce, sequence))
 }
 
+// Filesystem cache entry metadata used to choose eviction victims.
 #[derive(Debug)]
 pub(super) struct LakehouseCacheEntry {
     pub(in crate::exec::source) path: PathBuf,
