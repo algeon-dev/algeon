@@ -108,7 +108,7 @@ fn test_replace_nulls_policy_ffill_leading_nulls_remain() {
     let result = replace::replace_nulls_policy(&view, FillPolicy::Preceding).unwrap();
     let s = Series::from_column(result).unwrap();
     assert_eq!(s.null_count(), 2);
-    let vals = s.to_vec_optional::<i32>().unwrap();
+    let vals = s.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![None, None, Some(3), Some(3), Some(5)]);
 }
 
@@ -160,7 +160,7 @@ fn test_replace_nulls_policy_bfill_trailing_nulls_remain() {
     let result = replace::replace_nulls_policy(&view, FillPolicy::Following).unwrap();
     let s = Series::from_column(result).unwrap();
     assert_eq!(s.null_count(), 2);
-    let vals = s.to_vec_optional::<i32>().unwrap();
+    let vals = s.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(1), Some(3), Some(3), None, None]);
 }
 

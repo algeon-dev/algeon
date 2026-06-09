@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorKind, Series};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{assert_missing_column_error, dataframe_device_ptr as device_ptr};
 
 /// Helper: build a 3-row, 3-column DataFrame.
 fn sample_df() -> DataFrame {
@@ -17,11 +17,6 @@ fn sample_df() -> DataFrame {
     let flags = Series::new::<i32>("flags", &[100, 200, 300]).unwrap();
 
     DataFrame::from_named_pairs([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
-}
-
-/// Returns the raw device data pointer for a named column in a DataFrame.
-fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
 }
 
 // ===========================================================================

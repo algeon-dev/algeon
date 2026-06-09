@@ -93,6 +93,7 @@ fn wait_for_condition(timeout: Duration, mut predicate: impl FnMut() -> bool) {
 
 #[test]
 fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order() {
+    let _observation_lock = lock_event_observation();
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7001).unwrap();
     let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7002).unwrap();
     let right =
@@ -129,6 +130,7 @@ fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_a
 
 #[test]
 fn partitioned_dataframe_export_partition_wrapper_activates_directly() {
+    let _observation_lock = lock_event_observation();
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
     let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7004).unwrap();
     let right =

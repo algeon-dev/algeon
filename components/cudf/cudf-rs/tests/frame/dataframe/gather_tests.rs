@@ -11,8 +11,8 @@ fn test_gather_sequential_indices() {
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_vec_optional.
-    let vals = result.series("x").unwrap().to_vec_optional::<i32>().unwrap();
+    // Gather produces nullable output; use to_optional_vec.
+    let vals = result.series("x").unwrap().to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(10), Some(20), Some(30)]);
 }
 
@@ -25,8 +25,8 @@ fn test_gather_reversed() {
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_vec_optional.
-    let vals = result.series("x").unwrap().to_vec_optional::<i32>().unwrap();
+    // Gather produces nullable output; use to_optional_vec.
+    let vals = result.series("x").unwrap().to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(30), Some(20), Some(10)]);
 }
 
@@ -55,8 +55,8 @@ fn test_gather_duplicate_indices() {
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_vec_optional.
-    let vals = result.series("x").unwrap().to_vec_optional::<i32>().unwrap();
+    // Gather produces nullable output; use to_optional_vec.
+    let vals = result.series("x").unwrap().to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(20), Some(20), Some(20)]);
 }
 
@@ -71,9 +71,9 @@ fn test_gather_preserves_schema() {
 
     assert_eq!(result.column_names(), &["id", "score"]);
     assert_eq!(result.num_rows(), 2);
-    // Gather produces nullable output; use to_vec_optional.
-    assert_eq!(result.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(3), Some(1)]);
-    assert_eq!(result.series("score").unwrap().to_vec_optional::<f64>().unwrap(), vec![Some(30.0), Some(10.0)]);
+    // Gather produces nullable output; use to_optional_vec.
+    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(3), Some(1)]);
+    assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(30.0), Some(10.0)]);
 }
 
 #[test]
@@ -103,11 +103,11 @@ fn test_gather_multi_type() {
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 2);
-    // Gather produces nullable output; use to_vec_optional / to_strings_optional.
-    assert_eq!(result.series("ints").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(3), Some(1)]);
-    assert_eq!(result.series("floats").unwrap().to_vec_optional::<f64>().unwrap(), vec![Some(3.5), Some(1.5)]);
+    // Gather produces nullable output; use to_optional_vec / to_optional_strings.
+    assert_eq!(result.series("ints").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(3), Some(1)]);
+    assert_eq!(result.series("floats").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(3.5), Some(1.5)]);
     assert_eq!(
-        result.series("strs").unwrap().to_strings_optional().unwrap(),
+        result.series("strs").unwrap().to_optional_strings().unwrap(),
         vec![Some("c".to_string()), Some("a".to_string())]
     );
 }

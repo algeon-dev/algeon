@@ -293,9 +293,9 @@ fn test_dropna_basic() {
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 3);
-    assert_eq!(cleaned.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(3), Some(5)]);
+    assert_eq!(cleaned.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(1), Some(3), Some(5)]);
     assert_eq!(
-        cleaned.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
+        cleaned.series("val").unwrap().to_optional_vec::<f64>().unwrap(),
         vec![Some(10.0), Some(30.0), Some(50.0)]
     );
 }
@@ -321,12 +321,12 @@ fn test_dropna_any_equivalent_to_thresh() {
 
     assert_eq!(actual.num_rows(), expected.num_rows());
     assert_eq!(
-        actual.series("id").unwrap().to_vec_optional::<i32>().unwrap(),
-        expected.series("id").unwrap().to_vec_optional::<i32>().unwrap(),
+        actual.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
+        expected.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
     );
     assert_eq!(
-        actual.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
-        expected.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
+        actual.series("val").unwrap().to_optional_vec::<f64>().unwrap(),
+        expected.series("val").unwrap().to_optional_vec::<f64>().unwrap(),
     );
 }
 
@@ -348,9 +348,9 @@ fn test_dropna_any_mixed_null_patterns() {
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 2);
-    assert_eq!(cleaned.series("a").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(4)]);
-    assert_eq!(cleaned.series("b").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(10), Some(40)]);
-    assert_eq!(cleaned.series("c").unwrap().to_vec_optional::<f64>().unwrap(), vec![Some(100.0), Some(400.0)]);
+    assert_eq!(cleaned.series("a").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(1), Some(4)]);
+    assert_eq!(cleaned.series("b").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(40)]);
+    assert_eq!(cleaned.series("c").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(100.0), Some(400.0)]);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! Compares `cudf-rs` behavior against Python cuDF using shared JSON
 //! fixture manifests as the single source of truth.
 //!
-//! Run with: `cargo test -p cudf --test e2e_tests`
+//! Run with: `cargo test -p cudf --test e2e_conformance`
 
 #[path = "e2e/rust_runner/mod.rs"]
 mod rust_runner;

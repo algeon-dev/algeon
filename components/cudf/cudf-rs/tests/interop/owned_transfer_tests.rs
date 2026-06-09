@@ -1,4 +1,5 @@
 use std::{
+    ffi::c_void,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -14,9 +15,9 @@ use cudf::{
     interop::{
         BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
         InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness,
-        ReleaseContract, ReleaseSynchronization, RuntimeCompletionAuthority, SchemaNullability, SemanticColumn,
-        SemanticTable, TableId, TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer,
-        TryIntoOwnedDeviceTableTransfer,
+        ReleaseContract, ReleaseSynchronization, RuntimeCompletionAuthority, RuntimeOwnedColumnTransferReleaser,
+        RuntimeOwnedTableTransferReleaser, SchemaNullability, SemanticColumn, SemanticTable, TableId,
+        TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
     },
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -147,6 +148,14 @@ fn unblock_event_synchronize() {
     unsafe { cudf_sys::cudf_test_event_unblock_synchronize() };
 }
 
+fn fail_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_fail_synchronize() };
+}
+
+fn allow_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_allow_synchronize() };
+}
+
 struct EventSynchronizeBlockGuard;
 
 impl EventSynchronizeBlockGuard {
@@ -159,6 +168,21 @@ impl EventSynchronizeBlockGuard {
 impl Drop for EventSynchronizeBlockGuard {
     fn drop(&mut self) {
         unblock_event_synchronize();
+    }
+}
+
+struct EventSynchronizeFailureGuard;
+
+impl EventSynchronizeFailureGuard {
+    fn new() -> Self {
+        fail_event_synchronize();
+        Self
+    }
+}
+
+impl Drop for EventSynchronizeFailureGuard {
+    fn drop(&mut self) {
+        allow_event_synchronize();
     }
 }
 
@@ -473,255 +497,255 @@ fn assert_table_export_matches_snapshot(snapshot: &TableSemanticSnapshot, import
     }
 }
 
-#[test]
-fn column_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-    let expected_ptr = {
-        let view = column.view().unwrap();
-        view.device_data_ptr().unwrap()
-    };
-    let expected_stream = column.__debug_execution_domain_stream_value();
+#[derive(Clone, Copy, Debug)]
+enum OwnedTransferMode {
+    Plain,
+    RuntimeRelease(ReleaseSynchronization),
+}
 
-    let transfer = column.try_into_owned_transfer().unwrap();
+impl OwnedTransferMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::RuntimeRelease(ReleaseSynchronization::Asynchronous) => "runtime_release_async",
+            Self::RuntimeRelease(ReleaseSynchronization::MaySynchronizeInternally) => "runtime_release_may_synchronize",
+            Self::RuntimeRelease(ReleaseSynchronization::RequiresCallerSynchronization) => {
+                "runtime_release_requires_caller_synchronization"
+            },
+        }
+    }
 
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(
-        transfer.release_contract().completion(),
-        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
-    );
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+    fn expected_completion(self) -> TransferCompletionRule {
+        match self {
+            Self::Plain => TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+            Self::RuntimeRelease(_) => TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
+        }
+    }
 
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
-        },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+    fn expected_synchronization(self) -> ReleaseSynchronization {
+        match self {
+            Self::Plain => ReleaseSynchronization::MaySynchronizeInternally,
+            Self::RuntimeRelease(sync) => sync,
+        }
     }
 }
 
-#[test]
-fn column_try_into_owned_device_transfer_with_runtime_release_preserves_zero_copy_metadata_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-    let expected_ptr = {
-        let view = column.view().unwrap();
-        view.device_data_ptr().unwrap()
-    };
-    let expected_stream = column.__debug_execution_domain_stream_value();
-
-    let (transfer, releaser) = column.try_into_owned_transfer_with_release().unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
-        },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
-    }
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+fn owned_transfer_modes() -> [OwnedTransferMode; 3] {
+    [
+        OwnedTransferMode::Plain,
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::Asynchronous),
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::MaySynchronizeInternally),
+    ]
 }
 
-#[test]
-fn column_try_into_owned_device_transfer_with_runtime_release_synchronization_preserves_zero_copy_metadata_and_contract()
- {
-    let runtime = Runtime::builder().build().unwrap();
-    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-    let expected_ptr = {
-        let view = column.view().unwrap();
-        view.device_data_ptr().unwrap()
-    };
-    let expected_stream = column.__debug_execution_domain_stream_value();
-
-    let (transfer, releaser) = column
-        .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
-        .unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
-        },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
-    }
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
-}
-
-#[test]
-fn table_try_into_owned_device_transfer_preserves_table_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
+fn sample_named_dataframe(runtime: &Runtime) -> DataFrame {
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_series([ids, vals]).unwrap().try_into_table().unwrap();
-
-    let transfer = table.try_into_owned_transfer().unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(
-        transfer.release_contract().completion(),
-        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
-    );
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    DataFrame::from_series([ids, values]).unwrap()
 }
 
-#[test]
-fn table_try_into_owned_device_transfer_with_runtime_release_preserves_table_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_series([ids, vals]).unwrap().try_into_table().unwrap();
-
-    let (transfer, releaser) = table.try_into_owned_transfer_with_release().unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+fn sample_table(runtime: &Runtime) -> Table {
+    let (table, _names) = sample_named_dataframe(runtime).try_into_table().unwrap();
+    table
 }
 
-#[test]
-fn table_try_into_owned_device_transfer_with_runtime_release_synchronization_preserves_table_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let (table, _names) = DataFrame::from_series([ids, vals]).unwrap().try_into_table().unwrap();
-
-    let (transfer, releaser) = table
-        .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
-        .unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+fn assert_release_contract_matches(contract: &ReleaseContract, expected_device: i32, mode: OwnedTransferMode) {
+    assert_eq!(contract.completion(), mode.expected_completion(), "{}", mode.label());
+    assert_eq!(contract.synchronization(), mode.expected_synchronization(), "{}", mode.label());
+    assert_eq!(contract.release_device(), expected_device, "{}", mode.label());
 }
 
-#[test]
-fn series_try_into_owned_device_transfer_preserves_zero_copy_metadata_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
-    let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
-    let expected_stream = series.as_column().__debug_execution_domain_stream_value();
-
-    let transfer = series.try_into_owned_transfer().unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(
-        transfer.release_contract().completion(),
-        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
-    );
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
+fn assert_device_stream_readiness_matches(
+    readiness: &ProducerReadiness<'_>,
+    expected_stream: usize,
+    expected_device: i32,
+    mode: OwnedTransferMode,
+) {
+    match readiness {
+        ProducerReadiness::DeviceStreamOrdered { stream } => {
+            assert_eq!(stream.as_raw() as usize, expected_stream, "{}", mode.label());
+            assert_eq!(stream.device(), expected_device, "{}", mode.label());
         },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+        readiness => panic!("{}: expected device-stream readiness, got {readiness:?}", mode.label()),
+    }
+}
+
+fn assert_owned_column_transfer_contract(
+    transfer: &OwnedColumnTransfer,
+    expected_len: usize,
+    expected_ptr: *const c_void,
+    expected_stream: usize,
+    expected_device: i32,
+    mode: OwnedTransferMode,
+) {
+    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer, "{}", mode.label());
+    assert_eq!(transfer.column().len(), expected_len, "{}", mode.label());
+    assert!(binding_ptr_eq(transfer, expected_ptr), "{}", mode.label());
+    assert_release_contract_matches(transfer.release_contract(), expected_device, mode);
+    assert_device_stream_readiness_matches(transfer.readiness(), expected_stream, expected_device, mode);
+}
+
+fn assert_owned_table_transfer_contract(
+    transfer: &OwnedTableTransfer,
+    expected_rows: usize,
+    expected_columns: usize,
+    expected_names: Option<&[String]>,
+    expected_device: i32,
+    mode: OwnedTransferMode,
+) {
+    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer, "{}", mode.label());
+    assert_eq!(transfer.table().num_rows(), expected_rows, "{}", mode.label());
+    assert_eq!(transfer.columns().len(), expected_columns, "{}", mode.label());
+    assert_eq!(transfer.table().names(), expected_names, "{}", mode.label());
+    assert_release_contract_matches(transfer.release_contract(), expected_device, mode);
+}
+
+fn take_owned_column_transfer(
+    column: Column,
+    mode: OwnedTransferMode,
+) -> (OwnedColumnTransfer, Option<RuntimeOwnedColumnTransferReleaser>) {
+    match mode {
+        OwnedTransferMode::Plain => (column.try_into_owned_transfer().unwrap(), None),
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::Asynchronous) => {
+            let (transfer, releaser) = column.try_into_owned_transfer_with_release().unwrap();
+            (transfer, Some(releaser))
+        },
+        OwnedTransferMode::RuntimeRelease(sync) => {
+            let (transfer, releaser) = column.try_into_owned_transfer_with_release_synchronization(sync).unwrap();
+            (transfer, Some(releaser))
+        },
+    }
+}
+
+fn take_owned_series_transfer(
+    series: Series,
+    mode: OwnedTransferMode,
+) -> (OwnedColumnTransfer, Option<RuntimeOwnedColumnTransferReleaser>) {
+    match mode {
+        OwnedTransferMode::Plain => (series.try_into_owned_transfer().unwrap(), None),
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::Asynchronous) => {
+            let (transfer, releaser) = series.try_into_owned_transfer_with_release().unwrap();
+            (transfer, Some(releaser))
+        },
+        OwnedTransferMode::RuntimeRelease(sync) => {
+            let (transfer, releaser) = series.try_into_owned_transfer_with_release_synchronization(sync).unwrap();
+            (transfer, Some(releaser))
+        },
+    }
+}
+
+fn take_owned_table_transfer(
+    table: Table,
+    mode: OwnedTransferMode,
+) -> (OwnedTableTransfer, Option<RuntimeOwnedTableTransferReleaser>) {
+    match mode {
+        OwnedTransferMode::Plain => (table.try_into_owned_transfer().unwrap(), None),
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::Asynchronous) => {
+            let (transfer, releaser) = table.try_into_owned_transfer_with_release().unwrap();
+            (transfer, Some(releaser))
+        },
+        OwnedTransferMode::RuntimeRelease(sync) => {
+            let (transfer, releaser) = table.try_into_owned_transfer_with_release_synchronization(sync).unwrap();
+            (transfer, Some(releaser))
+        },
+    }
+}
+
+fn take_owned_dataframe_transfer(
+    frame: DataFrame,
+    mode: OwnedTransferMode,
+) -> (OwnedTableTransfer, Option<RuntimeOwnedTableTransferReleaser>) {
+    match mode {
+        OwnedTransferMode::Plain => (frame.try_into_owned_transfer().unwrap(), None),
+        OwnedTransferMode::RuntimeRelease(ReleaseSynchronization::Asynchronous) => {
+            let (transfer, releaser) = frame.try_into_owned_transfer_with_release().unwrap();
+            (transfer, Some(releaser))
+        },
+        OwnedTransferMode::RuntimeRelease(sync) => {
+            let (transfer, releaser) = frame.try_into_owned_transfer_with_release_synchronization(sync).unwrap();
+            (transfer, Some(releaser))
+        },
+    }
+}
+
+fn finish_column_runtime_release(releaser: Option<RuntimeOwnedColumnTransferReleaser>) {
+    if let Some(releaser) = releaser {
+        let consumer_stream = CudaStream::new().unwrap();
+        releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+    }
+}
+
+fn finish_table_runtime_release(releaser: Option<RuntimeOwnedTableTransferReleaser>) {
+    if let Some(releaser) = releaser {
+        let consumer_stream = CudaStream::new().unwrap();
+        releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+    }
+}
+
+fn assert_foreign_column_snapshot_round_trip(
+    transfer: OwnedColumnTransfer,
+    snapshot: &ColumnSemanticSnapshot,
+    drops: &Arc<AtomicUsize>,
+    value_assertion: impl FnOnce(&Column),
+) {
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    value_assertion(&imported);
+    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_column_export_matches_snapshot(snapshot, &imported);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+fn assert_ambient_default_owned_transfer_rejected(err: cudf::interop::InteropError) {
+    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+}
+
+#[test]
+fn column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
+    for mode in owned_transfer_modes() {
+        let runtime = Runtime::builder().build().unwrap();
+        let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
+        let expected_stream = column.__debug_execution_domain_stream_value();
+        let expected_device = runtime.device().ordinal() as i32;
+
+        let (transfer, releaser) = take_owned_column_transfer(column, mode);
+        assert_owned_column_transfer_contract(&transfer, 3, expected_ptr, expected_stream, expected_device, mode);
+
+        drop(transfer);
+        finish_column_runtime_release(releaser);
     }
 }
 
 #[test]
-fn series_try_into_owned_device_transfer_with_runtime_release_preserves_zero_copy_metadata_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
-    let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
-    let expected_stream = series.as_column().__debug_execution_domain_stream_value();
+fn table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
+    for mode in owned_transfer_modes() {
+        let runtime = Runtime::builder().build().unwrap();
+        let table = sample_table(&runtime);
+        let expected_device = runtime.device().ordinal() as i32;
 
-    let (transfer, releaser) = series.try_into_owned_transfer_with_release().unwrap();
+        let (transfer, releaser) = take_owned_table_transfer(table, mode);
+        assert_owned_table_transfer_contract(&transfer, 3, 2, None, expected_device, mode);
 
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
-        },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+        drop(transfer);
+        finish_table_runtime_release(releaser);
     }
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
 }
 
 #[test]
-fn series_try_into_owned_device_transfer_with_runtime_release_synchronization_preserves_zero_copy_metadata_and_contract()
- {
-    let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
-    let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
-    let expected_stream = series.as_column().__debug_execution_domain_stream_value();
+fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
+    for mode in owned_transfer_modes() {
+        let runtime = Runtime::builder().build().unwrap();
+        let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
+        let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
+        let expected_stream = series.as_column().__debug_execution_domain_stream_value();
+        let expected_device = runtime.device().ordinal() as i32;
 
-    let (transfer, releaser) = series
-        .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
-        .unwrap();
+        let (transfer, releaser) = take_owned_series_transfer(series, mode);
+        assert_owned_column_transfer_contract(&transfer, 3, expected_ptr, expected_stream, expected_device, mode);
 
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.column().len(), 3);
-    assert!(binding_ptr_eq(&transfer, expected_ptr));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    match transfer.readiness() {
-        cudf::interop::ProducerReadiness::DeviceStreamOrdered { stream } => {
-            assert_eq!(stream.as_raw() as usize, expected_stream);
-            assert_eq!(stream.device(), runtime.device().ordinal() as i32);
-        },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+        drop(transfer);
+        finish_column_runtime_release(releaser);
     }
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
 }
 
 #[test]
@@ -742,73 +766,19 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
 }
 
 #[test]
-fn dataframe_try_into_owned_device_transfer_with_runtime_release_preserves_names_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([ids, values]).unwrap();
-    let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
+fn dataframe_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
+    for mode in owned_transfer_modes() {
+        let runtime = Runtime::builder().build().unwrap();
+        let frame = sample_named_dataframe(&runtime);
+        let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
+        let expected_device = runtime.device().ordinal() as i32;
 
-    let (transfer, releaser) = frame.try_into_owned_transfer_with_release().unwrap();
+        let (transfer, releaser) = take_owned_dataframe_transfer(frame, mode);
+        assert_owned_table_transfer_contract(&transfer, 3, 2, Some(expected_names.as_slice()), expected_device, mode);
 
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(transfer.table().names(), Some(expected_names.as_slice()));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
-}
-
-#[test]
-fn dataframe_try_into_owned_device_transfer_with_runtime_release_synchronization_preserves_names_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([ids, values]).unwrap();
-    let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
-
-    let (transfer, releaser) = frame
-        .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
-        .unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(transfer.table().names(), Some(expected_names.as_slice()));
-    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
-
-    drop(transfer);
-    let consumer_stream = CudaStream::new().unwrap();
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
-}
-
-#[test]
-fn dataframe_try_into_owned_device_transfer_preserves_names_shape_and_contract() {
-    let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([ids, values]).unwrap();
-    let expected_names = frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
-
-    let transfer = frame.try_into_owned_transfer().unwrap();
-
-    assert_eq!(transfer.diagnostics().profile(), ExportProfile::OwnedDeviceTransfer);
-    assert_eq!(transfer.table().num_rows(), 3);
-    assert_eq!(transfer.columns().len(), 2);
-    assert_eq!(transfer.table().names(), Some(expected_names.as_slice()));
-    assert_eq!(
-        transfer.release_contract().completion(),
-        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
-    );
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
-    assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
+        drop(transfer);
+        finish_table_runtime_release(releaser);
+    }
 }
 
 #[test]
@@ -981,6 +951,31 @@ fn runtime_release_owned_column_transfer_import_claims_native_ownership_and_inva
     let consumer_stream = CudaStream::new().unwrap();
     let err = releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap_err();
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+}
+
+#[test]
+fn runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
+    let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
+    let (transfer, releaser) = column
+        .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
+        .unwrap();
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let consumer_event = CudaEvent::new().unwrap();
+    consumer_event.record(&consumer_stream).unwrap();
+
+    reset_event_observation();
+    let _sync_failure = EventSynchronizeFailureGuard::new();
+
+    let err = releaser.release(RuntimeCompletionAuthority::cross_device_event(&consumer_event)).unwrap_err();
+    assert_eq!(err.kind(), InteropErrorKind::ReadinessUnavailable);
+
+    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+    assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(imported.view().unwrap().device_data_ptr().unwrap(), expected_ptr);
 }
 
 #[test]
@@ -1162,12 +1157,9 @@ fn owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy() {
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
 
-    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
-
-    assert_eq!(imported.view().unwrap().to_strings_lossy().unwrap(), vec!["alpha", "beta", "gamma"]);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
-    assert_column_export_matches_snapshot(&snapshot, &imported);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert_foreign_column_snapshot_round_trip(transfer, &snapshot, &drops, |imported| {
+        assert_eq!(imported.view().unwrap().to_strings_lossy().unwrap(), vec!["alpha", "beta", "gamma"]);
+    });
 }
 
 #[test]
@@ -1180,12 +1172,9 @@ fn owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy() {
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
 
-    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
-
-    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::List);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
-    assert_column_export_matches_snapshot(&snapshot, &imported);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert_foreign_column_snapshot_round_trip(transfer, &snapshot, &drops, |imported| {
+        assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::List);
+    });
 }
 
 #[test]
@@ -1200,12 +1189,9 @@ fn owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy() {
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(source, Arc::clone(&drops));
 
-    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
-
-    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Struct);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
-    assert_column_export_matches_snapshot(&snapshot, &imported);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert_foreign_column_snapshot_round_trip(transfer, &snapshot, &drops, |imported| {
+        assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Struct);
+    });
 }
 
 #[test]
@@ -1216,14 +1202,11 @@ fn owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy
     let drops = Arc::new(AtomicUsize::new(0));
     let (transfer, snapshot) = snapshot_foreign_owned_column_transfer(dictionary, Arc::clone(&drops));
 
-    let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
-    let decoded = dictionary::decode(&imported.view().unwrap()).unwrap();
-
-    assert_eq!(decoded.view().unwrap().to_strings_lossy().unwrap(), vec!["beta", "alpha", "beta", "gamma"]);
-    assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Dictionary32);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
-    assert_column_export_matches_snapshot(&snapshot, &imported);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert_foreign_column_snapshot_round_trip(transfer, &snapshot, &drops, |imported| {
+        let decoded = dictionary::decode(&imported.view().unwrap()).unwrap();
+        assert_eq!(decoded.view().unwrap().to_strings_lossy().unwrap(), vec!["beta", "alpha", "beta", "gamma"]);
+        assert_eq!(imported.view().unwrap().data_type().unwrap().id(), TypeId::Dictionary32);
+    });
 }
 
 #[test]
@@ -1275,43 +1258,22 @@ fn owned_table_transfer_import_rejects_excessively_nested_wrappers() {
 }
 
 #[test]
-fn ambient_default_column_owned_transfer_is_rejected() {
+fn ambient_default_owned_transfer_is_rejected_across_column_series_table_and_dataframe() {
     let column = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    assert_ambient_default_owned_transfer_rejected(column.try_into_owned_transfer().unwrap_err());
 
-    let err = column.try_into_owned_transfer().unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-}
-
-#[test]
-fn ambient_default_series_owned_transfer_is_rejected() {
     let series = Series::new("values", &[1i32, 2, 3]).unwrap();
+    assert_ambient_default_owned_transfer_rejected(series.try_into_owned_transfer().unwrap_err());
 
-    let err = series.try_into_owned_transfer().unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-}
-
-#[test]
-fn ambient_default_table_owned_transfer_is_rejected() {
     let c0 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let c1 = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
+    assert_ambient_default_owned_transfer_rejected(table.try_into_owned_transfer().unwrap_err());
 
-    let err = table.try_into_owned_transfer().unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
-}
-
-#[test]
-fn ambient_default_dataframe_owned_transfer_is_rejected() {
     let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
     let values = Series::new("value", &[10i32, 20, 30]).unwrap();
     let frame = DataFrame::from_series([ids, values]).unwrap();
-
-    let err = frame.try_into_owned_transfer().unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
+    assert_ambient_default_owned_transfer_rejected(frame.try_into_owned_transfer().unwrap_err());
 }
 
 // ---------------------------------------------------------------------------

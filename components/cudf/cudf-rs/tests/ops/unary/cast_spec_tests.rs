@@ -120,7 +120,7 @@ fn test_cast_preserves_null_mask() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
     assert_eq!(result.null_count(), 1);
-    let vals = result.to_vec_optional::<f64>().unwrap();
+    let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
@@ -130,7 +130,7 @@ fn test_cast_all_null_column() {
     let result = s.astype(TypeId::Float64).unwrap();
     assert_eq!(result.null_count(), 2);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    let vals = result.to_vec_optional::<f64>().unwrap();
+    let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![None, None]);
 }
 

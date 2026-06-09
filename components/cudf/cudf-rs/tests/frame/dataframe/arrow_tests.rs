@@ -128,8 +128,8 @@ fn test_round_trip_nullable_i32() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    // Nullable column: use to_vec_optional to access values alongside nulls.
-    let vals = cv.to_vec_optional::<i32>().unwrap();
+    // Nullable column: use to_optional_vec to access values alongside nulls.
+    let vals = cv.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(1));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(3));
@@ -155,8 +155,8 @@ fn test_round_trip_nullable_f64() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
 
-    // Nullable column: use to_vec_optional to access values alongside nulls.
-    let vals = cv.to_vec_optional::<f64>().unwrap();
+    // Nullable column: use to_optional_vec to access values alongside nulls.
+    let vals = cv.to_optional_vec::<f64>().unwrap();
     assert!((vals[0].unwrap() - 1.1).abs() < 1e-10);
     assert_eq!(vals[1], None);
     assert!((vals[2].unwrap() - 3.3).abs() < 1e-10);
@@ -296,8 +296,8 @@ fn test_from_record_batch_with_nulls() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    // Nullable column: use to_vec_optional to access values alongside nulls.
-    let vals = cv.to_vec_optional::<i32>().unwrap();
+    // Nullable column: use to_optional_vec to access values alongside nulls.
+    let vals = cv.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(1));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(3));
@@ -381,8 +381,8 @@ fn test_round_trip_nullable_string() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    // Nullable column: use to_strings_optional to access values alongside nulls.
-    let strs = cv.to_strings_optional().unwrap();
+    // Nullable column: use to_optional_strings to access values alongside nulls.
+    let strs = cv.to_optional_strings().unwrap();
     assert_eq!(strs[0], Some("hello".to_string()));
     assert_eq!(strs[1], None);
     assert_eq!(strs[2], Some("world".to_string()));
@@ -447,8 +447,8 @@ fn test_from_record_batch_nullable_string_array() {
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
-    // Nullable column: use to_strings_optional to access values alongside nulls.
-    let strs = cv.to_strings_optional().unwrap();
+    // Nullable column: use to_optional_strings to access values alongside nulls.
+    let strs = cv.to_optional_strings().unwrap();
     assert_eq!(strs[0], Some("a".to_string()));
     assert_eq!(strs[1], None);
     assert_eq!(strs[2], Some("c".to_string()));

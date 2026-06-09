@@ -29,8 +29,8 @@ fn test_groupby_sum_skips_nulls_in_values() {
     // key=2: [30, 40] -> sum=70
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let sum_data = result.series("value_sum").unwrap().to_vec_optional::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let sum_data = result.series("value_sum").unwrap().to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -46,8 +46,8 @@ fn test_groupby_min_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let min_data = result.series("value_min").unwrap().to_vec_optional::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let min_data = result.series("value_min").unwrap().to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(min_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -61,8 +61,8 @@ fn test_groupby_max_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Max)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let max_data = result.series("value_max").unwrap().to_vec_optional::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let max_data = result.series("value_max").unwrap().to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(max_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -141,7 +141,7 @@ fn test_groupby_sum_all_null_group() {
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let sum_series = result.series("value_sum").unwrap();
-    let sum_data = sum_series.to_vec_optional::<i64>().unwrap();
+    let sum_data = sum_series.to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -165,7 +165,7 @@ fn test_groupby_min_all_null_group() {
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let min_series = result.series("value_min").unwrap();
-    let min_data = min_series.to_vec_optional::<i64>().unwrap();
+    let min_data = min_series.to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, Option<i64>)> = key_data.into_iter().zip(min_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -194,8 +194,8 @@ fn test_groupby_null_keys_excluded_by_default() {
     // Without include_null_keys, the null-key row should be dropped
     assert_eq!(result.num_rows(), 2);
 
-    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let sum_data = result.series("value_sum").unwrap().to_vec_optional::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let sum_data = result.series("value_sum").unwrap().to_optional_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -222,7 +222,7 @@ fn test_groupby_null_keys_included_when_requested() {
 
     let key_series = result.series("key").unwrap();
     let sum_series = result.series("value_sum").unwrap();
-    let key_data = key_series.to_vec_optional::<i32>().unwrap();
+    let key_data = key_series.to_optional_vec::<i32>().unwrap();
     let _sum_data = sum_series.to_vec_strict::<i64>().unwrap();
 
     // Should have groups for key=1, key=2, and key=null

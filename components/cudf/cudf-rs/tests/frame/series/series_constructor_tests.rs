@@ -17,7 +17,7 @@ fn test_from_optional_i32() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.to_vec_optional::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
+    assert_eq!(s.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn test_from_optional_bool_preserves_false() {
 
     assert_eq!(s.name(), Some("flag"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(s.to_vec_optional::<bool>().unwrap(), vec![Some(false), Some(true), None, Some(false)]);
+    assert_eq!(s.to_optional_vec::<bool>().unwrap(), vec![Some(false), Some(true), None, Some(false)]);
 }
 
 #[test]

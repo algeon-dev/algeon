@@ -54,7 +54,7 @@ fn test_gather_out_of_bounds_nullifies_rows() {
     let gathered = values.gather(&indices).unwrap();
 
     assert_eq!(gathered.name(), Some("x"));
-    assert_eq!(gathered.to_vec_optional::<i32>().unwrap(), vec![Some(30), None, Some(10)]);
+    assert_eq!(gathered.to_optional_vec::<i32>().unwrap(), vec![Some(30), None, Some(10)]);
 }
 
 #[test]

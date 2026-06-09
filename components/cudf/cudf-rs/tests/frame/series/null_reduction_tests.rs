@@ -290,7 +290,7 @@ fn test_cumsum_with_nulls() {
     // Expected: [1, null, 4, 8] (null positions stay null)
     let s = Series::new_nullable::<i32>("x", &[1, 0, 3, 4], &[true, false, true, true]).unwrap();
     let result = s.cumsum().unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(1));
     assert_eq!(vals[1], None); // null position stays null
     assert_eq!(vals[2], Some(4)); // 1 + 3
@@ -303,7 +303,7 @@ fn test_cummin_with_nulls() {
     // Expected: [5, null, 3, 3]
     let s = Series::new_nullable::<i32>("x", &[5, 0, 3, 7], &[true, false, true, true]).unwrap();
     let result = s.cummin().unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(5));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(3));
@@ -316,7 +316,7 @@ fn test_cummax_with_nulls() {
     // Expected: [5, null, 5, 7]
     let s = Series::new_nullable::<i32>("x", &[5, 0, 3, 7], &[true, false, true, true]).unwrap();
     let result = s.cummax().unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(5));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(5));
@@ -329,7 +329,7 @@ fn test_cumprod_with_nulls() {
     // Expected: [2, null, 6, 24]
     let s = Series::new_nullable::<i32>("x", &[2, 0, 3, 4], &[true, false, true, true]).unwrap();
     let result = s.cumprod().unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals[0], Some(2));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(6));

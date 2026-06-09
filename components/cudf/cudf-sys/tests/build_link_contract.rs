@@ -96,11 +96,36 @@ fn normalized_cmake_bool_from_env_reads_optional_env_input() {
 }
 
 #[test]
+fn supported_target_os_accepts_linux_only() {
+    build_support::ensure_supported_target_os("linux").expect("linux target should be accepted");
+
+    let error = build_support::ensure_supported_target_os("macos").unwrap_err();
+    assert!(error.contains("Linux only"), "unexpected error: {error}");
+    assert!(error.contains("macos"), "unexpected error: {error}");
+
+    let error = build_support::ensure_supported_target_os("windows").unwrap_err();
+    assert!(error.contains("Linux only"), "unexpected error: {error}");
+    assert!(error.contains("windows"), "unexpected error: {error}");
+}
+
+#[test]
 fn build_script_tracks_build_support_and_cargo_link_template_changes() {
     for tracked in ["build_support.rs", "native/cmake/cargo-link.txt.in"] {
         let expected = format!("cargo:rerun-if-changed={tracked}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {tracked} with `{expected}`");
     }
+}
+
+#[test]
+fn build_script_checks_target_os_before_configuring_cmake() {
+    assert!(
+        BUILD_RS.contains("CARGO_CFG_TARGET_OS"),
+        "expected build.rs to read the Cargo target OS before configuring the native build"
+    );
+    assert!(
+        BUILD_RS.contains("ensure_supported_target_os"),
+        "expected build.rs to enforce the Linux-only target policy"
+    );
 }
 
 #[test]

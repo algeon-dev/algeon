@@ -8,6 +8,8 @@
 
 use cudf::{DataFrame, core::Column};
 
+use crate::common::dataframe_device_ptr as device_ptr;
+
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -18,14 +20,6 @@ fn sample_df() -> DataFrame {
         vec![ids, scores, flags],
     )
     .unwrap()
-}
-
-/// Returns the raw device data pointer for a named column in a DataFrame.
-///
-/// Two columns that share the same underlying GPU allocation will have
-/// the same device pointer.
-fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
 }
 
 // ---------------------------------------------------------------------------

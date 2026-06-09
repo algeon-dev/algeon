@@ -44,6 +44,16 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
 }
 
 #[allow(dead_code)]
+pub fn dataframe_device_ptr(df: &DataFrame, name: &str) -> *const c_void {
+    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
+}
+
+#[allow(dead_code)]
+pub fn series_device_ptr(series: &Series) -> *const c_void {
+    series.as_column_view().unwrap().device_data_ptr().unwrap()
+}
+
+#[allow(dead_code)]
 pub fn reset_exec_observation() {
     unsafe { cudf_test_exec_reset_observation() };
 }

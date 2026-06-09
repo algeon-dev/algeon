@@ -9,7 +9,7 @@
 
 use cudf::{
     DataFrame, ErrorKind, Series, TypeId,
-    ops::expr::{col, lit, when},
+    ops::expr::{Expr, col, lit, when},
 };
 
 // ===========================================================================
@@ -23,6 +23,50 @@ fn xy_df() -> DataFrame {
     DataFrame::from_series([x, y]).unwrap()
 }
 
+fn df_with_series(series: Series) -> DataFrame {
+    DataFrame::from_series([series]).unwrap()
+}
+
+fn i32_df(name: &str, data: &[i32]) -> DataFrame {
+    df_with_series(Series::new::<i32>(name, data).unwrap())
+}
+
+fn nullable_i32_df(name: &str, data: &[i32], validity: &[bool]) -> DataFrame {
+    df_with_series(Series::new_nullable::<i32>(name, data, validity).unwrap())
+}
+
+fn f64_df(name: &str, data: &[f64]) -> DataFrame {
+    df_with_series(Series::new::<f64>(name, data).unwrap())
+}
+
+fn bool_df(name: &str, data: &[bool]) -> DataFrame {
+    df_with_series(Series::new::<bool>(name, data).unwrap())
+}
+
+fn str_df(name: &str, data: &[&str]) -> DataFrame {
+    df_with_series(Series::from_strs(name, data).unwrap())
+}
+
+fn eval(expr: Expr, df: &DataFrame) -> Series {
+    expr.eval(df).unwrap()
+}
+
+fn eval_i32(expr: Expr, df: &DataFrame) -> Vec<i32> {
+    eval(expr, df).to_vec_strict::<i32>().unwrap()
+}
+
+fn eval_f64(expr: Expr, df: &DataFrame) -> Vec<f64> {
+    eval(expr, df).to_vec_strict::<f64>().unwrap()
+}
+
+fn eval_bool(expr: Expr, df: &DataFrame) -> Vec<bool> {
+    eval(expr, df).to_vec_strict::<bool>().unwrap()
+}
+
+fn assert_output_name(expr: Expr, expected: Option<&str>) {
+    assert_eq!(expr.output_name(), expected);
+}
+
 // ===========================================================================
 // col / lit basics
 // ===========================================================================
@@ -30,7 +74,7 @@ fn xy_df() -> DataFrame {
 #[test]
 fn col_resolves_existing_column() {
     let df = xy_df();
-    let result = col("x").eval(&df).unwrap();
+    let result = eval(col("x"), &df);
     assert_eq!(result.name(), Some("x"));
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
@@ -46,7 +90,7 @@ fn col_missing_column_errors() {
 #[test]
 fn lit_i32_broadcasts() {
     let df = xy_df();
-    let result = lit(42i32).alias("c").eval(&df).unwrap();
+    let result = eval(lit(42i32).alias("c"), &df);
     assert_eq!(result.name(), Some("c"));
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
@@ -55,7 +99,7 @@ fn lit_i32_broadcasts() {
 #[test]
 fn lit_f64_broadcasts() {
     let df = xy_df();
-    let result = lit(3.25f64).alias("pi").eval(&df).unwrap();
+    let result = eval(lit(3.25f64).alias("pi"), &df);
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.25, 3.25, 3.25]);
 }
@@ -63,7 +107,7 @@ fn lit_f64_broadcasts() {
 #[test]
 fn lit_string_broadcasts() {
     let df = xy_df();
-    let result = lit("hello").alias("s").eval(&df).unwrap();
+    let result = eval(lit("hello").alias("s"), &df);
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
 }
@@ -71,7 +115,7 @@ fn lit_string_broadcasts() {
 #[test]
 fn alias_renames_output() {
     let df = xy_df();
-    let result = col("x").alias("renamed").eval(&df).unwrap();
+    let result = eval(col("x").alias("renamed"), &df);
     assert_eq!(result.name(), Some("renamed"));
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -83,73 +127,63 @@ fn alias_renames_output() {
 #[test]
 fn add_col_col() {
     let df = xy_df();
-    let result = (col("x") + col("y")).alias("sum").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(eval_i32((col("x") + col("y")).alias("sum"), &df), vec![11, 22, 33]);
 }
 
 #[test]
 fn add_col_lit() {
     let df = xy_df();
-    let result = (col("x") + lit(100i32)).alias("plus").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![110, 120, 130]);
+    assert_eq!(eval_i32((col("x") + lit(100i32)).alias("plus"), &df), vec![110, 120, 130]);
 }
 
 #[test]
 fn add_col_scalar_without_lit() {
     let df = xy_df();
-    let result = (col("x") + 100i32).alias("plus").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![110, 120, 130]);
+    assert_eq!(eval_i32((col("x") + 100i32).alias("plus"), &df), vec![110, 120, 130]);
 }
 
 #[test]
 fn add_scalar_lhs_without_lit() {
     let df = xy_df();
-    let result = (100i32 + col("x")).alias("plus").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![110, 120, 130]);
+    assert_eq!(eval_i32((100i32 + col("x")).alias("plus"), &df), vec![110, 120, 130]);
 }
 
 #[test]
 fn compound_expr_add_mul() {
     let df = xy_df();
     // (x + y) * lit(2)
-    let result = ((col("x") + col("y")) * lit(2i32)).alias("r").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![22, 44, 66]);
+    assert_eq!(eval_i32(((col("x") + col("y")) * lit(2i32)).alias("r"), &df), vec![22, 44, 66]);
 }
 
 #[test]
 fn sub_col_col() {
     let df = xy_df();
-    let result = (col("x") - col("y")).alias("diff").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![9, 18, 27]);
+    assert_eq!(eval_i32((col("x") - col("y")).alias("diff"), &df), vec![9, 18, 27]);
 }
 
 #[test]
 fn mul_col_col() {
     let df = xy_df();
-    let result = (col("x") * col("y")).alias("prod").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 40, 90]);
+    assert_eq!(eval_i32((col("x") * col("y")).alias("prod"), &df), vec![10, 40, 90]);
 }
 
 #[test]
 fn div_col_col() {
     let df = xy_df();
-    let result = (col("x") / col("y")).alias("quot").eval(&df).unwrap();
     // cuDF integer division: 10/1=10, 20/2=10, 30/3=10
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 10, 10]);
+    assert_eq!(eval_i32((col("x") / col("y")).alias("quot"), &df), vec![10, 10, 10]);
 }
 
 #[test]
 fn rem_col_lit() {
     let df = xy_df(); // x = [10, 20, 30]
-    let result = (col("x") % lit(3i32)).alias("mod3").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 0]);
+    assert_eq!(eval_i32((col("x") % lit(3i32)).alias("mod3"), &df), vec![1, 2, 0]);
 }
 
 #[test]
 fn neg_expr() {
     let df = xy_df(); // x = [10, 20, 30]
-    let result = (-col("x")).alias("neg").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![-10, -20, -30]);
+    assert_eq!(eval_i32((-col("x")).alias("neg"), &df), vec![-10, -20, -30]);
 }
 
 #[test]
@@ -164,9 +198,8 @@ fn bitand_bool() {
 
 #[test]
 fn bitand_bool_scalar_lhs_without_lit() {
-    let b = Series::new::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_series([b]).unwrap();
-    let result = (true & col("b")).alias("and").eval(&df).unwrap();
+    let df = bool_df("b", &[true, false, true, false]);
+    let result = eval((true & col("b")).alias("and"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true, false]);
 }
@@ -183,51 +216,39 @@ fn bitor_bool() {
 
 #[test]
 fn pow_builder() {
-    let s = Series::new::<f64>("x", &[2.0, 3.0, 4.0]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").pow(lit(2.0f64)).alias("sq").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![4.0, 9.0, 16.0]);
+    let df = f64_df("x", &[2.0, 3.0, 4.0]);
+    assert_eq!(eval_f64(col("x").pow(lit(2.0f64)).alias("sq"), &df), vec![4.0, 9.0, 16.0]);
 }
 
 #[test]
 fn pow_builder_scalar_without_lit() {
-    let s = Series::new::<f64>("x", &[2.0, 3.0, 4.0]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").pow(2.0f64).alias("sq").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![4.0, 9.0, 16.0]);
+    let df = f64_df("x", &[2.0, 3.0, 4.0]);
+    assert_eq!(eval_f64(col("x").pow(2.0f64).alias("sq"), &df), vec![4.0, 9.0, 16.0]);
 }
 
 #[test]
 fn floor_div_builder() {
     let df = xy_df(); // x = [10, 20, 30]
-    let result = col("x").floor_div(lit(3i32)).alias("fd").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 6, 10]);
+    assert_eq!(eval_i32(col("x").floor_div(lit(3i32)).alias("fd"), &df), vec![3, 6, 10]);
 }
 
 #[test]
 fn abs_builder() {
-    let s = Series::new::<i32>("v", &[-5, 0, 7]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").abs().alias("a").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 0, 7]);
+    let df = i32_df("v", &[-5, 0, 7]);
+    assert_eq!(eval_i32(col("v").abs().alias("a"), &df), vec![5, 0, 7]);
 }
 
 #[test]
 fn sqrt_builder() {
-    let s = Series::new::<f64>("v", &[4.0, 9.0, 16.0]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").sqrt().alias("r").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 3.0, 4.0]);
+    let df = f64_df("v", &[4.0, 9.0, 16.0]);
+    assert_eq!(eval_f64(col("v").sqrt().alias("r"), &df), vec![2.0, 3.0, 4.0]);
 }
 
 #[test]
 fn ceil_floor_builder() {
-    let s = Series::new::<f64>("v", &[1.2, 2.7, -0.5]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let c = col("v").ceil().alias("c").eval(&df).unwrap();
-    assert_eq!(c.to_vec_strict::<f64>().unwrap(), vec![2.0, 3.0, 0.0]);
-    let f = col("v").floor().alias("f").eval(&df).unwrap();
-    assert_eq!(f.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, -1.0]);
+    let df = f64_df("v", &[1.2, 2.7, -0.5]);
+    assert_eq!(eval_f64(col("v").ceil().alias("c"), &df), vec![2.0, 3.0, 0.0]);
+    assert_eq!(eval_f64(col("v").floor().alias("f"), &df), vec![1.0, 2.0, -1.0]);
 }
 
 // ===========================================================================
@@ -237,7 +258,7 @@ fn ceil_floor_builder() {
 #[test]
 fn gt_lit_produces_bool() {
     let df = xy_df();
-    let result = col("x").gt(lit(15i32)).alias("big").eval(&df).unwrap();
+    let result = eval(col("x").gt(lit(15i32)).alias("big"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
@@ -245,7 +266,7 @@ fn gt_lit_produces_bool() {
 #[test]
 fn gt_scalar_without_lit_produces_bool() {
     let df = xy_df();
-    let result = col("x").gt(15i32).alias("big").eval(&df).unwrap();
+    let result = eval(col("x").gt(15i32).alias("big"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
@@ -262,8 +283,7 @@ fn eq_col_col() {
 #[test]
 fn lt_lit_with_alias() {
     let df = xy_df();
-    let result = col("x").lt(lit(25i32)).alias("small").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
+    assert_eq!(eval_bool(col("x").lt(lit(25i32)).alias("small"), &df), vec![true, true, false]);
 }
 
 #[test]
@@ -278,10 +298,8 @@ fn ne_col_col() {
 #[test]
 fn ge_and_le() {
     let df = xy_df();
-    let ge = col("x").ge(lit(20i32)).alias("ge20").eval(&df).unwrap();
-    assert_eq!(ge.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
-    let le = col("x").le(lit(20i32)).alias("le20").eval(&df).unwrap();
-    assert_eq!(le.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
+    assert_eq!(eval_bool(col("x").ge(lit(20i32)).alias("ge20"), &df), vec![false, true, true]);
+    assert_eq!(eval_bool(col("x").le(lit(20i32)).alias("le20"), &df), vec![true, true, false]);
 }
 
 // ===========================================================================
@@ -290,35 +308,30 @@ fn ge_and_le() {
 
 #[test]
 fn is_null_expr() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").is_null().alias("nulls").eval(&df).unwrap();
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
+    let result = eval(col("v").is_null().alias("nulls"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
 fn is_not_null_expr() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").is_not_null().alias("valid").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
+    assert_eq!(eval_bool(col("v").is_not_null().alias("valid"), &df), vec![true, false, true]);
 }
 
 #[test]
 fn cast_i32_to_f64() {
     let df = xy_df();
-    let result = col("x").cast(TypeId::Float64).alias("xf").eval(&df).unwrap();
+    let result = eval(col("x").cast(TypeId::Float64).alias("xf"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 #[test]
 fn not_operator() {
-    let s = Series::new::<bool>("mask", &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = (!col("mask")).alias("inv").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
+    let df = bool_df("mask", &[true, false, true]);
+    assert_eq!(eval_bool((!col("mask")).alias("inv"), &df), vec![false, true, false]);
 }
 
 // ===========================================================================
@@ -363,8 +376,7 @@ fn with_columns_named_pair_allows_binary_expr_without_alias() {
 
 #[test]
 fn with_columns_named_pair_allows_if_else_without_alias() {
-    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x]).unwrap();
+    let df = i32_df("x", &[1, 2, 3]);
     let df2 = df.with_columns([("big", when(col("x").gt(1i32)).then(100i32).otherwise(0i32))]).unwrap();
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
 }
@@ -420,26 +432,22 @@ fn with_columns_bare_col_uses_column_name() {
 
 #[test]
 fn output_name_propagates_through_cast() {
-    let expr = col("x").cast(TypeId::Float64);
-    assert_eq!(expr.output_name(), Some("x"));
+    assert_output_name(col("x").cast(TypeId::Float64), Some("x"));
 }
 
 #[test]
 fn output_name_propagates_through_is_null() {
-    let expr = col("x").is_null();
-    assert_eq!(expr.output_name(), Some("x"));
+    assert_output_name(col("x").is_null(), Some("x"));
 }
 
 #[test]
 fn output_name_propagates_through_is_not_null() {
-    let expr = col("x").is_not_null();
-    assert_eq!(expr.output_name(), Some("x"));
+    assert_output_name(col("x").is_not_null(), Some("x"));
 }
 
 #[test]
 fn output_name_propagates_through_unary_op() {
-    let expr = col("x").abs();
-    assert_eq!(expr.output_name(), Some("x"));
+    assert_output_name(col("x").abs(), Some("x"));
 }
 
 #[test]
@@ -452,8 +460,7 @@ fn with_columns_cast_no_alias_needed() {
 
 #[test]
 fn with_columns_is_null_no_alias_needed() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let df2 = df.with_columns([col("v").is_null()]).unwrap();
     assert_eq!(df2.series("v").unwrap().dtype().unwrap().id(), TypeId::Bool8);
 }
@@ -461,39 +468,35 @@ fn with_columns_is_null_no_alias_needed() {
 #[test]
 fn eval_unary_op_preserves_name() {
     let df = xy_df();
-    let result = col("x").abs().eval(&df).unwrap();
+    let result = eval(col("x").abs(), &df);
     assert_eq!(result.name(), Some("x"));
 }
 
 #[test]
 fn eval_fillna_preserves_name() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").fillna(99i32).eval(&df).unwrap();
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
+    let result = eval(col("v").fillna(99i32), &df);
     assert_eq!(result.name(), Some("v"));
 }
 
 #[test]
 fn eval_cumsum_preserves_name() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").cumsum().eval(&df).unwrap();
+    let df = i32_df("x", &[1, 2, 3]);
+    let result = eval(col("x").cumsum(), &df);
     assert_eq!(result.name(), Some("x"));
 }
 
 #[test]
 fn eval_reduce_has_no_implicit_name() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").agg().sum().eval(&df).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
+    let result = eval(col("x").agg().sum(), &df);
     assert_eq!(result.name(), None);
 }
 
 #[test]
 fn eval_string_op_preserves_name() {
-    let s = Series::from_strs("s", &["Hello", "WORLD"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().lower().eval(&df).unwrap();
+    let df = str_df("s", &["Hello", "WORLD"]);
+    let result = eval(col("s").str().lower(), &df);
     assert_eq!(result.name(), Some("s"));
 }
 
@@ -503,17 +506,15 @@ fn eval_string_op_preserves_name() {
 
 #[test]
 fn fillna_scalar_replaces_nulls() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").fillna(0i32).alias("filled").eval(&df).unwrap();
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
+    let result = eval(col("v").fillna(0i32).alias("filled"), &df);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 0, 3]);
     assert_eq!(result.null_count(), 0);
 }
 
 #[test]
 fn fillna_scalar_preserves_output_name() {
-    let expr = col("v").fillna(0i32);
-    assert_eq!(expr.output_name(), Some("v"));
+    assert_output_name(col("v").fillna(0i32), Some("v"));
 }
 
 #[test]
@@ -528,72 +529,58 @@ fn fillna_with_column_path() {
 
 #[test]
 fn fillna_with_preserves_output_name() {
-    let expr = col("v").fillna_with(col("backup"));
-    assert_eq!(expr.output_name(), Some("v"));
+    assert_output_name(col("v").fillna_with(col("backup")), Some("v"));
 }
 
 #[test]
 fn ffill_expr() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3, 0], &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").ffill().alias("ff").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 3]);
+    let df = nullable_i32_df("v", &[1, 0, 3, 0], &[true, false, true, false]);
+    assert_eq!(eval_i32(col("v").ffill().alias("ff"), &df), vec![1, 1, 3, 3]);
 }
 
 #[test]
 fn bfill_expr() {
-    let s = Series::new_nullable::<i32>("v", &[0, 0, 3, 0], &[false, false, true, false]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("v").bfill().alias("bf").eval(&df).unwrap();
+    let df = nullable_i32_df("v", &[0, 0, 3, 0], &[false, false, true, false]);
+    let result = eval(col("v").bfill().alias("bf"), &df);
     // Last element remains null since there's no following value.
     assert_eq!(result.null_count(), 1);
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(3), Some(3), Some(3), None]);
 }
 
 #[test]
 fn cumsum_expr() {
-    let s = Series::new::<i32>("x", &[1, 2, 3, 4]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").cumsum().alias("cs").eval(&df).unwrap();
     // cumsum output type for i32 is i32 (scan preserves type)
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 3, 6, 10]);
+    let df = i32_df("x", &[1, 2, 3, 4]);
+    assert_eq!(eval_i32(col("x").cumsum().alias("cs"), &df), vec![1, 3, 6, 10]);
 }
 
 #[test]
 fn cummin_expr() {
-    let s = Series::new::<i32>("x", &[3, 1, 4, 1]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").cummin().alias("cm").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 1, 1, 1]);
+    let df = i32_df("x", &[3, 1, 4, 1]);
+    assert_eq!(eval_i32(col("x").cummin().alias("cm"), &df), vec![3, 1, 1, 1]);
 }
 
 #[test]
 fn cummax_expr() {
-    let s = Series::new::<i32>("x", &[1, 3, 2, 5]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").cummax().alias("cm").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 3, 3, 5]);
+    let df = i32_df("x", &[1, 3, 2, 5]);
+    assert_eq!(eval_i32(col("x").cummax().alias("cm"), &df), vec![1, 3, 3, 5]);
 }
 
 #[test]
 fn cumprod_expr() {
-    let s = Series::new::<i32>("x", &[1, 2, 3, 4]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").cumprod().alias("cp").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 6, 24]);
+    let df = i32_df("x", &[1, 2, 3, 4]);
+    assert_eq!(eval_i32(col("x").cumprod().alias("cp"), &df), vec![1, 2, 6, 24]);
 }
 
 #[test]
 fn cumsum_preserves_output_name() {
-    let expr = col("x").cumsum();
-    assert_eq!(expr.output_name(), Some("x"));
+    assert_output_name(col("x").cumsum(), Some("x"));
 }
 
 #[test]
 fn with_columns_fillna_no_alias_needed() {
-    let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let df2 = df.with_columns([col("v").fillna(99i32)]).unwrap();
     assert_eq!(df2.series("v").unwrap().null_count(), 0);
     assert_eq!(df2.series("v").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
@@ -601,8 +588,7 @@ fn with_columns_fillna_no_alias_needed() {
 
 #[test]
 fn with_columns_cumsum_no_alias_needed() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = i32_df("x", &[1, 2, 3]);
     let df2 = df.with_columns([col("x").cumsum()]).unwrap();
     assert_eq!(df2.series("x").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 6]);
 }
@@ -613,9 +599,8 @@ fn with_columns_cumsum_no_alias_needed() {
 
 #[test]
 fn agg_sum() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").agg().sum().alias("s").eval(&df).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
+    let result = eval(col("x").agg().sum().alias("s"), &df);
     assert_eq!(result.len(), 3);
     // i32 sum → i64
     assert_eq!(result.to_vec_strict::<i64>().unwrap(), vec![60, 60, 60]);
@@ -623,30 +608,25 @@ fn agg_sum() {
 
 #[test]
 fn agg_mean() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").agg().mean().alias("m").eval(&df).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
+    let result = eval(col("x").agg().mean().alias("m"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![20.0, 20.0, 20.0]);
 }
 
 #[test]
 fn agg_min_max() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let mn = col("x").agg().min().alias("mn").eval(&df).unwrap();
-    assert_eq!(mn.to_vec_strict::<i32>().unwrap(), vec![10, 10, 10]);
-    let mx = col("x").agg().max().alias("mx").eval(&df).unwrap();
-    assert_eq!(mx.to_vec_strict::<i32>().unwrap(), vec![30, 30, 30]);
+    let df = i32_df("x", &[10, 20, 30]);
+    assert_eq!(eval_i32(col("x").agg().min().alias("mn"), &df), vec![10, 10, 10]);
+    assert_eq!(eval_i32(col("x").agg().max().alias("mx"), &df), vec![30, 30, 30]);
 }
 
 #[test]
 fn agg_std_var() {
-    let s = Series::new::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let std_r = col("x").agg().std(1).alias("s").eval(&df).unwrap();
+    let df = f64_df("x", &[2.0, 4.0, 6.0]);
+    let std_r = eval(col("x").agg().std(1).alias("s"), &df);
     assert_eq!(std_r.dtype().unwrap().id(), TypeId::Float64);
-    let var_r = col("x").agg().var(1).alias("v").eval(&df).unwrap();
+    let var_r = eval(col("x").agg().var(1).alias("v"), &df);
     assert_eq!(var_r.dtype().unwrap().id(), TypeId::Float64);
     // var = 4.0, std = 2.0 for [2,4,6] with ddof=1
     let std_vals = std_r.to_vec_strict::<f64>().unwrap();
@@ -657,44 +637,35 @@ fn agg_std_var() {
 
 #[test]
 fn agg_median() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").agg().median().alias("med").eval(&df).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
+    let result = eval(col("x").agg().median().alias("med"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![20.0, 20.0, 20.0]);
 }
 
 #[test]
 fn agg_any_all() {
-    let s = Series::new::<bool>("f", &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let any_r = col("f").agg().any().alias("a").eval(&df).unwrap();
-    assert_eq!(any_r.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
-    let all_r = col("f").agg().all().alias("b").eval(&df).unwrap();
-    assert_eq!(all_r.to_vec_strict::<bool>().unwrap(), vec![false, false, false]);
+    let df = bool_df("f", &[true, false, true]);
+    assert_eq!(eval_bool(col("f").agg().any().alias("a"), &df), vec![true, true, true]);
+    assert_eq!(eval_bool(col("f").agg().all().alias("b"), &df), vec![false, false, false]);
 }
 
 #[test]
 fn agg_product() {
-    let s = Series::new::<i32>("x", &[2, 3, 5]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("x").agg().product().alias("p").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![30, 30, 30]);
+    let df = i32_df("x", &[2, 3, 5]);
+    assert_eq!(eval_i32(col("x").agg().product().alias("p"), &df), vec![30, 30, 30]);
 }
 
 #[test]
 fn reduce_requires_explicit_output_name() {
-    let expr = col("x").agg().sum();
-    assert_eq!(expr.output_name(), None);
+    assert_output_name(col("x").agg().sum(), None);
 }
 
 #[test]
 fn pct_pattern() {
-    let s = Series::new::<f64>("x", &[10.0, 20.0, 30.0]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = f64_df("x", &[10.0, 20.0, 30.0]);
     // (x / x.agg().sum()) should give each row's fraction of total.
-    let result = (col("x") / col("x").agg().sum()).alias("pct").eval(&df).unwrap();
-    let vals = result.to_vec_strict::<f64>().unwrap();
+    let vals = eval_f64((col("x") / col("x").agg().sum()).alias("pct"), &df);
     assert!((vals[0] - 10.0 / 60.0).abs() < 1e-10);
     assert!((vals[1] - 20.0 / 60.0).abs() < 1e-10);
     assert!((vals[2] - 30.0 / 60.0).abs() < 1e-10);
@@ -702,16 +673,14 @@ fn pct_pattern() {
 
 #[test]
 fn with_columns_rejects_unaliased_reduce() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
     let err = df.with_columns([col("x").agg().sum()]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn with_columns_reduce_requires_alias_or_explicit_name() {
-    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = i32_df("x", &[10, 20, 30]);
     let df2 = df.with_columns([("x_total", col("x").agg().sum())]).unwrap();
     assert_eq!(df2.series("x_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![60, 60, 60]);
 }
@@ -722,84 +691,70 @@ fn with_columns_reduce_requires_alias_or_explicit_name() {
 
 #[test]
 fn str_lower_expr() {
-    let s = Series::from_strs("s", &["Hello", "WORLD", "Foo"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().lower().alias("lo").eval(&df).unwrap();
+    let df = str_df("s", &["Hello", "WORLD", "Foo"]);
+    let result = eval(col("s").str().lower().alias("lo"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
     assert_eq!(result.len(), 3);
 }
 
 #[test]
 fn str_upper_expr() {
-    let s = Series::from_strs("s", &["Hello", "world", "Foo"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().upper().alias("up").eval(&df).unwrap();
+    let df = str_df("s", &["Hello", "world", "Foo"]);
+    let result = eval(col("s").str().upper().alias("up"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
 }
 
 #[test]
 fn str_strip_expr() {
-    let s = Series::from_strs("s", &["  hi  ", " lo", "ok "]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let stripped = col("s").str().strip().alias("st").eval(&df).unwrap();
+    let df = str_df("s", &["  hi  ", " lo", "ok "]);
+    let stripped = eval(col("s").str().strip().alias("st"), &df);
     assert_eq!(stripped.dtype().unwrap().id(), TypeId::String);
-    let l = col("s").str().lstrip().alias("ls").eval(&df).unwrap();
+    let l = eval(col("s").str().lstrip().alias("ls"), &df);
     assert_eq!(l.dtype().unwrap().id(), TypeId::String);
-    let r = col("s").str().rstrip().alias("rs").eval(&df).unwrap();
+    let r = eval(col("s").str().rstrip().alias("rs"), &df);
     assert_eq!(r.dtype().unwrap().id(), TypeId::String);
 }
 
 #[test]
 fn str_len_expr() {
-    let s = Series::from_strs("s", &["ab", "cde", "f"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().len().alias("n").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![2, 3, 1]);
+    let df = str_df("s", &["ab", "cde", "f"]);
+    assert_eq!(eval_i32(col("s").str().len().alias("n"), &df), vec![2, 3, 1]);
 }
 
 #[test]
 fn str_byte_count_expr() {
-    let s = Series::from_strs("s", &["ab", "cde", "f"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().byte_count().alias("n").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![2, 3, 1]);
+    let df = str_df("s", &["ab", "cde", "f"]);
+    assert_eq!(eval_i32(col("s").str().byte_count().alias("n"), &df), vec![2, 3, 1]);
 }
 
 #[test]
 fn str_contains_expr() {
-    let s = Series::from_strs("s", &["foobar", "baz", "foo"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().contains("foo").alias("has").eval(&df).unwrap();
+    let df = str_df("s", &["foobar", "baz", "foo"]);
+    let result = eval(col("s").str().contains("foo").alias("has"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
 fn str_startswith_expr() {
-    let s = Series::from_strs("s", &["abc", "bca", "axy"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().starts_with("a").alias("sw").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
+    let df = str_df("s", &["abc", "bca", "axy"]);
+    assert_eq!(eval_bool(col("s").str().starts_with("a").alias("sw"), &df), vec![true, false, true]);
 }
 
 #[test]
 fn str_endswith_expr() {
-    let s = Series::from_strs("s", &["abc", "bca", "xya"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
-    let result = col("s").str().ends_with("a").alias("ew").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
+    let df = str_df("s", &["abc", "bca", "xya"]);
+    assert_eq!(eval_bool(col("s").str().ends_with("a").alias("ew"), &df), vec![false, true, true]);
 }
 
 #[test]
 fn str_preserves_output_name() {
-    let expr = col("s").str().lower();
-    assert_eq!(expr.output_name(), Some("s"));
+    assert_output_name(col("s").str().lower(), Some("s"));
 }
 
 #[test]
 fn with_columns_str_lower_no_alias() {
-    let s = Series::from_strs("s", &["Hello", "WORLD"]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = str_df("s", &["Hello", "WORLD"]);
     let df2 = df.with_columns([col("s").str().lower()]).unwrap();
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);
 }
@@ -810,18 +765,17 @@ fn with_columns_str_lower_no_alias() {
 
 #[test]
 fn when_then_otherwise_basic() {
-    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x]).unwrap();
-    let result = when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("out").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
+    let df = i32_df("x", &[1, 2, 3]);
+    assert_eq!(
+        eval_i32(when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("out"), &df,),
+        vec![0, 100, 100]
+    );
 }
 
 #[test]
 fn when_then_otherwise_scalar_literals_without_lit() {
-    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x]).unwrap();
-    let result = when(col("x").gt(1i32)).then(100i32).otherwise(0i32).alias("out").eval(&df).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
+    let df = i32_df("x", &[1, 2, 3]);
+    assert_eq!(eval_i32(when(col("x").gt(1i32)).then(100i32).otherwise(0i32).alias("out"), &df), vec![0, 100, 100]);
 }
 
 #[test]
@@ -850,10 +804,9 @@ fn when_then_otherwise_with_nulls_in_condition() {
 
 #[test]
 fn when_then_otherwise_string_branches() {
-    let age = Series::new::<i32>("age", &[20, 10, 30]).unwrap();
-    let df = DataFrame::from_series([age]).unwrap();
+    let df = i32_df("age", &[20, 10, 30]);
     let result =
-        when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category").eval(&df).unwrap();
+        eval(when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
@@ -861,22 +814,19 @@ fn when_then_otherwise_string_branches() {
 
 #[test]
 fn if_else_output_name_is_none() {
-    let expr = when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32));
-    assert_eq!(expr.output_name(), None);
+    assert_output_name(when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)), None);
 }
 
 #[test]
 fn if_else_requires_alias_in_with_columns() {
-    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x]).unwrap();
+    let df = i32_df("x", &[1, 2, 3]);
     let err = df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32))]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn if_else_with_alias_in_with_columns() {
-    let x = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x]).unwrap();
+    let df = i32_df("x", &[1, 2, 3]);
     let df2 =
         df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("big")]).unwrap();
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
@@ -884,8 +834,7 @@ fn if_else_with_alias_in_with_columns() {
 
 #[test]
 fn when_then_otherwise_composite() {
-    let age = Series::new::<i32>("age", &[25, 12, 18]).unwrap();
-    let df = DataFrame::from_series([age]).unwrap();
+    let df = i32_df("age", &[25, 12, 18]);
     let df2 = df
         .with_columns([when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category")])
         .unwrap();

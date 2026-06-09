@@ -167,7 +167,7 @@ fn owned_column_transfer_owner_type_mismatch_returns_original_transfer() {
     )
     .unwrap();
 
-    let transfer = transfer.try_into_owner::<String>().unwrap_err();
+    let transfer = transfer.try_into_owner::<String>().unwrap_err().into_transfer();
 
     assert_eq!(transfer.release_contract(), &release_contract());
     assert!(!dropped.load(Ordering::SeqCst));

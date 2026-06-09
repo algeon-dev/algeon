@@ -1,0 +1,365 @@
+use std::{
+    os::raw::{c_char, c_void},
+    ptr,
+};
+
+// Re-declare selected FFI functions with `i32` parameters so that tests can
+// pass deliberately invalid enum discriminants to the C shim without
+// constructing invalid Rust enum values (which is instant UB).
+#[allow(dead_code)]
+extern "C" {
+    #[link_name = "cudf_sort"]
+    pub(crate) fn cudf_sort_raw(
+        input: *mut c_void,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_key_columns: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_distinct"]
+    pub(crate) fn cudf_distinct_raw(
+        input: *mut c_void,
+        keys: *const i32,
+        num_keys: i32,
+        keep: i32,
+        null_equality: i32,
+        nan_equality: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_gather"]
+    pub(crate) fn cudf_gather_raw(
+        input: *mut c_void,
+        gather_map: *mut c_void,
+        bounds_policy: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_aggregation_create_count"]
+    pub(crate) fn cudf_aggregation_create_count_raw(null_policy: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_groupby_aggregate"]
+    pub(crate) fn cudf_groupby_aggregate_raw(
+        keys: *mut c_void,
+        values: *const *mut c_void,
+        aggregations: *const *mut c_void,
+        agg_counts: *const i32,
+        num_requests: i32,
+        num_aggregations: i32,
+        keys_null_policy: i32,
+        out_keys: *mut *mut c_void,
+        out_values: *mut *mut *mut c_void,
+        out_total_columns: *mut i32,
+    ) -> i32;
+    #[link_name = "cudf_inner_join"]
+    pub(crate) fn cudf_inner_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_left_join"]
+    pub(crate) fn cudf_left_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_full_join"]
+    pub(crate) fn cudf_full_join_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        left_payload: *mut c_void,
+        right_payload: *mut c_void,
+        null_equality: i32,
+        out_left: *mut *mut c_void,
+        out_right: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_scan_aggregation_create"]
+    pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_scan"]
+    pub(crate) fn cudf_scan_raw(
+        input: *mut c_void,
+        agg: *mut c_void,
+        scan_type: i32,
+        null_policy: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_unary_operation"]
+    pub(crate) fn cudf_unary_operation_raw(input: *mut c_void, op: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_binary_operation_vv"]
+    pub(crate) fn cudf_binary_operation_vv_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_binary_operation_vs"]
+    pub(crate) fn cudf_binary_operation_vs_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_binary_operation_sv"]
+    pub(crate) fn cudf_binary_operation_sv_raw(
+        lhs: *mut c_void,
+        rhs: *mut c_void,
+        op: i32,
+        output_type: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+}
+
+pub(crate) fn make_i32_column(data: &[i32]) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            ptr::null(),
+            0,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
+    let mut mask = vec![0u8; validity.len().div_ceil(8).div_ceil(64) * 64];
+    for (index, is_valid) in validity.iter().copied().enumerate() {
+        if is_valid {
+            mask[index / 8] |= 1 << (index % 8);
+        }
+    }
+    mask
+}
+
+pub(crate) fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut c_void {
+    assert_eq!(data.len(), validity.len());
+    let null_mask = validity_to_bitmask(validity);
+    let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            null_mask.as_ptr(),
+            null_count,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_string_column(data: &[&str]) -> *mut c_void {
+    let c_strings: Vec<_> = data.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
+    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let lengths: Vec<_> = data.iter().map(|value| value.len() as i32).collect();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_strings(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            data.len() as i32,
+            ptr::null(),
+            0,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_string_scalar(value: &str) -> *mut c_void {
+    let c_value = std::ffi::CString::new(value).unwrap();
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scalar_create_string(c_value.as_ptr(), 1, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_empty_i32_column() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_create_empty(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_empty_table() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_column_view(col: *mut c_void) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view(col, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_table_from_one_column(col: *mut c_void) -> *mut c_void {
+    let mut col_arr = [col];
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(col_arr.as_mut_ptr(), 1, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    // ownership moved into table
+    assert!(col_arr[0].is_null());
+    out
+}
+
+pub(crate) fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec<i32> {
+    let view = make_column_view(col);
+    let mut buf = vec![0i32; expected_len];
+    let buf_size = expected_len * std::mem::size_of::<i32>();
+    let st = unsafe { cudf_sys::cudf_column_view_to_host(view, buf.as_mut_ptr() as *mut c_void, buf_size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+    buf
+}
+
+pub(crate) fn read_string_column_data(col: *mut c_void) -> Vec<String> {
+    let view = make_column_view(col);
+    let mut size = 0i32;
+    let st = unsafe { cudf_sys::cudf_column_view_size(view, &mut size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut offsets = vec![0i32; size as usize + 1];
+    let mut total_chars = -1i32;
+    let st = unsafe {
+        cudf_sys::cudf_column_view_strings_to_host(
+            view,
+            offsets.as_mut_ptr(),
+            std::mem::size_of_val(offsets.as_slice()),
+            ptr::null_mut(),
+            0,
+            &mut total_chars,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut chars = vec![0u8; total_chars.max(0) as usize];
+    let st = unsafe {
+        cudf_sys::cudf_column_view_strings_to_host(
+            view,
+            offsets.as_mut_ptr(),
+            std::mem::size_of_val(offsets.as_slice()),
+            chars.as_mut_ptr() as *mut c_char,
+            chars.len(),
+            &mut total_chars,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+
+    offsets
+        .windows(2)
+        .map(|window| {
+            let start = window[0] as usize;
+            let end = window[1] as usize;
+            String::from_utf8(chars[start..end].to_vec()).unwrap()
+        })
+        .collect()
+}
+
+pub(crate) fn make_table_view(tbl: *mut c_void) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_view(tbl, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_i32_scalar(value: i32) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_scalar_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            &value as *const i32 as *const c_void,
+            1,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_i32_data_type() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_data_type_create(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_dictionary_i32_column(data: &[i32]) -> *mut c_void {
+    let col = make_i32_column(data);
+    let view = make_column_view(col);
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_dictionary_encode(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+    out
+}
+
+pub(crate) fn decode_dictionary_i32_column(dict_col: *mut c_void, expected_len: usize) -> Vec<i32> {
+    let dict_view = make_column_view(dict_col);
+    let mut decoded: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_dictionary_decode(dict_view, &mut decoded) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!decoded.is_null());
+    unsafe { cudf_sys::cudf_column_view_destroy(dict_view) };
+
+    let data = read_i32_column_data(decoded, expected_len);
+    unsafe { cudf_sys::cudf_column_destroy(decoded) };
+    data
+}
+
+pub(crate) fn make_sliced_column_view(col: *mut c_void, offset: usize, len: usize) -> *mut c_void {
+    let base = make_column_view(col);
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(base, offset as i32, len as i32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    unsafe { cudf_sys::cudf_column_view_destroy(base) };
+    out
+}
+
+pub(crate) fn unique_missing_path(extension: &str) -> std::ffi::CString {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "cudf-sys-ffi-regressions-missing-{}-{}.{}",
+        std::process::id(),
+        nanos,
+        extension
+    ));
+    let _ = std::fs::remove_file(&path);
+    std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap()
+}

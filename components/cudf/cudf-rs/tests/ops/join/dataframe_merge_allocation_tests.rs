@@ -78,7 +78,7 @@ fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
         assert_eq!(result.left.num_rows(), 3);
         assert_eq!(result.right.num_rows(), 3);
         let _ = result.left.series("left_id").unwrap().to_vec_strict::<i32>().unwrap();
-        let _ = result.right.series("right_id").unwrap().to_vec_optional::<i32>().unwrap();
+        let _ = result.right.series("right_id").unwrap().to_optional_vec::<i32>().unwrap();
         result
     });
 
