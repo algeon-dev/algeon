@@ -226,6 +226,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
                 input_map.insert(input_name, handle);
             }
 
+            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             // The consumer query starts after all GPU-resident producer handles are registered. No
             // CPU fallback is attempted after this point.
             let result = execute_query_plan_with_gpu_inputs(context, &plan, &input_map).map_err(|error| {

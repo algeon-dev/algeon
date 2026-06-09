@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    LocalParquetSource, PredicateDisposition,
+    LocalParquetSource, PredicateDisposition, WindowFrame, WindowNode,
     capability::join::SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerReductionStage},
 };
@@ -874,12 +874,14 @@ fn root_topk_window_input_sort_ids(plan: &QueryPlan, window_ids: &[NodeId]) -> R
                 [("node_id", window_id.to_string()), ("role", "window".to_string())],
             ));
         };
-        if window.spec.order_by.is_empty() {
-            continue;
-        }
         if matches!(plan.node(window.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
-            sort_ids.push(window.input);
+            if !window.spec.order_by.is_empty() || root_topk_window_allows_orderless_input_sort(window) {
+                sort_ids.push(window.input);
+            }
         } else {
+            if window.spec.order_by.is_empty() {
+                continue;
+            }
             return Err(CapabilityDecision::rejected(
                 "root_topk_join_aggregate_requires_ordered_window_input",
                 [("node_id", window_id.to_string()), ("input_id", window.input.to_string())],
@@ -889,6 +891,16 @@ fn root_topk_window_input_sort_ids(plan: &QueryPlan, window_ids: &[NodeId]) -> R
     sort_ids.sort_unstable();
     sort_ids.dedup();
     Ok(sort_ids)
+}
+
+fn root_topk_window_allows_orderless_input_sort(window: &WindowNode) -> bool {
+    !window.spec.partition_by.is_empty()
+        && !window.spec.functions.is_empty()
+        && window
+            .spec
+            .functions
+            .iter()
+            .all(|function| matches!(function, WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. }))
 }
 
 fn aggregate_projection_in_reachable_fragment(

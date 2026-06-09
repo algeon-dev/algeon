@@ -93,6 +93,23 @@ fn small_grouped_aggregate_without_topk_or_residual_keeps_gpu_preferred() {
 }
 
 #[test]
+fn small_selective_full_sort_join_aggregate_prefers_cpu() {
+    let plan = full_sort_join_aggregate_plan(4, 10_000, 1024 * 1024);
+
+    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+
+    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
+        panic!("small full-sort join/aggregate should prefer CPU");
+    };
+    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveFullSort);
+    assert_eq!(facts.selected_row_groups, Some(8));
+    assert_eq!(facts.sort_count, 1);
+    assert_eq!(facts.join_count, 1);
+    assert_eq!(facts.grouped_aggregate_count, 1);
+    assert_eq!(facts.min_topk_fetch, None);
+}
+
+#[test]
 fn disabled_preference_options_keep_gpu_preferred() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
@@ -240,6 +257,66 @@ fn grouped_aggregate_plan(row_groups: usize) -> nexus_query_engine::QueryPlan {
         aggregate_schema,
     );
     builder.finish_with_host_sink(aggregate)
+}
+
+fn full_sort_join_aggregate_plan(
+    row_groups_per_source: usize,
+    rows_per_source: u64,
+    bytes_per_source: u64,
+) -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left_schema = key_value_schema();
+    let right_schema = key_label_schema();
+    let join_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("v", DataType::Int64, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("sum_v", DataType::Int64, true),
+    ]));
+    let left = builder.add_source(SourceNode::LocalParquet(parquet_source(
+        "/tmp/preference-full-sort-left.parquet",
+        Arc::clone(&left_schema),
+        vec!["k", "v"],
+        row_groups_per_source,
+        rows_per_source,
+        bytes_per_source,
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(parquet_source(
+        "/tmp/preference-full-sort-right.parquet",
+        Arc::clone(&right_schema),
+        vec!["k", "label"],
+        row_groups_per_source,
+        rows_per_source,
+        bytes_per_source,
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("sum_v"), true, false)]),
+        aggregate_schema,
+    );
+    builder.finish_with_host_sink(sort)
 }
 
 fn parquet_source(

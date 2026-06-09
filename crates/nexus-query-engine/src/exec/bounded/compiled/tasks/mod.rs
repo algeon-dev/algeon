@@ -39,6 +39,7 @@ use crate::{
             execute_final_sort_node_from_stream_with_retry, materialize_bounded_join_leaf_local_parquet_source_stream,
             plan_bounded_join_leaf_local_parquet_source_stream, release_bounded_compiled_join_build_state,
             release_bounded_compiled_join_probe_state, release_reservations_reverse,
+            reusable_hash_join_stream_target_output_bytes,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},

@@ -160,6 +160,158 @@ pub(super) fn root_full_sort_single_keyed_join_grouped_aggregate_plan() -> Query
     builder.finish_with_host_sink(sort)
 }
 
+pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_plan() -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("sold_date_sk", DataType::Int32, false),
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let date_schema = Arc::new(Schema::new(vec![Field::new("date_sk", DataType::Int32, false)]));
+    let item_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("class_id", DataType::Int32, false),
+        Field::new("category_id", DataType::Int32, false),
+    ]));
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let pre_aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("pre_amount_sum", DataType::Int64, true),
+    ]));
+    let second_join_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("class_id", DataType::Int32, false),
+        Field::new("category_id", DataType::Int32, false),
+        Field::new("pre_amount_sum", DataType::Int64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("class_id", DataType::Int32, false),
+        Field::new("category_id", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+    ]));
+    let window_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("class_id", DataType::Int32, false),
+        Field::new("category_id", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+        Field::new("class_amount_sum", DataType::Int64, true),
+    ]));
+    let projection_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("class_id", DataType::Int32, false),
+        Field::new("category_id", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+        Field::new("class_amount_sum", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-window-fact.parquet",
+        fact_schema,
+        vec!["sold_date_sk".into(), "item_sk".into(), "amount".into()],
+    )));
+    let date = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-window-date.parquet",
+        date_schema,
+        vec!["date_sk".into()],
+    )));
+    let item = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-window-item.parquet",
+        item_schema,
+        vec!["item_sk".into(), "class_id".into(), "category_id".into()],
+    )));
+    let first_join = builder.add_join(
+        fact,
+        date,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "sold_date_sk", "sold_date_sk"),
+                ColumnRef::input(1, "date_sk", "date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        first_join_schema,
+    );
+    let pre_aggregate = builder.add_aggregate(
+        first_join,
+        AggregateSpec::new(
+            vec![Expr::column("item_sk")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "pre_amount_sum")],
+        ),
+        Arc::clone(&pre_aggregate_schema),
+    );
+    let second_join = builder.add_join(
+        pre_aggregate,
+        item,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+            JoinOutputColumn::right(ColumnRef::input(1, "class_id", "class_id"), "class_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category_id", "category_id"), "category_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "pre_amount_sum", "pre_amount_sum"), "pre_amount_sum"),
+        ])
+        .with_build_side(JoinSide::Right),
+        second_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        second_join,
+        AggregateSpec::new(
+            vec![Expr::column("item_sk"), Expr::column("class_id"), Expr::column("category_id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("pre_amount_sum"), "amount_sum")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let window_input_sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("class_id"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let window = builder.add_window(
+        window_input_sort,
+        WindowSpec::new(
+            vec![Expr::column("class_id")],
+            Vec::new(),
+            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("amount_sum"), "class_amount_sum")],
+        ),
+        Arc::clone(&window_schema),
+    );
+    let projection = builder.add_projection(
+        window,
+        projection_outputs(
+            vec![
+                Expr::column("item_sk"),
+                Expr::column("class_id"),
+                Expr::column("category_id"),
+                Expr::column("amount_sum"),
+                Expr::column("class_amount_sum"),
+            ],
+            Arc::clone(&projection_schema),
+        ),
+    );
+    let final_sort = builder.add_sort(
+        projection,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("category_id"), false, true),
+            SortExpr::new(Expr::column("class_id"), false, true),
+            SortExpr::new(Expr::column("item_sk"), false, true),
+            SortExpr::new(Expr::column("class_amount_sum"), false, true),
+        ]),
+        projection_schema,
+    );
+    builder.finish_with_host_sink(final_sort)
+}
+
 pub(super) fn root_full_sort_keyless_join_grouped_aggregate_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),

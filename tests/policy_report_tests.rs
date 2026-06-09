@@ -22,6 +22,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
             FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred,
             "native_small_selective_residual_join_cpu_preferred",
         ),
+        (FallbackReason::NativeSmallSelectiveFullSortCpuPreferred, "native_small_selective_full_sort_cpu_preferred"),
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),

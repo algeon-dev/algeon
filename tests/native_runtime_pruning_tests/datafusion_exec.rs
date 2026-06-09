@@ -40,6 +40,7 @@ async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert!(metrics.elapsed_compute().unwrap_or(0) > 0);
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_source_batch_metrics(&metrics);

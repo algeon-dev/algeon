@@ -1,4 +1,5 @@
 use super::*;
+use crate::{WindowFrame, WindowNode};
 
 pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     plan: &QueryPlan,
@@ -285,10 +286,27 @@ fn root_full_sort_sink_path_grouped_aggregate_id(plan: &QueryPlan) -> Option<Nod
         match &node.kind {
             PlanNode::Projection(projection) => current = projection.input,
             PlanNode::Filter(filter) => current = filter.input,
+            PlanNode::Sort(sort) => current = sort.input,
+            PlanNode::Window(window) if root_full_sort_window_allows_sink_path_grouped_aggregate_search(window) => {
+                current = window.input;
+            },
             PlanNode::Aggregate(aggregate) if !aggregate.spec.group_exprs.is_empty() => return Some(current),
             _ => return None,
         }
     }
+}
+
+pub(in crate::capability) fn root_full_sort_window_allows_sink_path_grouped_aggregate_search(
+    window: &WindowNode,
+) -> bool {
+    window.spec.order_by.is_empty()
+        && !window.spec.partition_by.is_empty()
+        && !window.spec.functions.is_empty()
+        && window
+            .spec
+            .functions
+            .iter()
+            .all(|function| matches!(function, WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. }))
 }
 
 fn root_full_sort_keyless_or_cross_join_ids(

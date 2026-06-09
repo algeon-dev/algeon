@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, Time,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType, Time,
 };
 use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, QueryMetrics};
 
@@ -1383,11 +1383,27 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
 }
 
 fn summary_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Count {
-    MetricBuilder::new(metrics).with_type(MetricType::Summary).counter(name, partition)
+    MetricBuilder::new(metrics)
+        .with_type(MetricType::Summary)
+        .with_category(summary_counter_category(name))
+        .counter(name, partition)
 }
 
 fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Time {
-    MetricBuilder::new(metrics).with_type(MetricType::Summary).subset_time(name, partition)
+    MetricBuilder::new(metrics)
+        .with_type(MetricType::Summary)
+        .with_category(MetricCategory::Timing)
+        .subset_time(name, partition)
+}
+
+fn summary_counter_category(name: &str) -> MetricCategory {
+    if name.ends_with("_bytes_observed") {
+        MetricCategory::Rows
+    } else if name.contains("bytes") {
+        MetricCategory::Bytes
+    } else {
+        MetricCategory::Rows
+    }
 }
 
 #[cfg(test)]
@@ -1398,6 +1414,25 @@ mod tests {
 
     use super::*;
     use crate::native_report::NativeDataFusionExecutionMetrics;
+
+    #[test]
+    fn native_summary_metrics_set_datafusion_v54_categories() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let _native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let metrics = metrics_set.clone_inner();
+
+        let category_for = |name: &str| {
+            metrics.iter().find(|metric| metric.value().name() == name).and_then(|metric| metric.metric_category())
+        };
+
+        assert_eq!(category_for("reservation_live_peak_bytes"), Some(MetricCategory::Bytes));
+        assert_eq!(category_for("resident_dataframe_peak_bytes_observed"), Some(MetricCategory::Rows));
+        assert_eq!(category_for("source_chunks_committed"), Some(MetricCategory::Rows));
+        assert_eq!(category_for("source_read_time"), Some(MetricCategory::Timing));
+        assert_eq!(category_for("output_rows"), Some(MetricCategory::Rows));
+        assert_eq!(category_for("output_bytes"), Some(MetricCategory::Bytes));
+        assert_eq!(category_for("elapsed_compute"), Some(MetricCategory::Timing));
+    }
 
     #[test]
     fn aggregate_strategy_rows_bridge_statistical_contract_labels() {

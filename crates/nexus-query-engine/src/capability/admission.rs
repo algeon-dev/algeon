@@ -768,10 +768,13 @@ fn root_full_sort_aggregate_is_on_sink_path(plan: &QueryPlan, shape: &RootFullSo
             PlanNode::Sort(sort) => current = sort.input,
             PlanNode::Projection(projection) => current = projection.input,
             PlanNode::Filter(filter) => current = filter.input,
-            PlanNode::Window(window) => current = window.input,
+            PlanNode::Window(window) if root_full_sort_window_allows_sink_path_grouped_aggregate_search(window) => {
+                current = window.input;
+            },
             PlanNode::Aggregate(_) => return current == shape.aggregate_id,
             PlanNode::Source(_)
             | PlanNode::Join(_)
+            | PlanNode::Window(_)
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)

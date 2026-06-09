@@ -1,0 +1,149 @@
+use super::*;
+
+#[test]
+fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate_keys_and_nulls() {
+    let dir = unique_temp_dir("nexus-query-engine-aggregate-join-pushdown-parity");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+
+    let left_schema = write_aggregate_join_pushdown_left_parquet(&runtime, &left_path);
+    let right_schema = write_aggregate_join_pushdown_right_parquet(&runtime, &right_path);
+    let plan = aggregate_join_pushdown_execution_plan(&left_path, &left_schema, &right_path, &right_schema);
+    let optimizer_result = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let original = execute_query_plan(&context, &plan).unwrap();
+    let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
+
+    let QueryOutput::HostArrow(original_batch) = original.output() else {
+        panic!("original aggregate-join plan should materialize host output");
+    };
+    let QueryOutput::HostArrow(optimized_batch) = optimized.output() else {
+        panic!("optimized aggregate-join plan should materialize host output");
+    };
+    assert_eq!(original_batch.schema(), optimized_batch.schema());
+    assert_eq!(
+        string_array(original_batch, 0).iter().collect::<Vec<_>>(),
+        string_array(optimized_batch, 0).iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        int64_array(original_batch, 1).iter().collect::<Vec<_>>(),
+        int64_array(optimized_batch, 1).iter().collect::<Vec<_>>()
+    );
+    assert_eq!(string_array(optimized_batch, 0).iter().collect::<Vec<_>>(), vec![Some("A"), Some("B")]);
+    assert_eq!(int64_array(optimized_batch, 1).iter().collect::<Vec<_>>(), vec![Some(25), Some(14)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn aggregate_join_pushdown_execution_plan(
+    left_path: &Path,
+    left_schema: &Arc<Schema>,
+    right_path: &Path,
+    right_schema: &Arc<Schema>,
+) -> nexus_query_engine::QueryPlan {
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("ss_net_profit", DataType::Int64, true),
+        Field::new("s_store_name", DataType::Utf8, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("s_store_name", DataType::Utf8, true),
+        Field::new("sum_profit", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(local_source(
+        left_path,
+        left_schema,
+        &["zip_prefix", "s_store_name", "ss_net_profit"],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(local_source(right_path, right_schema, &["zip_prefix"])));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "zip_prefix", "zip_prefix"),
+                nexus_query_engine::ColumnRef::input(1, "zip_prefix", "zip_prefix"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(
+                nexus_query_engine::ColumnRef::input(0, "ss_net_profit", "ss_net_profit"),
+                "ss_net_profit",
+            ),
+            JoinOutputColumn::left(
+                nexus_query_engine::ColumnRef::input(0, "s_store_name", "s_store_name"),
+                "s_store_name",
+            ),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let projection = builder.add_projection(
+        join,
+        vec![
+            ProjectionOutput::new(Expr::column("s_store_name"), Field::new("s_store_name", DataType::Utf8, true)),
+            ProjectionOutput::new(
+                Expr::column("ss_net_profit"),
+                Field::new("__cudf_aggregate_arg_0", DataType::Int64, true),
+            ),
+        ],
+    );
+    let aggregate = builder.add_aggregate(
+        projection,
+        AggregateSpec::new(
+            vec![Expr::column("s_store_name")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "sum_profit")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("s_store_name"), false, false)]),
+        aggregate_schema,
+    );
+    builder.finish_with_host_sink(sort)
+}
+
+fn local_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        Arc::clone(schema),
+        columns.iter().map(|column| (*column).to_string()).collect(),
+    )
+}
+
+fn write_aggregate_join_pushdown_left_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("zip_prefix", DataType::Int32, true),
+        Field::new("s_store_name", DataType::Utf8, true),
+        Field::new("ss_net_profit", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), Some(3), Some(3), None])),
+            Arc::new(StringArray::from(vec![Some("A"), Some("A"), Some("A"), Some("B"), Some("B"), Some("B")])),
+            Arc::new(Int64Array::from(vec![Some(10), None, Some(5), Some(7), None, Some(100)])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_aggregate_join_pushdown_right_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("zip_prefix", DataType::Int32, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), Some(3), Some(3), None]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}

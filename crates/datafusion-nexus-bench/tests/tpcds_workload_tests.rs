@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::NativeCudfExecutionConfig;
+use datafusion_nexus::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, ParityFloatTolerance};
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_PROFILE_ENV,
@@ -12,8 +12,10 @@ use datafusion_nexus_bench::{
     TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT, TPCDS_QUERIES, TPCDS_QUERY_COUNT,
     TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
     TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TPCDS_TABLES, describe_tpcds_dataset,
-    tiny_tpcds_dataset_metadata, tpcds_native_optimizer_config, tpcds_native_profile_settings_with_env,
-    tpcds_native_report_session_config, tpcds_query_ids, tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
+    tiny_tpcds_dataset_metadata, tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
+    tpcds_native_optimizer_config, tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+    tpcds_parity_report_rows_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
+    write_tiny_tpcds_parquet_dataset,
 };
 
 #[test]
@@ -81,6 +83,17 @@ fn tpcds_native_optimizer_config_disables_cpu_preference_for_gpu_only_sql_surfac
     assert!(
         !config.native_plan_preference_options().enabled,
         "TPC-DS native surfaces must not emit cpu_preferred_not_run while SQL may contain GPU-only cugraph_* calls"
+    );
+}
+
+#[test]
+fn tpcds_hybrid_benchmark_optimizer_config_enables_cpu_preference() {
+    let profile = tpcds_native_profile_settings_with_env(|_| None);
+    let config = tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(&profile);
+
+    assert!(
+        config.native_plan_preference_options().enabled,
+        "hybrid_cpu_preferred must classify small/selective native plans instead of skipping every query"
     );
 }
 
@@ -204,6 +217,44 @@ fn tiny_tpcds_dataset_metadata_projects_into_workload_dataset_metadata() {
     assert_eq!(workload.generation_command, "test_projection");
     assert_eq!(workload.table_count, 24);
     assert_eq!(workload.file_count, 24);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpcds_parity_report_rows_emit_progress_per_completed_query() {
+    let dir = unique_temp_dir("datafusion-nexus-tpcds-streaming-parity");
+    write_tiny_tpcds_parquet_dataset(&dir).unwrap();
+
+    let query_filter = vec!["q01".to_string()];
+    let mut events = Vec::new();
+    let mut emitted_lines = Vec::new();
+    let mut progress = |event: datafusion_nexus_bench::TpcdsParityProgressEvent<'_>| match event {
+        datafusion_nexus_bench::TpcdsParityProgressEvent::QueryStarted { query_index, total, query_id } => {
+            events.push(format!("start:{query_index}/{total}:{query_id}"));
+        },
+        datafusion_nexus_bench::TpcdsParityProgressEvent::RowReady { query_index, total, query_id, row } => {
+            events.push(format!("row:{query_index}/{total}:{query_id}"));
+            emitted_lines.push(row.to_tsv_line());
+        },
+    };
+
+    let rows = tpcds_parity_report_rows_with_external_oracles(
+        &dir,
+        tpcds_report_session_config(),
+        CudfOptimizerConfig::new(GpuFallbackPolicy::CpuOnly),
+        Some(&query_filter),
+        None,
+        ParityFloatTolerance::exact(),
+        Some(&mut progress),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].query_id, "q01");
+    assert_eq!(events, vec!["start:1/1:q01", "row:1/1:q01"]);
+    assert_eq!(emitted_lines, vec![rows[0].to_tsv_line()]);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -603,6 +603,22 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         topk_projection = join(&mut builder, topk_projection, store, "post_window_root");
         topk_projection = project_key_value(&mut builder, topk_projection);
         key_value_schema()
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortedAggregateWindow) {
+        let sorted = builder.add_sort(
+            topk_projection,
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
+            key_value_schema(),
+        );
+        topk_projection = unordered_aggregate_window_project_key_value(&mut builder, sorted);
+        key_value_schema()
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow) {
+        let sorted = builder.add_sort(
+            topk_projection,
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
+            key_value_schema(),
+        );
+        topk_projection = unordered_global_aggregate_window_project_key_value(&mut builder, sorted);
+        key_value_schema()
     } else if matches!(variant, RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection) {
         topk_projection = rank_filter_window_project_key_value(&mut builder, topk_projection);
         key_value_schema()
@@ -649,6 +665,8 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::KeylessOuterCrossUnorderedWindow
         | RootTopKJoinAggregateVariant::BranchLocalWindow
         | RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin
+        | RootTopKJoinAggregateVariant::SortedAggregateWindow
+        | RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow
         | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection
         | RootTopKJoinAggregateVariant::WindowFullOuterLeftOnlyProjection
         | RootTopKJoinAggregateVariant::UnsortedRankWindow
@@ -709,6 +727,8 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     KeylessOuterCrossUnorderedWindow,
     BranchLocalWindow,
     WindowInputSortFullOuterJoin,
+    SortedAggregateWindow,
+    SortedGlobalAggregateWindow,
     RankFilterWindowFinalProjection,
     WindowFullOuterLeftOnlyProjection,
     UnsortedRankWindow,
@@ -1207,6 +1227,27 @@ fn unordered_aggregate_window_project_key_value(
         input,
         WindowSpec::new(
             vec![Expr::column("k")],
+            vec![],
+            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
+        ),
+        window_schema,
+    );
+    project_key_value(builder, window)
+}
+
+fn unordered_global_aggregate_window_project_key_value(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::NodeId,
+) -> nexus_query_engine::NodeId {
+    let window_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new("window_v", DataType::Int64, true),
+    ]));
+    let window = builder.add_window(
+        input,
+        WindowSpec::new(
+            vec![],
             vec![],
             vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
         ),

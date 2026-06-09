@@ -357,6 +357,9 @@ fn validate_binary_expr_with_expected_type(
             available_columns,
         );
     }
+    if matches!(op, BinaryOp::And | BinaryOp::Or) && output_type.is_none() {
+        return validate_logical_binary_expr(left, op, right, input_schema, available_columns);
+    }
 
     let left_type = validate_expr(left, input_schema, available_columns)?;
     let right_type = validate_expr(right, input_schema, available_columns)?;
@@ -412,6 +415,29 @@ fn validate_binary_expr_with_expected_type(
             Ok(ArrowDataType::Boolean)
         },
     }
+}
+
+fn validate_logical_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    let mut stack = vec![right, left];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expr::Binary { left, op: nested_op, right, output_type: None } if *nested_op == op => {
+                stack.push(right);
+                stack.push(left);
+            },
+            _ => {
+                let data_type = validate_expr(expr, input_schema, available_columns)?;
+                require_boolean(&data_type, "boolean binary operand")?;
+            },
+        }
+    }
+    Ok(ArrowDataType::Boolean)
 }
 
 fn decimal_arithmetic_output_type(

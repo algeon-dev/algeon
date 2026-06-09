@@ -35,7 +35,8 @@ pub use dataset::{
     external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
 };
 pub use parity::{
-    TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, tpcds_parity_workload_items,
+    TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
+    tpcds_parity_report_rows_with_external_oracles, tpcds_parity_workload_items,
     tpcds_parity_workload_items_with_external_oracles, tpcds_parity_workload_items_with_session_configs,
 };
 pub use tiny::write_tiny_tpcds_parquet_dataset;
@@ -307,6 +308,17 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
         nexus_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
         profile,
     )
+}
+
+/// Analytics/performance optimizer config for the `hybrid_cpu_preferred`
+/// benchmark surface. Ordinary native TPC-DS report/parity surfaces keep CPU
+/// preference disabled so all-native validation remains exact; the hybrid
+/// benchmark uses this config to quantify the conservative CPU-preference model.
+pub fn tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(
+    profile: &TpcdsNativeProfileSettings,
+) -> CudfOptimizerConfig {
+    tpcds_native_analytics_optimizer_config_with_profile_settings(profile)
+        .with_native_plan_preference_options(nexus_query_engine::NativePlanPreferenceOptions::default())
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(

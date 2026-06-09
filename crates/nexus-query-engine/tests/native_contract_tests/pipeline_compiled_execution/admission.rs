@@ -1133,6 +1133,57 @@ fn strict_admission_accepts_root_full_sort_keyed_join_aggregate_with_modeled_gat
 }
 
 #[test]
+fn strict_admission_accepts_root_full_sort_keyed_grouped_aggregate_below_orderless_window() {
+    let plan = root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_root_full_sort_join_aggregate_pipeline(),
+        "sink-path grouped aggregate below an orderless whole-partition window should be admitted: {:?}",
+        analysis.root_full_sort_join_aggregate_admission
+    );
+    assert_eq!(
+        analysis.strict_bounded_envelope_admission(),
+        CapabilityEnvelopeAdmission::Admitted { envelope: StrictBoundedEnvelope::RootFullSortJoinAggregate }
+    );
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("q98-shaped root full-sort join/aggregate should be admitted");
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::FinalSort, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Window, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled q98-shaped root full-sort report should be valid");
+    assert_modeled_gate_row(
+        "root full-sort keyed grouped aggregate below window",
+        &report,
+        ReservationKind::OperatorOutput,
+        "window_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyed grouped aggregate below window",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyed grouped aggregate below window",
+        &report,
+        ReservationKind::FinalSort,
+        "final_sort_contract",
+    );
+}
+
+#[test]
 fn strict_admission_accepts_root_full_sort_keyless_scalar_projection_fanout_with_modeled_gates() {
     let plan = root_full_sort_keyless_scalar_projection_fanout_plan();
     let analysis = plan.capability_analysis();
@@ -1534,18 +1585,19 @@ fn compiled_bounded_support_accepts_root_topk_rtk9_subcontract_graphs() {
 
 #[test]
 fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_in_graph() {
-    let plan = optimize_query_plan(
+    let optimized = optimize_query_plan(
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn),
         &NativeOptimizerOptions::default(),
-    )
-    .plan;
+    );
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 3);
+    let plan = optimized.plan;
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
     let pipeline =
         compile_pipeline(&plan, &analysis).expect("RTK-10 anti-rewritten aggregate fan-in plan should compile");
 
     assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 8);
-    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 3);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 6);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
     assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
     assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
@@ -1590,6 +1642,7 @@ fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
         RootTopKJoinAggregateVariant::BranchLocalWindow,
         RootTopKJoinAggregateVariant::KeylessOuterCrossWindow,
         RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin,
+        RootTopKJoinAggregateVariant::SortedAggregateWindow,
         RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
@@ -1603,6 +1656,7 @@ fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
             RootTopKJoinAggregateVariant::Window
             | RootTopKJoinAggregateVariant::BranchLocalWindow
             | RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
+            | RootTopKJoinAggregateVariant::SortedAggregateWindow
             | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection => 1,
             _ => unreachable!("window subcontract variants are enumerated above"),
         };
@@ -1611,6 +1665,7 @@ fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
             RootTopKJoinAggregateVariant::Window
             | RootTopKJoinAggregateVariant::BranchLocalWindow
             | RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
+            | RootTopKJoinAggregateVariant::SortedAggregateWindow
             | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection => 2,
             _ => unreachable!("window subcontract variants are enumerated above"),
         };

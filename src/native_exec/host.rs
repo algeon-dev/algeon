@@ -148,6 +148,7 @@ impl ExecutionPlan for NativeCudfExec {
         let execution_config = self.execution_config.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
+            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             // Context construction is the configuration/validation stage. Failures here happen
             // before the native query starts.
             let context_lease = execution_config

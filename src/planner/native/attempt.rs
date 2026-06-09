@@ -105,6 +105,7 @@ fn native_preference_rejected(report: &PlanningReport) -> bool {
             reason,
             FallbackReason::NativeSmallSelectiveTopkCpuPreferred
                 | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
+                | FallbackReason::NativeSmallSelectiveFullSortCpuPreferred
         )
     })
 }
@@ -116,6 +117,9 @@ fn native_preference_fallback_reason(reason: nexus_query_engine::NativePlanCpuPr
         },
         nexus_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin => {
             FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
+        },
+        nexus_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveFullSort => {
+            FallbackReason::NativeSmallSelectiveFullSortCpuPreferred
         },
     }
 }

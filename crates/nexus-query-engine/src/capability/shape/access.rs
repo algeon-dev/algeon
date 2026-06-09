@@ -551,6 +551,126 @@ pub(in crate::capability) fn validate_bounded_join_subtree_for_capability(
     }
 }
 
+pub(in crate::capability) fn validate_bounded_join_subtree_with_preaggregate_leaves_rooted_at_join_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "aggregate_over_join_topk_join_subplan_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Join(_) => {
+            let mut join_count = 0;
+            validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(plan, node_id, &mut join_count)
+        },
+        PlanNode::Projection(projection) => {
+            validate_bounded_join_subtree_with_preaggregate_leaves_rooted_at_join_for_capability(plan, projection.input)
+        },
+        PlanNode::Source(_)
+        | PlanNode::Filter(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
+            "aggregate_over_join_topk_input_requires_join_subplan",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
+    }
+}
+
+fn validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    join_count: &mut usize,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "join_subtree_input_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Join(join) => {
+            if multi_join_subtree_join_execution_capability(join).is_none() {
+                return Err(CapabilityDecision::rejected(
+                    "join_subtree_input_unsupported_join",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("join_type", join.spec.join_type.to_string()),
+                        ("key_count", join.spec.keys.len().to_string()),
+                        ("has_residual", join.spec.residual_predicate.is_some().to_string()),
+                        ("build_side", join.spec.build_side.to_string()),
+                    ],
+                ));
+            }
+            *join_count += 1;
+            validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(plan, join.inputs[0], join_count)?;
+            validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(plan, join.inputs[1], join_count)
+        },
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => {
+            validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(plan, filter.input, join_count)
+        },
+        PlanNode::Projection(projection) => {
+            validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(plan, projection.input, join_count)
+        },
+        PlanNode::Aggregate(aggregate) => {
+            validate_grouped_sum_preaggregate_leaf(plan, node_id, aggregate)?;
+            Ok(())
+        },
+        PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => Err(CapabilityDecision::rejected(
+            "join_subtree_input_unsupported_node",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
+    }
+}
+
+fn validate_grouped_sum_preaggregate_leaf(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+) -> Result<(), CapabilityDecision> {
+    if aggregate.spec.group_exprs.is_empty()
+        || aggregate.spec.aggr_exprs.is_empty()
+        || aggregate.spec.grouping_sets.is_some()
+    {
+        return Err(CapabilityDecision::rejected(
+            "join_subtree_input_unsupported_preaggregate",
+            [
+                ("node_id", node_id.to_string()),
+                ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+                ("aggregate_expr_count", aggregate.spec.aggr_exprs.len().to_string()),
+                ("has_grouping_sets", aggregate.spec.grouping_sets.is_some().to_string()),
+            ],
+        ));
+    }
+    for expr in &aggregate.spec.aggr_exprs {
+        if expr.function != AggregateFunction::Sum || expr.distinct || expr.filter.is_some() {
+            return Err(CapabilityDecision::rejected(
+                "join_subtree_input_unsupported_preaggregate",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("function", expr.function.as_str().to_string()),
+                    ("distinct", expr.distinct.to_string()),
+                    ("has_filter", expr.filter.is_some().to_string()),
+                ],
+            ));
+        }
+    }
+    validate_local_parquet_leaf_pipeline_for_capability(plan, aggregate.input)
+}
+
 pub(in crate::capability) fn validate_bounded_join_subtree_rooted_at_join_for_capability(
     plan: &QueryPlan,
     node_id: NodeId,

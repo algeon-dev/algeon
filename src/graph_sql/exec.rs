@@ -142,6 +142,8 @@ impl CugraphAlgoExec {
                 .with_fact("partition", partition)
                 .into());
             }
+            let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let edge_schema = self.edge_source.schema();
             let edge_frame =
                 execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
@@ -201,7 +203,6 @@ impl CugraphAlgoExec {
                     error,
                 ))
             })?;
-            let metrics = NativeCudfMetrics::new(&self.metrics, partition);
             metrics.record_query_metrics(&query_metrics);
             return Ok((self.gpu_result_input_name.clone(), handle));
         }
@@ -214,6 +215,8 @@ impl CugraphAlgoExec {
             .with_fact("partition", partition)
             .into());
         }
+        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let edge_schema = self.edge_source.schema();
         let edge_frame =
             execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
@@ -221,7 +224,6 @@ impl CugraphAlgoExec {
         let predicate_frames =
             execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                 .await?;
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let prepared =
             prepare_bfs_logical_gpu_inputs(native_context, &self.spec, edge_schema, edge_frame, predicate_frames)?;
         let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
@@ -372,6 +374,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         let default_execution_config = self.native_execution_config.clone();
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
+            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let execution_config = edge_execution_config(edge_source.as_ref(), &default_execution_config);
             let context_lease = execution_config.execution_context().map_err(|error| {
                 DataFusionError::from(

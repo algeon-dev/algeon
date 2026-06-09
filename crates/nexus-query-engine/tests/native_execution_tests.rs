@@ -62,6 +62,8 @@ mod window_execution;
 
 #[path = "native_execution_tests/aggregate_execution.rs"]
 mod aggregate_execution;
+#[path = "native_execution_tests/aggregate_join_pushdown.rs"]
+mod aggregate_join_pushdown;
 #[path = "native_execution_tests/core_execution.rs"]
 mod core_execution;
 #[cfg(feature = "cugraph")]

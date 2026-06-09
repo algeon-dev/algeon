@@ -296,6 +296,34 @@ fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled(
 }
 
 #[test]
+fn native_optimizer_rule_prefers_cpu_for_small_selective_full_sort_join_when_enabled() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-full-sort");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_sql_plan(&left, &right);
+    let config = native_optimizer_config().with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(
+        optimized.downcast_ref::<NativeCudfExec>().is_none(),
+        "CPU-preferred plan should not be replaced by a native execution boundary"
+    );
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSmallSelectiveFullSortCpuPreferred, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-gpu-only");
     let left = dir.join("left.parquet");

@@ -15,14 +15,14 @@ use datafusion::{
 use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, NativePlanningFailure,
     NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityWorkloadItem,
+    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityFloatTolerance,
 };
 use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
-    register_tpcds_tables,
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, TpcdsWorkloadResult, discover_tpcds_table_layout,
+    native_tpcds_session_config, register_tpcds_tables,
 };
 
 /// External oracle configuration for TPC-DS parity runs.
@@ -39,6 +39,32 @@ pub struct TpcdsExternalOracleConfig {
 pub struct TpcdsExternalEngineConfig {
     /// Executable invoked with SQL on stdin and an in-memory database argument.
     pub binary: PathBuf,
+}
+
+/// Per-query lifecycle events emitted by the TPC-DS parity row builder.
+/// `query_index` is 1-based and counts only the queries selected for this run.
+pub enum TpcdsParityProgressEvent<'a> {
+    /// A selected query is about to execute CPU and native parity work.
+    QueryStarted {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable TPC-DS query id.
+        query_id: &'a str,
+    },
+    /// A selected query has been reduced to its report row. Heavy CPU/native
+    /// Arrow batches have already been consumed by row construction.
+    RowReady {
+        /// One-based index among selected queries.
+        query_index: usize,
+        /// Total selected query count.
+        total: usize,
+        /// Stable TPC-DS query id.
+        query_id: &'a str,
+        /// Completed row for this query.
+        row: &'a NativeTpcdsParityRow,
+    },
 }
 
 /// Build parity workload items for the TPC-DS workload. For each selected query
@@ -99,6 +125,33 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
     .await
 }
 
+/// Build TPC-DS parity report rows and optionally run external oracles.
+///
+/// Unlike [`tpcds_parity_workload_items_with_external_oracles`], this converts
+/// each query into a stable report row before starting the next query so CPU and
+/// native output batches do not stay retained for the full selected workload.
+pub async fn tpcds_parity_report_rows_with_external_oracles(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
+    float_tolerance: ParityFloatTolerance,
+    progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityRow>> {
+    tpcds_parity_report_rows_with_session_configs_and_external_oracles(
+        root,
+        session_config.clone(),
+        session_config,
+        optimizer_config,
+        query_filter,
+        external_oracles,
+        float_tolerance,
+        progress,
+    )
+    .await
+}
+
 async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     root: &Path,
     cpu_session_config: SessionConfig,
@@ -107,50 +160,107 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
-    let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
-        let mut fallback_config = cpu_session_config.clone();
-        fallback_config.options_mut().execution.collect_statistics = false;
-        let fallback_ctx = SessionContext::new_with_config(fallback_config);
-        register_tpcds_tables(&fallback_ctx, root).await?;
-        Some(fallback_ctx)
-    } else {
-        None
-    };
-    let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
-    register_tpcds_tables(&cpu_ctx, root).await?;
-
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
-    let native_state = SessionStateBuilder::new_with_default_features()
-        .with_config(native_tpcds_session_config(native_session_config))
-        .with_cudf_native_rule(Arc::clone(&native_rule))
-        .build();
-    let native_ctx = SessionContext::new_with_state(native_state);
-    register_tpcds_tables(&native_ctx, root).await?;
-
+    let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
         if !is_query_selected(query.id, query_filter) {
             continue;
         }
 
-        let cpu_outcome = run_cpu_query(&cpu_ctx, cpu_stats_fallback_ctx.as_ref(), query.sql).await;
-        let (native_planning, native_runtime) = run_native_query(&native_ctx, &native_rule, query.sql).await;
+        items.push(runner.run_query(root, query, external_oracles.as_ref()).await);
+    }
+    Ok(items)
+}
+
+async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
+    root: &Path,
+    cpu_session_config: SessionConfig,
+    native_session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
+    float_tolerance: ParityFloatTolerance,
+    mut progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityRow>> {
+    let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
+    let selected: Vec<_> = TPCDS_QUERIES.iter().filter(|query| is_query_selected(query.id, query_filter)).collect();
+    let total = selected.len();
+    let mut rows = Vec::with_capacity(total);
+    for (index, query) in selected.into_iter().enumerate() {
+        let query_index = index + 1;
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(TpcdsParityProgressEvent::QueryStarted { query_index, total, query_id: query.id });
+        }
+
+        let item = runner.run_query(root, query, external_oracles.as_ref()).await;
+        let row = NativeTpcdsParityRow::from_workload_item(item, float_tolerance);
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(TpcdsParityProgressEvent::RowReady { query_index, total, query_id: query.id, row: &row });
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+struct TpcdsParityRunner {
+    cpu_ctx: SessionContext,
+    cpu_stats_fallback_ctx: Option<SessionContext>,
+    native_ctx: SessionContext,
+    native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+}
+
+impl TpcdsParityRunner {
+    async fn new(
+        root: &Path,
+        cpu_session_config: SessionConfig,
+        native_session_config: SessionConfig,
+        optimizer_config: CudfOptimizerConfig,
+    ) -> TpcdsWorkloadResult<Self> {
+        let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
+            let mut fallback_config = cpu_session_config.clone();
+            fallback_config.options_mut().execution.collect_statistics = false;
+            let fallback_ctx = SessionContext::new_with_config(fallback_config);
+            register_tpcds_tables(&fallback_ctx, root).await?;
+            Some(fallback_ctx)
+        } else {
+            None
+        };
+        let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
+        register_tpcds_tables(&cpu_ctx, root).await?;
+
+        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+        let native_state = SessionStateBuilder::new_with_default_features()
+            .with_config(native_tpcds_session_config(native_session_config))
+            .with_cudf_native_rule(Arc::clone(&native_rule))
+            .build();
+        let native_ctx = SessionContext::new_with_state(native_state);
+        register_tpcds_tables(&native_ctx, root).await?;
+
+        Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule })
+    }
+
+    async fn run_query(
+        &self,
+        root: &Path,
+        query: &TpcdsQuery,
+        external_oracles: Option<&TpcdsExternalOracleConfig>,
+    ) -> NativeTpcdsParityWorkloadItem {
+        let cpu_outcome = run_cpu_query(&self.cpu_ctx, self.cpu_stats_fallback_ctx.as_ref(), query.sql).await;
+        let (native_planning, native_runtime) = run_native_query(&self.native_ctx, &self.native_rule, query.sql).await;
         let duckdb_output = external_oracles
-            .as_ref()
             .and_then(|config| config.duckdb.as_ref().map(|engine| (config, engine)))
             .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
                 run_external_oracle(root, query.id, query.sql, "duckdb", engine, &config.scratch_dir)
             });
-        items.push(NativeTpcdsParityWorkloadItem {
+        NativeTpcdsParityWorkloadItem {
             query_id: query.id.to_string(),
             sql: query.sql.to_string(),
             cpu_outcome,
             native_planning,
             native_runtime,
             duckdb_output,
-        });
+        }
     }
-    Ok(items)
 }
 
 fn is_query_selected(query_id: &str, filter: Option<&[String]>) -> bool {
