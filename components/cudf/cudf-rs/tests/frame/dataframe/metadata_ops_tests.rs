@@ -132,7 +132,7 @@ fn test_rename_columns_nonexistent_source_returns_error() {
     let result = df.rename_columns([("nonexistent", "x")]);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&result.unwrap_err(), "nonexistent");
 }
 
 #[test]

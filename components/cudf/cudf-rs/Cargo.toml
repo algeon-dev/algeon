@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 strict-multi-gpu = []
 
@@ -14,7 +17,6 @@ strict-multi-gpu = []
 cudf-sys = { path = "../cudf-sys" }
 rapids-interop = { path = "../rapids-interop" }
 ahash = "0.8"
-anyhow = "1"
 arrow = { version = "58" }
 bitflags = "2"
 csv = "1.4"

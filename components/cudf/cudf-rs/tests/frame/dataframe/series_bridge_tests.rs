@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorKind, Series, TypeId};
 
-use crate::common::{assert_duplicate_name_error, error_context_value};
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value};
 
 // ---------------------------------------------------------------------------
 // from_columns: happy path
@@ -90,7 +90,7 @@ fn test_from_columns_rejects_length_mismatch() {
 #[test]
 fn test_from_named_pairs_happy_path() {
     let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
-    let names = Series::from_strs("names", &["a", "b", "c"]).unwrap();
+    let names = Series::new("names", &["a", "b", "c"]).unwrap();
 
     let pairs = vec![("id".to_string(), ids), ("name".to_string(), names)];
     let df = DataFrame::from_named_pairs(pairs).unwrap();
@@ -179,7 +179,7 @@ fn test_series_nonexistent_column_returns_error() {
 
     let result = df.series("nonexistent");
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&result.unwrap_err(), "nonexistent");
 }
 
 // ---------------------------------------------------------------------------

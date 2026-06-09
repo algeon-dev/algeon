@@ -24,7 +24,7 @@ fn test_display_smoke_reports_series_metadata_without_materializing_values() {
 
 #[test]
 fn test_debug_smoke_reports_series_metadata_without_materializing_values() {
-    let series = Series::from_strs("city", &["tokyo", "paris", "taipei"]).unwrap();
+    let series = Series::new("city", &["tokyo", "paris", "taipei"]).unwrap();
 
     let output = format!("{:?}", series);
 

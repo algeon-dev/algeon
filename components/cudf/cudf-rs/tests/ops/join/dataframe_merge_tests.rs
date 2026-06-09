@@ -3,8 +3,8 @@
 use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, core::Column};
 
 use crate::common::{
-    assert_duplicate_name_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_runtime,
+    assert_duplicate_name_error, assert_missing_column_error, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -451,7 +451,7 @@ fn test_merge_missing_on_key_in_left() {
     let right = right_df();
 
     let err = left.merge(&right, MergeOptions::new().on(["nonexistent"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
     assert_eq!(err.operation(), "dataframe::merge");
 }
 
@@ -461,7 +461,7 @@ fn test_merge_missing_on_key_in_right() {
     let right = right_df();
 
     let err = left.merge(&right, MergeOptions::new().on(["score"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "score");
 }
 
 #[test]

@@ -175,7 +175,7 @@ impl<'a> BorrowedColumnView<'a> {
             ColumnLayout::List { child, .. } => {
                 let child_column = columns.get(child).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "borrowed compatibility list layout referenced a missing child semantic column",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -187,7 +187,7 @@ impl<'a> BorrowedColumnView<'a> {
                 for child in children {
                     let child_column = columns.get(child).copied().ok_or_else(|| {
                         InteropError::new(
-                            InteropErrorKind::InvalidView,
+                            InteropErrorKind::NotFound,
                             "borrowed compatibility struct layout referenced a missing child semantic column",
                         )
                         .with_context("column_id", column.id().get().to_string())
@@ -200,7 +200,7 @@ impl<'a> BorrowedColumnView<'a> {
             ColumnLayout::Dictionary { keys, .. } => {
                 let keys_column = columns.get(keys).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "borrowed compatibility dictionary layout referenced a missing keys semantic column",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -249,7 +249,7 @@ impl<'a> BorrowedColumnView<'a> {
         let column_map = semantic_column_map(&semantic_columns, "column_id")?;
         let mapped_root = column_map.get(&column.id()).copied().ok_or_else(|| {
             InteropError::new(
-                InteropErrorKind::InvalidView,
+                InteropErrorKind::NotFound,
                 "borrowed column view root must be present in the semantic column graph",
             )
             .with_context("column_id", column.id().get().to_string())
@@ -298,7 +298,7 @@ impl<'a> BorrowedColumnView<'a> {
             ColumnLayout::FixedWidth { values } => {
                 binding_map.get(values).map(|binding| binding.bytes().base_ptr()).ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "borrowed column view fixed-width layout referenced a missing value binding",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -316,7 +316,7 @@ impl<'a> BorrowedColumnView<'a> {
             PhysicalValidity::ValidityMask { mask, null_count } => {
                 let mask_binding = binding_map.get(mask).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "borrowed column view referenced a missing validity binding",
                     )
                     .with_context("column_id", column.id().get().to_string())

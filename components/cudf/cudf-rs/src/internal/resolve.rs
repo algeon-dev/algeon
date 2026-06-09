@@ -17,6 +17,13 @@ use crate::{
     },
 };
 
+pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
+    let name = name.into();
+    Error::new(ErrorKind::NotFound, format!("column '{}' not found in schema", name))
+        .with_operation(operation)
+        .with_context("column_name", name)
+}
+
 /// Validate that `names` contains no duplicates.
 ///
 /// # Errors
@@ -45,16 +52,7 @@ pub(crate) fn resolve_column_names(
     names: &[&str],
     operation: &'static str,
 ) -> Result<Vec<usize>> {
-    names
-        .iter()
-        .map(|&name| {
-            columns.get_index_of(name).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation(operation)
-                    .with_context("column_name", name.to_string())
-            })
-        })
-        .collect()
+    names.iter().map(|&name| columns.get_index_of(name).ok_or_else(|| missing_column_error(operation, name))).collect()
 }
 
 /// Build a borrowed `TempTableView` containing only the columns at the given
@@ -119,7 +117,7 @@ mod tests {
         map.insert("a".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), ErrorKind::NotFound);
         assert!(err.context().iter().any(|(k, v)| *k == "column_name" && v == "missing"));
     }
 

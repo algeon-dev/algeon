@@ -57,6 +57,15 @@ fn test_bad_alloc_maps_to_out_of_memory() {
 }
 
 #[test]
+fn test_invalid_argument_maps_to_invalid_argument() {
+    let _shim_state = lock_shim_state();
+    let status = unsafe { cudf_sys::cudf_test_throw_invalid_argument() };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(last_error_message().contains("invalid argument"));
+}
+
+#[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     let path = unique_missing_path("parquet");
     let mut out_table = 1usize as *mut c_void;

@@ -3,8 +3,8 @@
 use cudf::{DataFrame, ErrorKind, core::Column};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 #[test]
@@ -275,7 +275,7 @@ fn test_rename_nonexistent_column_returns_error() {
         .unwrap();
 
     let err = df.rename_column("nonexistent", "new").expect_err("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn test_select_nonexistent_column_returns_error() {
             .unwrap();
 
     let err = df.select(["nonexistent"]).expect_err("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]

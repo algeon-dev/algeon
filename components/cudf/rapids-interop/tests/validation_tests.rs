@@ -9,10 +9,10 @@ use rapids_interop::{
     ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitnessBackend, CompletionWitnessKind,
     CudaEventHandle, CudaStreamHandle, DataType, DeviceMemoryResourceHandle, ExecutionBinding, ExportDiagnostics,
     ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation, LeaseBackend,
-    LeaseCompletionResult, LeaseExportContext, NullMask, PartitionedPreparedTableExport,
+    LeaseCompletionResult, LeaseExportContext, NullMask, OwnedColumnTransfer, PartitionedPreparedTableExport,
     PartitionedPreparedTablePartition, PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport,
-    ProducerReadiness, ReadStartAuthority, ReadStartBinding, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-    TypeId,
+    ProducerReadiness, ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization,
+    SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule, TypeId,
 };
 
 fn fake_ptr(addr: usize) -> *const core::ffi::c_void {
@@ -57,6 +57,14 @@ fn prepared_diagnostics() -> ExportDiagnostics {
 
 fn prepared_host_diagnostics() -> ExportDiagnostics {
     ExportDiagnostics::new(ExportProfile::PreparedHostExport)
+}
+
+fn owned_release_contract() -> ReleaseContract {
+    ReleaseContract::new(
+        0,
+        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
+        ReleaseSynchronization::RequiresCallerSynchronization,
+    )
 }
 
 fn prepared_fixed_width_table_export_on_device(
@@ -481,6 +489,21 @@ fn borrowed_column_view_accepts_binary_like_string_semantic_graph() {
 }
 
 #[test]
+fn borrowed_column_view_rejects_missing_root_semantic_column() {
+    let root = fixed_width_column(1, 10, 3, 0);
+    let err = BorrowedColumnView::try_new_with_semantic_columns(
+        root,
+        vec![fixed_width_column(2, 10, 3, 0)],
+        vec![device_binding(10, 0x6000, 12, 0)],
+        explicit_binding(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
+}
+
+#[test]
 fn borrowed_column_view_accepts_dictionary32_with_string_keys_semantic_graph() {
     let root = dictionary_column(1, 10, 2, 3, 0);
     let keys = binary_like_column(2, 11, 12, 2, 0);
@@ -633,6 +656,49 @@ fn borrowed_column_view_rejects_undersized_null_mask() {
 }
 
 #[test]
+fn borrowed_column_view_rejects_missing_fixed_width_value_binding() {
+    let root = fixed_width_column(1, 10, 3, 0);
+    let err = BorrowedColumnView::try_new_with_semantic_columns(
+        root,
+        vec![fixed_width_column(1, 10, 3, 0)],
+        vec![],
+        explicit_binding(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "10"));
+}
+
+#[test]
+fn borrowed_column_view_rejects_missing_validity_binding() {
+    let root = fixed_width_column_with_validity(
+        1,
+        10,
+        3,
+        0,
+        PhysicalValidity::ValidityMask { mask: BufferId::new(11), null_count: Some(1) },
+    );
+    let err = BorrowedColumnView::try_new_with_semantic_columns(
+        root,
+        vec![fixed_width_column_with_validity(
+            1,
+            10,
+            3,
+            0,
+            PhysicalValidity::ValidityMask { mask: BufferId::new(11), null_count: Some(1) },
+        )],
+        vec![device_binding(10, 0x6000, 12, 0)],
+        explicit_binding(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
+    assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "11"));
+}
+
+#[test]
 fn prepared_column_export_accepts_fixed_width_device_binding() {
     let export = PreparedColumnExport::try_new(
         fixed_width_column(1, 10, 3, 0),
@@ -650,6 +716,22 @@ fn prepared_column_export_accepts_fixed_width_device_binding() {
 }
 
 #[test]
+fn prepared_column_export_rejects_missing_root_semantic_column() {
+    let root = fixed_width_column(1, 10, 3, 0);
+    let err = PreparedColumnExport::try_new_with_semantic_columns(
+        root,
+        vec![fixed_width_column(2, 10, 3, 0)],
+        vec![device_binding(10, 0x6000, 12, 0)],
+        prepared_readiness(),
+        prepared_diagnostics(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
+}
+
+#[test]
 fn prepared_column_export_rejects_missing_values_binding() {
     let err = PreparedColumnExport::try_new(
         fixed_width_column(1, 10, 3, 0),
@@ -659,8 +741,26 @@ fn prepared_column_export_rejects_missing_values_binding() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "10"));
+}
+
+#[test]
+fn owned_column_transfer_rejects_missing_root_semantic_column() {
+    let root = fixed_width_column(1, 10, 3, 0);
+    let err = OwnedColumnTransfer::try_new_with_semantic_columns(
+        root,
+        vec![fixed_width_column(2, 10, 3, 0)],
+        vec![device_binding(10, 0x6000, 12, 0)],
+        prepared_readiness(),
+        ExportDiagnostics::new(ExportProfile::OwnedDeviceTransfer),
+        owned_release_contract(),
+        (),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
 }
 
 #[test]
@@ -694,6 +794,27 @@ fn prepared_column_export_rejects_validity_mask_binding_on_wrong_device() {
     .unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::PlacementUnsupported);
+    assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "11"));
+}
+
+#[test]
+fn prepared_column_export_rejects_missing_validity_mask_binding() {
+    let err = PreparedColumnExport::try_new(
+        fixed_width_column_with_validity(
+            1,
+            10,
+            3,
+            0,
+            PhysicalValidity::ValidityMask { mask: BufferId::new(11), null_count: Some(1) },
+        ),
+        vec![device_binding(10, 0x6000, 12, 0)],
+        prepared_readiness(),
+        prepared_diagnostics(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
     assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "11"));
 }
 
@@ -758,7 +879,7 @@ fn prepared_column_export_rejects_missing_binary_like_data_binding() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "11"));
 }
 
@@ -804,6 +925,27 @@ fn prepared_host_column_export_accepts_fixed_width_host_binding() {
     assert_eq!(export.bindings().len(), 1);
     assert_eq!(export.readiness(), &ProducerReadiness::HostVisible);
     assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedHostExport);
+}
+
+#[test]
+fn prepared_host_column_export_rejects_missing_validity_mask_binding() {
+    let err = PreparedColumnExport::try_new(
+        fixed_width_column_with_validity(
+            1,
+            10,
+            3,
+            0,
+            PhysicalValidity::ValidityMask { mask: BufferId::new(11), null_count: Some(1) },
+        ),
+        vec![host_binding(10, 0x6000, 12)],
+        ProducerReadiness::HostVisible,
+        prepared_host_diagnostics(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
+    assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "1"));
+    assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "11"));
 }
 
 #[test]
@@ -1016,7 +1158,7 @@ fn prepared_table_export_rejects_missing_binding_for_column_buffer() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "buffer_id" && value == "10"));
 }
 
@@ -1031,7 +1173,7 @@ fn prepared_table_export_rejects_missing_column_id_in_table_schema() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "column_id" && value == "2"));
 }
 
@@ -1197,7 +1339,7 @@ fn partitioned_prepared_table_export_rejects_missing_top_level_coverage() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "missing_top_level_column_index" && value == "1"));
 }
 
@@ -1681,7 +1823,7 @@ fn prepared_column_export_rejects_missing_list_child_semantic_column() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "child_column_id" && value == "2"));
 }
 
@@ -1698,7 +1840,7 @@ fn prepared_column_export_rejects_missing_struct_child_semantic_column() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "child_column_id" && value == "3"));
 }
 
@@ -1714,7 +1856,7 @@ fn prepared_column_export_rejects_missing_dictionary_keys_semantic_column() {
     )
     .unwrap_err();
 
-    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert_eq!(err.kind(), InteropErrorKind::NotFound);
     assert!(err.context().iter().any(|(key, value)| *key == "child_column_id" && value == "2"));
 }
 

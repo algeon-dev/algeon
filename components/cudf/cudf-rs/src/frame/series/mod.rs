@@ -8,10 +8,12 @@
 mod constructors;
 mod context;
 mod display;
+mod host_column_data;
 mod naming;
 mod ops;
 mod owned;
 pub(crate) mod reduction;
 mod strings;
 
+pub use host_column_data::HostColumnData;
 pub use owned::{IntoSeries, Series};

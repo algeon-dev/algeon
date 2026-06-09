@@ -5,8 +5,8 @@ use cudf::{
 };
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_df, sample_runtime,
+    assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_df, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -95,10 +95,8 @@ fn test_filter_isin_preserves_schema() {
 fn test_filter_isin_nonexistent_column() {
     let df = sample_df();
     let values = Series::new::<i32>("values", &[1]).unwrap();
-    let result = df.filter_isin("nonexistent", &values);
-
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = df.filter_isin("nonexistent", &values).unwrap_err();
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]
@@ -189,10 +187,8 @@ fn test_sort_by_subset_of_columns() {
 #[test]
 fn test_sort_nonexistent_column_returns_error() {
     let df = sample_df();
-    let result = df.sort_values(["nonexistent"], SortOptions::new());
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    let err = df.sort_values(["nonexistent"], SortOptions::new()).unwrap_err();
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]
@@ -239,9 +235,8 @@ fn test_nsmallest() {
 #[test]
 fn test_nlargest_nonexistent_column() {
     let df = sample_df();
-    let result = df.nlargest(2, "missing");
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = df.nlargest(2, "missing").unwrap_err();
+    assert_missing_column_error(&err, "missing");
 }
 
 // ---------------------------------------------------------------------------
@@ -274,10 +269,10 @@ fn test_drop_duplicates_preserves_schema() {
 #[test]
 fn test_drop_duplicates_nonexistent_column() {
     let df = sample_df();
-    let result = df
-        .drop_duplicates(DropDuplicatesOptions::builder().subset(&["nope"]).keep(DuplicateKeepOption::KeepAny).build());
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = df
+        .drop_duplicates(DropDuplicatesOptions::builder().subset(&["nope"]).keep(DuplicateKeepOption::KeepAny).build())
+        .unwrap_err();
+    assert_missing_column_error(&err, "nope");
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +393,6 @@ fn test_dropna_nonexistent_column_returns_error() {
     let c = Column::from_slice(&[1i32]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
 
-    let result = df.dropna(DropNaOptions::builder().subset(&["missing"]).build());
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = df.dropna(DropNaOptions::builder().subset(&["missing"]).build()).unwrap_err();
+    assert_missing_column_error(&err, "missing");
 }

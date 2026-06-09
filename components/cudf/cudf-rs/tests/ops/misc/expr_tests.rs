@@ -44,7 +44,7 @@ fn bool_df(name: &str, data: &[bool]) -> DataFrame {
 }
 
 fn str_df(name: &str, data: &[&str]) -> DataFrame {
-    df_with_series(Series::from_strs(name, data).unwrap())
+    df_with_series(Series::new(name, data).unwrap())
 }
 
 fn eval(expr: Expr, df: &DataFrame) -> Series {
@@ -84,7 +84,7 @@ fn col_resolves_existing_column() {
 fn col_missing_column_errors() {
     let df = xy_df();
     let err = col("zzz").eval(&df).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 }
 
 #[test]

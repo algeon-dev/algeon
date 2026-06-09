@@ -358,16 +358,11 @@ pub fn normalize_manifest_error(err: &cudf::Error, operation_kind: &'static str)
     NormalizedError { kind, operation, context }
 }
 
-fn normalize_manifest_error_kind(err: &cudf::Error, operation_kind: &'static str) -> String {
+fn normalize_manifest_error_kind(err: &cudf::Error, _operation_kind: &'static str) -> String {
     let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
 
     match err.kind() {
-        cudf::ErrorKind::InvalidOperation
-            if has_column_name
-                && matches!(operation_kind, "select" | "rename" | "sort_values" | "filter_eq" | "drop_nulls") =>
-        {
-            "column_not_found".into()
-        },
+        cudf::ErrorKind::NotFound if has_column_name => "column_not_found".into(),
         cudf::ErrorKind::InvalidArgument
         | cudf::ErrorKind::NotSupported
         | cudf::ErrorKind::InvalidOperation

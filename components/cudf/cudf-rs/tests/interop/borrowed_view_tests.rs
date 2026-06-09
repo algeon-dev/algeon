@@ -1,7 +1,7 @@
 use cudf::{
     DataFrame, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
-    interop::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
+    interop::borrowed::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
 };
 use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};

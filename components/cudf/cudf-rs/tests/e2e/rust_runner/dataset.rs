@@ -15,7 +15,7 @@ use super::manifest::Dataset;
 /// Each column in the dataset is constructed as a nullable `Series`:
 /// - Numeric types use `Series::new_nullable` with a validity mask derived
 ///   from JSON null positions.
-/// - String types use `Series::from_strs_nullable`.
+/// - String types use `Series::new_nullable`.
 /// - Bool types convert JSON bools to Rust bools and use `Series::new_nullable`.
 pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let frame = if !dataset.columns.is_empty() {
@@ -159,7 +159,7 @@ fn build_str_series(name: &str, values: &[serde_json::Value]) -> cudf::Result<Se
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { Series::from_strs_nullable(name, &data, &validity) } else { Series::from_strs(name, &data) }
+    if has_nulls { Series::new_nullable(name, &data, &validity) } else { Series::new(name, &data) }
 }
 
 #[cfg(test)]

@@ -8,8 +8,10 @@ pub(crate) mod execution_domain;
 mod owner;
 pub mod stream;
 
-pub use device::*;
-pub use event::*;
-pub use execution_context::*;
-pub use owner::*;
-pub use stream::*;
+pub use device::DeviceId;
+pub use event::CudaEvent;
+#[doc(hidden)]
+pub use execution_context::__DebugExecutionContext;
+pub use execution_context::ExecutionContext;
+pub use owner::{Runtime, RuntimeBuilder};
+pub use stream::CudaStream;

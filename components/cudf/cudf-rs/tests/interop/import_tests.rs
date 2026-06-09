@@ -4,8 +4,11 @@ use cudf::{
     DataFrame, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::{
-        BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedTableTransfer,
-        PhysicalValidity, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,
+        borrowed::{BufferBinding, ColumnLayout, PhysicalValidity, SchemaNullability, SemanticColumn, SemanticTable},
+        prepared::{
+            ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, PreparedColumnExport, ProducerReadiness,
+        },
+        transfer::OwnedTableTransfer,
     },
     ops::dictionary,
 };
@@ -34,7 +37,7 @@ fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> HashMap<u32, &'a Se
     columns.iter().map(|column| (column.id().get(), column)).collect()
 }
 
-fn interop_error_context_value<'a>(err: &'a cudf::interop::InteropError, key: &str) -> Option<&'a str> {
+fn interop_error_context_value<'a>(err: &'a InteropError, key: &str) -> Option<&'a str> {
     err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
 }
 
@@ -112,11 +115,11 @@ fn schema_nullability_is_elidable(
     imported_bindings: &HashMap<u32, &BufferBinding<'_>>,
 ) -> bool {
     match (source.schema_nullability(), imported.schema_nullability()) {
-        (cudf::interop::SchemaNullability::Nullable, cudf::interop::SchemaNullability::NonNullable) => {
+        (SchemaNullability::Nullable, SchemaNullability::NonNullable) => {
             validity_mask_is_elidable(source.validity(), source_bindings)
                 && matches!(imported.validity(), PhysicalValidity::NoValidityBuffer)
         },
-        (cudf::interop::SchemaNullability::NonNullable, cudf::interop::SchemaNullability::Nullable) => {
+        (SchemaNullability::NonNullable, SchemaNullability::Nullable) => {
             matches!(source.validity(), PhysicalValidity::NoValidityBuffer)
                 && validity_mask_is_elidable(imported.validity(), imported_bindings)
         },
@@ -850,7 +853,7 @@ mod error_mapping_contracts {
     fn prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable() {
         use std::{any::Any, sync::Arc};
 
-        use cudf::interop::{
+        use cudf::interop::prepared::{
             ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
             IncompleteDropBehavior, InteropError, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
         };
@@ -911,6 +914,10 @@ mod error_mapping_contracts {
         };
 
         assert_eq!(err.kind(), InteropErrorKind::ReadinessUnavailable);
+        assert_eq!(err.to_string(), "test shared completion synchronize failure");
+        assert!(!err.to_string().contains("InvalidView"));
+        assert!(!err.to_string().contains("context:"));
+        assert!(!err.to_string().contains("phase:"));
         assert_eq!(
             interop_error_context_value(&err, "operation"),
             Some("interop::Column::try_import_from_prepared_column_export_into_runtime")

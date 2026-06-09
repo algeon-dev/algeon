@@ -2,15 +2,19 @@
 //! and an optional source — so that GPU pipeline failures are debuggable without
 //! guesswork.
 
-use std::{ffi::CStr, fmt};
+use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt};
 
 use rapids_interop::{InteropError, InteropErrorKind};
+
+type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 /// The kind of error that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     /// The caller passed an invalid value or combination of values.
     InvalidArgument,
+    /// The caller referenced a named resource that does not exist.
+    NotFound,
     /// The requested operation or type combination is not supported.
     NotSupported,
     /// A logical precondition or internal contract was violated.
@@ -21,7 +25,8 @@ pub enum ErrorKind {
     FatalCudaError,
     /// Device or host memory allocation failed.
     OutOfMemory,
-    /// An I/O error occurred (file not found, permission denied, etc.).
+    /// An I/O error occurred (permission denied, decode failure, etc.).
+    /// Missing resources should be reported as [`ErrorKind::NotFound`].
     IoError,
     /// An operation was attempted on an unsupported data type.
     TypeError,
@@ -37,6 +42,7 @@ impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ErrorKind::InvalidArgument => write!(f, "InvalidArgument"),
+            ErrorKind::NotFound => write!(f, "NotFound"),
             ErrorKind::NotSupported => write!(f, "NotSupported"),
             ErrorKind::InvalidOperation => write!(f, "InvalidOperation"),
             ErrorKind::CudaError => write!(f, "CudaError"),
@@ -90,9 +96,17 @@ pub struct Error {
     kind: ErrorKind,
     message: String,
     status: ErrorStatus,
-    operation: &'static str,
+    operation: Cow<'static, str>,
     context: Vec<(&'static str, String)>,
-    source: Option<anyhow::Error>,
+    source: Option<BoxedSourceError>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceCudfSnapshot {
+    kind: ErrorKind,
+    status: ErrorStatus,
+    operation: String,
+    called: Vec<String>,
 }
 
 impl Error {
@@ -105,7 +119,7 @@ impl Error {
             kind,
             message: message.into(),
             status: ErrorStatus::Permanent,
-            operation: "",
+            operation: Cow::Borrowed(""),
             context: Vec::new(),
             source: None,
         }
@@ -115,7 +129,7 @@ impl Error {
 
     /// Set the operation that was being performed when the error occurred.
     pub fn with_operation(mut self, operation: &'static str) -> Self {
-        self.operation = operation;
+        self.push_operation(Cow::Borrowed(operation));
         self
     }
 
@@ -126,7 +140,7 @@ impl Error {
     }
 
     /// Attach a source error.
-    pub fn set_source(mut self, src: impl Into<anyhow::Error>) -> Self {
+    pub fn set_source(mut self, src: impl Into<BoxedSourceError>) -> Self {
         self.source = Some(src.into());
         self
     }
@@ -149,6 +163,58 @@ impl Error {
         self
     }
 
+    fn push_operation(&mut self, operation: Cow<'static, str>) {
+        if !self.operation.is_empty() {
+            Self::push_unique_context(&mut self.context, "called", self.operation.to_string());
+        }
+        self.operation = operation;
+    }
+
+    fn apply_interop_context(&mut self, source_cudf_error: Option<&SourceCudfSnapshot>) {
+        let mut operations = Vec::new();
+        let mut remaining_context = Vec::new();
+
+        if let Some(source) = self.source.as_deref().and_then(|source| source.downcast_ref::<InteropError>()) {
+            for (key, value) in source.context() {
+                if *key == "operation" {
+                    operations.push(value.clone());
+                } else {
+                    remaining_context.push((*key, value.clone()));
+                }
+            }
+        }
+
+        if let Some(operation) = operations.first() {
+            self.operation = Cow::Owned(operation.clone());
+        } else if let Some(source) = source_cudf_error.filter(|source| !source.operation.is_empty()) {
+            self.operation = Cow::Owned(source.operation.clone());
+        }
+
+        for operation in operations.into_iter().skip(1) {
+            Self::push_unique_context(&mut self.context, "called", operation);
+        }
+
+        if let Some(source) = source_cudf_error {
+            if !source.operation.is_empty() && source.operation != self.operation() {
+                Self::push_unique_context(&mut self.context, "called", source.operation.clone());
+            }
+
+            for called in &source.called {
+                Self::push_unique_context(&mut self.context, "called", called.clone());
+            }
+        }
+
+        for (key, value) in remaining_context {
+            Self::push_unique_context(&mut self.context, key, value);
+        }
+    }
+
+    fn push_unique_context(context: &mut Vec<(&'static str, String)>, key: &'static str, value: String) {
+        if !context.iter().any(|(existing_key, existing_value)| *existing_key == key && *existing_value == value) {
+            context.push((key, value));
+        }
+    }
+
     // -- Accessors -----------------------------------------------------------
 
     /// Returns the kind of this error.
@@ -167,8 +233,8 @@ impl Error {
     }
 
     /// Returns the operation that was being performed.
-    pub fn operation(&self) -> &'static str {
-        self.operation
+    pub fn operation(&self) -> &str {
+        self.operation.as_ref()
     }
 
     /// Returns the context key-value pairs.
@@ -252,7 +318,7 @@ impl fmt::Debug for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| e.as_ref())
+        self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
 }
 
@@ -273,9 +339,12 @@ fn default_status_for_kind(kind: ErrorKind) -> ErrorStatus {
 
 fn map_interop_error_kind(kind: InteropErrorKind) -> ErrorKind {
     match kind {
+        InteropErrorKind::NotFound => ErrorKind::NotFound,
         InteropErrorKind::UnsupportedType => ErrorKind::TypeError,
         InteropErrorKind::NullMaskUnsupported => ErrorKind::NullError,
-        InteropErrorKind::ExecutionBindingUnavailable | InteropErrorKind::ReadinessUnavailable => ErrorKind::CudaError,
+        InteropErrorKind::ExecutionBindingUnavailable | InteropErrorKind::ReadinessUnavailable => {
+            ErrorKind::InvalidOperation
+        },
         InteropErrorKind::UnsupportedLayout
         | InteropErrorKind::AmbientInteropUnsupported
         | InteropErrorKind::PlacementUnsupported
@@ -290,15 +359,36 @@ fn map_interop_error_kind(kind: InteropErrorKind) -> ErrorKind {
 
 impl From<InteropError> for Error {
     fn from(error: InteropError) -> Self {
-        let kind = map_interop_error_kind(error.kind());
+        let source_cudf_error =
+            find_cudf_error_in_chain(&error as &(dyn std::error::Error + 'static)).map(|inner| SourceCudfSnapshot {
+                kind: inner.kind(),
+                status: inner.status(),
+                operation: inner.operation().to_string(),
+                called: inner
+                    .context()
+                    .iter()
+                    .filter(|(key, _)| *key == "called")
+                    .map(|(_, value)| value.clone())
+                    .collect(),
+            });
+        let kind = source_cudf_error.as_ref().map_or_else(|| map_interop_error_kind(error.kind()), |inner| inner.kind);
         let message = error.to_string();
-        let context = error.context().iter().map(|(key, value)| (*key, value.clone())).collect::<Vec<_>>();
-
         let mut mapped = Error::new(kind, message).set_source(error);
-        mapped.status = default_status_for_kind(kind);
-        mapped.context = context;
+        mapped.status = source_cudf_error.as_ref().map_or_else(|| default_status_for_kind(kind), |inner| inner.status);
+        mapped.apply_interop_context(source_cudf_error.as_ref());
         mapped
     }
+}
+
+fn find_cudf_error_in_chain<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Error> {
+    let mut current = Some(error);
+    while let Some(err) = current {
+        if let Some(cudf_error) = err.downcast_ref::<Error>() {
+            return Some(cudf_error);
+        }
+        current = err.source();
+    }
+    None
 }
 
 /// Convert a C shim status code into a `Result<()>`.
@@ -312,6 +402,7 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
     }
 
     let kind = match status {
+        cudf_sys::CUDF_ERROR_INVALID_ARGUMENT => ErrorKind::InvalidArgument,
         cudf_sys::CUDF_ERROR_INVALID_OPERATION => ErrorKind::InvalidOperation,
         cudf_sys::CUDF_ERROR_CUDA => ErrorKind::CudaError,
         cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorKind::FatalCudaError,

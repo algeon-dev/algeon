@@ -48,6 +48,7 @@ impl JsonTableReadOptions {
 pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> {
     const OPERATION: &str = "io::json::read_json_table";
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
+    super::validate_input_path(&options.filepath, OPERATION)?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 

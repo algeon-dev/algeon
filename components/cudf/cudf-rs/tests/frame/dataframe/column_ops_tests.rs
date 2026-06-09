@@ -5,6 +5,8 @@ use cudf::{
     core::{Column, Scalar},
 };
 
+use crate::common::assert_missing_column_error;
+
 // ---------------------------------------------------------------------------
 // Column-level convenience (with_column, fillna_with_scalar, cast_column)
 // ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ fn test_fillna_with_scalar_nonexistent_column_returns_error() {
 
     let fill = Scalar::from_value(0i32).unwrap();
     let err = df.fillna_with_scalar("missing", &fill).expect_err("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "missing");
 }
 
 #[test]
@@ -176,7 +178,7 @@ fn test_cast_column_nonexistent_returns_error() {
 
     let target = DataType::new(TypeId::Float64);
     let err = df.cast_column("missing", target).expect_err("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "missing");
 }
 
 #[test]

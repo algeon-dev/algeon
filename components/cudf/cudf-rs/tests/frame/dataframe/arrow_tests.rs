@@ -49,6 +49,30 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
 }
 
 #[test]
+fn test_arrow_numeric_wrapper_preserves_source_chain() {
+    let err = cudf::io::arrow::__debug_trigger_numeric_to_arrow_error_for_test()
+        .expect_err("expected numeric Arrow wrapper to surface a mapped error");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "arrow::numeric_to_arrow");
+
+    let source = std::error::Error::source(&err).expect("expected preserved Arrow source");
+    assert_eq!(source.to_string(), err.message());
+}
+
+#[test]
+fn test_to_record_batch_wrapper_preserves_source_chain() {
+    let err = cudf::io::arrow::__debug_trigger_record_batch_error_for_test()
+        .expect_err("expected RecordBatch wrapper to surface a mapped error");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "dataframe::to_record_batch");
+
+    let source = std::error::Error::source(&err).expect("expected preserved Arrow source");
+    assert_eq!(source.to_string(), err.message());
+}
+
+#[test]
 fn test_round_trip_i32() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])

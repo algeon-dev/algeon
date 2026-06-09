@@ -33,6 +33,7 @@ use crate::{
         types::TypeId,
     },
     frame::dataframe::DataFrame,
+    internal::resolve::missing_column_error,
 };
 
 impl DataFrame {
@@ -60,10 +61,7 @@ impl DataFrame {
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
             .iter()
             .map(|&name| {
-                let col = col_map.get(name).ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                        .with_operation("dataframe::to_record_batch")
-                })?;
+                let col = col_map.get(name).ok_or_else(|| missing_column_error("dataframe::to_record_batch", name))?;
                 let cv = col.view()?;
                 let type_id = cv.data_type()?.id();
                 let nullable = cv.nullable()?;
@@ -72,9 +70,7 @@ impl DataFrame {
             })
             .collect::<Result<_>>()?;
 
-        RecordBatch::try_from_iter_with_nullable(columns).map_err(|e| {
-            Error::new(ErrorKind::InvalidOperation, e.to_string()).with_operation("dataframe::to_record_batch")
-        })
+        RecordBatch::try_from_iter_with_nullable(columns).map_err(|e| map_record_batch_error(e))
     }
 
     /// Create a GPU `DataFrame` from an Arrow [`RecordBatch`] via host copy.
@@ -222,6 +218,16 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
     }
 }
 
+fn map_record_batch_error(error: arrow::error::ArrowError) -> Error {
+    let message = error.to_string();
+    Error::new(ErrorKind::InvalidOperation, message).with_operation("dataframe::to_record_batch").set_source(error)
+}
+
+fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Error {
+    let message = error.to_string();
+    Error::new(ErrorKind::InvalidOperation, message).with_operation("arrow::numeric_to_arrow").set_source(error)
+}
+
 /// Convert a numeric column to the corresponding Arrow primitive array.
 fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
 where T: ArrowPrimitiveMapping {
@@ -236,14 +242,29 @@ where T: ArrowPrimitiveMapping {
         Some(mask) => {
             let null_buffer = arrow::buffer::NullBuffer::from(mask);
             let buffer = arrow::buffer::ScalarBuffer::from(data);
-            let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer)).map_err(
-                |e: arrow::error::ArrowError| {
-                    Error::new(ErrorKind::InvalidOperation, e.to_string()).with_operation("arrow::numeric_to_arrow")
-                },
-            )?;
+            let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer))
+                .map_err(map_numeric_to_arrow_error)?;
             Ok(Arc::new(arr))
         },
     }
+}
+
+#[doc(hidden)]
+pub fn __debug_trigger_numeric_to_arrow_error_for_test() -> Result<()> {
+    let buffer = arrow::buffer::ScalarBuffer::from(vec![1i32]);
+    let null_buffer = arrow::buffer::NullBuffer::from(vec![true, false]);
+    PrimitiveArray::<arrow::datatypes::Int32Type>::try_new(buffer, Some(null_buffer))
+        .map(|_| ())
+        .map_err(map_numeric_to_arrow_error)
+}
+
+#[doc(hidden)]
+pub fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
+    let columns = vec![
+        ("left".to_string(), Arc::new(Int32Array::from(vec![1, 2])) as Arc<dyn Array>, false),
+        ("right".to_string(), Arc::new(Int32Array::from(vec![10])) as Arc<dyn Array>, false),
+    ];
+    RecordBatch::try_from_iter_with_nullable(columns).map(|_| ()).map_err(map_record_batch_error)
 }
 
 /// Convert a Bool8 column to an Arrow BooleanArray.

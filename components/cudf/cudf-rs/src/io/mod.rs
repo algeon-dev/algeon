@@ -35,7 +35,9 @@
 //! borrow.
 
 use std::{
+    error::Error as StdError,
     ffi::{CStr, CString, c_char},
+    fs, io as stdio,
     path::Path,
 };
 
@@ -53,6 +55,45 @@ pub mod parquet;
 pub struct IoTableResult {
     pub table: Table,
     pub column_names: Option<Vec<String>>,
+}
+
+fn classify_io_error_kind(kind: stdio::ErrorKind) -> ErrorKind {
+    match kind {
+        stdio::ErrorKind::NotFound => ErrorKind::NotFound,
+        _ => ErrorKind::IoError,
+    }
+}
+
+fn map_path_io_error(
+    source: impl StdError + Send + Sync + 'static,
+    kind: ErrorKind,
+    path: &Path,
+    operation: &'static str,
+    message: &'static str,
+) -> Error {
+    Error::new(kind, message)
+        .with_operation(operation)
+        .with_context("path", path.display().to_string())
+        .set_source(source)
+}
+
+fn map_std_io_error(source: stdio::Error, path: &Path, operation: &'static str, message: &'static str) -> Error {
+    let kind = classify_io_error_kind(source.kind());
+    map_path_io_error(source, kind, path, operation, message)
+}
+
+fn map_csv_error(source: ::csv::Error, path: &Path, operation: &'static str, message: &'static str) -> Error {
+    let kind = match source.kind() {
+        ::csv::ErrorKind::Io(io_error) => classify_io_error_kind(io_error.kind()),
+        _ => ErrorKind::IoError,
+    };
+    map_path_io_error(source, kind, path, operation, message)
+}
+
+fn validate_input_path(path: &Path, operation: &'static str) -> Result<()> {
+    fs::metadata(path)
+        .map(|_| ())
+        .map_err(|source| map_std_io_error(source, path, operation, "failed to access input path"))
 }
 
 /// Convert a filesystem path to a `CString` for FFI, with operation context.
@@ -142,5 +183,15 @@ mod tests {
         let mut ptrs: Vec<*mut c_char> = raw.iter_mut().map(|s| s.as_ptr() as *mut c_char).collect();
         let names = unsafe { super::collect_column_names(ptrs.as_mut_ptr(), ptrs.len() as i32, "test") }.unwrap();
         assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_validate_input_path_reports_not_found() {
+        let path = std::env::temp_dir().join("cudf_rs_missing_input_path_test_12345.csv");
+        let err = super::validate_input_path(&path, "test").unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert_eq!(err.operation(), "test");
+        assert!(err.context().iter().any(|(k, v)| *k == "path" && v == &path.display().to_string()));
     }
 }

@@ -8,3 +8,7 @@ edition = "2021"
 rust-version = "1.94.0"
 license = "Apache-2.0"
 repository = "https://github.com/morristai/cudf-rs"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

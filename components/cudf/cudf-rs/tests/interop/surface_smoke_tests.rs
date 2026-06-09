@@ -10,7 +10,7 @@ use cudf::{
     DataFrame, Runtime, Series,
     core::{Column, Table},
     interop::{
-        PartitionedLocalTableResults, ReleaseSynchronization,
+        PartitionedLocalTableResults,
         borrowed::{BorrowedColumnView, BorrowedTableView},
         frame::PartitionedDataFrameExport,
         prepared::{
@@ -21,7 +21,7 @@ use cudf::{
         runtime::cuda_explicit_completion_required_lease_backend,
         transfer::{
             OwnedColumnTransfer, OwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser,
-            RuntimeOwnedTableTransferReleaser,
+            ReleaseSynchronization, RuntimeOwnedTableTransferReleaser,
         },
     },
 };
@@ -90,14 +90,9 @@ fn interop_lease_backend_surface_smoke() {
 #[test]
 fn interop_runtime_authority_surface_smoke() {
     use cudf::{
-        interop::{
+        interop::runtime::{
             RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-            runtime::{
-                RuntimeCompletionAuthority as NamespacedRuntimeCompletionAuthority,
-                RuntimeLeaseCompletionResult as NamespacedRuntimeLeaseCompletionResult,
-                RuntimeReadStartAuthority as NamespacedRuntimeReadStartAuthority,
-                cuda_explicit_completion_required_lease_backend as namespaced_cuda_explicit_completion_required_lease_backend,
-            },
+            cuda_explicit_completion_required_lease_backend as namespaced_cuda_explicit_completion_required_lease_backend,
         },
         runtime::{CudaEvent, CudaStream},
     };
@@ -105,12 +100,9 @@ fn interop_runtime_authority_surface_smoke() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
 
-    let _root_read_start = RuntimeReadStartAuthority::consumer_stream(&stream);
-    let _namespaced_read_start = NamespacedRuntimeReadStartAuthority::consumer_stream(&stream);
-    let _root_completion = RuntimeCompletionAuthority::cross_device_event(&event);
-    let _namespaced_completion = NamespacedRuntimeCompletionAuthority::cross_device_event(&event);
-    let _root_result = RuntimeLeaseCompletionResult::FallbackSynchronized;
-    let _namespaced_result = NamespacedRuntimeLeaseCompletionResult::FallbackSynchronized;
+    let _read_start = RuntimeReadStartAuthority::consumer_stream(&stream);
+    let _completion = RuntimeCompletionAuthority::cross_device_event(&event);
+    let _result = RuntimeLeaseCompletionResult::FallbackSynchronized;
 
     assert_eq!(
         cuda_explicit_completion_required_lease_backend().incomplete_drop_behavior(),

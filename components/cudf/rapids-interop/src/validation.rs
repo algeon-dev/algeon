@@ -194,9 +194,11 @@ pub(crate) fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> Result<HashM
 fn require_binding<'a>(
     map: &HashMap<BufferId, &'a BufferBinding<'a>>,
     buffer_id: BufferId,
+    column: &SemanticColumn,
 ) -> Result<&'a BufferBinding<'a>> {
     map.get(&buffer_id).copied().ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "prepared export referenced a missing buffer binding")
+        InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
+            .with_context("column_id", column.id().get().to_string())
             .with_context("buffer_id", buffer_id.get().to_string())
     })
 }
@@ -385,7 +387,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
                 }
             }
 
-            let mask_binding = require_binding(bindings, *mask)?;
+            let mask_binding = require_binding(bindings, *mask, column)?;
             require_host_binding(mask_binding, InteropErrorKind::PlacementUnsupported)?;
 
             let required_bits = column.offset().checked_add(column.len()).ok_or_else(|| {
@@ -421,7 +423,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
     ) -> Result<()> {
         match column.layout() {
             ColumnLayout::FixedWidth { values } => {
-                let values_binding = require_binding(bindings, *values)?;
+                let values_binding = require_binding(bindings, *values, column)?;
                 require_host_binding(values_binding, InteropErrorKind::PlacementUnsupported)?;
                 let required_bytes = fixed_width_required_bytes(column)?;
                 if values_binding.bytes().byte_len() < required_bytes {
@@ -436,7 +438,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
                 }
             },
             ColumnLayout::BinaryLike { offsets, data } => {
-                let offsets_binding = require_binding(bindings, *offsets)?;
+                let offsets_binding = require_binding(bindings, *offsets, column)?;
                 require_host_binding(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
                 let required_bytes = binary_like_offsets_required_bytes(column)?;
                 if offsets_binding.bytes().byte_len() < required_bytes {
@@ -450,7 +452,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
                     .with_context("required_bytes", required_bytes.to_string()));
                 }
 
-                let data_binding = require_binding(bindings, *data)?;
+                let data_binding = require_binding(bindings, *data, column)?;
                 require_host_binding(data_binding, InteropErrorKind::PlacementUnsupported)?;
             },
             _ => {
@@ -475,7 +477,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
 
         match column.layout() {
             ColumnLayout::List { offsets, child } => {
-                let offsets_binding = require_binding(bindings, *offsets)?;
+                let offsets_binding = require_binding(bindings, *offsets, column)?;
                 require_host_binding(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
                 let required_bytes = binary_like_offsets_required_bytes(column)?;
                 if offsets_binding.bytes().byte_len() < required_bytes {
@@ -491,7 +493,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
 
                 let child_column = columns.get(child).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "prepared host export list layout referenced a missing child semantic column",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -520,7 +522,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
             for child in children {
                 let child_column = columns.get(child).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "prepared host export struct layout referenced a missing child semantic column",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -533,7 +535,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
         ColumnLayout::Dictionary { indices, keys } => {
             validated_columns.insert(column.id());
 
-            let indices_binding = require_binding(bindings, *indices)?;
+            let indices_binding = require_binding(bindings, *indices, column)?;
             require_host_binding(indices_binding, InteropErrorKind::PlacementUnsupported)?;
             let required_bytes = dictionary_indices_required_bytes(column)?;
             if indices_binding.bytes().byte_len() < required_bytes {
@@ -549,7 +551,7 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
 
             let keys_column = columns.get(keys).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "prepared host export dictionary layout referenced a missing keys semantic column",
                 )
                 .with_context("column_id", column.id().get().to_string())
@@ -585,7 +587,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
 
     let device = match column.layout() {
         ColumnLayout::FixedWidth { values } => {
-            let values_binding = require_binding(bindings, *values)?;
+            let values_binding = require_binding(bindings, *values, column)?;
             let (device, _) = require_cuda_device(values_binding, InteropErrorKind::PlacementUnsupported)?;
             let required_bytes = fixed_width_required_bytes(column)?;
             if values_binding.bytes().byte_len() < required_bytes {
@@ -601,7 +603,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             device
         },
         ColumnLayout::BinaryLike { offsets, data } => {
-            let offsets_binding = require_binding(bindings, *offsets)?;
+            let offsets_binding = require_binding(bindings, *offsets, column)?;
             let (device, _) = require_cuda_device(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
             let required_bytes = binary_like_offsets_required_bytes(column)?;
             if offsets_binding.bytes().byte_len() < required_bytes {
@@ -615,7 +617,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
                 .with_context("required_bytes", required_bytes.to_string()));
             }
 
-            let data_binding = require_binding(bindings, *data)?;
+            let data_binding = require_binding(bindings, *data, column)?;
             let (data_device, _) = require_cuda_device(data_binding, InteropErrorKind::PlacementUnsupported)?;
             if data_device != device {
                 return Err(InteropError::new(
@@ -630,7 +632,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             device
         },
         ColumnLayout::List { offsets, child } => {
-            let offsets_binding = require_binding(bindings, *offsets)?;
+            let offsets_binding = require_binding(bindings, *offsets, column)?;
             let (device, _) = require_cuda_device(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
             let required_bytes = binary_like_offsets_required_bytes(column)?;
             if offsets_binding.bytes().byte_len() < required_bytes {
@@ -646,7 +648,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
 
             let child_column = columns.get(child).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "prepared export list layout referenced a missing child semantic column",
                 )
                 .with_context("column_id", column.id().get().to_string())
@@ -683,7 +685,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             })?;
             let first_child_column = columns.get(first_child).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "prepared export struct layout referenced a missing child semantic column",
                 )
                 .with_context("column_id", column.id().get().to_string())
@@ -700,7 +702,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             for child in child_iter {
                 let child_column = columns.get(child).copied().ok_or_else(|| {
                     InteropError::new(
-                        InteropErrorKind::InvalidView,
+                        InteropErrorKind::NotFound,
                         "prepared export struct layout referenced a missing child semantic column",
                     )
                     .with_context("column_id", column.id().get().to_string())
@@ -728,7 +730,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             device
         },
         ColumnLayout::Dictionary { indices, keys } => {
-            let indices_binding = require_binding(bindings, *indices)?;
+            let indices_binding = require_binding(bindings, *indices, column)?;
             let (device, _) = require_cuda_device(indices_binding, InteropErrorKind::PlacementUnsupported)?;
             let required_bytes = dictionary_indices_required_bytes(column)?;
             if indices_binding.bytes().byte_len() < required_bytes {
@@ -744,7 +746,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
 
             let keys_column = columns.get(keys).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "prepared export dictionary layout referenced a missing keys semantic column",
                 )
                 .with_context("column_id", column.id().get().to_string())
@@ -782,7 +784,7 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
             }
         }
 
-        let mask_binding = require_binding(bindings, *mask)?;
+        let mask_binding = require_binding(bindings, *mask, column)?;
         let (mask_device, _) = require_cuda_device(mask_binding, InteropErrorKind::PlacementUnsupported)?;
         if mask_device != device {
             return Err(InteropError::new(cross_binding_kind, "prepared export bindings must live on one CUDA device")

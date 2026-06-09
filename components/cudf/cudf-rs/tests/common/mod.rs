@@ -168,7 +168,7 @@ pub fn error_context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a st
 
 #[allow(dead_code)]
 pub fn assert_missing_column_error(err: &cudf::Error, expected_column: &str) {
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::NotFound);
     assert_eq!(error_context_value(err, "column_name"), Some(expected_column));
 }
 

@@ -5,7 +5,7 @@ mod dataframe_merge_allocation_tests;
 #[path = "../ops/sorting/dataframe_sort_values_allocation_tests.rs"]
 mod dataframe_sort_values_allocation_tests;
 
-use cudf::{core::Column, interop::ProducerReadiness};
+use cudf::{core::Column, interop::prepared::ProducerReadiness};
 
 use crate::allocation::allocation_count_delta;
 
