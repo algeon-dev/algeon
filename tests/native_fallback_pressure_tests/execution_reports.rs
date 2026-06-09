@@ -497,8 +497,8 @@ fn aggregate_strategy_row(
 #[test]
 fn native_datafusion_execution_report_keeps_unobserved_optional_memory_metrics_empty() {
     let metrics = ExecutionPlanMetricsSet::new();
-    MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter("resident_dataframe_peak_bytes", 0);
-    MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter("allocator_high_water_bytes", 0);
+    MetricBuilder::new(&metrics).with_type(MetricType::Summary).counter("resident_dataframe_peak_bytes", 0);
+    MetricBuilder::new(&metrics).with_type(MetricType::Summary).counter("allocator_high_water_bytes", 0);
     let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "q01",
         native_exec_leaf_for_report(),

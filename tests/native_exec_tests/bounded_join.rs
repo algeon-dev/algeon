@@ -12,7 +12,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
@@ -50,7 +50,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
@@ -78,7 +78,6 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized
-        .as_any()
         .downcast_ref::<NativeCudfExec>()
         .expect("single-join post-root pipeline should optimize to NativeCudfExec");
     let pipeline = compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis())
@@ -124,7 +123,6 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized
-        .as_any()
         .downcast_ref::<NativeCudfExec>()
         .expect("adaptive mode should still present a NativeCudfExec DataFusion boundary");
     assert!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"));
@@ -171,7 +169,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
 
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert!(
-        optimized.as_any().downcast_ref::<NativeCudfExec>().is_some(),
+        optimized.downcast_ref::<NativeCudfExec>().is_some(),
         "Q11 should optimize to NativeCudfExec; report={report:?}; diagnostics={:?}",
         rule.last_planning_diagnostics()
     );
@@ -264,7 +262,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);

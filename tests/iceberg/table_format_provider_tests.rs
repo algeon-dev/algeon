@@ -658,11 +658,13 @@ fn iceberg_test_schema() -> Arc<Schema> {
 }
 
 fn direct_friendly_session_config() -> SessionConfig {
-    SessionConfig::new()
+    let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false)
-        .with_target_partitions(1)
+        .with_target_partitions(1);
+    config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
+    config
 }
 
 fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
@@ -750,7 +752,7 @@ fn native_admissible_empty_scan_plan() -> TableFormatScanPlan {
 }
 
 fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))

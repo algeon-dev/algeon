@@ -134,7 +134,7 @@ pub(super) fn aggregate_topk_plan(
     fetch: usize,
 ) -> Arc<dyn ExecutionPlan> {
     let sort = aggregate_sort_plan(scan, projection_operator);
-    let sort = sort.as_any().downcast_ref::<SortExec>().expect("aggregate_sort_plan returns SortExec");
+    let sort = sort.downcast_ref::<SortExec>().expect("aggregate_sort_plan returns SortExec");
     Arc::new(sort.with_fetch(Some(fetch)))
 }
 

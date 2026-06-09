@@ -75,7 +75,9 @@ pub(in crate::capability) fn multi_join_aggregate_over_join_subplan_topk_shape_d
     )?;
     let (post_projection_input_id, post_root_projections) =
         peel_projection_chain_ids_for_shape(plan, post_root_projection_id)?;
-    if post_root_projections.is_empty() {
+    let direct_sort_fetch_join_input =
+        matches!(plan.node(post_projection_input_id).map(|node| &node.kind), Some(PlanNode::Join(_)));
+    if post_root_projections.is_empty() && !direct_sort_fetch_join_input {
         return Err(CapabilityDecision::rejected(
             "multi_join_aggregate_over_join_topk_requires_projection_before_sort",
             [

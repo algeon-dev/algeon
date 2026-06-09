@@ -8,7 +8,6 @@
 //! lazily on first access.
 
 use std::{
-    any::Any,
     collections::{BTreeMap, HashMap},
     fmt,
     sync::Arc,
@@ -193,10 +192,6 @@ impl CudfIcebergCatalogProvider {
 }
 
 impl CatalogProvider for CudfIcebergCatalogProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema_names(&self) -> Vec<String> {
         self.schemas.keys().cloned().collect()
     }
@@ -258,10 +253,6 @@ impl CudfIcebergSchemaProvider {
 
 #[async_trait]
 impl SchemaProvider for CudfIcebergSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         self.known_table_names.clone()
     }

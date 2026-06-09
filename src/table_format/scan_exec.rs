@@ -1,4 +1,4 @@
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
@@ -97,10 +97,6 @@ impl DisplayAs for CudfTableFormatScanExec {
 impl ExecutionPlan for CudfTableFormatScanExec {
     fn name(&self) -> &str {
         "CudfTableFormatScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

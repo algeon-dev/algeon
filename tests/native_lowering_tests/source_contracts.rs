@@ -350,6 +350,35 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
 }
 
 #[test]
+fn partial_byte_range_with_access_plan_and_extra_extension_is_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-mixed-extension");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let access_plan = ParquetAccessPlan::new(vec![
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+    ]);
+    let scan = parquet_scan_with_partial_byte_range_access_plan_and_extra_extension(&path, access_plan);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-split-ranged-file");
     let path = dir.join("input.parquet");

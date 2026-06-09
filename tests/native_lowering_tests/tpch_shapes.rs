@@ -400,7 +400,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     };
     assert_eq!(
         candidate.shape,
-        "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))))"
+        "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))))))"
     );
 
     let plan = &result.plans[0];
@@ -632,7 +632,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
     };
     assert_eq!(
         candidate.shape,
-        "SortExec(ProjectionExec(AggregateExec(AggregateExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),FilterExec(LocalParquetScan))))))"
+        "SortExec(ProjectionExec(AggregateExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan))))))"
     );
 
     let plan = &result.plans[0];

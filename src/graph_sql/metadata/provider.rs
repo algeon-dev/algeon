@@ -1,4 +1,4 @@
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::{
     array::{ArrayRef, BooleanArray, Int64Array, StringArray},
@@ -119,10 +119,6 @@ impl CugraphMetadataProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for CugraphMetadataProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         match self.kind {
             CugraphMetadataKind::List => list_schema(),

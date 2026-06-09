@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::{
@@ -271,7 +270,7 @@ impl GpuResidentProducerExec for CugraphAlgoExec {
 }
 
 pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducerExec> {
-    plan.as_any().downcast_ref::<CugraphAlgoExec>().map(|producer| producer as &dyn GpuResidentProducerExec)
+    plan.downcast_ref::<CugraphAlgoExec>().map(|producer| producer as &dyn GpuResidentProducerExec)
 }
 
 impl DisplayAs for CugraphAlgoExec {
@@ -313,10 +312,6 @@ impl DisplayAs for CugraphAlgoExec {
 impl ExecutionPlan for CugraphAlgoExec {
     fn name(&self) -> &str {
         "CugraphAlgoExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -482,25 +477,25 @@ fn edge_execution_config(
 }
 
 fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {
-    if let Some(native) = plan.as_any().downcast_ref::<NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
         return Some(native);
     }
     let children = cooperative_exec_children(plan)?;
     let [child] = children.as_slice() else {
         return None;
     };
-    child.as_any().downcast_ref::<NativeCudfExec>()
+    child.downcast_ref::<NativeCudfExec>()
 }
 
 fn as_native_cudf_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfComposedExec> {
-    if let Some(native) = plan.as_any().downcast_ref::<NativeCudfComposedExec>() {
+    if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
         return Some(native);
     }
     let children = cooperative_exec_children(plan)?;
     let [child] = children.as_slice() else {
         return None;
     };
-    child.as_any().downcast_ref::<NativeCudfComposedExec>()
+    child.downcast_ref::<NativeCudfComposedExec>()
 }
 
 fn cooperative_exec_children(plan: &dyn ExecutionPlan) -> Option<Vec<&Arc<dyn ExecutionPlan>>> {
@@ -520,17 +515,17 @@ impl CugraphEdgeCanonicalFacts {
 }
 
 fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
         let mut facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
         facts |= aggregate_edge_dedup_facts(aggregate, spec);
         return facts;
     }
 
-    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
         return cugraph_edge_canonical_facts(projection.input().as_ref(), spec);
     }
 
-    if let Some(union) = plan.as_any().downcast_ref::<UnionExec>()
+    if let Some(union) = plan.downcast_ref::<UnionExec>()
         && union_has_reverse_edge_expansion(union, spec)
     {
         return CugraphEdgeCanonicalFacts { add_reverse_present: true, ..Default::default() };
@@ -597,7 +592,7 @@ fn edge_projection_orientation(
     plan: &dyn ExecutionPlan,
     spec: &CugraphAlgorithmSpec,
 ) -> Option<EdgeProjectionOrientation> {
-    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
         return projection_edge_orientation(projection, spec);
     }
 
@@ -654,7 +649,7 @@ fn projection_preserves_weight(projection: &ProjectionExec, spec: &CugraphAlgori
 }
 
 fn physical_column_name(expr: &dyn datafusion::physical_expr::PhysicalExpr) -> Option<&str> {
-    expr.as_any().downcast_ref::<Column>().map(Column::name)
+    expr.downcast_ref::<Column>().map(Column::name)
 }
 
 fn same_edge_column(actual: &str, expected: &str) -> bool {

@@ -213,7 +213,7 @@ pub(super) fn required_scan_projection_requires_native_projection(
     input_schema: &SchemaRef,
 ) -> bool {
     projection.iter().any(|projection_expr| {
-        let Some(column) = projection_expr.expr.as_any().downcast_ref::<Column>() else {
+        let Some(column) = projection_expr.expr.downcast_ref::<Column>() else {
             return true;
         };
         input_schema.fields().get(column.index()).is_none_or(|field| field.name() != projection_expr.alias)

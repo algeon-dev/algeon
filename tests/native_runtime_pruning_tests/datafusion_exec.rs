@@ -30,7 +30,7 @@ async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
     let plan = native_datafusion_sql_plan(&path, SQL_Q6_SHAPED_QUERY, native_datafusion_config()).await;
 
     assert_eq!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
@@ -58,7 +58,7 @@ async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
     let plan = native_datafusion_sql_plan(&path, SQL_COUNT_ONLY_QUERY, native_datafusion_config()).await;
 
     assert_eq!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
@@ -86,7 +86,7 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
     let plan = native_datafusion_sql_plan(&path, SQL_SUM_EXPRESSION_QUERY, native_datafusion_config()).await;
 
     assert_eq!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
@@ -117,7 +117,7 @@ async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_
     let plan = native_datafusion_sql_plan(&path, SQL_AVG_AGGREGATE_QUERY, native_datafusion_config()).await;
 
     assert_eq!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
@@ -147,7 +147,7 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
     let plan = native_datafusion_sql_plan(&path, SQL_AVG_ORDER_BY_VALUE_QUERY, native_datafusion_config()).await;
 
     assert_eq!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
@@ -175,7 +175,7 @@ async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_executi
         native_datafusion_sql_plan(&path, SQL_UNSUPPORTED_APPROX_DISTINCT_QUERY, native_datafusion_config()).await;
 
     assert_ne!(plan.name(), "NativeCudfExec");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_none());
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_none());
     assert!(plan.metrics().is_none_or(|metrics| metrics.sum_by_name("host_to_device_uploads").is_none()));
 
     fs::remove_dir_all(dir).unwrap();

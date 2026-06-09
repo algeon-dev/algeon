@@ -283,10 +283,10 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         ("one_shot_join_output_bytes", 16384),
         ("join_gather_map_bytes", 2048),
     ] {
-        MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
+        MetricBuilder::new(&metrics).with_type(MetricType::Summary).counter(name, 0).add(value);
     }
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("node_id", "n3")
         .with_new_label("algorithm", "pagerank")
         .with_new_label("runtime_outcome", "succeeded")
@@ -312,7 +312,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_graph_runtime_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("operator_kind", "source_read")
         .with_new_label("task_count", "3")
         .with_new_label("reservation_requested_bytes", "120")
@@ -324,7 +324,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_task_operator_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("compiled_task_id", "t7")
         .with_new_label("operator_kind", "source_read")
         .with_new_label("reservation_requested_bytes", "80")
@@ -336,7 +336,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_task_runtime_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("dynamic_filter_id", "df0")
         .with_new_label("event", "applied")
         .with_new_label("producer_kind", "hash_join_build")
@@ -360,7 +360,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_dynamic_filter_runtime_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("dynamic_filter_id", "df0")
         .with_new_label("event", "applied_post_decode")
         .with_new_label("producer_kind", "hash_join_build")
@@ -383,7 +383,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_dynamic_filter_runtime_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("node_id", "n4")
         .with_new_label("selected_strategy", "libcudf_groupby")
         .with_new_label("execution_stage", "partial")
@@ -435,7 +435,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_aggregate_strategy_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("node_id", "n2")
         .with_new_label("join_strategy", "one_shot_equi")
         .with_new_label("execution_strategy", "bounded_one_shot_equi_join")
@@ -462,7 +462,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .global_counter("native_join_strategy_rows")
         .add(1);
     MetricBuilder::new(&metrics)
-        .with_type(MetricType::SUMMARY)
+        .with_type(MetricType::Summary)
         .with_new_label("outcome", "completed")
         .with_new_label("bytes", "4096")
         .with_new_label("elapsed_ns", "9000000")

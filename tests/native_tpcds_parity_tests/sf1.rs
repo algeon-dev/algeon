@@ -8,7 +8,8 @@ use datafusion_nexus::{
     ParityStageStatus, ParityStatus, StatisticalAggregateExecutionMode, lower_physical_plan_to_native,
 };
 use datafusion_nexus_bench::{
-    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_report_session_config,
+    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_native_report_session_config,
+    tpcds_report_session_config,
 };
 
 use super::support::*;
@@ -375,7 +376,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
 
         let items = tpcds_datafusion_planning_workload_items_with_optimizer_config(
             root,
-            tpcds_report_session_config(),
+            tpcds_native_report_session_config(),
             sf1_native_optimizer_config(),
         )
         .await
@@ -752,7 +753,7 @@ fn tpcds_sf1_residual_root_topk_rejections_are_owned_by_root_topk_analyzer() {
 
         let items = tpcds_datafusion_planning_workload_items_with_optimizer_config(
             root,
-            tpcds_report_session_config(),
+            tpcds_native_report_session_config(),
             sf1_native_optimizer_config(),
         )
         .await

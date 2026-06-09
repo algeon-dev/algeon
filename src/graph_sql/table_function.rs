@@ -1,4 +1,4 @@
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
@@ -37,10 +37,6 @@ impl CugraphAlgoTableProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for CugraphAlgoTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.spec.output_schema)
     }

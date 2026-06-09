@@ -42,7 +42,7 @@ fn prune_execution_plan(
 ) -> BoxFutureResult<Arc<dyn ExecutionPlan>> {
     let runtime_env = Arc::clone(runtime_env);
     Box::pin(async move {
-        if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfExec>() {
+        if let Some(exec) = plan.downcast_ref::<NativeCudfExec>() {
             return Ok(prune_native_exec(exec, &runtime_env).await);
         }
 

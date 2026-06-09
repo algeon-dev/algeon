@@ -350,7 +350,7 @@ fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sorted = aggregate_sort_plan_without_filter(parquet_scan(&path), Operator::Plus);
-    let sort = sorted.as_any().downcast_ref::<SortExec>().expect("helper returns SortExec");
+    let sort = sorted.downcast_ref::<SortExec>().expect("helper returns SortExec");
     let aggregate = Arc::clone(sort.input());
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(aggregate, 0, Some(2)));
 
@@ -409,7 +409,7 @@ fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sort = aggregate_topk_plan(parquet_scan(&path), Operator::Plus, 2);
-    let sort = sort.as_any().downcast_ref::<SortExec>().expect("helper returns SortExec");
+    let sort = sort.downcast_ref::<SortExec>().expect("helper returns SortExec");
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), Arc::clone(sort.input())));
 
@@ -431,7 +431,7 @@ fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() 
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sort = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
-    let sort = sort.as_any().downcast_ref::<SortExec>().expect("helper returns SortExec");
+    let sort = sort.downcast_ref::<SortExec>().expect("helper returns SortExec");
     let child_sort: Arc<dyn ExecutionPlan> =
         Arc::new(SortExec::new(sort.expr().clone(), Arc::clone(sort.input())).with_fetch(Some(1)));
     let merge: Arc<dyn ExecutionPlan> =

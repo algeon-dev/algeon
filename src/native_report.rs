@@ -291,23 +291,23 @@ fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> 
 }
 
 fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {
-    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfExec>()
+    if let Some(exec) = plan.downcast_ref::<NativeCudfExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;
     }
-    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfComposedExec>()
+    if let Some(exec) = plan.downcast_ref::<NativeCudfComposedExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;
     }
-    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>()
+    if let Some(exec) = plan.downcast_ref::<NativeCudfGpuProducerExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;
     }
     #[cfg(feature = "cugraph")]
-    if let Some(exec) = plan.as_any().downcast_ref::<CugraphAlgoExec>()
+    if let Some(exec) = plan.downcast_ref::<CugraphAlgoExec>()
         && exec.edge_normalize_inserted()
     {
         return true;

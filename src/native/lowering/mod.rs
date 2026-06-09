@@ -165,7 +165,6 @@ fn lower_literal_source_input(
         super::normalize::NormalizedNativeLiteralSource::Memory(source_exec) => {
             let memory = source_exec
                 .data_source()
-                .as_any()
                 .downcast_ref::<MemorySourceConfig>()
                 .ok_or(FallbackReason::UnsupportedOperator)?;
             let batches = memory

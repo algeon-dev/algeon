@@ -34,12 +34,11 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         });
     }
 
-    let partial = peel_repartition(aggregate.input().as_ref()).as_any().downcast_ref::<AggregateExec>().ok_or(
-        NativePlanRejection {
+    let partial =
+        peel_repartition(aggregate.input().as_ref()).downcast_ref::<AggregateExec>().ok_or(NativePlanRejection {
             candidate: candidate.clone(),
             reason: FallbackReason::NativeDistributedAggregateUnsupported,
-        },
-    )?;
+        })?;
     if !distributed_aggregate_pair_is_safe(aggregate, partial) {
         return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported });
     }
@@ -122,10 +121,7 @@ fn distributed_group_expr_layout_is_native_safe(
 fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
     final_aggregate.group_expr().expr().iter().zip(partial_group_output_names(partial_aggregate)).all(
         |((final_expr, _final_alias), partial_alias)| {
-            final_expr
-                .as_any()
-                .downcast_ref::<Column>()
-                .is_some_and(|final_column| final_column.name() == partial_alias)
+            final_expr.downcast_ref::<Column>().is_some_and(|final_column| final_column.name() == partial_alias)
         },
     )
 }

@@ -116,13 +116,13 @@ fn lower_join_filter_expr(
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
 ) -> Result<NativeExpr, FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         return lower_join_filter_column(column, context, left_required, right_required);
     }
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return lower_literal(literal.value());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
         let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
         let op = lower_binary_operator(binary.op())?;
@@ -133,10 +133,10 @@ fn lower_join_filter_expr(
         }
         return Ok(NativeExpr::binary(left, op, right));
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_join_filter_expr(not.arg(), context, left_required, right_required, materializations)?);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_join_filter_expr(
             is_null.arg(),
             context,
@@ -145,7 +145,7 @@ fn lower_join_filter_expr(
             materializations,
         )?));
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return Ok(NativeExpr::is_not_null(lower_join_filter_expr(
             is_not_null.arg(),
             context,
@@ -154,7 +154,7 @@ fn lower_join_filter_expr(
             materializations,
         )?));
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type = cast
             .expr()
             .data_type(context.filter.schema().as_ref())
@@ -176,7 +176,7 @@ fn lower_join_filter_expr(
             cast.cast_type().clone(),
         ));
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
@@ -185,7 +185,7 @@ fn lower_join_filter_expr(
             .list()
             .iter()
             .map(|item| {
-                let Some(literal) = item.as_any().downcast_ref::<Literal>() else {
+                let Some(literal) = item.downcast_ref::<Literal>() else {
                     return Err(FallbackReason::UnsupportedExpression);
                 };
                 if literal.value().is_null() {
@@ -200,13 +200,13 @@ fn lower_join_filter_expr(
             NativeExpr::in_list(expr, list)
         });
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if join_filter_expr_single_side(expr, context.filter).is_ok() {
             return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
         }
         return lower_join_filter_case_expr(case, context, left_required, right_required, materializations);
     }
-    if expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some() {
+    if expr.downcast_ref::<ScalarFunctionExpr>().is_some() {
         return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
     }
     Err(FallbackReason::UnsupportedExpression)
@@ -303,7 +303,7 @@ fn collect_join_filter_expr_sides(
     filter: &JoinFilter,
     side: &mut Option<DataFusionJoinSide>,
 ) -> Result<(), FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         let column_index = filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
         match column_index.side {
             DataFusionJoinSide::Left | DataFusionJoinSide::Right => {
@@ -316,33 +316,33 @@ fn collect_join_filter_expr_sides(
             DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
         }
     }
-    if expr.as_any().downcast_ref::<Literal>().is_some() {
+    if expr.downcast_ref::<Literal>().is_some() {
         return Ok(());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         collect_join_filter_expr_sides(binary.left(), filter, side)?;
         return collect_join_filter_expr_sides(binary.right(), filter, side);
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return collect_join_filter_expr_sides(not.arg(), filter, side);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return collect_join_filter_expr_sides(is_null.arg(), filter, side);
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return collect_join_filter_expr_sides(is_not_null.arg(), filter, side);
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         return collect_join_filter_expr_sides(cast.expr(), filter, side);
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         collect_join_filter_expr_sides(in_list.expr(), filter, side)?;
         for item in in_list.list() {
             collect_join_filter_expr_sides(item, filter, side)?;
         }
         return Ok(());
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr() {
             collect_join_filter_expr_sides(expr, filter, side)?;
         }
@@ -355,7 +355,7 @@ fn collect_join_filter_expr_sides(
         }
         return Ok(());
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         for arg in function.args() {
             collect_join_filter_expr_sides(arg, filter, side)?;
         }
@@ -371,7 +371,7 @@ fn lower_join_filter_side_expr(
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         let column_index =
             context.filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
         if column_index.side != side {
@@ -384,10 +384,10 @@ fn lower_join_filter_side_expr(
         required.insert(column_index.index);
         return Ok(NativeExpr::column(side_native_name(context, side, column_index.index, field.name())?));
     }
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return lower_literal(literal.value());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
         let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
         let op = lower_binary_operator(binary.op())?;
@@ -398,10 +398,10 @@ fn lower_join_filter_side_expr(
         }
         return Ok(NativeExpr::binary(left, op, right));
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_join_filter_side_expr(not.arg(), context, side_schema, side, required)?);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_join_filter_side_expr(
             is_null.arg(),
             context,
@@ -410,7 +410,7 @@ fn lower_join_filter_side_expr(
             required,
         )?));
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return Ok(NativeExpr::is_not_null(lower_join_filter_side_expr(
             is_not_null.arg(),
             context,
@@ -419,7 +419,7 @@ fn lower_join_filter_side_expr(
             required,
         )?));
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type = cast
             .expr()
             .data_type(context.filter.schema().as_ref())
@@ -435,7 +435,7 @@ fn lower_join_filter_side_expr(
             cast.cast_type().clone(),
         ));
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
@@ -444,7 +444,7 @@ fn lower_join_filter_side_expr(
             .list()
             .iter()
             .map(|item| {
-                let Some(literal) = item.as_any().downcast_ref::<Literal>() else {
+                let Some(literal) = item.downcast_ref::<Literal>() else {
                     return Err(FallbackReason::UnsupportedExpression);
                 };
                 if literal.value().is_null() {
@@ -459,10 +459,10 @@ fn lower_join_filter_side_expr(
             NativeExpr::in_list(expr, list)
         });
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         return lower_join_filter_side_case_expr(case, context, side_schema, side, required);
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         return lower_join_filter_side_scalar_function_expr(function, context, side_schema, side, required);
     }
     Err(FallbackReason::UnsupportedExpression)
@@ -601,7 +601,7 @@ fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
 }
 
 fn join_filter_literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
     match literal.value() {

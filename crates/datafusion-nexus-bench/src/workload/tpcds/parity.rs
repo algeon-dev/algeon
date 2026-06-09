@@ -1,5 +1,7 @@
 use std::{
+    any::Any,
     fs,
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
@@ -15,6 +17,7 @@ use datafusion_nexus::{
     NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
     NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityWorkloadItem,
 };
+use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{
@@ -104,6 +107,15 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
+        let mut fallback_config = cpu_session_config.clone();
+        fallback_config.options_mut().execution.collect_statistics = false;
+        let fallback_ctx = SessionContext::new_with_config(fallback_config);
+        register_tpcds_tables(&fallback_ctx, root).await?;
+        Some(fallback_ctx)
+    } else {
+        None
+    };
     let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
     register_tpcds_tables(&cpu_ctx, root).await?;
 
@@ -121,7 +133,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
             continue;
         }
 
-        let cpu_outcome = run_cpu_query(&cpu_ctx, query.sql).await;
+        let cpu_outcome = run_cpu_query(&cpu_ctx, cpu_stats_fallback_ctx.as_ref(), query.sql).await;
         let (native_planning, native_runtime) = run_native_query(&native_ctx, &native_rule, query.sql).await;
         let duckdb_output = external_oracles
             .as_ref()
@@ -148,31 +160,128 @@ fn is_query_selected(query_id: &str, filter: Option<&[String]>) -> bool {
     }
 }
 
-async fn run_cpu_query(ctx: &SessionContext, sql: &str) -> NativeTpcdsParityCpuOutcome {
+async fn run_cpu_query(
+    ctx: &SessionContext,
+    stats_fallback_ctx: Option<&SessionContext>,
+    sql: &str,
+) -> NativeTpcdsParityCpuOutcome {
+    let primary = run_cpu_query_once(ctx, sql).await;
+    let fallback = match (&primary, stats_fallback_ctx) {
+        (CpuQueryAttempt::PhysicalPlanningPanicked(_), Some(fallback_ctx)) => {
+            Some(run_cpu_query_once(fallback_ctx, sql).await)
+        },
+        _ => None,
+    };
+    cpu_query_outcome_from_attempts(primary, fallback)
+}
+
+fn cpu_query_outcome_from_attempts(
+    primary: CpuQueryAttempt,
+    stats_fallback: Option<CpuQueryAttempt>,
+) -> NativeTpcdsParityCpuOutcome {
+    match primary {
+        CpuQueryAttempt::Outcome(outcome) => outcome,
+        CpuQueryAttempt::PhysicalPlanningPanicked(message) => match stats_fallback {
+            Some(CpuQueryAttempt::Outcome(outcome)) => outcome,
+            Some(CpuQueryAttempt::PhysicalPlanningPanicked(fallback_message)) => physical_planning_panic_failure(
+                format!("initial physical planning panicked: {message}; stats-off retry panicked: {fallback_message}"),
+            ),
+            None => physical_planning_panic_failure(message),
+        },
+    }
+}
+
+enum CpuQueryAttempt {
+    Outcome(NativeTpcdsParityCpuOutcome),
+    PhysicalPlanningPanicked(String),
+}
+
+async fn run_cpu_query_once(ctx: &SessionContext, sql: &str) -> CpuQueryAttempt {
     let df = match ctx.sql(sql).await {
         Ok(df) => df,
         Err(error) => {
-            return NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
+            return CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
                 stage: "sql_to_logical_plan".to_string(),
                 reason_code: "sql_planning_failed".to_string(),
                 message: error.to_string(),
-            });
+            }));
         },
     };
-    let plan = match df.create_physical_plan().await {
-        Ok(plan) => plan,
-        Err(error) => {
-            return NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
+    let plan = match AssertUnwindSafe(df.create_physical_plan()).catch_unwind().await {
+        Ok(Ok(plan)) => plan,
+        Ok(Err(error)) => {
+            return CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
                 stage: "physical_planning".to_string(),
                 reason_code: "physical_planning_failed".to_string(),
                 message: error.to_string(),
-            });
+            }));
         },
+        Err(payload) => return CpuQueryAttempt::PhysicalPlanningPanicked(panic_payload_to_string(payload.as_ref())),
     };
     let schema = plan.schema();
     match collect(plan, Arc::new(TaskContext::default())).await {
-        Ok(batches) => NativeTpcdsParityCpuOutcome::Succeeded { schema, batches },
-        Err(error) => NativeTpcdsParityCpuOutcome::ExecutionFailed { message: error.to_string() },
+        Ok(batches) => CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::Succeeded { schema, batches }),
+        Err(error) => {
+            CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::ExecutionFailed { message: error.to_string() })
+        },
+    }
+}
+
+fn physical_planning_panic_failure(message: String) -> NativeTpcdsParityCpuOutcome {
+    NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
+        stage: "physical_planning".to_string(),
+        reason_code: "physical_planning_panicked".to_string(),
+        message,
+    })
+}
+
+fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_query_physical_planning_panic_uses_stats_fallback_success() {
+        let outcome = cpu_query_outcome_from_attempts(
+            CpuQueryAttempt::PhysicalPlanningPanicked("attempt to multiply with overflow".to_string()),
+            Some(CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::ExecutionFailed {
+                message: "fallback execution reached".to_string(),
+            })),
+        );
+
+        match outcome {
+            NativeTpcdsParityCpuOutcome::ExecutionFailed { message } => {
+                assert_eq!(message, "fallback execution reached");
+            },
+            other => panic!("expected fallback outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cpu_query_physical_planning_panic_reports_both_failed_attempts() {
+        let outcome = cpu_query_outcome_from_attempts(
+            CpuQueryAttempt::PhysicalPlanningPanicked("primary overflow".to_string()),
+            Some(CpuQueryAttempt::PhysicalPlanningPanicked("fallback overflow".to_string())),
+        );
+
+        match outcome {
+            NativeTpcdsParityCpuOutcome::PlanningFailed(failure) => {
+                assert_eq!(failure.stage, "physical_planning");
+                assert_eq!(failure.reason_code, "physical_planning_panicked");
+                assert!(failure.message.contains("primary overflow"));
+                assert!(failure.message.contains("fallback overflow"));
+            },
+            other => panic!("expected planning failure, got {other:?}"),
+        }
     }
 }
 

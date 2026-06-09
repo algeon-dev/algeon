@@ -223,9 +223,11 @@ impl From<DataFusionError> for TpcdsWorkloadError {
 
 /// Session config used by TPC-DS native report surfaces.
 ///
-/// Uses one target partition, disables DataFusion repartitioning and dynamic
+/// Uses one target partition, disables DataFusion repartitioning, dynamic
 /// filter pushdown, and leaves Parquet pushdown filters enabled for scan
-/// pruning parity with report binaries.
+/// pruning parity with report binaries. This base config remains compatible
+/// with the CPU DataFusion oracle; native-only planner guards are applied by
+/// [`tpcds_native_report_session_config`].
 pub fn tpcds_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -242,17 +244,21 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 
 /// Session config used for native TPC-DS planning and execution contexts.
 ///
-/// This starts from [`tpcds_report_session_config`] but disables DataFusion
-/// table-statistics collection. SF100 multi-join shapes can overflow
-/// DataFusion's table-level cardinality estimates during physical
-/// optimization; native source planning reads row-group metadata directly from
-/// Parquet footers instead of relying on those estimates.
+/// This starts from [`tpcds_report_session_config`] and disables DataFusion
+/// table-level statistics collection. DataFusion 54.0.0's crates.io physical
+/// join statistics can overflow on large multi-join TPC-DS plans; native source
+/// planning reads row-group metadata directly from Parquet footers instead of
+/// relying on those table estimates.
+/// DataFusion 54 defaults uncorrelated scalar subqueries to `ScalarSubqueryExec`;
+/// native TPC-DS report/admission contracts require the relationalized join form
+/// the native IR can lower.
 pub fn tpcds_native_report_session_config() -> SessionConfig {
     native_tpcds_session_config(tpcds_report_session_config())
 }
 
 fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
     config.options_mut().execution.collect_statistics = false;
+    config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config
 }
 

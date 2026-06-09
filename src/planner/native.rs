@@ -185,9 +185,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
-            || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
-        {
+        if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
             return Ok(plan);
         }
         if let Some(native_plan) = peel_cooperative_native_exec(&plan) {

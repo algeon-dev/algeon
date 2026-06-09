@@ -564,49 +564,46 @@ fn append_planning_report(report: &mut PlanningReport, extra: &PlanningReport) {
 }
 
 fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<FilterExec>().is_some()
-        || plan.as_any().downcast_ref::<ProjectionExec>().is_some()
-        || plan.as_any().downcast_ref::<SortExec>().is_some()
-        || plan.as_any().downcast_ref::<GlobalLimitExec>().is_some()
-        || plan.as_any().downcast_ref::<LocalLimitExec>().is_some()
-        || plan.as_any().downcast_ref::<AggregateExec>().is_some()
-        || plan.as_any().downcast_ref::<CoalescePartitionsExec>().is_some()
-        || plan.as_any().downcast_ref::<RepartitionExec>().is_some()
-        || plan.as_any().downcast_ref::<HashJoinExec>().is_some()
-        || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
-        || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
-        || plan.as_any().downcast_ref::<UnionExec>().is_some()
-        || plan.as_any().downcast_ref::<WindowAggExec>().is_some()
-        || plan.as_any().downcast_ref::<BoundedWindowAggExec>().is_some()
+    plan.downcast_ref::<FilterExec>().is_some()
+        || plan.downcast_ref::<ProjectionExec>().is_some()
+        || plan.downcast_ref::<SortExec>().is_some()
+        || plan.downcast_ref::<GlobalLimitExec>().is_some()
+        || plan.downcast_ref::<LocalLimitExec>().is_some()
+        || plan.downcast_ref::<AggregateExec>().is_some()
+        || plan.downcast_ref::<CoalescePartitionsExec>().is_some()
+        || plan.downcast_ref::<RepartitionExec>().is_some()
+        || plan.downcast_ref::<HashJoinExec>().is_some()
+        || plan.downcast_ref::<CrossJoinExec>().is_some()
+        || plan.downcast_ref::<NestedLoopJoinExec>().is_some()
+        || plan.downcast_ref::<UnionExec>().is_some()
+        || plan.downcast_ref::<WindowAggExec>().is_some()
+        || plan.downcast_ref::<BoundedWindowAggExec>().is_some()
 }
 
 fn join_boundary_should_keep_datafusion_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {
-    if parent.as_any().downcast_ref::<HashJoinExec>().is_none()
-        && parent.as_any().downcast_ref::<NestedLoopJoinExec>().is_none()
-    {
+    if parent.downcast_ref::<HashJoinExec>().is_none() && parent.downcast_ref::<NestedLoopJoinExec>().is_none() {
         return false;
     }
-    child.as_any().downcast_ref::<DataSourceExec>().is_some() || child.as_any().downcast_ref::<FilterExec>().is_some()
+    child.downcast_ref::<DataSourceExec>().is_some() || child.downcast_ref::<FilterExec>().is_some()
 }
 
 fn window_boundary_should_preserve_sort_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {
-    (parent.as_any().downcast_ref::<WindowAggExec>().is_some()
-        || parent.as_any().downcast_ref::<BoundedWindowAggExec>().is_some())
-        && child.as_any().downcast_ref::<SortExec>().is_some()
+    (parent.downcast_ref::<WindowAggExec>().is_some() || parent.downcast_ref::<BoundedWindowAggExec>().is_some())
+        && child.downcast_ref::<SortExec>().is_some()
 }
 
 // q39-style final full-sort/stddev subtrees are precision-sensitive: replacing
 // children below the CPU stddev aggregate changes the input order/batching that
 // DataFusion's Welford accumulator observes and can produce final-bit drift.
 fn precision_sensitive_aggregate_requires_whole_subtree_rejection(plan: &dyn ExecutionPlan) -> bool {
-    let Some(sort) = plan.as_any().downcast_ref::<SortExec>() else {
+    let Some(sort) = plan.downcast_ref::<SortExec>() else {
         return false;
     };
     sort.fetch().is_none() && subtree_contains_precision_sensitive_unsupported_aggregate(plan)
 }
 
 fn subtree_contains_precision_sensitive_unsupported_aggregate(plan: &dyn ExecutionPlan) -> bool {
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
         && aggregate.aggr_expr().iter().any(|expr| {
             let function_name = expr.fun().name();
             function_name.eq_ignore_ascii_case("stddev") || function_name.eq_ignore_ascii_case("stddev_samp")
@@ -618,14 +615,14 @@ fn subtree_contains_precision_sensitive_unsupported_aggregate(plan: &dyn Executi
 }
 
 fn subtree_contains_unsafe_join_residual(plan: &dyn ExecutionPlan) -> bool {
-    if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
+    if let Some(join) = plan.downcast_ref::<HashJoinExec>()
         && join
             .filter()
             .is_some_and(|filter| join_residual_contains_nullable_scalar_or(filter.expression(), filter.schema()))
     {
         return true;
     }
-    if let Some(join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+    if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>()
         && join
             .filter()
             .is_some_and(|filter| join_residual_contains_nullable_scalar_or(filter.expression(), filter.schema()))
@@ -636,12 +633,12 @@ fn subtree_contains_unsafe_join_residual(plan: &dyn ExecutionPlan) -> bool {
 }
 
 fn subtree_contains_outer_join(plan: &dyn ExecutionPlan) -> bool {
-    if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
+    if let Some(join) = plan.downcast_ref::<HashJoinExec>()
         && matches!(join.join_type(), JoinType::Left | JoinType::Right | JoinType::Full)
     {
         return true;
     }
-    if let Some(join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+    if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>()
         && matches!(join.join_type(), JoinType::Left | JoinType::Right | JoinType::Full)
     {
         return true;
@@ -650,7 +647,7 @@ fn subtree_contains_outer_join(plan: &dyn ExecutionPlan) -> bool {
 }
 
 fn join_residual_contains_nullable_scalar_or(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> bool {
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>()
         && matches!(binary.op(), datafusion::logical_expr::Operator::Or)
         && expr.nullable(schema).unwrap_or(true)
         && expr_contains_scalar_function(expr)
@@ -661,7 +658,7 @@ fn join_residual_contains_nullable_scalar_or(expr: &Arc<dyn PhysicalExpr>, schem
 }
 
 fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
+    expr.downcast_ref::<ScalarFunctionExpr>().is_some()
         || expr.children().into_iter().any(expr_contains_scalar_function)
 }
 
@@ -734,5 +731,5 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
     let [child] = children.as_slice() else {
         return None;
     };
-    child.as_any().downcast_ref::<NativeCudfExec>().is_some().then(|| Arc::clone(child))
+    child.downcast_ref::<NativeCudfExec>().is_some().then(|| Arc::clone(child))
 }

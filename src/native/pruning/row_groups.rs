@@ -17,7 +17,7 @@ pub(in crate::native) fn metadata_row_group_selections(
         || file_scan.limit.is_some()
         || file_scan.preserve_order
         || !file_scan.output_ordering.is_empty()
-        || files.iter().any(|file| file.extensions.is_some() || file.ordering.is_some())
+        || files.iter().any(|file| !file.extensions.is_empty() || file.ordering.is_some())
     {
         return None;
     }
@@ -96,22 +96,22 @@ struct PruningColumn {
 }
 
 fn row_group_pruning_expr(expr: &Arc<dyn PhysicalExpr>, file_schema: &SchemaRef) -> Option<RowGroupPruningExpr> {
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         let column = pruning_column(is_null.arg(), file_schema)?;
         return Some(RowGroupPruningExpr::Atom(RowGroupPruningAtom::IsNull { column_index: column.column_index }));
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         let column = pruning_column(is_not_null.arg(), file_schema)?;
         return Some(RowGroupPruningExpr::Atom(RowGroupPruningAtom::IsNotNull { column_index: column.column_index }));
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.negated() {
             return None;
         }
         let column = pruning_column(in_list.expr(), file_schema)?;
         let mut literals = Vec::new();
         for expr in in_list.list() {
-            let literal = expr.as_any().downcast_ref::<Literal>()?;
+            let literal = expr.downcast_ref::<Literal>()?;
             if literal.value().is_null() {
                 continue;
             }
@@ -123,7 +123,7 @@ fn row_group_pruning_expr(expr: &Arc<dyn PhysicalExpr>, file_schema: &SchemaRef)
         }));
     }
 
-    let binary = expr.as_any().downcast_ref::<BinaryExpr>()?;
+    let binary = expr.downcast_ref::<BinaryExpr>()?;
     match binary.op() {
         Operator::And => return pruning_conjunction(binary.left(), binary.right(), file_schema),
         Operator::Or => return pruning_disjunction(binary.left(), binary.right(), file_schema),
@@ -176,7 +176,7 @@ fn column_literal_predicate<'a>(
     file_schema: &SchemaRef,
 ) -> Option<(PruningColumn, &'a Literal, Operator)> {
     let column = pruning_column(left, file_schema)?;
-    let literal = right.as_any().downcast_ref::<Literal>()?;
+    let literal = right.downcast_ref::<Literal>()?;
     if matches!(op, Operator::Eq | Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq) {
         Some((column, literal, *op))
     } else {
@@ -185,14 +185,14 @@ fn column_literal_predicate<'a>(
 }
 
 fn pruning_column(expr: &Arc<dyn PhysicalExpr>, file_schema: &SchemaRef) -> Option<PruningColumn> {
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let column = pruning_column(cast.expr(), file_schema)?;
         if order_preserving_pruning_cast(&column.data_type, cast.cast_type()) {
             return Some(PruningColumn { data_type: cast.cast_type().clone(), ..column });
         }
         return None;
     }
-    let column = expr.as_any().downcast_ref::<Column>()?;
+    let column = expr.downcast_ref::<Column>()?;
     let column_index = file_schema.index_of(column.name()).ok()?;
     let data_type = file_schema.field(column_index).data_type().clone();
     Some(PruningColumn { column_index, data_type })

@@ -14,7 +14,7 @@ pub(super) fn parquet_scan_with_projection_indices(
     projected_indices: Vec<usize>,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_scan = FileScanConfigBuilder::from(file_scan.clone())
@@ -26,7 +26,7 @@ pub(super) fn parquet_scan_with_projection_indices(
 
 pub(super) fn parquet_scan_with_order_sensitive_limit(path: &std::path::Path, limit: usize) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_scan =
@@ -39,7 +39,7 @@ pub(super) fn parquet_scan_with_order_sensitive_limit_one_file_per_group(
     limit: usize,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_groups = file_scan
@@ -57,7 +57,7 @@ pub(super) fn parquet_scan_with_order_sensitive_limit_one_file_per_group(
 
 pub(super) fn parquet_scan_with_missing_nullable_column(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let mut fields = file_scan.file_schema().fields().iter().cloned().collect::<Vec<_>>();
@@ -101,7 +101,7 @@ pub(super) fn physical_projection_field_with_name(plan: &dyn ExecutionPlan, fiel
 }
 
 fn collect_physical_projection_fields_with_name(plan: &dyn ExecutionPlan, field_name: &str, fields: &mut Vec<Field>) {
-    if plan.as_any().is::<ProjectionExec>()
+    if plan.is::<ProjectionExec>()
         && let Ok(field) = plan.schema().field_with_name(field_name)
     {
         fields.push(field.clone());
@@ -124,25 +124,20 @@ pub(super) async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql:
 
 pub(super) fn sql_plan_without_scan_predicate(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let sort_plan = plan;
-    let sort = sort_plan.as_any().downcast_ref::<SortExec>().expect("SQL plan root should be SortExec");
+    let sort = sort_plan.downcast_ref::<SortExec>().expect("SQL plan root should be SortExec");
     let post_projection_plan = Arc::clone(sort.input());
     let post_projection = post_projection_plan
-        .as_any()
         .downcast_ref::<ProjectionExec>()
         .expect("SQL plan should have a post-aggregate ProjectionExec");
     let aggregate_plan = Arc::clone(post_projection.input());
     let aggregate = aggregate_plan
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("SQL plan should have an AggregateExec below post projection");
     let filter_plan = Arc::clone(aggregate.input());
-    let filter =
-        filter_plan.as_any().downcast_ref::<FilterExec>().expect("SQL plan should have a FilterExec below aggregate");
+    let filter = filter_plan.downcast_ref::<FilterExec>().expect("SQL plan should have a FilterExec below aggregate");
     let source_plan = Arc::clone(filter.input());
-    let source = source_plan
-        .as_any()
-        .downcast_ref::<DataSourceExec>()
-        .expect("SQL plan filter input should be a DataSourceExec");
+    let source =
+        source_plan.downcast_ref::<DataSourceExec>().expect("SQL plan filter input should be a DataSourceExec");
 
     let source_without_predicate = parquet_source_exec_without_predicate(source);
     let filter_without_predicate = filter_plan.with_new_children(vec![source_without_predicate]).unwrap();
@@ -184,7 +179,7 @@ impl datafusion::datasource::physical_plan::ParquetFileReaderFactory for Rejecti
 
 pub(super) fn parquet_scan_with_custom_reader_factory(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let parquet_source = ParquetSource::new(file_scan.file_source().table_schema().clone())
@@ -207,39 +202,32 @@ pub(super) struct DefaultDistributedSqlPlanParts {
 
 pub(super) fn default_distributed_sql_plan_parts(plan: Arc<dyn ExecutionPlan>) -> DefaultDistributedSqlPlanParts {
     let root = plan;
-    let root_spm = root.as_any().downcast_ref::<SortPreservingMergeExec>().expect("default SQL root should be SPM");
+    let root_spm = root.downcast_ref::<SortPreservingMergeExec>().expect("default SQL root should be SPM");
     let sort = Arc::clone(root_spm.input());
-    let sort_exec = sort.as_any().downcast_ref::<SortExec>().expect("default SQL SPM input should be SortExec");
+    let sort_exec = sort.downcast_ref::<SortExec>().expect("default SQL SPM input should be SortExec");
     let projection = Arc::clone(sort_exec.input());
     let projection_exec =
-        projection.as_any().downcast_ref::<ProjectionExec>().expect("default SQL sort input should be ProjectionExec");
+        projection.downcast_ref::<ProjectionExec>().expect("default SQL sort input should be ProjectionExec");
     let final_aggregate = Arc::clone(projection_exec.input());
     let final_aggregate_exec = final_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL projection input should be final AggregateExec");
     assert!(matches!(final_aggregate_exec.mode(), AggregateMode::FinalPartitioned));
     let between_aggregate_repartition = Arc::clone(final_aggregate_exec.input());
     let repartition = between_aggregate_repartition
-        .as_any()
         .downcast_ref::<RepartitionExec>()
         .expect("default SQL final aggregate input should be RepartitionExec");
     let partial_aggregate = Arc::clone(repartition.input());
     let partial_aggregate_exec = partial_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL repartition input should be partial AggregateExec");
     assert!(matches!(partial_aggregate_exec.mode(), AggregateMode::Partial));
     let filter = partial_aggregate_exec
         .input()
-        .as_any()
         .downcast_ref::<FilterExec>()
         .expect("default SQL partial aggregate input should be FilterExec");
-    let source_repartition = filter
-        .input()
-        .as_any()
-        .downcast_ref::<RepartitionExec>()
-        .expect("default SQL filter input should be RepartitionExec");
+    let source_repartition =
+        filter.input().downcast_ref::<RepartitionExec>().expect("default SQL filter input should be RepartitionExec");
     let scan_input = Arc::clone(source_repartition.input());
 
     DefaultDistributedSqlPlanParts {
@@ -269,7 +257,6 @@ pub(super) fn with_rewritten_distributed_final_aggregate(
     let parts = default_distributed_sql_plan_parts(plan);
     let final_aggregate = parts
         .final_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL final aggregate should be AggregateExec");
     let rewritten_final: Arc<dyn ExecutionPlan> =
@@ -284,7 +271,6 @@ pub(super) fn with_rewritten_distributed_final_aggregate_exec(
     let parts = default_distributed_sql_plan_parts(plan);
     let final_aggregate = parts
         .final_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL final aggregate should be AggregateExec");
     rebuild_default_distributed_sql_plan(&parts, rewrite(final_aggregate))
@@ -297,7 +283,6 @@ pub(super) fn with_rewritten_distributed_partial_aggregate(
     let parts = default_distributed_sql_plan_parts(plan);
     let partial_aggregate = parts
         .partial_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL partial aggregate should be AggregateExec");
     let rewritten_partial = rewrite(partial_aggregate);
@@ -315,12 +300,10 @@ pub(super) fn with_rewritten_distributed_partial_and_final_aggregate(
     let parts = default_distributed_sql_plan_parts(plan);
     let partial_aggregate = parts
         .partial_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL partial aggregate should be AggregateExec");
     let final_aggregate = parts
         .final_aggregate
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("default SQL final aggregate should be AggregateExec");
     let rewritten_partial = rewrite_partial(partial_aggregate);
@@ -348,7 +331,7 @@ pub(super) fn parquet_scan_with_pushed_down_predicate_value(
     value: i32,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -366,7 +349,7 @@ pub(super) fn parquet_scan_with_pushed_down_predicate_value(
 
 pub(super) fn parquet_scan_with_pushed_down_decimal_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -386,7 +369,7 @@ pub(super) fn parquet_scan_with_pushed_down_decimal_equality_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -402,7 +385,7 @@ pub(super) fn parquet_scan_with_pushed_down_decimal_in_list_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -422,7 +405,7 @@ pub(super) fn parquet_scan_with_pushed_down_case_decimal_divide_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let table_schema = scan.schema();
@@ -455,7 +438,7 @@ pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan_with_projection_indices(path, vec![0, 4, 2, 3]);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -473,7 +456,7 @@ pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
 
 pub(super) fn parquet_scan_with_pushed_down_label_prefix_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan_with_projection_indices(path, vec![0, 4, 2, 3]);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -498,7 +481,7 @@ pub(super) fn parquet_scan_with_pushed_down_label_prefix_predicate(path: &std::p
 
 pub(super) fn parquet_scan_with_pushed_down_partial_reader_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let scan_schema = scan.schema();
@@ -522,16 +505,14 @@ pub(super) fn parquet_scan_with_access_plan(
     access_plan: ParquetAccessPlan,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_groups = file_scan
         .file_groups
         .iter()
         .map(|group| {
-            FileGroup::new(
-                group.files().iter().cloned().map(|file| file.with_extensions(Arc::new(access_plan.clone()))).collect(),
-            )
+            FileGroup::new(group.files().iter().cloned().map(|file| file.with_extension(access_plan.clone())).collect())
         })
         .collect();
     let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(file_groups).build();
@@ -551,7 +532,7 @@ pub(super) fn parquet_scan_with_partial_byte_range_and_access_plan(
     access_plan: ParquetAccessPlan,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_groups = file_scan
@@ -565,7 +546,38 @@ pub(super) fn parquet_scan_with_partial_byte_range_and_access_plan(
                     .cloned()
                     .map(|file| {
                         let size = file.object_meta.size as i64;
-                        file.with_range(0, size / 2).with_extensions(Arc::new(access_plan.clone()))
+                        file.with_range(0, size / 2).with_extension(access_plan.clone())
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(file_groups).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+pub(super) fn parquet_scan_with_partial_byte_range_access_plan_and_extra_extension(
+    path: &std::path::Path,
+    access_plan: ParquetAccessPlan,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .map(|group| {
+            FileGroup::new(
+                group
+                    .files()
+                    .iter()
+                    .cloned()
+                    .map(|file| {
+                        let size = file.object_meta.size as i64;
+                        file.with_range(0, size / 2)
+                            .with_extension(access_plan.clone())
+                            .with_extension(String::from("unsupported"))
                     })
                     .collect(),
             )
@@ -594,7 +606,7 @@ pub(super) fn parquet_scan_with_byte_ranges(
     ranges: impl Fn(i64) -> Vec<(i64, i64)>,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_groups = file_scan
@@ -625,7 +637,7 @@ pub(super) fn parquet_scan_with_object_store_url(
     object_store_url: ObjectStoreUrl,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_scan = FileScanConfigBuilder::new(object_store_url, Arc::clone(file_scan.file_source()))
@@ -648,7 +660,7 @@ pub(super) fn parquet_scan_with_typed_partition_value(
     value: ScalarValue,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan_with_partition_field(path, partition_field);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_groups = file_scan
@@ -669,7 +681,7 @@ pub(super) fn parquet_scan_with_partition_field(
     partition_field: Field,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let projected_indices = (0..=file_scan.file_schema().fields().len()).collect::<Vec<_>>();
