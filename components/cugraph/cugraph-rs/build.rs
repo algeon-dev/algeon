@@ -69,6 +69,7 @@ fn main() {
     for path in [
         manifest_dir.join("shim").join("runtime_resource_handle.cpp"),
         manifest_dir.join("shim").join("runtime_resource_handle.h"),
+        manifest_dir.join("shim").join("memory_resource_compat.hpp"),
     ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }

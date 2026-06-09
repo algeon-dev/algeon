@@ -336,10 +336,13 @@ file(GENERATE OUTPUT "${{CMAKE_BINARY_DIR}}/includes.txt" CONTENT "$<JOIN:$<TARG
 "#,
         build_dir = cmake_build_dir.display(),
     );
+    // Probe representative cugraph_c/RAFT/RMM headers. per_device_resource.hpp
+    // exists in both RMM 26.04 and 26.06, unlike the removed polymorphic
+    // device_memory_resource.hpp.
     let probe_cpp = r#"#include <cugraph_c/resource_handle.h>
 #include <raft/core/handle.hpp>
 #include <rmm/cuda_stream_view.hpp>
-#include <rmm/mr/device_memory_resource.hpp>
+#include <rmm/mr/per_device_resource.hpp>
 #include <cuda_runtime_api.h>
 int main() { return 0; }
 "#;
@@ -437,6 +440,12 @@ fn looks_like_library_path(path: &Path) -> bool {
         || file_name.ends_with(".dylib")
         || file_name.ends_with(".dll")
         || file_name.ends_with(".lib")
+        // Static archives (e.g. CUDA's `libcudart_static.a`) are linked by the
+        // CMake export via absolute paths. Capture their directory so the
+        // toolkit lib dir flows through the formal native-link metadata; the
+        // same directory also holds the corresponding shared libraries that
+        // `cugraph-rs/build.rs` links (e.g. `-lcudart`).
+        || file_name.ends_with(".a")
 }
 
 fn has_library(dir: &Path, stem: &str) -> bool {
