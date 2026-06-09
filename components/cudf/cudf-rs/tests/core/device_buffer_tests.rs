@@ -29,6 +29,16 @@ fn data_ptr_non_null_for_non_empty() {
 }
 
 #[test]
+fn data_ptr_zero_size_succeeds_even_if_pointer_is_null() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer(0).unwrap();
+
+    let _ptr = buf.data_ptr().unwrap();
+
+    assert!(buf.is_empty().unwrap());
+}
+
+#[test]
 fn from_host_data_creates_correct_size() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[1, 2, 3];

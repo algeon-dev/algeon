@@ -35,6 +35,9 @@ void cudf_device_buffer_destroy(cudf_device_buffer_handle handle);
 /// The returned pointer is valid until the buffer is destroyed or
 /// adopted into a column. It refers to GPU memory and must not be
 /// dereferenced from host code.
+///
+/// For zero-size buffers this call still succeeds, but the returned pointer
+/// may be NULL because there is no addressable device range.
 cudf_status_t cudf_device_buffer_data(cudf_device_buffer_handle handle,
                                       void** out);
 

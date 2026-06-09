@@ -27,5 +27,7 @@ pub use owned::{DataFrame, DataFrameJoinResult};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 #[doc(hidden)]
 pub use reshape::IntoWithColumnExpr;
-pub use reshape::{DropDuplicatesOptions, DropNaHow, DropNaOptions, MeltOptions};
+pub use reshape::{
+    ColumnOrder, ConcatByNameOptions, DropDuplicatesOptions, DropNaHow, DropNaOptions, MeltOptions, SchemaAlignment,
+};
 pub use table_view::DataFrameTableView;

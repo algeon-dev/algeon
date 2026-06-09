@@ -5,7 +5,7 @@
 //! through `table_view()` plus `cudf::ops::*`.
 
 use cudf::{
-    DataFrame,
+    DataFrame, TypeId,
     ops::{copying, filter as low_level_filter, search},
 };
 
@@ -186,6 +186,35 @@ fn test_factorize_returns_typed_result() {
     assert_eq!(factorized.codebook().len(), 5); // all values are unique
     assert_eq!(factorized.row_codes().name(), Some("id_codes"));
     assert_eq!(factorized.codebook().keys().name(), Some("id_keys"));
+}
+
+#[test]
+fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
+    let df = DataFrame::from_series([crate::common::series("vertex", &["u2", "u9", "u1"]).unwrap()]).unwrap();
+    let lookup_df = DataFrame::from_series([
+        crate::common::series("id", &["u1", "u2"]).unwrap(),
+        crate::common::series("label", &["alice", "bob"]).unwrap(),
+    ])
+    .unwrap();
+
+    let looked_up = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap();
+
+    assert_eq!(
+        looked_up.series("owner").unwrap().to_optional_strings().unwrap(),
+        vec![Some("bob".to_string()), None, Some("alice".to_string())]
+    );
+}
+
+#[test]
+fn test_with_encoded_and_decoded_column_workflows() {
+    let df = DataFrame::from_series([crate::common::series("kind", &["b", "a", "c", "a"]).unwrap()]).unwrap();
+    let codebook = df.codebook("kind").unwrap();
+
+    let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
+    assert_eq!(encoded.series("kind_id").unwrap().dtype().unwrap().id(), TypeId::Int32);
+
+    let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+    assert_eq!(decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(), vec!["b", "a", "c", "a"]);
 }
 
 // ===========================================================================

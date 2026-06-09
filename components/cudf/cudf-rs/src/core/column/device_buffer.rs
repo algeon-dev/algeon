@@ -110,6 +110,9 @@ impl DeviceBuffer {
     ///
     /// The pointer refers to GPU memory and cannot be dereferenced from host
     /// code. It is intended for diagnostics and for passing to GPU libraries.
+    ///
+    /// For zero-size buffers this call still succeeds, but the returned
+    /// pointer may be null because there is no addressable device range.
     pub fn data_ptr(&self) -> Result<*mut c_void> {
         let mut out: *mut c_void = ptr::null_mut();
         error::check_status_in(

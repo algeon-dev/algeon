@@ -286,6 +286,14 @@ impl Column {
         Self::from_handle_with_domain(handle, domain)
     }
 
+    /// Construct a `Column` from a raw FFI handle, explicit retained domain,
+    /// and retained external owner.
+    ///
+    /// # Safety
+    /// The handle must be a valid `cudf_column_handle` and the caller must
+    /// transfer ownership. `retained_owner` must keep any external resources
+    /// required by the raw handle alive for the full lifetime of the returned
+    /// column.
     pub(crate) unsafe fn from_raw_with_domain_and_owner(
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
@@ -441,7 +449,7 @@ impl Column {
         Ok(Self::from_handle_with_domain(handle, domain))
     }
 
-    fn nulls_in_domain(
+    pub(crate) fn nulls_in_domain(
         type_id: TypeId,
         len: usize,
         domain: &Arc<ExecutionDomain>,

@@ -30,6 +30,9 @@
 namespace {
 
 thread_local bool g_fail_next_column_view_metadata_read = false;
+// Synthetic fixed-width test views only need a stable non-null backing pointer.
+// The shim never writes through this storage.
+int64_t g_test_column_view_dummy_storage[8] = {};
 
 bool should_fail_next_column_view_metadata_read() {
   if (!g_fail_next_column_view_metadata_read) { return false; }
@@ -100,6 +103,65 @@ extern "C" {
 
 void cudf_test_fail_next_column_view_metadata_read() {
   g_fail_next_column_view_metadata_read = true;
+}
+
+cudf_status_t cudf_test_column_view_create_synthetic_fixed_width(
+    cudf_type_id_t type_id,
+    int32_t size,
+    int32_t offset,
+    cudf_column_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (offset < 0) {
+    set_error("offset must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY {
+    cudf::data_type dtype(to_cudf_type_id(type_id));
+    if (!cudf::is_fixed_width(dtype)) {
+      set_error("synthetic test view only supports fixed-width types");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto* view = new cudf::column_view(
+        dtype,
+        static_cast<cudf::size_type>(size),
+        static_cast<void const*>(g_test_column_view_dummy_storage),
+        nullptr,
+        0,
+        static_cast<cudf::size_type>(offset));
+    *out = static_cast<cudf_column_view_handle>(view);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_column_view_create_synthetic_string_without_children(
+    int32_t size,
+    cudf_column_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size <= 0) {
+    set_error("size must be > 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY {
+    auto* view = new cudf::column_view(
+        cudf::data_type{cudf::type_id::STRING},
+        static_cast<cudf::size_type>(size),
+        nullptr,
+        nullptr,
+        0,
+        0,
+        {});
+    *out = static_cast<cudf_column_view_handle>(view);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 
 cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
@@ -678,13 +740,19 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
     auto* view = static_cast<cudf::column_view*>(handle);
     auto const start = static_cast<cudf::size_type>(offset);
     auto const len   = static_cast<cudf::size_type>(length);
-    // Guard against int32_t overflow before computing end.
     if (start > view->size() || len > view->size() - start) {
       set_error("slice range is out of bounds");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    auto const active_begin = view->offset() + start;
-    auto const active_end   = active_begin + len;
+    auto const max_size_type = static_cast<int64_t>(std::numeric_limits<cudf::size_type>::max());
+    auto const active_begin64 = static_cast<int64_t>(view->offset()) + static_cast<int64_t>(start);
+    auto const active_end64   = active_begin64 + static_cast<int64_t>(len);
+    if (active_begin64 > max_size_type || active_end64 > max_size_type) {
+      set_error("slice range exceeds active column offset range");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto const active_begin = static_cast<cudf::size_type>(active_begin64);
+    auto const active_end   = static_cast<cudf::size_type>(active_end64);
 
     std::vector<cudf::column_view> children{};
     children.reserve(view->num_children());
@@ -698,7 +766,7 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
                                 : 0;
 
     auto* slice = new cudf::column_view(
-        view->type(), len, view->head(), view->null_mask(), null_count, view->offset() + start, children);
+        view->type(), len, view->head(), view->null_mask(), null_count, active_begin, children);
     *out = static_cast<cudf_column_view_handle>(slice);
     return CUDF_SUCCESS;
   }
@@ -984,6 +1052,10 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
     // String columns: child 0 = offsets, child 1 = chars
     // For the *sliced* view, we need n+1 offsets (not the unsliced child size,
     // which may be larger when the view is a slice of a larger column).
+    if (view->num_children() < 1) {
+      set_error("string column view must expose an offsets child");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
     auto offsets_view = view->child(0);
     auto offsets_count = n + 1;
 

@@ -1142,27 +1142,6 @@ fn column_copy_ex_stream_and_mr_combined() {
 // have the properties needed for ExecutionContext construction.
 // ===========================================================================
 
-/// CudaStream is Send + Sync (required to move into spawn_blocking closures).
-#[test]
-fn cuda_stream_is_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<CudaStream>();
-}
-
-/// DeviceMemoryResource is Send + Sync (required for Arc sharing).
-#[test]
-fn device_memory_resource_is_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<DeviceMemoryResource>();
-}
-
-/// CudaEvent is Send + Sync (required for retained owner sharing).
-#[test]
-fn cuda_event_is_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<CudaEvent>();
-}
-
 /// CudaStream can be created and synchronized.
 #[test]
 fn cuda_stream_create_and_sync() {

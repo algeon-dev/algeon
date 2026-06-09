@@ -5,9 +5,41 @@ use crate::{
         column::Column,
         error::{Error, ErrorKind, Result},
     },
-    frame::series::Series,
+    frame::series::{IntoSeries, Series},
     runtime::execution_domain::ExecutionDomain,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodebookOrder {
+    Sorted,
+    FirstSeen,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodebookOptions {
+    order: CodebookOrder,
+}
+
+impl Default for CodebookOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CodebookOptions {
+    pub fn new() -> Self {
+        Self { order: CodebookOrder::Sorted }
+    }
+
+    pub fn order(mut self, order: CodebookOrder) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub(crate) fn order_mode(&self) -> CodebookOrder {
+        self.order
+    }
+}
 
 fn positional_code_series(
     len: usize,
@@ -67,6 +99,12 @@ impl AsRef<Series> for EncodedSeries {
     }
 }
 
+impl IntoSeries for EncodedSeries {
+    fn into_series(self) -> Result<Series> {
+        Ok(self.series)
+    }
+}
+
 impl Deref for EncodedSeries {
     type Target = Series;
 
@@ -84,7 +122,7 @@ pub struct Codebook {
 }
 
 impl Codebook {
-    pub(crate) fn from_keys(keys: Series, fallback_decoded_name: Option<String>) -> Result<Self> {
+    pub(crate) fn from_keys_with_fallback(keys: Series, fallback_decoded_name: Option<String>) -> Result<Self> {
         let code_name = keys.name().map(|name| format!("{name}_codes"));
         let codes = positional_code_series(
             keys.len(),
@@ -93,6 +131,21 @@ impl Codebook {
             fallback_decoded_name.as_deref(),
         )?;
         Ok(Self { keys, codes, fallback_decoded_name })
+    }
+
+    pub fn from_keys(keys: Series) -> Result<Self> {
+        let operation = "codebook::from_keys";
+        let distinct_keys = keys.drop_duplicates().map_err(|e| e.with_operation(operation))?;
+        if distinct_keys.len() != keys.len() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "codebook keys must be unique")
+                .with_operation(operation)
+                .with_context("key_count", keys.len().to_string())
+                .with_context("distinct_key_count", distinct_keys.len().to_string())
+                .with_context("remedy", "deduplicate the key series before constructing a reusable Codebook"));
+        }
+
+        let fallback_decoded_name = keys.name().map(str::to_string);
+        Self::from_keys_with_fallback(keys, fallback_decoded_name)
     }
 
     pub fn keys(&self) -> &Series {
@@ -121,6 +174,11 @@ impl Codebook {
         Ok(EncodedSeries::new(encoded, values.name().map(str::to_string)))
     }
 
+    pub fn encode_as(&self, values: &Series, output_name: &str) -> Result<EncodedSeries> {
+        let encoded = self.encode(values)?;
+        Ok(EncodedSeries::new(encoded.into_series().rename(output_name), values.name().map(str::to_string)))
+    }
+
     pub fn decode(&self, codes: &EncodedSeries) -> Result<Series> {
         let decoded = self.keys.gather(codes.as_series())?;
         let name = codes.decoded_name().or(self.fallback_decoded_name.as_deref());
@@ -130,12 +188,20 @@ impl Codebook {
         })
     }
 
+    pub fn decode_as(&self, codes: &EncodedSeries, output_name: &str) -> Result<Series> {
+        self.decode(codes).map(|decoded| decoded.rename(output_name))
+    }
+
     pub fn decode_series(&self, codes: &Series) -> Result<Series> {
         let decoded = self.keys.gather(codes)?;
         Ok(match self.fallback_decoded_name.as_deref() {
             Some(name) => decoded.rename(name),
             None => decoded,
         })
+    }
+
+    pub fn decode_series_as(&self, codes: &Series, output_name: &str) -> Result<Series> {
+        self.decode_series(codes).map(|decoded| decoded.rename(output_name))
     }
 
     pub fn into_parts(self) -> (Series, EncodedSeries) {

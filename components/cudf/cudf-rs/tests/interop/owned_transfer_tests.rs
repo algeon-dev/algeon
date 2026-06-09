@@ -1348,10 +1348,10 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
 // ---------------------------------------------------------------------------
 
 #[test]
-fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_does_not_leak() {
+fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     // When both the transfer root and the releaser are dropped without either
     // importing or releasing, the RuntimeOwnedTransferInner Drop impl must
-    // clean up the retained Column (GPU memory) without panicking.
+    // clean up the retained Column path without panicking.
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
 
@@ -1363,7 +1363,7 @@ fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_doe
 }
 
 #[test]
-fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_does_not_leak() {
+fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
@@ -1376,7 +1376,7 @@ fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_does
 }
 
 #[test]
-fn runtime_release_owned_column_transfer_abandoned_releaser_only_does_not_leak() {
+fn runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_import_path() {
     // The releaser is dropped first, then the transfer is imported normally.
     // This verifies the releaser drop alone does not corrupt state.
     let runtime = Runtime::builder().build().unwrap();

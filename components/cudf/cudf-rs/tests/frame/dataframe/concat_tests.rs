@@ -1,6 +1,6 @@
 //! Tests for DataFrame concat, copy, rename, select.
 
-use cudf::{DataFrame, ErrorKind};
+use cudf::{ColumnOrder, ConcatByNameOptions, DataFrame, ErrorKind, SchemaAlignment};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -84,6 +84,153 @@ fn test_concat_mismatched_column_types_returns_error() {
     .unwrap();
 
     let err = df1.concat(&df2).expect_err("expected type mismatch error");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder() {
+    let df1 = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
+    )
+    .unwrap();
+
+    let df2 = crate::common::dataframe_from_columns(
+        vec!["b".to_string(), "a".to_string()],
+        vec![column_from_slice(&[30i32, 40]).unwrap(), column_from_slice(&[3i32, 4]).unwrap()],
+    )
+    .unwrap();
+
+    assert!(df1.concat(&df2).is_err());
+
+    let result = df1.concat_by_name(&df2, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap();
+
+    assert_eq!(result.column_names(), vec!["a", "b"]);
+    assert_eq!(result.series("a").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(result.series("b").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
+}
+
+#[test]
+fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
+    let left =
+        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
+
+    let right = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string()],
+        vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30.0f64, 40.0]).unwrap()],
+    )
+    .unwrap();
+
+    let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
+
+    assert_eq!(result.column_names(), vec!["id", "score"]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(
+        result.series("score").unwrap().to_optional_vec::<f64>().unwrap(),
+        vec![None, None, Some(30.0), Some(40.0)]
+    );
+}
+
+#[test]
+fn test_concat_many_by_name_handles_multi_input_union() {
+    let left = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
+        .unwrap();
+    let middle = crate::common::dataframe_from_columns(
+        vec!["city".to_string()],
+        vec![crate::common::column_from_strs(&["Toronto"]).unwrap()],
+    )
+    .unwrap();
+    let right =
+        crate::common::dataframe_from_columns(vec!["score".to_string()], vec![column_from_slice(&[99.0f64]).unwrap()])
+            .unwrap();
+
+    let result = left.concat_many_by_name(&[&middle, &right], ConcatByNameOptions::default()).unwrap();
+
+    assert_eq!(result.column_names(), vec!["id", "city", "score"]);
+    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(1), None, None]);
+    assert_eq!(
+        result.series("city").unwrap().to_optional_strings().unwrap(),
+        vec![None, Some("Toronto".to_string()), None]
+    );
+    assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![None, None, Some(99.0)]);
+}
+
+#[test]
+fn test_concat_by_name_honors_left_column_order() {
+    let left = crate::common::dataframe_from_columns(
+        vec!["b".to_string(), "a".to_string()],
+        vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[2i32]).unwrap()],
+    )
+    .unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["c".to_string(), "a".to_string()],
+        vec![column_from_slice(&[3i32]).unwrap(), column_from_slice(&[4i32]).unwrap()],
+    )
+    .unwrap();
+
+    let result = left
+        .concat_by_name(
+            &right,
+            ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill).column_order(ColumnOrder::Left),
+        )
+        .unwrap();
+
+    assert_eq!(result.column_names(), vec!["b", "a", "c"]);
+}
+
+#[test]
+fn test_concat_by_name_honors_first_seen_column_order() {
+    let left = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
+        .unwrap();
+    let middle = crate::common::dataframe_from_columns(
+        vec!["city".to_string(), "score".to_string()],
+        vec![crate::common::column_from_strs(&["Toronto"]).unwrap(), column_from_slice(&[10.0f64]).unwrap()],
+    )
+    .unwrap();
+    let right = crate::common::dataframe_from_columns(
+        vec!["score".to_string(), "country".to_string()],
+        vec![column_from_slice(&[20.0f64]).unwrap(), crate::common::column_from_strs(&["CA"]).unwrap()],
+    )
+    .unwrap();
+
+    let result = left
+        .concat_many_by_name(
+            &[&middle, &right],
+            ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill).column_order(ColumnOrder::FirstSeen),
+        )
+        .unwrap();
+
+    assert_eq!(result.column_names(), vec!["id", "city", "score", "country"]);
+}
+
+#[test]
+fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
+    let left =
+        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
+            .unwrap();
+    let right =
+        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()])
+            .unwrap();
+
+    let err = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_concat_by_name_exact_rejects_missing_columns() {
+    let left = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string()],
+        vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[10.0f64]).unwrap()],
+    )
+    .unwrap();
+    let right =
+        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[2i32]).unwrap()])
+            .unwrap();
+
+    let err = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap_err();
+
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
