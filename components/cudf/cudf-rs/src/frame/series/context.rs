@@ -27,7 +27,10 @@ use crate::{
         strings::{self, StringSliceOptions, StripSide},
         unary::{self, UnaryOperator},
     },
-    runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        ExecutionOverrides, Runtime,
+        execution_domain::{ConsumerCompletionFence, ExecutionDomain},
+    },
 };
 
 type StringScalarColumnOp = fn(
@@ -53,7 +56,7 @@ macro_rules! series_context_op {
      |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: &ExecutionOverrides<'_>) -> Result<Series> {
             let $op = $operation;
-            let $domain = self.resolve_context_output_domain(ctx, $op)?;
+            let ($domain, _consumer_fence) = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
             let $exec = $domain.exec_options_raw();
             let col = $call?;
@@ -64,7 +67,7 @@ macro_rules! series_context_op {
     (unary fn $method:ident($($param:ident : $pty:ty),*),
      caller_op |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: &ExecutionOverrides<'_>, $op: &'static str) -> Result<Series> {
-            let $domain = self.resolve_context_output_domain(ctx, $op)?;
+            let ($domain, _consumer_fence) = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
             let $exec = $domain.exec_options_raw();
             let col = $call?;
@@ -80,15 +83,13 @@ macro_rules! series_context_op {
             ctx: &ExecutionOverrides<'_>,
         ) -> Result<Series> {
             let $op = $operation;
-            let $domain = self.resolve_context_output_domain(ctx, $op)?;
+            let ($domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, $op)?;
             ExecutionDomain::require_same_device_for_mixed_inputs(
                 self.column.execution_domain(),
                 $other.column.execution_domain(),
                 $op,
             )?;
-            if !ExecutionDomain::same_provenance($other.column.execution_domain(), &$domain) {
-                ExecutionDomain::insert_stream_dependency($other.column.execution_domain(), &$domain, $op)?;
-            }
+            consumer_fence.order_input($other.column.execution_domain())?;
             let $cv = self.column.view()?;
             let $other_cv = $other.column.view()?;
             let $exec = $domain.exec_options_raw();
@@ -268,16 +269,21 @@ pub(crate) fn trigger_series_row_range_overflow_error_for_test() -> Result<Serie
 }
 
 impl Series {
+    /// Resolve the output domain for a context op and order this series'
+    /// retained stream into it.
+    ///
+    /// The returned [`ConsumerCompletionFence`] must be held across the FFI
+    /// call that consumes this series; additional inputs are ordered through
+    /// [`ConsumerCompletionFence::order_input`] so one fence covers them all.
     fn resolve_context_output_domain(
         &self,
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
-    ) -> Result<Arc<ExecutionDomain>> {
+    ) -> Result<(Arc<ExecutionDomain>, ConsumerCompletionFence)> {
         let output_domain = ctx.resolve_output_domain(self.column.execution_domain())?;
-        if !ExecutionDomain::same_provenance(self.column.execution_domain(), &output_domain) {
+        let consumer_fence =
             ExecutionDomain::insert_stream_dependency(self.column.execution_domain(), &output_domain, operation)?;
-        }
-        Ok(output_domain)
+        Ok((output_domain, consumer_fence))
     }
 
     // ── Hand-written helpers (unique control flow) ──────────────────────
@@ -288,7 +294,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let (orders, null_orders) = options.resolve(1, operation)?;
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
@@ -372,7 +378,7 @@ impl Series {
         options: DictionaryEncodingOptions,
         operation: &'static str,
     ) -> Result<Codebook> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         self.build_codebook_in_domain(output_domain, options, operation)
     }
 
@@ -394,7 +400,7 @@ impl Series {
         options: DictionaryEncodingOptions,
         operation: &'static str,
     ) -> Result<Factorized> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let parts = factorization::factorize_impl(
@@ -422,7 +428,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col =
@@ -439,7 +445,7 @@ impl Series {
     }
 
     pub(super) fn unique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.exec_options_raw();
@@ -516,7 +522,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         if len == 0 {
             let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
             let empty =
@@ -549,16 +555,14 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let idx_cv = indices.view().map_err(|e| e.reanchor(operation))?;
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             idx_cv.execution_domain(),
             operation,
         )?;
-        if !ExecutionDomain::same_provenance(idx_cv.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(idx_cv.execution_domain(), &output_domain, operation)?;
-        }
+        consumer_fence.order_input(idx_cv.execution_domain())?;
 
         if idx_cv.is_empty()? {
             let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
@@ -593,7 +597,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let mask_cv = mask.view().map_err(|e| e.reanchor(operation))?;
         crate::ops::filter::validate_boolean_mask(&mask_cv, self.len(), "series length", operation)?;
 
@@ -602,9 +606,7 @@ impl Series {
             mask_cv.execution_domain(),
             operation,
         )?;
-        if !ExecutionDomain::same_provenance(mask_cv.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(mask_cv.execution_domain(), &output_domain, operation)?;
-        }
+        consumer_fence.order_input(mask_cv.execution_domain())?;
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
@@ -625,7 +627,7 @@ impl Series {
     }
 
     pub(super) fn dropna_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.exec_options_raw();
@@ -644,7 +646,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.exec_options_raw();
@@ -671,7 +673,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<crate::DataFrame> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
 
         let keys_view = self.column.view().map_err(|e| e.reanchor(operation))?;
         let values_view = self.column.view().map_err(|e| e.reanchor(operation))?;
@@ -717,7 +719,7 @@ impl Series {
     where
         F: FnOnce(Error) -> Error,
     {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         reduction::reduce_impl_with_status_error_mapper(
@@ -736,7 +738,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<(Scalar, Scalar)> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         reduction::minmax_impl(&cv, &output_domain, &exec_options, operation)
@@ -749,7 +751,7 @@ impl Series {
     // ── Macro-generated unary helpers ───────────────────────────────────
 
     pub(super) fn is_nan_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = unary::is_nan_impl(&cv, &output_domain, &exec_options, operation)?;
@@ -765,7 +767,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = unary::is_not_nan_impl(&cv, &output_domain, &exec_options, operation)?;
@@ -789,7 +791,7 @@ impl Series {
     }
 
     pub(super) fn is_null_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = unary::is_null_impl(&cv, &output_domain, &exec_options, operation)?;
@@ -805,7 +807,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = unary::is_valid_impl(&cv, &output_domain, &exec_options, operation)?;
@@ -843,7 +845,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = reduction::scan_impl(&cv, agg, scan_type, null_policy, &output_domain, &exec_options, operation)?;
@@ -895,7 +897,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = datetime::extract_component_impl(&cv, component, &output_domain, &exec_options, operation)?;
@@ -909,7 +911,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(to_strip, &output_domain)?;
         let exec_options = output_domain.exec_options_raw();
@@ -924,7 +926,7 @@ impl Series {
         operation: &'static str,
         op: StringScalarColumnOp,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(target, &output_domain)?;
         let exec_options = output_domain.exec_options_raw();
@@ -939,7 +941,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = strings::like_impl(&cv, pattern, escape, &output_domain, &exec_options, operation)?;
@@ -952,7 +954,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = strings::slice_impl(&cv, options, &output_domain, &exec_options, operation)?;
@@ -965,7 +967,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
         let col = strings::try_to_integers_impl(&cv, output_type, &output_domain, &exec_options, operation)?;
@@ -980,7 +982,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let target = target.into();
         let cv = self.column.view()?;
         let exec_options = output_domain.exec_options_raw();
@@ -996,7 +998,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
         let exec_options = output_domain.exec_options_raw();
@@ -1016,15 +1018,13 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             other.column.execution_domain(),
             operation,
         )?;
-        if !ExecutionDomain::same_provenance(other.column.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(other.column.execution_domain(), &output_domain, operation)?;
-        }
+        consumer_fence.order_input(other.column.execution_domain())?;
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
         let exec_options = output_domain.exec_options_raw();
@@ -1043,7 +1043,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let values_cv = values.column.view()?;
         let input_type = cv.data_type()?.id();
@@ -1069,10 +1069,7 @@ impl Series {
             operation,
         )
         .map_err(annotate_type_context)?;
-        if !ExecutionDomain::same_provenance(values.column.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)
-                .map_err(annotate_type_context)?;
-        }
+        consumer_fence.order_input(values.column.execution_domain()).map_err(annotate_type_context)?;
         let exec_options = output_domain.exec_options_raw();
         let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, &exec_options, operation)
             .map_err(annotate_type_context)?;
@@ -1092,15 +1089,13 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             other.column.execution_domain(),
             operation,
         )?;
-        if !ExecutionDomain::same_provenance(other.column.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(other.column.execution_domain(), &output_domain, operation)?;
-        }
+        consumer_fence.order_input(other.column.execution_domain())?;
         let lhs = self.column.view()?;
         let rhs = other.column.view()?;
         let output_type = binary::infer_binary_output_dtype_in(lhs.data_type()?, rhs.data_type()?, op, operation)?;
@@ -1117,7 +1112,7 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let scalar = value.into_runtime_scalar(&output_domain)?;
         let output_type = binary::infer_binary_output_dtype_in(cv.data_type()?, scalar.data_type()?, op, operation)?;

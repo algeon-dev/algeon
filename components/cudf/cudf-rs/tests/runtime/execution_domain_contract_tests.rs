@@ -277,6 +277,36 @@ fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
 }
 
 #[test]
+fn binary_op_reverse_fences_cross_stream_input_after_enqueue() {
+    // P0-2 regression contract: after a consuming operation returns, every
+    // cross-stream input's retained stream must wait on the consumer's
+    // completion event. Otherwise dropping the input enqueues its
+    // stream-ordered deallocation on its own stream and the pool can reuse
+    // the block while the consuming kernel is still reading it.
+    let _event_observation = lock_event_observation();
+    let input = explicit_i32_column(&[-3, 0, 5], 145);
+    let rhs = explicit_i32_column(&[10, 20, 30], 146);
+    let input_stream = input.testing_execution_domain_stream_value();
+    let rhs_stream = rhs.testing_execution_domain_stream_value();
+
+    reset_dependency_observation();
+    let added = binary::binary_operation_vv(
+        &input.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
+        BinaryOperator::Add,
+        &DataType::new(TypeId::Int32),
+    )
+    .unwrap();
+    // Forward fence: the output (= primary input) stream waited on rhs once.
+    assert_eq!(dependency_wait_call_count_for_stream(input_stream), 1);
+    // Reverse fence: rhs's retained stream waits on the consumer completion
+    // event, so dropping `rhs` now cannot race the add kernel.
+    assert_eq!(dependency_wait_call_count_for_stream(rhs_stream), 1);
+    drop(rhs);
+    assert_eq!(added.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![7, 20, 35]);
+}
+
+#[test]
 fn sort_filter_and_gather_families_use_data_provenance_for_mixed_domains() {
     let _event_observation = lock_event_observation();
     let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 150)]).unwrap();

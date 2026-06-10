@@ -252,41 +252,24 @@ impl ExecutionDomain {
             .map_err(|error| error.reanchor(operation).with_detail("sync_stream", self.debug_label()))
     }
 
-    /// Insert a device-side ordering dependency from `source` into `target`.
+    /// Insert two-way device-side ordering between a cross-stream input
+    /// (`source`) and the consuming operation's output domain (`target`).
     ///
-    /// This records a CUDA event on the source stream, then inserts a
-    /// `cudaStreamWaitEvent` on the target stream. It does not block the
-    /// calling CPU thread.
+    /// The forward direction happens immediately: a CUDA event is recorded on
+    /// the source stream and the target stream waits on it, so the consumer
+    /// never reads bytes that are still being produced. The reverse direction
+    /// is carried by the returned [`ConsumerCompletionFence`]: hold it across
+    /// the FFI call that enqueues the consuming operation; when it drops it
+    /// records a completion event on the target stream and makes the source
+    /// stream wait on it. Neither direction blocks the calling CPU thread.
     pub(crate) fn insert_stream_dependency(
         source: &Arc<Self>,
         target: &Arc<Self>,
         operation: &'static str,
-    ) -> Result<()> {
-        Self::require_same_device_for_mixed_inputs(source, target, operation)?;
-        if Self::same_provenance(source, target) {
-            return Ok(());
-        }
-
-        let _guard = DeviceGuard::new(source.device).map_err(|e| {
-            e.reanchor(operation)
-                .with_detail("source_domain", source.debug_label())
-                .with_detail("target_domain", target.debug_label())
-        })?;
-        let barrier = CudaEvent::new().map_err(|e| {
-            e.reanchor(operation)
-                .with_detail("source_domain", source.debug_label())
-                .with_detail("target_domain", target.debug_label())
-        })?;
-        barrier.record(source.stream.as_ref()).map_err(|e| {
-            e.reanchor(operation)
-                .with_detail("source_domain", source.debug_label())
-                .with_detail("target_domain", target.debug_label())
-        })?;
-        target.stream.wait_event(&barrier).map_err(|e| {
-            e.reanchor(operation)
-                .with_detail("source_domain", source.debug_label())
-                .with_detail("target_domain", target.debug_label())
-        })
+    ) -> Result<ConsumerCompletionFence> {
+        let mut fence = ConsumerCompletionFence::for_output(target, operation);
+        fence.order_input(source)?;
+        Ok(fence)
     }
 
     pub(crate) fn exec_options_raw(&self) -> cudf_sys::cudf_exec_options_t {
@@ -403,5 +386,114 @@ impl ExecutionDomain {
             .with_detail("left_domain", left.debug_label())
             .with_detail("right_domain", right.debug_label())
             .with_detail("remedy", remedy))
+    }
+}
+
+/// Two-way cross-stream ordering for one consuming operation.
+///
+/// Forward direction (at [`order_input`](Self::order_input) time): the
+/// consuming (output) stream waits for work already enqueued on the input's
+/// retained stream, so the consumer never reads bytes that are still being
+/// produced.
+///
+/// Reverse direction (at drop): a completion event is recorded on the output
+/// stream and every registered cross-stream input's retained stream waits on
+/// it. Without this, dropping an input right after the operation enqueues its
+/// stream-ordered deallocation on the input's own stream, and the pool can
+/// hand the block to new work on that stream while the consuming kernel is
+/// still reading it (device use-after-free).
+///
+/// Hold the fence across the FFI call that enqueues the consuming operation:
+/// the reverse fence must be recorded *after* that work is on the output
+/// stream. Dropping it earlier (or on an error path before the FFI call) is
+/// safe but provides no protection for work enqueued afterwards.
+///
+/// Inputs that already share the output stream need no fencing and are not
+/// registered, so the same-provenance fast path stays free of CUDA calls.
+///
+/// Failure policy: if the device-side fence cannot be recorded at drop time
+/// (event creation, record, or wait fails — in practice only after a sticky
+/// CUDA error), the drop falls back to host-synchronizing the output stream,
+/// which restores safety at the cost of blocking the calling thread. Both
+/// failures are reported on stderr; they are never silently ignored.
+#[must_use = "hold the fence across the consuming FFI call; dropping it earlier breaks consumer-to-owner stream ordering"]
+pub(crate) struct ConsumerCompletionFence {
+    output: Arc<ExecutionDomain>,
+    inputs: Vec<Arc<ExecutionDomain>>,
+    operation: &'static str,
+}
+
+impl ConsumerCompletionFence {
+    pub(crate) fn for_output(output: &Arc<ExecutionDomain>, operation: &'static str) -> Self {
+        Self { output: Arc::clone(output), inputs: Vec::new(), operation }
+    }
+
+    /// Order `input` into the output domain (forward fence) and register it
+    /// for the reverse completion fence if it lives on a different stream.
+    pub(crate) fn order_input(&mut self, input: &Arc<ExecutionDomain>) -> Result<()> {
+        let operation = self.operation;
+        ExecutionDomain::require_same_device_for_mixed_inputs(input, &self.output, operation)?;
+        if ExecutionDomain::same_provenance(input, &self.output) {
+            return Ok(());
+        }
+
+        let decorate = |e: Error| {
+            e.reanchor(operation)
+                .with_detail("source_domain", input.debug_label())
+                .with_detail("target_domain", self.output.debug_label())
+        };
+        let _guard = DeviceGuard::new(input.device).map_err(decorate)?;
+        let barrier = CudaEvent::new().map_err(decorate)?;
+        barrier.record(input.stream.as_ref()).map_err(decorate)?;
+        self.output.stream.wait_event(&barrier).map_err(decorate)?;
+
+        let cross_stream = input.stream.as_raw() != self.output.stream.as_raw();
+        let already_registered = self.inputs.iter().any(|known| known.stream.as_raw() == input.stream.as_raw());
+        if cross_stream && !already_registered {
+            self.inputs.push(Arc::clone(input));
+        }
+        Ok(())
+    }
+
+    fn fire(&self) -> Result<()> {
+        let operation = self.operation;
+        let decorate = |e: Error| e.reanchor(operation).with_detail("output_domain", self.output.debug_label());
+        let _guard = DeviceGuard::new(self.output.device).map_err(decorate)?;
+        let completion = CudaEvent::new().map_err(decorate)?;
+        completion.record(self.output.stream.as_ref()).map_err(decorate)?;
+        for input in &self.inputs {
+            input.stream.wait_event(&completion).map_err(|e| {
+                e.reanchor(operation)
+                    .with_detail("input_domain", input.debug_label())
+                    .with_detail("output_domain", self.output.debug_label())
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ConsumerCompletionFence {
+    fn drop(&mut self) {
+        if self.inputs.is_empty() {
+            return;
+        }
+        if let Err(error) = self.fire() {
+            // The device-side fence could not be recorded (or only partially:
+            // fire() stops at the first failure). Returning silently would
+            // reopen the use-after-free this fence exists to close, so fall
+            // back to a host fence: block until the consuming work on the
+            // output stream completes. After that, no input stream can
+            // deallocate under an in-flight consumer. Slow but safe.
+            eprintln!(
+                "[cudf::ConsumerCompletionFence] warning: failed to order cross-stream input streams after consuming operation {}; falling back to host synchronization: {error}",
+                self.operation
+            );
+            if let Err(sync_error) = self.output.synchronize_for_host_visibility(self.operation) {
+                eprintln!(
+                    "[cudf::ConsumerCompletionFence] warning: host-synchronization fallback also failed after consuming operation {}; cross-stream input buffers may be reused while the consumer is still reading them: {sync_error}",
+                    self.operation
+                );
+            }
+        }
     }
 }

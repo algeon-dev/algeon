@@ -324,8 +324,7 @@ impl DataFrame {
             } else if ExecutionDomain::same_provenance(column.execution_domain(), &output_domain) {
                 new_columns.insert(name.clone(), Arc::clone(column));
             } else {
-                ExecutionDomain::insert_stream_dependency(column.execution_domain(), &output_domain, operation)
-                    .map_err(|e| e.with_column(name.clone()))?;
+                // copy_into_domain installs both fence directions internally.
                 let copied = column
                     .copy_into_domain(Arc::clone(&output_domain), operation)
                     .map_err(|e| e.with_column(name.clone()))?;
@@ -415,7 +414,8 @@ impl DataFrame {
         let operation = "dataframe::replace_nulls";
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
 
-        ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
+        let _consumer_fence =
+            ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
         let cv = col.view()?;
         let exec_options = col.execution_domain().exec_options_raw();
         let new_col = crate::ops::replace::replace_nulls_with_exec_options(
