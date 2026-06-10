@@ -462,8 +462,7 @@ async fn wait_for_shutdown_signal() {
 /// `LD_LIBRARY_PATH` next to the one libcugraph links) executes some consumers
 /// against the wrong object layout and globals. The known failure mode is a
 /// SIGSEGV inside `rmm::device_buffer::allocate_async` during the first
-/// `DoGet` (see
-/// docs/issue/2026-06-09-flight-sql-glue-credentialless-remote-direct.md).
+/// `DoGet`.
 /// The build-time guard in `build.rs` pins what the link graph resolves; this
 /// backstop catches what the loader actually mapped.
 fn ensure_single_librmm_runtime_mapping() -> Result<()> {

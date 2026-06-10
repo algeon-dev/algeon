@@ -37,6 +37,10 @@ impl ServerError {
         Self { message: format!("invalid server configuration: {}", message.into()), source: Some(Box::new(source)) }
     }
 
+    pub fn startup(message: impl Into<String>) -> Self {
+        Self { message: message.into(), source: None }
+    }
+
     pub fn session(message: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
         Self { message: message.into(), source: Some(Box::new(source)) }
     }
