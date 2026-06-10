@@ -372,7 +372,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
 }
 
 #[test]
-fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() {
+fn native_optimizer_rule_composes_supported_host_arrow_parent_over_native_child() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
@@ -389,12 +389,14 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    let projection = optimized
-        .downcast_ref::<ProjectionExec>()
-        .expect("unsupported CPU parent should remain above the host-arrow native boundary");
-    assert!(projection.input().downcast_ref::<NativeCudfExec>().is_some());
+    let composed = optimized
+        .downcast_ref::<NativeCudfComposedExec>()
+        .expect("supported host-arrow parent should compose over the native child fragment");
+    assert_eq!(composed.children().len(), 1);
+    assert!(composed.children()[0].downcast_ref::<NativeCudfGpuProducerExec>().is_some());
+    assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=__native_fragment_0"));
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rewritten_count(), 2);
     assert_eq!(report.rejected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
@@ -402,6 +404,74 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
     ));
     assert!(matches!(report.outcomes()[1], CandidateOutcome::Rewritten { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_gpu_only_allows_composed_native_root_with_superseded_rejection() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-composition-gpu-only");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    let child_schema = child.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("key", &child_schema).unwrap(), alias: "key".to_string() }],
+            child,
+        )
+        .unwrap(),
+    );
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.downcast_ref::<NativeCudfComposedExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 2);
+    assert_eq!(report.rejected_count(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_composes_distinct_aggregate_over_anti_join_fragment() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-distinct-anti-composition");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let plan = single_partition_sql_plan_with_parquet_tables(
+        &[("left_input", &left), ("right_input", &right)],
+        "SELECT COUNT(DISTINCT l.key) AS distinct_keys \
+         FROM left_input l \
+         WHERE l.key NOT IN (SELECT r.key FROM right_input r WHERE r.r_payload IS NOT NULL)",
+    );
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
+    assert!(
+        !optimized_tree.contains("NativeCudfGpuProducerExec"),
+        "anti-join fragments must not be producerized until the bounded join GPU-resident sink is admitted:\n{optimized_tree}",
+    );
+    assert!(
+        optimized_tree.contains("NativeCudfExec"),
+        "the anti-join fragment should still use the safe host-arrow native boundary:\n{optimized_tree}",
+    );
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert!(
+        report.rewritten_count() >= 1,
+        "anti-join child should be reported as a native rewrite even when producerization is rejected: {report:?}"
+    );
+
+    let batches =
+        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 1);
+    assert_eq!(int64_array(&batches[0], 0).value(0), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -36,7 +36,8 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, gpu_resident_producer_input_name,
+        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+        gpu_resident_producer_input_name,
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
@@ -77,6 +78,11 @@ pub(super) fn apply_native_fallback_policy(
             rewritten: false,
         }),
         GpuFallbackPolicy::GpuOnly => {
+            if attempt.plan.downcast_ref::<NativeCudfExec>().is_some()
+                || attempt.plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+            {
+                return Ok(attempt);
+            }
             if let Some((candidate, reason)) = first_native_rejection(&attempt.report) {
                 return Err(candidate_rejected_error(candidate, reason, config).into());
             }
@@ -148,6 +154,22 @@ pub(super) fn optimize_final_native_plan(
     native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    optimize_final_native_plan_with_composition(
+        plan,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_preference_options,
+        true,
+    )
+}
+
+fn optimize_final_native_plan_with_composition(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    allow_fragment_composition: bool,
+) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
     if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
         let attempt = replace_lowered_root_or_keep_plan(
@@ -191,6 +213,22 @@ pub(super) fn optimize_final_native_plan(
         )?
         else {
             return Ok(attempt);
+        };
+
+        let rewritten_plan = if allow_fragment_composition {
+            compose_host_remainder_over_native_fragments_if_possible(
+                rewritten_plan,
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_preference_options,
+                &mut report,
+                &mut native_optimizer,
+                &mut source_diagnostics,
+                &mut strict_bounded_contract,
+                &mut adaptive_pipeline,
+            )?
+        } else {
+            rewritten_plan
         };
 
         return Ok(NativeOptimizationAttempt {
@@ -242,6 +280,22 @@ pub(super) fn optimize_final_native_plan(
             adaptive_pipeline,
             rewritten: false,
         });
+    };
+
+    let rewritten_plan = if allow_fragment_composition {
+        compose_host_remainder_over_native_fragments_if_possible(
+            rewritten_plan,
+            native_execution_config,
+            native_optimizer_options,
+            native_plan_preference_options,
+            &mut report,
+            &mut native_optimizer,
+            &mut source_diagnostics,
+            &mut strict_bounded_contract,
+            &mut adaptive_pipeline,
+        )?
+    } else {
+        rewritten_plan
     };
 
     Ok(NativeOptimizationAttempt {
@@ -448,6 +502,183 @@ fn collect_gpu_resident_producer_children(
     }
 }
 
+fn compose_host_remainder_over_native_fragments_if_possible(
+    rewritten_plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    report: &mut PlanningReport,
+    native_optimizer: &mut nexus_query_engine::NativeOptimizerDiagnostics,
+    source_diagnostics: &mut Vec<nexus_query_engine::SourceDiagnostics>,
+    strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
+    adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let Some(composed_attempt) = try_compose_host_remainder_over_native_fragments(
+        Arc::clone(&rewritten_plan),
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_preference_options,
+    )?
+    else {
+        return Ok(rewritten_plan);
+    };
+    if !host_arrow_child_replacement_preserves_schema(rewritten_plan.as_ref(), composed_attempt.plan.as_ref()) {
+        return Ok(rewritten_plan);
+    }
+
+    append_planning_report(report, &composed_attempt.report);
+    native_optimizer.merge(composed_attempt.native_optimizer);
+    source_diagnostics.extend(composed_attempt.source_diagnostics);
+    strict_bounded_contract.merge(composed_attempt.strict_bounded_contract);
+    adaptive_pipeline.merge(composed_attempt.adaptive_pipeline);
+    Ok(composed_attempt.plan)
+}
+
+fn try_compose_host_remainder_over_native_fragments(
+    rewritten_plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+) -> DataFusionResult<Option<NativeOptimizationAttempt>> {
+    if rewritten_plan.downcast_ref::<NativeCudfExec>().is_some()
+        || rewritten_plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || gpu_resident_producer_input_name(rewritten_plan.as_ref()).is_some()
+    {
+        return Ok(None);
+    }
+
+    let mut state = NativeFragmentProducerization::from_plan(rewritten_plan.as_ref());
+    let Some(producerized_plan) =
+        producerize_native_fragments(Arc::clone(&rewritten_plan), &mut state, native_execution_config)?
+    else {
+        return Ok(None);
+    };
+
+    let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&producerized_plan));
+    let attempt = replace_lowered_root_or_keep_plan(
+        producerized_plan,
+        lowering,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_preference_options,
+    )?;
+    if !attempt.rewritten || attempt.plan.downcast_ref::<NativeCudfComposedExec>().is_none() {
+        return Ok(None);
+    }
+    Ok(Some(attempt))
+}
+
+#[derive(Debug, Default)]
+struct NativeFragmentProducerization {
+    next_fragment_index: usize,
+    used_input_names: BTreeSet<String>,
+}
+
+impl NativeFragmentProducerization {
+    fn from_plan(plan: &dyn ExecutionPlan) -> Self {
+        let mut state = Self::default();
+        collect_gpu_resident_input_names(plan, &mut state.used_input_names);
+        state
+    }
+
+    fn next_input_name(&mut self) -> String {
+        loop {
+            let candidate = format!("__native_fragment_{}", self.next_fragment_index);
+            self.next_fragment_index += 1;
+            if self.used_input_names.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+    }
+}
+
+fn collect_gpu_resident_input_names(plan: &dyn ExecutionPlan, names: &mut BTreeSet<String>) {
+    if let Some(input_name) = gpu_resident_producer_input_name(plan) {
+        names.insert(input_name);
+        return;
+    }
+    for child in plan.children() {
+        collect_gpu_resident_input_names(child.as_ref(), names);
+    }
+}
+
+fn producerize_native_fragments(
+    plan: Arc<dyn ExecutionPlan>,
+    state: &mut NativeFragmentProducerization,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+        let native_plan = native.native_plan().clone_with_gpu_resident_sink();
+        if native_gpu_resident_producer_boundary_is_rejected(&native_plan, native_execution_config)? {
+            return Ok(None);
+        }
+        let input_name = state.next_input_name();
+        let producer = NativeCudfGpuProducerExec::try_new(input_name, native_plan).map_err(DataFusionError::from)?;
+        return Ok(Some(Arc::new(producer)));
+    }
+
+    if plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || gpu_resident_producer_input_name(plan.as_ref()).is_some()
+    {
+        return Ok(None);
+    }
+
+    let children = plan.children();
+    if children.is_empty() {
+        return Ok(None);
+    }
+
+    let mut changed = false;
+    let mut new_children = Vec::with_capacity(children.len());
+    for child in children {
+        if let Some(new_child) = producerize_native_fragments(Arc::clone(child), state, native_execution_config)? {
+            changed = true;
+            new_children.push(new_child);
+        } else {
+            new_children.push(Arc::clone(child));
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    plan.with_new_children(new_children).map(Some)
+}
+
+fn native_gpu_resident_producer_boundary_is_rejected(
+    plan: &nexus_query_engine::QueryPlan,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<bool> {
+    match native_execution_config.native_pipeline_execution_mode() {
+        nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
+            native_execution_boundary_is_rejected(plan, native_execution_config)
+        },
+        nexus_query_engine::NativePipelineExecutionMode::Adaptive => {
+            let diagnostics = plan_adaptive_pipeline_diagnostics(
+                plan,
+                GpuCandidate::new("NativeCudfGpuProducerExec", plan.output_schema().fields().len()),
+                native_execution_config,
+            )?
+            .unwrap_or_default();
+            Ok(adaptive_pipeline_was_rejected(&diagnostics))
+        },
+    }
+}
+
+fn optimize_native_child_without_composing_host_remainder(
+    child: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    optimize_final_native_plan_with_composition(
+        child,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_preference_options,
+        false,
+    )
+}
+
 fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
@@ -526,7 +757,7 @@ fn optimize_native_children_for_host_arrow_boundary(
             }
             continue;
         }
-        let attempt = optimize_final_native_plan(
+        let attempt = optimize_native_child_without_composing_host_remainder(
             Arc::clone(child),
             native_execution_config,
             native_optimizer_options,

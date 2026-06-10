@@ -139,6 +139,26 @@ pub(super) fn join_aggregate_sort_sql_plan(left: &std::path::Path, right: &std::
     join_aggregate_sort_sql_plan_with_limit(left, right, false)
 }
 
+pub(super) fn single_partition_sql_plan_with_parquet_tables(
+    tables: &[(&str, &std::path::Path)],
+    sql: &str,
+) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_joins(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    for (name, path) in tables {
+        futures::executor::block_on(ctx.register_parquet(*name, path.to_str().unwrap(), ParquetReadOptions::default()))
+            .unwrap();
+    }
+    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
+    futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
 fn join_aggregate_sort_sql_plan_with_limit(
     left: &std::path::Path,
     right: &std::path::Path,
