@@ -83,11 +83,11 @@ pub mod ir {
         source::{
             ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
             LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-            ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation,
-            PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-            RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition,
-            SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics, SourceFormat, SourceNode,
-            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+            ParquetFieldIdReadBinding, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
+            ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
+            RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
+            SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics,
+            SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
         },
     };
 }
@@ -356,10 +356,10 @@ pub use runtime::{
 };
 pub use source::{
     ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
-    LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetReadStrategy,
-    ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, PartitionColumn,
-    PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, RemoteParquetReadMode,
-    ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef,
-    SourceDecodeInput, SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    ZeroColumnCountDisposition,
+    LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+    ParquetFieldIdReadBinding, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
+    ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
+    RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition,
+    SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics, SourceFormat, SourceNode,
+    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

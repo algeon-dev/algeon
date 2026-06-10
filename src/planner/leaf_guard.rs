@@ -104,19 +104,35 @@ fn find_leftover_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTabl
 enum LeafGuardBlockingContext {
     UnionBranchNotRewritten,
     NativeRuleRejection(FallbackReason),
+    ScanPlanRejection(FallbackReason),
 }
 
 impl LeafGuardBlockingContext {
     fn code(self) -> &'static str {
         match self {
             Self::UnionBranchNotRewritten => UNION_BRANCH_NOT_REWRITTEN_CONTEXT,
-            Self::NativeRuleRejection(reason) => reason.code(),
+            Self::NativeRuleRejection(reason) | Self::ScanPlanRejection(reason) => reason.code(),
+        }
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            Self::UnionBranchNotRewritten => "plan_shape",
+            Self::NativeRuleRejection(_) => "native_rule",
+            Self::ScanPlanRejection(_) => "scan_plan",
         }
     }
 
     fn native_rule_rejection(self) -> Option<FallbackReason> {
         match self {
             Self::NativeRuleRejection(reason) => Some(reason),
+            Self::UnionBranchNotRewritten | Self::ScanPlanRejection(_) => None,
+        }
+    }
+
+    fn blocking_rejection(self) -> Option<FallbackReason> {
+        match self {
+            Self::NativeRuleRejection(reason) | Self::ScanPlanRejection(reason) => Some(reason),
             Self::UnionBranchNotRewritten => None,
         }
     }
@@ -127,11 +143,15 @@ fn leaf_guard_blocking_context(
     leaf: &CudfTableFormatScanExec,
     report: Option<&PlanningReport>,
 ) -> Option<LeafGuardBlockingContext> {
+    if let Some(reason) = scan_plan_rejection(leaf).filter(|reason| is_table_format_or_dtype_rejection(*reason)) {
+        return Some(LeafGuardBlockingContext::ScanPlanRejection(reason));
+    }
     if plan_has_mixed_union_branch_with_leftover_leaf(plan, leaf) {
         return Some(LeafGuardBlockingContext::UnionBranchNotRewritten);
     }
 
-    report.and_then(|report| first_blocking_rejection(report, leaf)).map(LeafGuardBlockingContext::NativeRuleRejection)
+    let native_rule_rejection = report.and_then(|report| first_blocking_rejection(report, leaf));
+    native_rule_rejection.map(LeafGuardBlockingContext::NativeRuleRejection)
 }
 
 fn first_blocking_rejection(report: &PlanningReport, leaf: &CudfTableFormatScanExec) -> Option<FallbackReason> {
@@ -142,14 +162,50 @@ fn first_blocking_rejection(report: &PlanningReport, leaf: &CudfTableFormatScanE
         {
             None
         },
+        CandidateOutcome::Rejected { candidate, reason } if is_table_format_or_dtype_rejection(*reason) => {
+            candidate_shape_contains_table_format_scan(candidate.shape.as_str()).then_some(*reason)
+        },
         CandidateOutcome::Rejected { reason, .. } => Some(*reason),
         CandidateOutcome::Rewritten { .. } => None,
     })
 }
 
+fn candidate_shape_contains_table_format_scan(shape: &str) -> bool {
+    shape.contains("TableFormatScan(")
+}
+
 fn table_format_leaf_is_proven_empty(leaf: &CudfTableFormatScanExec) -> bool {
     let scan_plan = leaf.scan_plan();
     scan_plan.data_files.is_empty() && scan_plan.delete_files.is_empty() && scan_plan.unsupported_features.is_empty()
+}
+
+fn scan_plan_rejection(leaf: &CudfTableFormatScanExec) -> Option<FallbackReason> {
+    leaf.scan_plan().first_rejection_reason().or_else(|| {
+        leaf.schema()
+            .fields()
+            .iter()
+            .any(|field| !nexus_query_engine::is_supported_arrow_type(field.data_type()))
+            .then_some(FallbackReason::UnsupportedType)
+    })
+}
+
+fn is_table_format_or_dtype_rejection(reason: FallbackReason) -> bool {
+    matches!(
+        reason,
+        FallbackReason::UnsupportedType
+            | FallbackReason::TableFormatUnsupported
+            | FallbackReason::TableFormatPlanningFailed
+            | FallbackReason::IcebergNonParquetDataFile
+            | FallbackReason::IcebergDeleteFilesUnsupported
+            | FallbackReason::IcebergFieldIdMappingUnsupported
+            | FallbackReason::IcebergNameMappingUnsupported
+            | FallbackReason::IcebergNestedProjectionUnsupported
+            | FallbackReason::IcebergPartitionTransformUnsupported
+            | FallbackReason::IcebergResidualPredicateUnsupported
+            | FallbackReason::IcebergRowSelectionUnsupported
+            | FallbackReason::IcebergObjectStoreReadUnsupported
+            | FallbackReason::IcebergSnapshotUnsupported
+    )
 }
 
 fn plan_has_mixed_union_branch_with_leftover_leaf(plan: &dyn ExecutionPlan, leaf: &CudfTableFormatScanExec) -> bool {
@@ -195,18 +251,28 @@ fn leftover_leaf_error(
     blocking_context: Option<LeafGuardBlockingContext>,
 ) -> Error {
     let diagnostics = leaf.diagnostics();
+    let first_rejection = blocking_context
+        .and_then(LeafGuardBlockingContext::blocking_rejection)
+        .map(FallbackReason::code)
+        .unwrap_or(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code());
     let mut error = Error::new(
         ErrorCode::NativeCandidateRejected,
         "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
-        "table-format scan leaf was not rewritten to native and has no CPU Arrow reader fallback",
+        format!(
+            "table-format scan leaf was not rewritten to native; first rejection={first_rejection}; no CPU Arrow reader fallback"
+        ),
     )
     .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
+    .with_fact("leaf_guard_first_rejection", first_rejection)
     .with_fact("leftover_operator", leaf.name())
-    .with_fact("table_format", diagnostics.table_format)
     .with_fact("cpu_arrow_reader_fallback", false)
     .with_fact("physical_plan_root", plan.name())
     .with_fact("physical_plan_shape", physical_plan_shape(plan));
+    for (key, value) in diagnostics.facts() {
+        error = error.with_fact(key, value);
+    }
     if let Some(context) = blocking_context {
+        error = error.with_fact("leaf_guard_context_source", context.source());
         error = error.with_fact("native_rule_blocking_context", context.code());
         if let Some(reason) = context.native_rule_rejection() {
             error = error.with_fact("native_rule_blocking_rejection", reason.code());
@@ -238,7 +304,7 @@ fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use nexus_query_engine::{LiteralBatchSource, QueryPlanBuilder, SourceNode};
 
     use super::*;
@@ -247,7 +313,8 @@ mod tests {
         planner::CudfOptimizerConfig,
         report::GpuCandidate,
         table_format::{
-            TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
+            TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability,
+            TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
         },
     };
 
@@ -327,6 +394,141 @@ mod tests {
         assert!(shape.contains("UnionExec("), "shape must include the union: {shape}");
         assert!(shape.contains("CudfTableFormatScanExec"), "shape must include the leftover leaf: {shape}");
         assert!(shape.contains("NativeCudfExec"), "shape must include the native branch: {shape}");
+    }
+
+    #[test]
+    fn leaf_guard_context_ignores_uncorrelated_native_rule_table_format_rejection() {
+        let leaf = table_format_scan_with_data_file();
+        let mut report = PlanningReport::new();
+        report.push_rejected(
+            GpuCandidate::new("CudfTableFormatScanExec", 1),
+            FallbackReason::IcebergFieldIdMappingUnsupported,
+        );
+
+        assert_eq!(leaf.scan_plan().first_rejection_reason(), None);
+        assert_eq!(leaf_guard_blocking_context(&leaf, &leaf, Some(&report)), None);
+    }
+
+    #[test]
+    fn leaf_guard_context_keeps_native_rule_table_format_scan_rejection() {
+        let leaf = table_format_scan_with_data_file();
+        let mut report = PlanningReport::new();
+        report.push_rejected(
+            GpuCandidate::new("ProjectionExec(TableFormatScan(iceberg))", 1),
+            FallbackReason::IcebergFieldIdMappingUnsupported,
+        );
+
+        assert_eq!(
+            leaf_guard_blocking_context(&leaf, &leaf, Some(&report)),
+            Some(LeafGuardBlockingContext::NativeRuleRejection(FallbackReason::IcebergFieldIdMappingUnsupported))
+        );
+    }
+
+    #[test]
+    fn leaf_guard_context_keeps_native_rule_structural_rejection() {
+        let leaf = table_format_scan_with_data_file();
+        let mut report = PlanningReport::new();
+        report.push_rejected(
+            GpuCandidate::new("SortPreservingMergeExec", 1),
+            FallbackReason::NativeSortPreservingMergeUnsupported,
+        );
+
+        assert_eq!(
+            leaf_guard_blocking_context(&leaf, &leaf, Some(&report)),
+            Some(LeafGuardBlockingContext::NativeRuleRejection(FallbackReason::NativeSortPreservingMergeUnsupported))
+        );
+    }
+
+    #[test]
+    fn leaf_guard_derives_scan_plan_rejection_and_diagnostics_without_native_rule_context() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_snapshot_id("s-123")
+            .with_catalog_type("glue")
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(Arc::clone(&schema))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "data-0001",
+                    "s3://bucket/table/data-0001.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_size_bytes(4096)
+                .with_row_count(11),
+            )
+            .with_unsupported_feature(TableFormatUnsupportedFeature::new(
+                TableFormatUnsupportedFeatureCode::IcebergFieldIdMappingUnsupported,
+                "schema evolution requires field-id-safe binding",
+            ));
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(scan_plan, schema));
+
+        let error = CudfTableFormatGpuOnlyLeafGuardRule::new()
+            .optimize(scan, &ConfigOptions::new())
+            .expect_err("leftover table-format scan must be rejected");
+        let adapter = adapter_error_from(&error);
+
+        assert_eq!(
+            adapter.fact_value("fallback_reason"),
+            Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
+        );
+        assert_eq!(
+            adapter.fact_value("leaf_guard_first_rejection"),
+            Some(FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        );
+        assert_eq!(adapter.fact_value("leaf_guard_context_source"), Some("scan_plan"));
+        assert_eq!(
+            adapter.fact_value("native_rule_blocking_context"),
+            Some(FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        );
+        assert_eq!(adapter.fact_value("native_rule_blocking_rejection"), None);
+        assert_eq!(adapter.fact_value("table_format"), Some("iceberg"));
+        assert_eq!(adapter.fact_value("snapshot_id"), Some("s-123"));
+        assert_eq!(adapter.fact_value("catalog_type"), Some("glue"));
+        assert_eq!(adapter.fact_value("planned_data_file_count"), Some("1"));
+        assert_eq!(adapter.fact_value("planned_delete_file_count"), Some("0"));
+        assert_eq!(
+            adapter.fact_value("rejected_feature_list"),
+            Some(FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        );
+        assert_eq!(adapter.fact_value("native_source_read_capability"), Some("object_store:s3"));
+        assert_eq!(adapter.fact_value("source_read_strategy"), Some("unknown"));
+        assert_eq!(adapter.fact_value("source_decode_input"), Some("unknown"));
+        assert_eq!(adapter.fact_value("credential_mode"), Some("unknown"));
+        assert_eq!(adapter.fact_value("lakehouse_cache_status"), Some("unknown"));
+        assert_eq!(adapter.fact_value("direct_device_read_disposition"), Some("rejected"));
+        assert!(
+            adapter.to_string().contains(FallbackReason::IcebergFieldIdMappingUnsupported.code()),
+            "client-visible leaf-guard error must include the stable first rejection code: {adapter}",
+        );
+    }
+
+    #[test]
+    fn leaf_guard_derives_projected_dtype_rejection_without_native_rule_context() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "event_time",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )]));
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(Arc::clone(&schema))
+            .with_data_file(TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            ));
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(scan_plan, schema));
+
+        let error = CudfTableFormatGpuOnlyLeafGuardRule::new()
+            .optimize(scan, &ConfigOptions::new())
+            .expect_err("leftover table-format scan must be rejected");
+        let adapter = adapter_error_from(&error);
+
+        assert_eq!(adapter.fact_value("leaf_guard_first_rejection"), Some(FallbackReason::UnsupportedType.code()));
+        assert_eq!(adapter.fact_value("leaf_guard_context_source"), Some("scan_plan"));
+        assert_eq!(adapter.fact_value("native_rule_blocking_context"), Some(FallbackReason::UnsupportedType.code()));
     }
 
     fn table_format_scan_with_data_file() -> CudfTableFormatScanExec {

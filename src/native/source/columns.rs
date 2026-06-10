@@ -37,7 +37,7 @@ use crate::{
 /// only to evaluate filters. This struct keeps those roles separate so lowering
 /// can remove filter-only columns after filters while still emitting them from
 /// the source when needed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::native) struct NativeParquetColumnRequirements {
     /// Physical Parquet columns that the native source must read and emit.
     ///
@@ -65,6 +65,12 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     pub(in crate::native) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
     /// Required partition columns represented as synthetic native source columns.
     pub(in crate::native) partition_columns: Vec<NativePartitionColumn>,
+    /// Optional literal values for synthetic partition-style columns.
+    ///
+    /// `None` means the value must come from file partition metadata. `Some`
+    /// represents a table-format default value materialized for every row of
+    /// the file.
+    pub(in crate::native) partition_column_values: Vec<Option<nexus_query_engine::LiteralValue>>,
     /// DataFusion table partition-column indices required by this source.
     pub(in crate::native) partition_column_indices: Vec<usize>,
     /// Required nullable table columns missing from the physical file schema.
@@ -104,6 +110,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
             pure_filter_columns: Vec::new(),
             pure_filter_column_source_refs: Vec::new(),
             partition_columns: Vec::new(),
+            partition_column_values: Vec::new(),
             partition_column_indices: Vec::new(),
             missing_columns: Vec::new(),
             scan_output_columns: Vec::new(),
@@ -189,6 +196,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
         pure_filter_columns,
         pure_filter_column_source_refs,
         partition_columns,
+        partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
@@ -266,6 +274,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         pure_filter_columns,
         pure_filter_column_source_refs,
         partition_columns,
+        partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),

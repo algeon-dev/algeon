@@ -45,7 +45,10 @@ use metrics::{
     record_host_buffer_chunk_read_metrics, record_host_buffer_file_read_metrics,
 };
 pub(super) use object_store_fetch::ScheduledHostParquetFetch;
-use object_store_fetch::{HostParquetBuffer, start_host_parquet_buffer_fetch};
+use object_store_fetch::{
+    HostParquetBuffer, start_host_parquet_buffer_fetch, start_host_parquet_buffer_pipeline_fetch,
+    try_start_host_parquet_buffer_pipeline_fetch,
+};
 #[cfg(test)]
 use object_store_safety::object_store_bucket_fact;
 pub(super) use object_store_safety::parse_s3_source_uri;
@@ -87,6 +90,53 @@ pub(super) fn start_object_store_parquet_file_fetch(
         return start_host_parquet_buffer_ranged_fetch(context, &file.location, &file.resolved_source, request);
     }
     start_host_parquet_buffer_fetch(context, &file.location, &file.resolved_source, file.file_size_bytes)
+}
+
+pub(super) fn start_object_store_parquet_file_pipeline_fetch(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> Result<ScheduledHostParquetFetch> {
+    if ranged_parquet_file_request(source, file).is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_fetch.pipeline",
+            "object-store fetch pipeline cannot start ranged file fetches",
+        ));
+    }
+    let file_size_bytes = pipeline_file_size_bytes(file)?;
+    start_host_parquet_buffer_pipeline_fetch(context, &file.location, &file.resolved_source, file_size_bytes)
+}
+
+pub(super) fn try_start_object_store_parquet_file_pipeline_fetch(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> Result<Option<ScheduledHostParquetFetch>> {
+    if ranged_parquet_file_request(source, file).is_some() {
+        return Ok(None);
+    }
+    let Some(file_size_bytes) = file.file_size_bytes else {
+        return Ok(None);
+    };
+    try_start_host_parquet_buffer_pipeline_fetch(context, &file.location, &file.resolved_source, file_size_bytes)
+}
+
+pub(super) fn object_store_file_fetch_pipeline_compatible(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> bool {
+    file.file_size_bytes.is_some() && ranged_parquet_file_request(source, file).is_none()
+}
+
+fn pipeline_file_size_bytes(file: &LocalParquetFile) -> Result<u64> {
+    file.file_size_bytes.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_fetch.pipeline",
+            "object-store fetch pipeline requires known file sizes",
+        )
+    })
 }
 
 pub(super) fn finish_object_store_parquet_file_fetch(

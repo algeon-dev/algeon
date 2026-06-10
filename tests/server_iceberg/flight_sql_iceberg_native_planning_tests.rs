@@ -594,7 +594,7 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
             .with_row_count(11),
         )
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
+            None,
             "id",
             Some("id"),
             DataType::Int64,
@@ -603,7 +603,7 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(2),
+            None,
             "value",
             Some("value"),
             DataType::Utf8,
@@ -637,7 +637,7 @@ fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
             .with_row_count(11),
         )
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
+            None,
             "idp",
             Some("idp"),
             DataType::Utf8,
@@ -646,7 +646,7 @@ fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(2),
+            None,
             "website",
             Some("website"),
             DataType::Utf8,
@@ -655,7 +655,7 @@ fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(3),
+            None,
             "crsScore",
             Some("crsScore"),
             DataType::Float64,
@@ -664,7 +664,7 @@ fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(4),
+            None,
             "foundedYear",
             Some("foundedYear"),
             DataType::Int32,
@@ -673,7 +673,7 @@ fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(5),
+            None,
             "supportApi",
             Some("supportApi"),
             DataType::Int64,

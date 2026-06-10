@@ -326,6 +326,48 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
 }
 
 #[test]
+fn input_tree_sort_fetch_lowers_to_native_sort_plus_limit() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-input-topk");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = count_over_topk_sort_fetch_input_plan(parquet_scan(&path), 2);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("input-tree top-k aggregate should lower to native");
+    };
+    assert_eq!(candidate.shape, "AggregateExec(SortExec(fetch)(LocalParquetScan))");
+    let PlanNode::Aggregate(_aggregate) = &result.plans[0].root_node().kind else {
+        panic!("native root should be an aggregate node");
+    };
+    let has_sort_fetch_limit = result.plans[0].nodes().iter().any(|node| {
+        let PlanNode::Limit(limit) = &node.kind else {
+            return false;
+        };
+        if limit.spec.fetch != Some(2) {
+            return false;
+        }
+        let Some(input) = result.plans[0].node(limit.input) else {
+            return false;
+        };
+        match &input.kind {
+            PlanNode::Sort(_) => true,
+            PlanNode::Projection(projection) => {
+                result.plans[0].node(projection.input).is_some_and(|input| matches!(input.kind, PlanNode::Sort(_)))
+            },
+            _ => false,
+        }
+    });
+    assert!(has_sort_fetch_limit, "native plan should keep SortExec.fetch as a limit above sort:\n{}", result.plans[0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn sort_without_fetch_over_aggregate_lowers_without_native_limit() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-sort-no-fetch");
     let path = dir.join("input.parquet");

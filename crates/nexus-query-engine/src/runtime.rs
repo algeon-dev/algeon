@@ -713,6 +713,10 @@ impl ExecutionContext {
         self.source_fetch_concurrency.acquire()
     }
 
+    pub(crate) fn try_acquire_source_fetch_operation(&self) -> Result<Option<SourceFetchOperationPermit>> {
+        self.source_fetch_concurrency.try_acquire()
+    }
+
     pub(crate) fn acquire_source_fetch_operation_with_timeout(
         &self,
         timeout: Duration,

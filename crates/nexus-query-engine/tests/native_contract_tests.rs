@@ -6,8 +6,8 @@ use std::{
 };
 
 use arrow::{
-    array::Int32Array,
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    array::{ArrayRef, Int32Array, StructArray},
+    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use cudf::{DataType as CudfDataType, TypeId};
@@ -18,10 +18,10 @@ use nexus_query_engine::{
     GpuLocalParquetSourceCacheKey, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn,
     JoinSide, JoinSpec, JoinType, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, LimitSpec,
     LiteralBatchSource, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationRequest, MemorySpaceId, MissingColumn, OperatorMetrics, ParquetReaderDecimalType,
-    ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition,
-    ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus,
-    QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, RemoteParquetReadMode, ReservationKind,
+    MemoryReservationRequest, MemorySpaceId, MissingColumn, OperatorMetrics, ParquetFieldIdReadBinding,
+    ParquetReaderDecimalType, ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PlanNode,
+    PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind,
+    QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, RemoteParquetReadMode, ReservationKind,
     ResolvedParquetSource, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
     SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,

@@ -37,6 +37,35 @@ pub(super) fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dy
     Arc::new(LocalLimitExec::new(sort, 1))
 }
 
+pub(super) fn typed_null_count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(None))])
+        .schema(Arc::clone(&scan_schema))
+        .alias("count_null")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("count_null", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
+}
+
 pub(super) fn aggregate_sort_limit_plan_with_filter(
     scan: Arc<dyn ExecutionPlan>,
     predicate: Arc<dyn PhysicalExpr>,
@@ -136,6 +165,36 @@ pub(super) fn aggregate_topk_plan(
     let sort = aggregate_sort_plan(scan, projection_operator);
     let sort = sort.downcast_ref::<SortExec>().expect("aggregate_sort_plan returns SortExec");
     Arc::new(sort.with_fetch(Some(fetch)))
+}
+
+pub(super) fn count_over_topk_sort_fetch_input_plan(
+    scan: Arc<dyn ExecutionPlan>,
+    fetch: usize,
+) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("payload", &scan_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, scan).with_fetch(Some(fetch)));
+    let sort_schema = sort.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&sort_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            sort,
+            sort_schema,
+        )
+        .unwrap(),
+    )
 }
 
 pub(super) fn aggregate_sort_plan(

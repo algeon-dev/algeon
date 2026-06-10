@@ -709,6 +709,9 @@ fn projection_scalar_setop_scalar_join_grouped_aggregate_input_has_contract(
     if shape.kind != ProjectionScalarSetopKind::ScalarJoinGroupedAggregateInput {
         return false;
     }
+    if shape.join_ids.len() != 1 {
+        return false;
+    }
     let Some(final_scalar_aggregate_id) =
         projection_scalar_setop_final_projection_input_scalar_aggregate_id(plan, shape.final_projection_id)
     else {

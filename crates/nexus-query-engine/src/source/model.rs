@@ -746,6 +746,49 @@ impl MissingColumn {
     }
 }
 
+/// Per-file Iceberg field-id proof for one physical Parquet read column.
+///
+/// The logical output name can differ from the physical Parquet column name
+/// when schema evolution renamed a top-level field. Execution still reads a
+/// normal Parquet projection by physical name, while source output columns map
+/// the decoded read column back to the logical name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParquetFieldIdReadBinding {
+    /// Iceberg field id that was matched against Parquet footer metadata.
+    pub logical_field_id: i32,
+    /// Logical column name exposed by the table schema.
+    pub logical_name: String,
+    /// Physical top-level Parquet column name in this file.
+    pub physical_name: String,
+    /// Physical top-level Parquet root index in this file.
+    pub physical_root_index: usize,
+    /// Nullability recorded in the physical Parquet/Arrow footer schema.
+    pub nullable: bool,
+    /// Arrow data type recorded in the physical Parquet/Arrow footer schema.
+    pub data_type: DataType,
+}
+
+impl ParquetFieldIdReadBinding {
+    /// Builds one footer-proven field-id read binding.
+    pub fn new(
+        logical_field_id: i32,
+        logical_name: impl Into<String>,
+        physical_name: impl Into<String>,
+        physical_root_index: usize,
+        nullable: bool,
+        data_type: DataType,
+    ) -> Self {
+        Self {
+            logical_field_id,
+            logical_name: logical_name.into(),
+            physical_name: physical_name.into(),
+            physical_root_index,
+            nullable,
+            data_type,
+        }
+    }
+}
+
 /// cuDF reader-side decimal storage type proven from Parquet metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParquetReaderDecimalTypeId {
@@ -989,6 +1032,19 @@ impl LocalParquetSource {
         )
     }
 
+    /// Sets the schema exposed to downstream query-plan nodes.
+    ///
+    /// This is used when the physical Parquet read schema contains file-local
+    /// names, but the source output has already been mapped back to logical
+    /// table names by explicit output-column refs. Non-count-probe callers must
+    /// still include every output override field in `schema`, because execution
+    /// schema coercion and source-contract lowering operate on that execution
+    /// source schema.
+    pub fn with_output_schema_override(mut self, output_schema: SchemaRef) -> Self {
+        self.output_schema_override = Some(output_schema);
+        self
+    }
+
     /// Sets the total physical column count in the source Parquet file schema.
     pub fn with_file_column_count(mut self, file_column_count: usize) -> Self {
         self.file_column_count = Some(file_column_count);
@@ -1165,6 +1221,12 @@ impl LocalParquetSource {
 
     /// Resolves a logical source column to a physical file or partition column.
     pub fn source_column_ref(&self, column: &str) -> Option<SourceColumnRef> {
+        if let Some(index) = self.projected_output_columns.iter().position(|output_column| output_column == column) {
+            return self.projected_output_column_source_refs.get(index).copied();
+        }
+        if let Some(index) = self.pure_filter_columns.iter().position(|filter_column| filter_column == column) {
+            return self.pure_filter_column_source_refs.get(index).copied();
+        }
         self.read_columns
             .iter()
             .position(|read_column| read_column == column)
@@ -1764,6 +1826,8 @@ pub struct LocalParquetFile {
     pub row_group_rows: Option<Vec<u64>>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
+    /// Per-file field-id bindings proven from table-format and Parquet footer metadata.
+    pub field_id_read_bindings: Vec<ParquetFieldIdReadBinding>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
     pub partition_values: Vec<LiteralValue>,
 }
@@ -1784,6 +1848,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("pure_filter_row_group_uncompressed_bytes", &self.pure_filter_row_group_uncompressed_bytes)
             .field("row_group_rows", &self.row_group_rows)
             .field("reader_decimal_types", &self.reader_decimal_types)
+            .field("field_id_read_bindings", &self.field_id_read_bindings)
             .field("partition_values", &self.partition_values)
             .finish()
     }
@@ -1809,6 +1874,7 @@ impl LocalParquetFile {
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
+            field_id_read_bindings: Vec::new(),
             partition_values: Vec::new(),
         }
     }
@@ -1837,6 +1903,7 @@ impl LocalParquetFile {
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
+            field_id_read_bindings: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1859,6 +1926,7 @@ impl LocalParquetFile {
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
+            field_id_read_bindings: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1922,6 +1990,12 @@ impl LocalParquetFile {
     /// Sets per-read-column decimal storage types proven from Parquet metadata.
     pub fn with_reader_decimal_types(mut self, reader_decimal_types: Vec<ParquetReaderDecimalType>) -> Self {
         self.reader_decimal_types = reader_decimal_types;
+        self
+    }
+
+    /// Sets per-file field-id bindings proven from footer metadata.
+    pub fn with_field_id_read_bindings(mut self, bindings: Vec<ParquetFieldIdReadBinding>) -> Self {
+        self.field_id_read_bindings = bindings;
         self
     }
 

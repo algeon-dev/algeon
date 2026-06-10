@@ -558,7 +558,9 @@ fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::Norma
 
     match input {
         NormalizedNativeInput::Projection(projection) => normalized_input_is_scalar_single_row(&projection.input),
-        NormalizedNativeInput::Limit(limit) => normalized_input_is_scalar_single_row(&limit.input),
+        NormalizedNativeInput::Limit(limit) => {
+            limit.spec.skip == 0 && limit.spec.fetch != Some(0) && normalized_input_is_scalar_single_row(&limit.input)
+        },
         NormalizedNativeInput::Aggregate(aggregate) => aggregate.aggregate.group_expr().expr().is_empty(),
         NormalizedNativeInput::GpuResidentSource(_) => false,
         NormalizedNativeInput::LiteralSource(source) => {

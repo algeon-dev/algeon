@@ -77,6 +77,121 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
 }
 
 #[test]
+fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
+    let dir = unique_contract_temp_dir("dimension-nested-fact");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let payload_x = Arc::new(Field::new("x", DataType::Int32, false));
+    let payload_y = Arc::new(Field::new("y", DataType::Int32, false));
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("payload", DataType::Struct(Fields::from(vec![payload_x.clone(), payload_y.clone()])), false),
+        Field::new("fact_key", DataType::Int32, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("dim_key", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    write_nested_fact_parquet(
+        &fact_path,
+        Arc::clone(&fact_schema),
+        payload_x,
+        payload_y,
+        Int32Array::from(vec![0, 0, 0]),
+        Int32Array::from(vec![20, 100, 100]),
+        Int32Array::from(vec![10, 20, 30]),
+        1,
+    );
+    write_i32_record_batch_parquet(
+        &dim_path,
+        Arc::clone(&dim_schema),
+        vec![Int32Array::from(vec![20, 40]), Int32Array::from(vec![2000, 1999])],
+        1,
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&fact_schema),
+        vec!["fact_key".to_string()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&dim_path)],
+        Arc::clone(&dim_schema),
+        vec!["dim_key".to_string(), "d_year".to_string()],
+    )));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("fact_key", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    let joined = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
+        ]),
+        Arc::clone(&join_schema),
+    );
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("d_year", DataType::Int32, false),
+        Field::new("cnt", DataType::Int64, true),
+    ]));
+    let aggregate = builder.add_aggregate(
+        joined,
+        AggregateSpec::new(
+            vec![Expr::column("d_year")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "cnt")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let filtered = builder.add_filter(
+        aggregate,
+        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
+        aggregate_schema,
+    );
+    let plan = builder.finish_gpu_resident(filtered);
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let applied = result
+        .diagnostics
+        .dimension_derived_row_group_pruning
+        .candidates
+        .iter()
+        .find(|candidate| candidate.applied)
+        .expect("nested fact source should be pruned by fact_key stats");
+    assert_eq!(applied.target_key_column.as_deref(), Some("fact_key"));
+    assert_eq!(applied.selected_row_groups_before, Some(3));
+    assert_eq!(applied.selected_row_groups_after, Some(1));
+
+    let fact_source = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                _ => None,
+            },
+            _ => None,
+        })
+        .find(|source| source.read_columns.iter().any(|column| column == "fact_key"))
+        .expect("fact source should remain present");
+    assert_eq!(fact_source.files[0].row_groups.as_deref(), Some(&[1][..]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
 fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
     let dir = unique_contract_temp_dir("dimension-group-filter-discovery");
     let plan = aggregate_group_filter_dimension_pruning_plan(&dir);
@@ -515,6 +630,28 @@ fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine
 fn write_i32_record_batch_parquet(path: &Path, schema: Arc<Schema>, columns: Vec<Int32Array>, row_group_rows: usize) {
     let arrays = columns.into_iter().map(|column| Arc::new(column) as Arc<dyn arrow::array::Array>).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).expect("test batch should be valid");
+    let file = File::create(path).expect("test parquet file should be creatable");
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be creatable");
+    writer.write(&batch).expect("test parquet batch should be writable");
+    writer.close().expect("test parquet writer should close");
+}
+
+fn write_nested_fact_parquet(
+    path: &Path,
+    schema: Arc<Schema>,
+    payload_x: Arc<Field>,
+    payload_y: Arc<Field>,
+    x_values: Int32Array,
+    y_values: Int32Array,
+    fact_key: Int32Array,
+    row_group_rows: usize,
+) {
+    let x_values = Arc::new(x_values) as ArrayRef;
+    let y_values = Arc::new(y_values) as ArrayRef;
+    let payload = Arc::new(StructArray::from(vec![(payload_x, x_values), (payload_y, y_values)])) as ArrayRef;
+    let fact_key = Arc::new(fact_key) as ArrayRef;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![payload, fact_key]).expect("test batch should be valid");
     let file = File::create(path).expect("test parquet file should be creatable");
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be creatable");

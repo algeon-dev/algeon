@@ -1,5 +1,5 @@
 use super::*;
-use crate::source::PredicateDisposition;
+use crate::source::{PredicateDisposition, SourceColumnRef};
 
 /// Validate local Parquet source invariants before native reads.
 ///
@@ -99,9 +99,13 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
 
     validate_local_parquet_source_contract(source)?;
     validate_count_star_probe_source(source)?;
+    validate_output_schema_override_contract(source)?;
 
     for projected_column in &source.projected_output_columns {
-        if source.source_column_ref(projected_column).is_none() {
+        if source
+            .source_column_ref(projected_column)
+            .is_none_or(|source_ref| !source_column_ref_is_available(source, source_ref))
+        {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.local_parquet_source.validate",
@@ -113,7 +117,10 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     }
 
     for filter_column in &source.pure_filter_columns {
-        if source.source_column_ref(filter_column).is_none() {
+        if source
+            .source_column_ref(filter_column)
+            .is_none_or(|source_ref| !source_column_ref_is_available(source, source_ref))
+        {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.local_parquet_source.validate",
@@ -156,6 +163,51 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn validate_output_schema_override_contract(source: &LocalParquetSource) -> Result<()> {
+    if source.output_schema_override.is_none() || source.is_count_star_probe_source() {
+        return Ok(());
+    }
+
+    for (field_index, output_field) in source.output_schema().fields().iter().enumerate() {
+        let source_field = source.schema.field_with_name(output_field.name()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet output schema override field must also exist in execution source schema",
+            )
+            .with_fact("reason", "output_schema_override_field_absent")
+            .with_fact("field_index", field_index)
+            .with_fact("field_name", output_field.name().as_str())
+        })?;
+        if source_field.data_type() != output_field.data_type()
+            || source_field.is_nullable() != output_field.is_nullable()
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet output schema override field must match execution source schema",
+            )
+            .with_fact("reason", "output_schema_override_field_mismatch")
+            .with_fact("field_index", field_index)
+            .with_fact("field_name", output_field.name().as_str())
+            .with_fact("source_type", format!("{:?}", source_field.data_type()))
+            .with_fact("output_type", format!("{:?}", output_field.data_type()))
+            .with_fact("source_nullable", source_field.is_nullable())
+            .with_fact("output_nullable", output_field.is_nullable()));
+        }
+    }
+
+    Ok(())
+}
+
+fn source_column_ref_is_available(source: &LocalParquetSource, source_ref: SourceColumnRef) -> bool {
+    match source_ref {
+        SourceColumnRef::File(index) => source.read_column_file_indices.iter().any(|read_index| *read_index == index),
+        SourceColumnRef::Partition(index) => index < source.partition_columns.len(),
+        SourceColumnRef::MissingNull(index) => index < source.missing_columns.len(),
+    }
 }
 
 fn validate_count_star_probe_source(source: &LocalParquetSource) -> Result<()> {
@@ -271,6 +323,14 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
         SchemaMappingDisposition::DirectByName => {
             if !source.missing_columns.is_empty() {
                 return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_direct_but_missing"));
+            }
+        },
+        SchemaMappingDisposition::FieldIdBindings => {
+            if source.files.iter().all(|file| file.field_id_read_bindings.is_empty()) {
+                return Err(unsupported_source_contract_fact(
+                    "schema_mapping",
+                    "diagnostic_field_id_but_bindings_empty",
+                ));
             }
         },
         SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source)?,

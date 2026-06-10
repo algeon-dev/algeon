@@ -239,18 +239,7 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
     match source {
         crate::source::SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source)?;
-            let mut available = BTreeSet::new();
-            available.extend(source.read_columns.iter().cloned());
-            available.extend(source.partition_columns.iter().map(|column| column.name.clone()));
-            available.extend(source.missing_columns.iter().map(|column| column.name.clone()));
-            if source.is_zero_column_count_source() {
-                available.insert(ZERO_COLUMN_COUNT_COLUMN.to_string());
-            }
-            if source.is_count_star_probe_source() {
-                available.clear();
-                available.insert(ZERO_COLUMN_COUNT_COLUMN.to_string());
-            }
-            Ok(available)
+            Ok(schema_column_names(source.output_schema()))
         },
         crate::source::SourceNode::GpuResident(source) => {
             if source.input_name.is_empty() {
@@ -420,8 +409,11 @@ mod tests {
     use super::*;
     use crate::{
         expr::{AggregateFunction, BinaryOp, LiteralValue},
-        plan::{QueryPlanBuilder, WindowFunction, WindowSpec},
-        source::{LiteralBatchSource, SourceNode},
+        plan::{ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec},
+        source::{
+            LiteralBatchSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, SourceColumnRef,
+            SourceNode,
+        },
     };
 
     #[test]
@@ -462,6 +454,31 @@ mod tests {
         let error = validate_query_plan(&plan).expect_err("global whole-partition aggregate windows are unsupported");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
         assert_eq!(error.operation(), "nexus_query_engine.window.validate");
+    }
+
+    #[test]
+    fn validate_local_parquet_source_uses_output_schema_override_for_available_columns() {
+        let physical_schema = Arc::new(Schema::new(vec![
+            Field::new("old_status", ArrowDataType::Int64, true),
+            Field::new("status", ArrowDataType::Int64, true),
+        ]));
+        let logical_schema = Arc::new(Schema::new(vec![Field::new("status", ArrowDataType::Int64, true)]));
+        let file = LocalParquetFile::new("/tmp/renamed.parquet").with_field_id_read_bindings(vec![
+            ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, ArrowDataType::Int64),
+        ]);
+        let source = LocalParquetSource::from_files(vec![file], physical_schema, vec!["old_status".to_string()])
+            .with_column_roles(vec!["status".to_string()], Vec::new())
+            .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
+            .with_output_schema_override(Arc::clone(&logical_schema));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("status"), Field::new("status", ArrowDataType::Int64, true))],
+        );
+        let plan = builder.finish_with_host_sink(projection);
+
+        validate_query_plan(&plan).expect("logical output alias should be available downstream");
     }
 
     fn left_deep_zip_range_disjunction(count: usize) -> Expr {

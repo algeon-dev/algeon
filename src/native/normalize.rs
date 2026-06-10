@@ -174,6 +174,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         || plan.downcast_ref::<PlaceholderRowExec>().is_some()
         || plan.downcast_ref::<EmptyExec>().is_some()
         || plan.downcast_ref::<CoalescePartitionsExec>().is_some()
+        || plan.downcast_ref::<CooperativeExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
         || plan.downcast_ref::<CudfTableFormatScanExec>().is_some()
     {
@@ -516,7 +517,11 @@ fn normalize_native_input<'a>(
             });
         }
         let input = normalize_native_input(sort.input().as_ref(), candidate)?;
-        return Ok(NormalizedNativeInput::Sort(NormalizedNativeSort { sort, input: Box::new(input) }));
+        return Ok(NormalizedNativeInput::Sort(NormalizedNativeSort {
+            sort,
+            fetch: sort.fetch().map(NativeLimitSpec::fetch),
+            input: Box::new(input),
+        }));
     }
     if let Some(window) = plan.downcast_ref::<WindowAggExec>() {
         let input = normalize_native_input(window.input().as_ref(), candidate)?;

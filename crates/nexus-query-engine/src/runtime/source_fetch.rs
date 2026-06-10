@@ -340,6 +340,17 @@ impl HostFetchBudget {
         Ok(HostFetchPermit { budget: self.clone(), bytes })
     }
 
+    /// Attempts to acquire a host-buffer permit without waiting.
+    pub fn try_acquire(&self, bytes: u64) -> Result<Option<HostFetchPermit>> {
+        validate_host_fetch_request_bytes(bytes, self.budget_bytes())?;
+        let mut state = self.lock_state("nexus_query_engine.host_fetch_budget.try_acquire")?;
+        if !host_fetch_bytes_fit(state.in_flight_bytes, bytes, self.budget_bytes()) {
+            return Ok(None);
+        }
+        state.in_flight_bytes = state.in_flight_bytes.saturating_add(bytes);
+        Ok(Some(HostFetchPermit { budget: self.clone(), bytes }))
+    }
+
     /// Acquires a host-buffer permit with a bounded wait.
     pub fn acquire_with_timeout(
         &self,
@@ -530,6 +541,15 @@ impl SourceFetchConcurrencyGate {
         }
         state.in_flight_ops = state.in_flight_ops.saturating_add(1);
         Ok(SourceFetchOperationPermit { gate: self.clone() })
+    }
+
+    pub(super) fn try_acquire(&self) -> Result<Option<SourceFetchOperationPermit>> {
+        let mut state = self.lock_state("nexus_query_engine.source_fetch_concurrency.try_acquire")?;
+        if state.in_flight_ops >= self.max_concurrent_ops() {
+            return Ok(None);
+        }
+        state.in_flight_ops = state.in_flight_ops.saturating_add(1);
+        Ok(Some(SourceFetchOperationPermit { gate: self.clone() }))
     }
 
     pub(super) fn acquire_with_timeout(
@@ -750,4 +770,33 @@ fn validate_gds_min_chunk_bytes(gds_min_chunk_bytes: u64) -> Result<()> {
         .with_fact("reason", "zero"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_fetch_budget_try_acquire_does_not_wait_when_capacity_is_held() {
+        let budget = HostFetchBudget::new(10).expect("budget should be valid");
+        let held = budget.acquire(10).expect("initial permit should fit");
+
+        let next = budget.try_acquire(1).expect("try acquire should not error");
+
+        assert!(next.is_none());
+        drop(held);
+        assert!(budget.try_acquire(1).expect("released capacity should fit").is_some());
+    }
+
+    #[test]
+    fn source_fetch_concurrency_try_acquire_does_not_wait_when_capacity_is_held() {
+        let gate = SourceFetchConcurrencyGate::new(1).expect("gate should be valid");
+        let held = gate.acquire().expect("initial permit should fit");
+
+        let next = gate.try_acquire().expect("try acquire should not error");
+
+        assert!(next.is_none());
+        drop(held);
+        assert!(gate.try_acquire().expect("released capacity should fit").is_some());
+    }
 }

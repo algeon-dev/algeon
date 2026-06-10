@@ -123,11 +123,23 @@ pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile
     tracing::warn!(
         query_id,
         fallback_reason = fields.fallback_reason,
+        leaf_guard_first_rejection = fields.leaf_guard_first_rejection,
+        leaf_guard_context_source = fields.leaf_guard_context_source,
         native_rule_blocking_context = fields.native_rule_blocking_context,
         native_rule_blocking_rejection = fields.native_rule_blocking_rejection,
         physical_plan_root = fields.physical_plan_root,
         physical_plan_shape = fields.physical_plan_shape,
         table_format = fields.table_format,
+        snapshot_id = fields.snapshot_id,
+        catalog_type = fields.catalog_type,
+        planned_data_file_count = fields.planned_data_file_count,
+        planned_delete_file_count = fields.planned_delete_file_count,
+        rejected_feature_list = fields.rejected_feature_list,
+        source_read_strategy = fields.source_read_strategy,
+        source_decode_input = fields.source_decode_input,
+        credential_mode = fields.credential_mode,
+        lakehouse_cache_status = fields.lakehouse_cache_status,
+        direct_device_read_disposition = fields.direct_device_read_disposition,
         rejection_class = fields.rejection_class.as_str(),
         session_profile = profile.as_str(),
         profile_hint = profile_hint(profile),
@@ -156,11 +168,23 @@ pub(crate) fn profile_hint(profile: ServerSessionProfile) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LeafGuardEventFields<'a> {
     pub fallback_reason: &'a str,
+    pub leaf_guard_first_rejection: &'a str,
+    pub leaf_guard_context_source: &'a str,
     pub native_rule_blocking_context: &'a str,
     pub native_rule_blocking_rejection: &'a str,
     pub physical_plan_root: &'a str,
     pub physical_plan_shape: &'a str,
     pub table_format: &'a str,
+    pub snapshot_id: &'a str,
+    pub catalog_type: &'a str,
+    pub planned_data_file_count: &'a str,
+    pub planned_delete_file_count: &'a str,
+    pub rejected_feature_list: &'a str,
+    pub source_read_strategy: &'a str,
+    pub source_decode_input: &'a str,
+    pub credential_mode: &'a str,
+    pub lakehouse_cache_status: &'a str,
+    pub direct_device_read_disposition: &'a str,
     pub rejection_class: FlightSqlNativeRejectClass,
 }
 
@@ -179,14 +203,30 @@ pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGua
     if fallback_reason != FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code() {
         return None;
     }
+    let leaf_guard_first_rejection = facts
+        .get("leaf_guard_first_rejection")
+        .or_else(|| facts.get("native_rule_blocking_rejection"))
+        .unwrap_or(fallback_reason);
     let native_rule_blocking_rejection = facts.get("native_rule_blocking_rejection").unwrap_or("");
     Some(LeafGuardEventFields {
         fallback_reason,
+        leaf_guard_first_rejection,
+        leaf_guard_context_source: facts.get("leaf_guard_context_source").unwrap_or(""),
         native_rule_blocking_context: facts.get("native_rule_blocking_context").unwrap_or(""),
         native_rule_blocking_rejection,
         physical_plan_root: facts.get("physical_plan_root").unwrap_or(""),
         physical_plan_shape: facts.get("physical_plan_shape").unwrap_or(""),
         table_format: facts.get("table_format").unwrap_or(""),
+        snapshot_id: facts.get("snapshot_id").unwrap_or(""),
+        catalog_type: facts.get("catalog_type").unwrap_or(""),
+        planned_data_file_count: facts.get("planned_data_file_count").unwrap_or(""),
+        planned_delete_file_count: facts.get("planned_delete_file_count").unwrap_or(""),
+        rejected_feature_list: facts.get("rejected_feature_list").unwrap_or(""),
+        source_read_strategy: facts.get("source_read_strategy").unwrap_or(""),
+        source_decode_input: facts.get("source_decode_input").unwrap_or(""),
+        credential_mode: facts.get("credential_mode").unwrap_or(""),
+        lakehouse_cache_status: facts.get("lakehouse_cache_status").unwrap_or(""),
+        direct_device_read_disposition: facts.get("direct_device_read_disposition").unwrap_or(""),
         rejection_class: FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf,
     })
 }
@@ -333,6 +373,8 @@ mod tests {
             "SortPreservingMergeExec(SortExec(AggregateExec(RepartitionExec(CudfTableFormatScanExec))))",
         );
         if let Some(reason) = native_rule_blocking_rejection {
+            error = error.with_fact("leaf_guard_first_rejection", reason);
+            error = error.with_fact("leaf_guard_context_source", "native_rule");
             error = error.with_fact("native_rule_blocking_rejection", reason);
             error = error.with_fact("native_rule_blocking_context", reason);
         }
@@ -351,6 +393,7 @@ mod tests {
         assert!(fields.physical_plan_shape.starts_with("SortPreservingMergeExec("));
         assert!(fields.physical_plan_shape.contains("CudfTableFormatScanExec"));
         assert_eq!(fields.table_format, "iceberg");
+        assert_eq!(fields.leaf_guard_first_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
         assert_eq!(fields.rejection_class, FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf);
     }
 
@@ -386,6 +429,49 @@ mod tests {
         assert_eq!(fields.native_rule_blocking_context, "union_branch_not_rewritten");
         assert_eq!(fields.native_rule_blocking_rejection, "");
         assert_eq!(fields.physical_plan_root, "UnionExec");
+    }
+
+    #[test]
+    fn leaf_guard_event_fields_prefers_first_rejection_and_extracts_scan_diagnostics() {
+        let error = Error::new(
+            ErrorCode::NativeCandidateRejected,
+            "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
+            "table-format scan leaf was not rewritten to native",
+        )
+        .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
+        .with_fact("leaf_guard_first_rejection", FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        .with_fact("leaf_guard_context_source", "scan_plan")
+        .with_fact("native_rule_blocking_context", FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        .with_fact("leftover_operator", "CudfTableFormatScanExec")
+        .with_fact("table_format", "iceberg")
+        .with_fact("snapshot_id", "s-123")
+        .with_fact("catalog_type", "glue")
+        .with_fact("planned_data_file_count", "2")
+        .with_fact("planned_delete_file_count", "1")
+        .with_fact("rejected_feature_list", FallbackReason::IcebergFieldIdMappingUnsupported.code())
+        .with_fact("source_read_strategy", "remote_host_buffer_full")
+        .with_fact("source_decode_input", "host_buffer")
+        .with_fact("credential_mode", "scoped_resolved")
+        .with_fact("lakehouse_cache_status", "miss")
+        .with_fact("direct_device_read_disposition", "rejected");
+        let df_error: DataFusionError = error.into();
+
+        let fields = leaf_guard_event_fields(&df_error).expect("leaf-guard error must produce structured fields");
+
+        assert_eq!(fields.leaf_guard_first_rejection, FallbackReason::IcebergFieldIdMappingUnsupported.code());
+        assert_eq!(fields.leaf_guard_context_source, "scan_plan");
+        assert_eq!(fields.table_format, "iceberg");
+        assert_eq!(fields.snapshot_id, "s-123");
+        assert_eq!(fields.catalog_type, "glue");
+        assert_eq!(fields.planned_data_file_count, "2");
+        assert_eq!(fields.planned_delete_file_count, "1");
+        assert_eq!(fields.rejected_feature_list, FallbackReason::IcebergFieldIdMappingUnsupported.code());
+        assert_eq!(fields.source_read_strategy, "remote_host_buffer_full");
+        assert_eq!(fields.source_decode_input, "host_buffer");
+        assert_eq!(fields.credential_mode, "scoped_resolved");
+        assert_eq!(fields.lakehouse_cache_status, "miss");
+        assert_eq!(fields.direct_device_read_disposition, "rejected");
+        assert_eq!(fields.rejection_class, FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf);
     }
 
     #[test]
