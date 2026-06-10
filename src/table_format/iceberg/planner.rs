@@ -3,7 +3,7 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
 use async_trait::async_trait;
@@ -18,9 +18,13 @@ use futures::{StreamExt, future::BoxFuture};
 use iceberg::{
     expr::Reference,
     scan::{FileScanTask, FileScanTaskDeleteFile},
-    spec::{DataContentType, DataFileFormat, Datum, NestedField, Schema as IcebergSchema, Type},
+    spec::{
+        DataContentType, DataFileFormat, Datum, Literal, NestedField, PartitionSpec, PrimitiveLiteral,
+        Schema as IcebergSchema, Transform, Type,
+    },
     table::Table,
 };
+use nexus_query_engine::is_supported_arrow_type;
 
 use crate::{
     Error, ErrorCode, Result,
@@ -28,8 +32,9 @@ use crate::{
         scan::{
             TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
             TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatLiteral,
-            TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPlanner,
-            TableFormatPredicate, TableFormatPredicateOp, TableFormatReadCapability, TableFormatScanPlan,
+            TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+            TableFormatPartitionValue, TableFormatPlanner, TableFormatPlanningDeadline, TableFormatPredicate,
+            TableFormatPredicateOp, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
             TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
             credential_free_endpoint_identity, resolve_table_format_parquet_source_with_metadata,
         },
@@ -38,6 +43,7 @@ use crate::{
 };
 
 const PLAN_SCAN_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan";
+const PLAN_SCAN_TIMEOUT_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan_timeout";
 const TASK_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceberg.convert_file_scan_tasks";
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
@@ -53,6 +59,7 @@ pub struct CudfIcebergTableProvider {
     schema: SchemaRef,
     planner: SharedTableFormatPlanner,
     catalog_type: Option<String>,
+    scan_planning_timeout: Option<Duration>,
 }
 
 impl CudfIcebergTableProvider {
@@ -83,12 +90,22 @@ impl CudfIcebergTableProvider {
     /// This keeps tests and custom catalog integrations credential-free at the
     /// DataFusion provider boundary.
     pub fn from_table_format_planner(schema: SchemaRef, planner: Arc<dyn TableFormatPlanner + Send + Sync>) -> Self {
-        Self { schema, planner, catalog_type: None }
+        Self { schema, planner, catalog_type: None, scan_planning_timeout: None }
     }
 
     /// Records a stable catalog label in scan requests and diagnostics.
     pub fn with_catalog_type(mut self, catalog_type: impl Into<String>) -> Self {
         self.catalog_type = Some(catalog_type.into());
+        self
+    }
+
+    /// Applies a wall-clock budget to metadata scan planning.
+    ///
+    /// `None` preserves unbounded library behavior. The Flight SQL server uses
+    /// this to keep one pathological Iceberg table from monopolizing the
+    /// statement-admission slot.
+    pub fn with_scan_planning_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.scan_planning_timeout = timeout;
         self
     }
 }
@@ -98,6 +115,7 @@ impl fmt::Debug for CudfIcebergTableProvider {
         f.debug_struct("CudfIcebergTableProvider")
             .field("schema", &self.schema)
             .field("catalog_type", &self.catalog_type)
+            .field("scan_planning_timeout", &self.scan_planning_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -131,7 +149,9 @@ impl TableProvider for CudfIcebergTableProvider {
         if let Some(catalog_type) = self.catalog_type.as_ref() {
             request.catalog_type = Some(catalog_type.clone());
         }
-        let scan_plan = self.planner.plan_scan(request).await.map_err(DataFusionError::from)?;
+        let scan_plan = plan_scan_with_optional_timeout(Arc::clone(&self.planner), request, self.scan_planning_timeout)
+            .await
+            .map_err(DataFusionError::from)?;
         Ok(Arc::new(CudfTableFormatScanExec::new(scan_plan, projected_schema)))
     }
 
@@ -140,6 +160,123 @@ impl TableProvider for CudfIcebergTableProvider {
         filters: &[&Expr],
     ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
         Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
+    }
+}
+
+async fn plan_scan_with_optional_timeout(
+    planner: SharedTableFormatPlanner,
+    request: TableFormatScanRequest,
+    timeout: Option<Duration>,
+) -> Result<TableFormatScanPlan> {
+    let Some(timeout) = timeout else {
+        return planner.plan_scan(request).await;
+    };
+    let deadline = TableFormatPlanningDeadline::from_timeout(timeout);
+    let timeout_ms = deadline.timeout_ms();
+    let catalog_type = request.catalog_type.clone();
+    let snapshot_id = request.snapshot_id.clone();
+    let planning_failure_facts = planner.planning_failure_facts();
+
+    let mut planning_task = tokio::spawn(async move { planner.plan_scan_with_deadline(request, deadline).await });
+    tokio::select! {
+        biased;
+
+        result = &mut planning_task => match result {
+            Ok(result) => result,
+            Err(error) => Err(iceberg_planning_task_error(error)),
+        },
+        _ = tokio::time::sleep(timeout) => {
+            planning_task.abort();
+            Err(iceberg_scan_planning_timeout_error(
+                timeout_ms,
+                catalog_type,
+                snapshot_id,
+                planning_failure_facts,
+                "provider_timeout",
+            ))
+        },
+    }
+}
+
+fn iceberg_planning_task_error(error: tokio::task::JoinError) -> Error {
+    let (code, join_status) =
+        if error.is_cancelled() { (ErrorCode::Cancelled, "cancelled") } else { (ErrorCode::Internal, "panic") };
+    Error::new(code, PLAN_SCAN_TIMEOUT_OPERATION, "Iceberg table-format scan planning task failed")
+        .with_fact("table_format", TableFormat::Iceberg.code())
+        .with_fact("planning_task_join_status", join_status)
+        .with_source(error)
+}
+
+fn iceberg_scan_planning_timeout_error(
+    timeout_ms: u128,
+    catalog_type: Option<String>,
+    snapshot_id: Option<String>,
+    planning_failure_facts: Vec<(&'static str, String)>,
+    stage: &'static str,
+) -> Error {
+    let mut error = Error::new(
+        ErrorCode::PlanningTimeout,
+        PLAN_SCAN_TIMEOUT_OPERATION,
+        "Iceberg table-format scan planning exceeded the configured time budget",
+    )
+    .with_fact("table_format", TableFormat::Iceberg.code())
+    .with_fact("planning_timeout", true)
+    .with_fact("planning_timeout_ms", timeout_ms)
+    .with_fact("planning_timeout_stage", stage)
+    .with_fact("timeout_retryable", false)
+    .with_fact("timeout_budget_increase_required", true);
+    if let Some(catalog_type) = catalog_type {
+        error = error.with_fact("catalog_type", catalog_type);
+    }
+    if let Some(snapshot_id) = snapshot_id {
+        error = error.with_fact("snapshot_id", snapshot_id);
+    }
+    for (key, value) in planning_failure_facts {
+        if error.fact_value(key).is_none() {
+            error = error.with_fact(key, value);
+        }
+    }
+    error
+}
+
+#[derive(Debug, Clone)]
+struct IcebergScanPlanningTimeoutContext {
+    deadline: TableFormatPlanningDeadline,
+    catalog_type: Option<String>,
+    snapshot_id: Option<String>,
+    planning_failure_facts: Vec<(&'static str, String)>,
+}
+
+impl IcebergScanPlanningTimeoutContext {
+    fn new(
+        deadline: TableFormatPlanningDeadline,
+        request: &TableFormatScanRequest,
+        planning_failure_facts: Vec<(&'static str, String)>,
+    ) -> Self {
+        Self {
+            deadline,
+            catalog_type: request.catalog_type.clone(),
+            snapshot_id: request.snapshot_id.clone(),
+            planning_failure_facts,
+        }
+    }
+
+    fn check(&self, stage: &'static str) -> Result<()> {
+        if self.deadline.is_elapsed() { Err(self.error(stage)) } else { Ok(()) }
+    }
+
+    fn remaining(&self, stage: &'static str) -> Result<Duration> {
+        self.deadline.remaining().ok_or_else(|| self.error(stage))
+    }
+
+    fn error(&self, stage: &'static str) -> Error {
+        iceberg_scan_planning_timeout_error(
+            self.deadline.timeout_ms(),
+            self.catalog_type.clone(),
+            self.snapshot_id.clone(),
+            self.planning_failure_facts.clone(),
+            stage,
+        )
     }
 }
 
@@ -185,6 +322,17 @@ impl IcebergTableFormatPlanner {
     /// projected columns, and unsupported-feature facts. It does not read data
     /// files and must not expose credentials in diagnostics.
     pub async fn plan_table_format_scan(&self, request: TableFormatScanRequest) -> Result<TableFormatScanPlan> {
+        self.plan_table_format_scan_with_timeout_context(request, None).await
+    }
+
+    async fn plan_table_format_scan_with_timeout_context(
+        &self,
+        request: TableFormatScanRequest,
+        timeout_context: Option<IcebergScanPlanningTimeoutContext>,
+    ) -> Result<TableFormatScanPlan> {
+        if let Some(context) = timeout_context.as_ref() {
+            context.check("start")?;
+        }
         let row_selection_enabled = request.row_selection_enabled;
         let mut scan_builder = self
             .table
@@ -218,16 +366,43 @@ impl IcebergTableFormatPlanner {
             scan_builder = scan_builder.with_filter(predicate);
         }
 
+        if let Some(context) = timeout_context.as_ref() {
+            context.check("before_build")?;
+        }
         let scan = scan_builder
             .build()
             .map_err(|error| iceberg_planning_error("failed to build Iceberg table scan", error))?;
-        let mut task_stream = scan
-            .plan_files()
-            .await
-            .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?;
+        if let Some(context) = timeout_context.as_ref() {
+            context.check("after_build")?;
+        }
+        let mut task_stream = if let Some(context) = timeout_context.as_ref() {
+            context.check("before_plan_files")?;
+            tokio::time::timeout(context.remaining("plan_files")?, scan.plan_files())
+                .await
+                .map_err(|_elapsed| context.error("plan_files"))?
+                .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
+        } else {
+            scan.plan_files()
+                .await
+                .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
+        };
 
         let mut tasks = Vec::new();
-        while let Some(task) = task_stream.next().await {
+        loop {
+            let task = if let Some(context) = timeout_context.as_ref() {
+                context.check("before_next_file_scan_task")?;
+                tokio::time::timeout(context.remaining("next_file_scan_task")?, task_stream.next())
+                    .await
+                    .map_err(|_elapsed| context.error("next_file_scan_task"))?
+            } else {
+                task_stream.next().await
+            };
+            let Some(task) = task else {
+                break;
+            };
+            if let Some(context) = timeout_context.as_ref() {
+                context.check("after_next_file_scan_task")?;
+            }
             tasks
                 .push(task.map_err(|error| iceberg_planning_error("failed to resolve Iceberg file scan task", error))?);
         }
@@ -241,6 +416,7 @@ impl IcebergTableFormatPlanner {
             tasks,
             &self.parquet_read_strategy_config,
             parent_filter_enforces_iceberg_predicate,
+            timeout_context.as_ref(),
         )?
         .with_scan_limit(request.scan_limit);
         if row_selection_enabled {
@@ -257,6 +433,42 @@ impl TableFormatPlanner for IcebergTableFormatPlanner {
     fn plan_scan<'a>(&'a self, request: TableFormatScanRequest) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
         Box::pin(async move { self.plan_table_format_scan(request).await })
     }
+
+    fn plan_scan_with_deadline<'a>(
+        &'a self,
+        request: TableFormatScanRequest,
+        deadline: TableFormatPlanningDeadline,
+    ) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
+        Box::pin(async move {
+            let timeout_context =
+                IcebergScanPlanningTimeoutContext::new(deadline, &request, self.planning_failure_facts());
+            self.plan_table_format_scan_with_timeout_context(request, Some(timeout_context)).await
+        })
+    }
+
+    fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
+        iceberg_metadata_planning_failure_facts(&self.table)
+    }
+}
+
+fn iceberg_metadata_planning_failure_facts(table: &Table) -> Vec<(&'static str, String)> {
+    let metadata = table.metadata();
+    let snapshots = metadata.snapshots().collect::<Vec<_>>();
+    let current_snapshot = metadata.current_snapshot();
+    vec![
+        ("iceberg_snapshot_count", snapshots.len().to_string()),
+        ("iceberg_snapshot_log_count", metadata.history().len().to_string()),
+        ("iceberg_metadata_log_count", metadata.metadata_log().len().to_string()),
+        (
+            "iceberg_snapshot_manifest_list_pointer_count",
+            snapshots.iter().filter(|snapshot| !snapshot.manifest_list().trim().is_empty()).count().to_string(),
+        ),
+        ("iceberg_current_snapshot_id", metadata.current_snapshot_id().map(|id| id.to_string()).unwrap_or_default()),
+        (
+            "iceberg_current_snapshot_has_manifest_list",
+            current_snapshot.is_some_and(|snapshot| !snapshot.manifest_list().trim().is_empty()).to_string(),
+        ),
+    ]
 }
 
 fn datafusion_filters_to_table_format_predicate(filters: &[Expr]) -> Option<TableFormatPredicate> {
@@ -466,6 +678,7 @@ fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(
         tasks,
         parquet_read_strategy_config,
         false,
+        None,
     )
 }
 
@@ -475,7 +688,11 @@ fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enfo
     tasks: impl IntoIterator<Item = FileScanTask>,
     parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
     parent_filter_enforces_task_predicate: bool,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
 ) -> Result<TableFormatScanPlan> {
+    if let Some(context) = timeout_context {
+        context.check("before_convert_file_scan_tasks")?;
+    }
     let mut tasks = tasks.into_iter().collect::<Vec<_>>();
     let logical_schema =
         tasks.first().map(|task| iceberg_schema_to_datafusion_arrow_schema(task.schema())).transpose()?;
@@ -490,8 +707,14 @@ fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enfo
     if let Some(schema) = logical_schema {
         plan = plan.with_logical_schema(Arc::clone(&schema)).with_native_source_schema(schema);
     }
+    if let Some(mapping) = count_star_probe_column_mapping_for_tasks(&tasks)? {
+        plan.pure_filter_columns.push(mapping);
+    }
 
     for (task_index, task) in tasks.drain(..).enumerate() {
+        if let Some(context) = timeout_context {
+            context.check("convert_file_scan_task")?;
+        }
         append_task_facts(
             &mut plan,
             task_index,
@@ -502,6 +725,56 @@ fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enfo
     }
 
     Ok(plan)
+}
+
+fn count_star_probe_column_mapping_for_tasks(tasks: &[FileScanTask]) -> Result<Option<TableFormatColumnMapping>> {
+    if tasks.is_empty()
+        || !tasks.iter().all(|task| task.project_field_ids.is_empty())
+        || !tasks.iter().any(|task| task.record_count.is_none())
+    {
+        return Ok(None);
+    }
+
+    let schema = tasks[0].schema();
+    for field in schema.as_struct().fields() {
+        if !count_star_probe_field_is_direct_file_column_for_missing_count_tasks(tasks, field.id)? {
+            continue;
+        }
+        let data_type = iceberg_field_to_arrow_data_type(field)?;
+        if !is_supported_arrow_type(&data_type) {
+            continue;
+        }
+        return Ok(Some(TableFormatColumnMapping::new(
+            Some(field.id),
+            field.name.clone(),
+            Some(field.name.clone()),
+            data_type,
+            !field.required,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::PureFilter,
+        )));
+    }
+
+    Ok(None)
+}
+
+fn count_star_probe_field_is_direct_file_column_for_missing_count_tasks(
+    tasks: &[FileScanTask],
+    field_id: i32,
+) -> Result<bool> {
+    for task in tasks.iter().filter(|task| task.record_count.is_none()) {
+        let Some(field) = task.schema().as_struct().field_by_id(field_id) else {
+            return Ok(false);
+        };
+        if task.partition_spec.as_deref().is_some_and(|spec| identity_partition_source_field(spec, field_id)) {
+            return Ok(false);
+        }
+        let data_type = iceberg_field_to_arrow_data_type(field)?;
+        if !is_supported_arrow_type(&data_type) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn append_task_facts(
@@ -550,6 +823,7 @@ fn append_task_facts(
     if let Some(record_count) = task.record_count {
         data_file = data_file.with_row_count(record_count);
     }
+    append_partition_values(plan, &mut data_file, &file_id, &task)?;
     plan.data_files.push(data_file);
 
     if task.data_file_format != DataFileFormat::Parquet {
@@ -584,16 +858,9 @@ fn append_task_facts(
         ));
     }
 
-    if task.partition.as_ref().is_some_and(|partition| !partition.fields().is_empty()) {
-        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
-            TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
-            file_id.clone(),
-            "Iceberg partition values are present but partition transform facts are not exposed by this scan task",
-        ));
-    }
-
+    let partition_spec = task.partition_spec.as_deref();
     for field_id in task.project_field_ids.iter().copied() {
-        append_projected_column_mapping(plan, task.schema(), field_id)?;
+        append_projected_column_mapping(plan, task.schema(), partition_spec, field_id)?;
     }
 
     for (delete_index, delete_file) in task.deletes.iter().enumerate() {
@@ -603,9 +870,81 @@ fn append_task_facts(
     Ok(())
 }
 
+fn append_partition_values(
+    plan: &mut TableFormatScanPlan,
+    data_file: &mut TableFormatDataFile,
+    file_id: &str,
+    task: &FileScanTask,
+) -> Result<()> {
+    let Some(partition) = task.partition.as_ref().filter(|partition| !partition.fields().is_empty()) else {
+        return Ok(());
+    };
+    let Some(partition_spec) = task.partition_spec.as_ref() else {
+        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+            TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
+            file_id,
+            "Iceberg partition values are present but partition spec facts are not exposed by this scan task",
+        ));
+        return Ok(());
+    };
+
+    let mut values = Vec::new();
+    for (partition_index, partition_field) in partition_spec.fields().iter().enumerate() {
+        let Some(partition_value) = partition.fields().get(partition_index) else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                TASK_CONVERSION_OPERATION,
+                "Iceberg partition value count does not match the partition spec",
+            )
+            .with_fact("table_format", TableFormat::Iceberg.code())
+            .with_fact("data_file_id", file_id)
+            .with_fact("partition_field", partition_field.name.as_str())
+            .with_fact("partition_index", partition_index));
+        };
+        let Some(source_field) = task.schema().field_by_id(partition_field.source_id) else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                TASK_CONVERSION_OPERATION,
+                "Iceberg partition source field is absent from the scan schema",
+            )
+            .with_fact("table_format", TableFormat::Iceberg.code())
+            .with_fact("data_file_id", file_id)
+            .with_fact("source_field_id", partition_field.source_id)
+            .with_fact("partition_field", partition_field.name.as_str()));
+        };
+        let transform = table_format_partition_transform(&partition_field.transform);
+        let transform_code = transform.code().to_string();
+        let result_type = partition_field.transform.result_type(source_field.field_type.as_ref()).map_err(|error| {
+            Error::new(
+                ErrorCode::UnsupportedType,
+                TASK_CONVERSION_OPERATION,
+                "failed to resolve Iceberg partition transform result type",
+            )
+            .with_fact("table_format", TableFormat::Iceberg.code())
+            .with_fact("data_file_id", file_id)
+            .with_fact("source_field_id", partition_field.source_id)
+            .with_fact("partition_transform", transform_code)
+            .with_source(error)
+        })?;
+        let data_type = iceberg_type_to_arrow_data_type(&result_type)?;
+        let Some(value) = table_format_partition_scalar_value(partition_value.as_ref(), &data_type) else {
+            continue;
+        };
+        let column_name = if partition_field.transform == Transform::Identity {
+            source_field.name.clone()
+        } else {
+            partition_field.name.clone()
+        };
+        values.push(TableFormatPartitionValue::new(column_name, data_type, !source_field.required, transform, value));
+    }
+    data_file.partition_values = values;
+    Ok(())
+}
+
 fn append_projected_column_mapping(
     plan: &mut TableFormatScanPlan,
     schema: &IcebergSchema,
+    partition_spec: Option<&PartitionSpec>,
     field_id: i32,
 ) -> Result<()> {
     let Some(field) = schema.field_by_id(field_id) else {
@@ -619,7 +958,11 @@ fn append_projected_column_mapping(
 
     let data_type = iceberg_field_to_arrow_data_type(field)?;
     let source = if schema.as_struct().field_by_id(field_id).is_some() {
-        TableFormatColumnSource::DirectTopLevelFileColumn
+        if partition_spec.is_some_and(|spec| identity_partition_source_field(spec, field_id)) {
+            TableFormatColumnSource::IdentityPartitionValue
+        } else {
+            TableFormatColumnSource::DirectTopLevelFileColumn
+        }
     } else {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergNestedProjectionUnsupported,
@@ -642,6 +985,58 @@ fn append_projected_column_mapping(
     ));
 
     Ok(())
+}
+
+fn identity_partition_source_field(partition_spec: &PartitionSpec, field_id: i32) -> bool {
+    partition_spec.fields().iter().any(|partition_field| {
+        partition_field.source_id == field_id && partition_field.transform == Transform::Identity
+    })
+}
+
+fn table_format_partition_transform(transform: &Transform) -> TableFormatPartitionTransform {
+    match transform {
+        Transform::Identity => TableFormatPartitionTransform::Identity,
+        Transform::Bucket(buckets) => TableFormatPartitionTransform::Bucket { buckets: *buckets },
+        Transform::Truncate(width) => TableFormatPartitionTransform::Truncate { width: *width },
+        Transform::Year => TableFormatPartitionTransform::Year,
+        Transform::Month => TableFormatPartitionTransform::Month,
+        Transform::Day => TableFormatPartitionTransform::Day,
+        Transform::Hour => TableFormatPartitionTransform::Hour,
+        Transform::Void => TableFormatPartitionTransform::Unknown("void".to_string()),
+        Transform::Unknown => TableFormatPartitionTransform::Unknown("unknown".to_string()),
+    }
+}
+
+fn table_format_partition_scalar_value(
+    value: Option<&Literal>,
+    data_type: &DataType,
+) -> Option<TableFormatScalarValue> {
+    let Some(value) = value else {
+        return Some(TableFormatScalarValue::Null);
+    };
+    let primitive = value.as_primitive_literal()?;
+    match primitive {
+        PrimitiveLiteral::Boolean(value) => Some(TableFormatScalarValue::Boolean(value)),
+        PrimitiveLiteral::Int(value) if matches!(data_type, DataType::Date32) => {
+            Some(TableFormatScalarValue::Date32(value))
+        },
+        PrimitiveLiteral::Int(value) => Some(TableFormatScalarValue::Int32(value)),
+        PrimitiveLiteral::Long(value) => Some(TableFormatScalarValue::Int64(value)),
+        PrimitiveLiteral::Int128(value) if matches!(data_type, DataType::Decimal128(_, _)) => {
+            Some(TableFormatScalarValue::Int128(value))
+        },
+        PrimitiveLiteral::UInt128(value) if matches!(data_type, DataType::Decimal128(_, _)) => {
+            i128::try_from(value).ok().map(TableFormatScalarValue::Int128)
+        },
+        PrimitiveLiteral::Float(value) => Some(TableFormatScalarValue::Float64(f64::from(value.into_inner()))),
+        PrimitiveLiteral::Double(value) => Some(TableFormatScalarValue::Float64(value.into_inner())),
+        PrimitiveLiteral::String(value) => Some(TableFormatScalarValue::Utf8(value)),
+        PrimitiveLiteral::Binary(_)
+        | PrimitiveLiteral::Int128(_)
+        | PrimitiveLiteral::UInt128(_)
+        | PrimitiveLiteral::AboveMax
+        | PrimitiveLiteral::BelowMin => None,
+    }
 }
 
 fn append_delete_file_facts(

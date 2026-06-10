@@ -17,6 +17,12 @@ pub enum ErrorCode {
     InvalidRequest,
     /// DataFusion rejected the query during logical or physical planning.
     DataFusionPlanning,
+    /// Adapter-owned planning exceeded its configured time budget.
+    ///
+    /// This is classified as permanent for the same request and budget: retry
+    /// with table maintenance, a narrower request, or a larger configured
+    /// planning budget.
+    PlanningTimeout,
     /// A requested catalog, schema, table, table function, or similar named object was not found.
     ObjectNotFound,
     /// A named field was not present in a resolved schema.
@@ -76,6 +82,7 @@ impl ErrorCode {
             Self::SqlParse => "sql_parse",
             Self::InvalidRequest => "invalid_request",
             Self::DataFusionPlanning => "datafusion_planning",
+            Self::PlanningTimeout => "planning_timeout",
             Self::ObjectNotFound => "object_not_found",
             Self::FieldNotFound => "field_not_found",
             Self::NativeCandidateRejected => "native_candidate_rejected",
@@ -206,9 +213,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::Cancelled => ErrorKind::Cancelled,
         ErrorCode::SqlParse => ErrorKind::InvalidInput,
         ErrorCode::InvalidRequest => ErrorKind::InvalidInput,
-        ErrorCode::DataFusionPlanning | ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => {
-            ErrorKind::Planning
-        },
+        ErrorCode::DataFusionPlanning
+        | ErrorCode::PlanningTimeout
+        | ErrorCode::NativeCandidateRejected
+        | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
         ErrorCode::ObjectNotFound => ErrorKind::NotFound,
         ErrorCode::FieldNotFound => ErrorKind::InvalidInput,
         ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
@@ -245,6 +253,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         ErrorCode::SqlParse
         | ErrorCode::InvalidRequest
         | ErrorCode::DataFusionPlanning
+        | ErrorCode::PlanningTimeout
         | ErrorCode::ObjectNotFound
         | ErrorCode::FieldNotFound
         | ErrorCode::NativeCandidateRejected

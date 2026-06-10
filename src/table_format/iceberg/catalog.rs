@@ -11,6 +11,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt,
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -79,6 +80,21 @@ impl IcebergProviderKind {
     }
 }
 
+/// Options applied when wrapping loaded Iceberg tables in DataFusion table providers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IcebergProviderOptions {
+    /// Optional wall-clock budget for GPU table-format scan planning.
+    pub scan_planning_timeout: Option<Duration>,
+}
+
+impl IcebergProviderOptions {
+    /// Sets the optional GPU scan-planning timeout.
+    pub fn with_scan_planning_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.scan_planning_timeout = timeout;
+        self
+    }
+}
+
 /// Wraps a loaded Iceberg table in the [`TableProvider`] selected by `kind`.
 ///
 /// `Gpu` always succeeds (the native provider has no runtime preconditions).
@@ -90,6 +106,7 @@ async fn build_table_provider(
     kind: IcebergProviderKind,
     catalog_type: &str,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
+    provider_options: &IcebergProviderOptions,
 ) -> Result<Arc<dyn TableProvider>> {
     match kind {
         IcebergProviderKind::Gpu => {
@@ -101,7 +118,11 @@ async fn build_table_provider(
                 },
                 None => crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)?,
             };
-            Ok(Arc::new(provider.with_catalog_type(catalog_type)))
+            Ok(Arc::new(
+                provider
+                    .with_catalog_type(catalog_type)
+                    .with_scan_planning_timeout(provider_options.scan_planning_timeout),
+            ))
         },
         IcebergProviderKind::Cpu => {
             #[cfg(feature = "iceberg-cpu")]
@@ -215,6 +236,7 @@ pub struct CudfIcebergSchemaProvider {
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: String,
     provider_kind: IcebergProviderKind,
+    provider_options: IcebergProviderOptions,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     table_cache: RwLock<HashMap<String, Arc<dyn TableProvider>>>,
 }
@@ -226,6 +248,7 @@ impl CudfIcebergSchemaProvider {
         backend: Arc<dyn IcebergCatalogBackend>,
         catalog_type: impl Into<String>,
         provider_kind: IcebergProviderKind,
+        provider_options: IcebergProviderOptions,
         parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     ) -> Self {
         Self {
@@ -234,6 +257,7 @@ impl CudfIcebergSchemaProvider {
             backend,
             catalog_type: catalog_type.into(),
             provider_kind,
+            provider_options,
             parquet_read_strategy_config,
             table_cache: RwLock::new(HashMap::new()),
         }
@@ -278,6 +302,7 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
             self.provider_kind,
             &self.catalog_type,
             self.parquet_read_strategy_config.clone(),
+            &self.provider_options,
         )
         .await
         .map_err(DataFusionError::from)?;
@@ -328,9 +353,25 @@ pub async fn build_catalog_provider_from_backend(
     catalog_type: impl Into<String>,
     provider_kind: IcebergProviderKind,
 ) -> Result<CudfIcebergCatalogProvider> {
+    build_catalog_provider_from_backend_with_options(
+        backend,
+        catalog_type,
+        provider_kind,
+        IcebergProviderOptions::default(),
+    )
+    .await
+}
+
+/// Builds a [`CudfIcebergCatalogProvider`] with explicit provider options.
+pub async fn build_catalog_provider_from_backend_with_options(
+    backend: Arc<dyn IcebergCatalogBackend>,
+    catalog_type: impl Into<String>,
+    provider_kind: IcebergProviderKind,
+    provider_options: IcebergProviderOptions,
+) -> Result<CudfIcebergCatalogProvider> {
     let catalog_type = catalog_type.into();
     let namespaces = backend.list_namespaces().await?;
-    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_kind).await
+    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_kind, provider_options).await
 }
 
 /// Builds a [`CudfIcebergCatalogProvider`] scoped to one configured namespace.
@@ -347,8 +388,33 @@ pub async fn build_scoped_catalog_provider_from_backend(
     namespace: &str,
     provider_kind: IcebergProviderKind,
 ) -> Result<CudfIcebergCatalogProvider> {
+    build_scoped_catalog_provider_from_backend_with_options(
+        backend,
+        catalog_type,
+        namespace,
+        provider_kind,
+        IcebergProviderOptions::default(),
+    )
+    .await
+}
+
+/// Builds a namespace-scoped [`CudfIcebergCatalogProvider`] with explicit provider options.
+pub async fn build_scoped_catalog_provider_from_backend_with_options(
+    backend: Arc<dyn IcebergCatalogBackend>,
+    catalog_type: impl Into<String>,
+    namespace: &str,
+    provider_kind: IcebergProviderKind,
+    provider_options: IcebergProviderOptions,
+) -> Result<CudfIcebergCatalogProvider> {
     let namespace = namespace_ident_from_flat_name(namespace)?;
-    build_catalog_provider_for_namespaces(backend, catalog_type.into(), vec![namespace], provider_kind).await
+    build_catalog_provider_for_namespaces(
+        backend,
+        catalog_type.into(),
+        vec![namespace],
+        provider_kind,
+        provider_options,
+    )
+    .await
 }
 
 async fn build_catalog_provider_for_namespaces(
@@ -356,6 +422,7 @@ async fn build_catalog_provider_for_namespaces(
     catalog_type: String,
     namespaces: Vec<NamespaceIdent>,
     provider_kind: IcebergProviderKind,
+    provider_options: IcebergProviderOptions,
 ) -> Result<CudfIcebergCatalogProvider> {
     let mut schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>> = BTreeMap::new();
 
@@ -372,6 +439,7 @@ async fn build_catalog_provider_for_namespaces(
             Arc::clone(&backend),
             &catalog_type,
             provider_kind,
+            provider_options.clone(),
             backend.parquet_read_strategy_config(),
         ));
         schemas.insert(schema_name, schema_provider);

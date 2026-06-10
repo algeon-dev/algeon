@@ -3,6 +3,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
@@ -220,6 +221,59 @@ pub enum TableFormatLiteral {
 pub trait TableFormatPlanner {
     /// Resolves metadata into scan facts without reading table data.
     fn plan_scan<'a>(&'a self, request: TableFormatScanRequest) -> BoxFuture<'a, Result<TableFormatScanPlan>>;
+
+    /// Resolves metadata with a caller-owned wall-clock deadline.
+    ///
+    /// The default implementation preserves existing planner behavior. Format
+    /// planners with long synchronous or ready-loop sections should override
+    /// this method and check the deadline at natural cancellation points.
+    fn plan_scan_with_deadline<'a>(
+        &'a self,
+        request: TableFormatScanRequest,
+        _deadline: TableFormatPlanningDeadline,
+    ) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
+        self.plan_scan(request)
+    }
+
+    /// Credential-free metadata facts to attach when planning fails before a
+    /// [`TableFormatScanPlan`] can be produced.
+    fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+}
+
+/// Caller-owned wall-clock deadline for table-format metadata planning.
+#[derive(Debug, Clone, Copy)]
+pub struct TableFormatPlanningDeadline {
+    deadline: Instant,
+    timeout: Duration,
+}
+
+impl TableFormatPlanningDeadline {
+    /// Builds a deadline from the current instant plus `timeout`.
+    pub fn from_timeout(timeout: Duration) -> Self {
+        Self { deadline: Instant::now() + timeout, timeout }
+    }
+
+    /// Configured timeout duration used to create the deadline.
+    pub fn timeout(self) -> Duration {
+        self.timeout
+    }
+
+    /// Millisecond budget for diagnostics, clamped to one millisecond.
+    pub fn timeout_ms(self) -> u128 {
+        self.timeout.as_millis().max(1)
+    }
+
+    /// Remaining wall-clock duration, or `None` when the deadline has elapsed.
+    pub fn remaining(self) -> Option<Duration> {
+        self.deadline.checked_duration_since(Instant::now()).filter(|remaining| !remaining.is_zero())
+    }
+
+    /// Returns true when the wall-clock deadline has elapsed.
+    pub fn is_elapsed(self) -> bool {
+        self.remaining().is_none()
+    }
 }
 
 impl TableFormat {
@@ -1621,6 +1675,8 @@ pub enum TableFormatScalarValue {
     Int32(i32),
     /// Signed 64-bit integer metadata value.
     Int64(i64),
+    /// Signed 128-bit integer metadata value.
+    Int128(i128),
     /// Unsigned 32-bit integer metadata value.
     UInt32(u32),
     /// Unsigned 64-bit integer metadata value.
@@ -1640,6 +1696,7 @@ impl fmt::Display for TableFormatScalarValue {
             Self::Boolean(value) => write!(f, "{value}"),
             Self::Int32(value) => write!(f, "{value}"),
             Self::Int64(value) => write!(f, "{value}"),
+            Self::Int128(value) => write!(f, "{value}"),
             Self::UInt32(value) => write!(f, "{value}"),
             Self::UInt64(value) => write!(f, "{value}"),
             Self::Float64(value) => write!(f, "{value}"),
@@ -1701,6 +1758,9 @@ impl TableFormatPartitionTransform {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableFormatPartitionValue {
     /// Logical partition column name.
+    ///
+    /// Identity transforms use the source column name. Non-identity transforms
+    /// use the partition field name and are retained as metadata facts only.
     pub column_name: String,
     /// Arrow data type of the partition value.
     pub data_type: DataType,
@@ -1722,6 +1782,11 @@ impl TableFormatPartitionValue {
         value: TableFormatScalarValue,
     ) -> Self {
         Self { column_name: column_name.into(), data_type, nullable, transform, value }
+    }
+
+    /// Column name that may be materialized natively from this partition value.
+    pub(crate) fn native_materialized_column_name(&self) -> &str {
+        self.column_name.as_str()
     }
 }
 
@@ -2441,7 +2506,7 @@ impl TableFormatScanPlan {
 
     /// Comma-separated stable source fallback reasons across data files.
     pub fn source_fallback_reason_summary(&self) -> String {
-        summarize_resolved_source_value(self.data_files.iter().filter_map(|file| {
+        summarize_resolved_source_fallback_reason(self.data_files.iter().filter_map(|file| {
             file.resolved_parquet_source.as_ref().map(|source| source.fallback_reason.as_deref().unwrap_or("none"))
         }))
     }
@@ -2475,6 +2540,13 @@ fn summarize_resolved_source_value<'a>(values: impl IntoIterator<Item = &'a str>
     values.sort_unstable();
     values.dedup();
     if values.is_empty() { "unknown".to_string() } else { values.join(",") }
+}
+
+fn summarize_resolved_source_fallback_reason<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    if values.is_empty() { "none".to_string() } else { values.join(",") }
 }
 
 fn table_format_source_read_contract(source: &ResolvedParquetSource) -> &'static str {

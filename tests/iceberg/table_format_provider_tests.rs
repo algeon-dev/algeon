@@ -1,11 +1,17 @@
 use std::{
-    path::PathBuf,
+    fs::{self, File},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::{
+    array::{Int64Array, StringArray},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
 use datafusion::{
-    common::ScalarValue,
+    common::{DataFusionError, ScalarValue},
     datasource::TableProvider,
     execution::context::TaskContext,
     logical_expr::Operator,
@@ -16,24 +22,89 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfTableFormatScanExec, FallbackReason, TableFormat, TableFormatColumnMapping,
-    TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
-    TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
-    TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
-    TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    CandidateOutcome, CudfTableFormatScanExec, ErrorCode, ErrorStatus, FallbackReason, TableFormat,
+    TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
+    TableFormatDataFileFormat, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+    TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
+    TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
     iceberg::CudfIcebergTableProvider, lower_physical_plan_to_native, resolve_table_format_parquet_source,
     resolve_table_format_parquet_source_with_metadata, schema_with_source_unique_keys,
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, PlanNode, ResolvedParquetSource, SourceDecodeInput,
-    SourceNode,
+    CredentialMode, ExecutionContext, LakehouseCacheStatus, LiteralValue as NativeLiteralValue, ParquetReadStrategy,
+    PlanNode, QueryOutput, ResolvedParquetSource, SourceColumnRef, SourceDecodeInput, SourceNode, execute_query_plan,
 };
+use parquet::arrow::ArrowWriter;
 
 #[derive(Debug)]
 struct RecordingPlanner {
     plan: TableFormatScanPlan,
     requests: Mutex<Vec<TableFormatScanRequest>>,
+}
+
+#[derive(Debug)]
+struct SleepingPlanner {
+    plan: TableFormatScanPlan,
+    delay: Duration,
+}
+
+#[derive(Debug)]
+struct BusyPlanner {
+    plan: TableFormatScanPlan,
+    spin_for: Duration,
+}
+
+impl SleepingPlanner {
+    fn new(plan: TableFormatScanPlan, delay: Duration) -> Self {
+        Self { plan, delay }
+    }
+}
+
+impl BusyPlanner {
+    fn new(plan: TableFormatScanPlan, spin_for: Duration) -> Self {
+        Self { plan, spin_for }
+    }
+}
+
+impl TableFormatPlanner for SleepingPlanner {
+    fn plan_scan<'a>(
+        &'a self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+        let plan = self.plan.clone();
+        let delay = self.delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(plan)
+        })
+    }
+
+    fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
+        vec![("test_planner_fact", "slow".to_string())]
+    }
+}
+
+impl TableFormatPlanner for BusyPlanner {
+    fn plan_scan<'a>(
+        &'a self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+        let plan = self.plan.clone();
+        let spin_for = self.spin_for;
+        Box::pin(async move {
+            let deadline = Instant::now() + spin_for;
+            while Instant::now() < deadline {
+                std::hint::spin_loop();
+            }
+            Ok(plan)
+        })
+    }
+
+    fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
+        vec![("test_planner_fact", "busy".to_string())]
+    }
 }
 
 impl RecordingPlanner {
@@ -86,6 +157,55 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
 }
 
 #[tokio::test]
+async fn iceberg_provider_scan_planning_timeout_returns_structured_error() {
+    let schema = iceberg_test_schema();
+    let planner =
+        Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
+    let provider = CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+        .with_catalog_type("local")
+        .with_scan_planning_timeout(Some(Duration::from_millis(1)));
+    let ctx = SessionContext::new();
+
+    let error = provider.scan(&ctx.state(), None, &[], None).await.expect_err("scan planning must time out");
+    let adapter_error = adapter_error_from(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::PlanningTimeout);
+    assert_eq!(adapter_error.status(), ErrorStatus::Permanent);
+    assert_eq!(adapter_error.fact_value("table_format"), Some("iceberg"));
+    assert_eq!(adapter_error.fact_value("catalog_type"), Some("local"));
+    assert_eq!(adapter_error.fact_value("planning_timeout"), Some("true"));
+    assert_eq!(adapter_error.fact_value("planning_timeout_ms"), Some("1"));
+    assert_eq!(adapter_error.fact_value("planning_timeout_stage"), Some("provider_timeout"));
+    assert_eq!(adapter_error.fact_value("timeout_retryable"), Some("false"));
+    assert_eq!(adapter_error.fact_value("timeout_budget_increase_required"), Some("true"));
+    assert_eq!(adapter_error.fact_value("test_planner_fact"), Some("slow"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iceberg_provider_scan_planning_timeout_returns_before_non_yielding_planner_finishes() {
+    let schema = iceberg_test_schema();
+    let planner =
+        Arc::new(BusyPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(30)));
+    let provider = CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+        .with_catalog_type("local")
+        .with_scan_planning_timeout(Some(Duration::from_millis(1)));
+    let ctx = SessionContext::new();
+
+    let started = Instant::now();
+    let error = provider.scan(&ctx.state(), None, &[], None).await.expect_err("scan planning must time out");
+    let elapsed = started.elapsed();
+    let adapter_error = adapter_error_from(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::PlanningTimeout);
+    assert_eq!(adapter_error.fact_value("planning_timeout_stage"), Some("provider_timeout"));
+    assert_eq!(adapter_error.fact_value("test_planner_fact"), Some("busy"));
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "provider timeout should not wait for the busy planner to finish; elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_source() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_empty_scan_plan()));
@@ -103,7 +223,235 @@ async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_so
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(source.is_zero_column_count_source());
     assert!(source.read_columns.is_empty());
+    assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
     assert_eq!(source.files[0].stable_id, "table-format:iceberg:data-0001");
+}
+
+#[tokio::test]
+async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metadata_is_missing() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(mixed_row_count_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
+    assert_eq!(native_plan_union_count(&result.plans[0]), 1);
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    let metadata_source = sources.iter().copied().find(|source| source.is_zero_column_count_source()).unwrap();
+    assert_eq!(metadata_source.files.len(), 1);
+    assert_eq!(metadata_source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
+    let fallback_source = sources.iter().copied().find(|source| !source.is_zero_column_count_source()).unwrap();
+    assert_eq!(fallback_source.files.len(), 1);
+    assert_eq!(fallback_source.read_columns, vec!["id".to_string()]);
+    assert_eq!(fallback_source.read_column_file_indices, vec![0]);
+    assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
+    assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
+    assert_eq!(fallback_source.schema.fields().len(), 1);
+}
+
+#[tokio::test]
+async fn iceberg_provider_count_star_probe_rejects_unproven_remote_carrier_column() {
+    let schema = iceberg_test_schema();
+    let planner =
+        Arc::new(RecordingPlanner::new(remote_mixed_row_count_scan_plan_without_probe_mapping(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+    ));
+}
+
+#[tokio::test]
+async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_metadata() {
+    let dir = unique_temp_dir("datafusion-nexus-iceberg-count-star-fallback");
+    let first_path = dir.join("data-0001.parquet");
+    let second_path = dir.join("data-0002.parquet");
+    let schema = iceberg_test_schema();
+    write_iceberg_test_parquet(&first_path, &[1, 2], &[Some("a"), Some("b")], Arc::clone(&schema));
+    write_iceberg_test_parquet(&second_path, &[3, 4, 5], &[Some("c"), None, Some("d")], Arc::clone(&schema));
+
+    let planner = Arc::new(RecordingPlanner::new(mixed_row_count_scan_plan_for_files(
+        Arc::clone(&schema),
+        &first_path,
+        &second_path,
+    )));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(native_plan_union_count(&result.plans[0]), 1);
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    let fallback_source = sources.iter().copied().find(|source| !source.is_zero_column_count_source()).unwrap();
+    assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
+    assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
+
+    let execution_context = ExecutionContext::from_runtime(cudf::Runtime::new().unwrap());
+    let result = execute_query_plan(&execution_context, &result.plans[0]).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("COUNT(*) plan should materialize a host Arrow batch");
+    };
+    let values = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(values.value(0), 5);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn iceberg_provider_count_star_ignores_unused_non_identity_partition_transform_facts() {
+    let schema = transformed_partition_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.is_zero_column_count_source());
+    assert!(source.partition_columns.is_empty());
+    assert!(source.files[0].partition_values.is_empty());
+}
+
+#[tokio::test]
+async fn iceberg_provider_reads_non_identity_partition_source_column_from_parquet() {
+    let schema = transformed_partition_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select \"customerId\", event_ts from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(
+        result.plans[0].output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["customerId", "event_ts"]
+    );
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["customerId", "event_ts"]
+    );
+    assert_eq!(source.read_columns, vec!["event_ts".to_string()]);
+    assert_eq!(source.read_column_file_indices, vec![1]);
+    assert_eq!(source.projected_output_columns, vec!["customerId".to_string(), "event_ts".to_string()]);
+    assert_eq!(
+        source.projected_output_column_source_refs,
+        vec![SourceColumnRef::Partition(0), SourceColumnRef::File(1)]
+    );
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].name, "customerId");
+    assert_eq!(source.files[0].partition_values, vec![NativeLiteralValue::Utf8("customer-1".to_string())]);
+}
+
+#[tokio::test]
+async fn iceberg_provider_materializes_identity_partition_only_projection() {
+    let schema = transformed_partition_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select \"customerId\" from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, Vec::<String>::new());
+    assert_eq!(source.projected_output_columns, vec!["customerId".to_string()]);
+    assert_eq!(source.projected_output_column_source_refs, vec![SourceColumnRef::Partition(0)]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.files[0].partition_values, vec![NativeLiteralValue::Utf8("customer-1".to_string())]);
+    assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
+}
+
+#[tokio::test]
+async fn iceberg_provider_materializes_timestamp_and_decimal_identity_partitions() {
+    let schema = timestamp_decimal_partition_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(timestamp_decimal_identity_partition_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select event_ts, amount from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, Vec::<String>::new());
+    assert_eq!(source.partition_columns.len(), 2);
+    assert_eq!(
+        source.files[0].partition_values,
+        vec![
+            NativeLiteralValue::Timestamp { raw: 1_700_000_000_123_456, unit: TimeUnit::Microsecond },
+            NativeLiteralValue::Decimal128 { raw: 12_345, precision: 10, scale: 2 },
+        ]
+    );
+    assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[7][..]));
+}
+
+#[tokio::test]
+async fn iceberg_provider_rejects_mixed_file_and_partition_source_mapping_for_one_column() {
+    let schema = transformed_partition_test_schema();
+    let plan =
+        identity_and_day_partition_scan_plan(Arc::clone(&schema)).with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "customerId",
+            Some("customerId"),
+            DataType::Utf8,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let planner = Arc::new(RecordingPlanner::new(plan));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select \"customerId\" from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+    ));
 }
 
 #[tokio::test]
@@ -751,11 +1099,267 @@ fn native_admissible_empty_scan_plan() -> TableFormatScanPlan {
     )
 }
 
+fn mixed_row_count_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0002",
+                "/tmp/iceberg/data-0002.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096),
+        )
+        .with_pure_filter_column(count_star_probe_carrier_mapping())
+}
+
+fn remote_mixed_row_count_scan_plan_without_probe_mapping(schema: Arc<Schema>) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("glue")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "s3://bucket/table/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0002",
+                "s3://bucket/table/data-0002.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(4096),
+        )
+}
+
+fn mixed_row_count_scan_plan_for_files(
+    schema: Arc<Schema>,
+    first_path: &Path,
+    second_path: &Path,
+) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                first_path.display().to_string(),
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(fs::metadata(first_path).unwrap().len())
+            .with_row_count(2),
+        )
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0002",
+                second_path.display().to_string(),
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(fs::metadata(second_path).unwrap().len()),
+        )
+        .with_pure_filter_column(count_star_probe_carrier_mapping())
+}
+
+fn count_star_probe_carrier_mapping() -> TableFormatColumnMapping {
+    TableFormatColumnMapping::new(
+        Some(1),
+        "id",
+        Some("id"),
+        DataType::Int64,
+        false,
+        TableFormatColumnSource::DirectTopLevelFileColumn,
+        TableFormatColumnRole::PureFilter,
+    )
+}
+
+fn write_iceberg_test_parquet(path: &Path, ids: &[i64], values: &[Option<&str>], schema: Arc<Schema>) {
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(ids.to_vec())), Arc::new(StringArray::from(values.to_vec()))],
+    )
+    .unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn transformed_partition_test_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("customerId", DataType::Utf8, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("value", DataType::Int64, true),
+    ]))
+}
+
+fn identity_and_day_partition_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/events/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11)
+            .with_partition_values(vec![
+                TableFormatPartitionValue::new(
+                    "customerId",
+                    DataType::Utf8,
+                    false,
+                    TableFormatPartitionTransform::Identity,
+                    TableFormatScalarValue::Utf8("customer-1".to_string()),
+                ),
+                TableFormatPartitionValue::new(
+                    "event_ts_day",
+                    DataType::Int32,
+                    true,
+                    TableFormatPartitionTransform::Day,
+                    TableFormatScalarValue::Int32(19_000),
+                ),
+            ]),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "customerId",
+            Some("customerId"),
+            DataType::Utf8,
+            false,
+            TableFormatColumnSource::IdentityPartitionValue,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "event_ts",
+            Some("event_ts"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(3),
+            "value",
+            Some("value"),
+            DataType::Int64,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+}
+
+fn timestamp_decimal_partition_test_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("amount", DataType::Decimal128(10, 2), false),
+    ]))
+}
+
+fn timestamp_decimal_identity_partition_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/events/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(7)
+            .with_partition_values(vec![
+                TableFormatPartitionValue::new(
+                    "event_ts",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    true,
+                    TableFormatPartitionTransform::Identity,
+                    TableFormatScalarValue::Int64(1_700_000_000_123_456),
+                ),
+                TableFormatPartitionValue::new(
+                    "amount",
+                    DataType::Decimal128(10, 2),
+                    false,
+                    TableFormatPartitionTransform::Identity,
+                    TableFormatScalarValue::Int128(12_345),
+                ),
+            ]),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "event_ts",
+            Some("event_ts"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+            TableFormatColumnSource::IdentityPartitionValue,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "amount",
+            Some("amount"),
+            DataType::Decimal128(10, 2),
+            false,
+            TableFormatColumnSource::IdentityPartitionValue,
+            TableFormatColumnRole::Projected,
+        ))
+}
+
 fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
     if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
+}
+
+fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::Error {
+    match error {
+        DataFusionError::External(source) => {
+            source.downcast_ref::<datafusion_nexus::Error>().expect("expected datafusion_nexus::Error")
+        },
+        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => adapter_error_from(source),
+        other => panic!("expected adapter error, got {other:?}"),
+    }
 }
 
 fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_query_engine::LocalParquetSource {
@@ -792,4 +1396,8 @@ fn native_plan_limit_count(plan: &nexus_query_engine::QueryPlan) -> usize {
 
 fn native_plan_filter_count(plan: &nexus_query_engine::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Filter(_))).count()
+}
+
+fn native_plan_union_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+    plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Union(_))).count()
 }

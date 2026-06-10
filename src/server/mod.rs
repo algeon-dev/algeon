@@ -146,6 +146,7 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 iceberg_aws_profile = %snapshot.aws_profile,
                 iceberg_rest_uri = %snapshot.rest_uri,
                 iceberg_rest_s3_endpoint = %snapshot.rest_s3_endpoint,
+                iceberg_scan_planning_timeout_secs = iceberg.scan_planning_timeout.as_secs(),
                 iceberg_static_table_count = iceberg.tables.len(),
                 "server config snapshot"
             )
@@ -593,6 +594,7 @@ mod tests {
                 s3_path_style_access: None,
             }),
             parquet_read_strategy_config: crate::TableFormatParquetReadStrategyConfig::default(),
+            scan_planning_timeout: std::time::Duration::from_secs(60),
         };
 
         let mut config = base_config(ServerSessionProfile::CpuFallback);

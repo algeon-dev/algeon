@@ -23,9 +23,9 @@ pub use scan::{
     TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
     TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy, TableFormatParquetReadStrategyConfig,
     TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
-    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
-    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+    TableFormatPartitionValue, TableFormatPlanner, TableFormatPlanningDeadline, TableFormatReadCapability,
+    TableFormatScalarValue, TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
     resolve_table_format_parquet_source_with_metadata,
 };
 pub use scan_exec::CudfTableFormatScanExec;

@@ -15,6 +15,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::InvalidRequest.kind(), ErrorKind::InvalidInput);
     assert_eq!(ErrorCode::InvalidRequest.status(), ErrorStatus::Permanent);
 
+    assert_eq!(ErrorCode::PlanningTimeout.as_str(), "planning_timeout");
+    assert_eq!(ErrorCode::PlanningTimeout.kind(), ErrorKind::Planning);
+    assert_eq!(ErrorCode::PlanningTimeout.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::ObjectNotFound.as_str(), "object_not_found");
     assert_eq!(ErrorCode::ObjectNotFound.kind(), ErrorKind::NotFound);
     assert_eq!(ErrorCode::ObjectNotFound.status(), ErrorStatus::Permanent);

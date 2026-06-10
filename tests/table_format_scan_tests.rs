@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::physical_plan::displayable;
 use datafusion_nexus::{
-    FallbackReason, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-    TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-    TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,
-    TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode,
+    CudfTableFormatScanExec, FallbackReason, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+    TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+    TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform,
+    TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
 };
 
 #[test]
@@ -82,6 +83,76 @@ fn no_delete_iceberg_parquet_scan_facts_are_native_admissible() {
     assert_eq!(diagnostics.native_source_read_capability, "local_file_system");
     assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Eligible);
     assert!(diagnostics.rejected_feature_list.is_empty());
+}
+
+#[test]
+fn non_identity_partition_value_facts_do_not_reject_scan_admission_by_themselves() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("customerId", DataType::Utf8, false),
+        Field::new("event_ts", DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None), true),
+    ]));
+    let day_partition = TableFormatPartitionValue::new(
+        "event_ts_day",
+        DataType::Int32,
+        true,
+        TableFormatPartitionTransform::Day,
+        TableFormatScalarValue::Int32(19_000),
+    );
+    let file = TableFormatDataFile::new(
+        "events-0001",
+        "s3://lakehouse/events/data-0001.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::object_store("s3"),
+    )
+    .with_size_bytes(4096)
+    .with_row_count(128)
+    .with_partition_values(vec![day_partition]);
+
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("aws_glue")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "event_ts",
+            Some("event_ts"),
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_data_file(file);
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    let diagnostics = plan.diagnostics();
+    assert_eq!(diagnostics.admitted_native_source_file_count, 1);
+    assert!(diagnostics.rejected_feature_list.is_empty());
+}
+
+#[test]
+fn empty_table_format_scan_reports_no_source_fallback_reason() {
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg).with_catalog_type("local");
+    let diagnostics = plan.diagnostics();
+
+    assert_eq!(diagnostics.source_fallback_reason, "none");
+    assert_eq!(diagnostics.facts()["source_fallback_reason"], "none");
+}
+
+#[test]
+fn table_format_scan_display_never_renders_unknown_fallback_reason() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema));
+    let scan = CudfTableFormatScanExec::new(plan, schema);
+    let rendered = displayable(&scan).indent(false).to_string();
+
+    assert!(rendered.contains("source_fallback_reason=none"), "{rendered}");
+    assert!(!rendered.contains("source_fallback_reason=unknown"), "{rendered}");
+    assert!(!rendered.contains("fallback_reason=unknown"), "{rendered}");
 }
 
 #[test]

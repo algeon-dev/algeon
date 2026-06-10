@@ -23,10 +23,14 @@ use super::{
     lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
     sort::lower_sort_with_input,
     source::{
-        add_source_filter_projection, lower_required_file_source_projection_exprs,
-        lower_table_format_zero_column_count_source, reader_predicate_proves_local_parquet_at_most_one_row,
-        required_scan_projection, required_scan_projection_requires_native_projection, required_scan_projection_schema,
-        source_bindings_for_schema, source_reader_pushdown_predicate, table_format_scan_rejection,
+        add_source_filter_projection, lower_empty_table_format_count_star_source,
+        lower_required_file_source_projection_exprs, lower_table_format_count_star_fallback_source,
+        lower_table_format_count_star_mixed_row_count_source, lower_table_format_zero_column_count_source,
+        reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
+        required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        source_bindings_for_schema, source_reader_pushdown_predicate,
+        table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
+        table_format_scan_rejection, table_format_zero_column_count_metadata_is_available,
     },
     source_scan_limit_from_limit_spec,
     unary::add_projection_node_with_input,
@@ -323,11 +327,57 @@ pub(super) fn lower_table_format_zero_column_count_plan(
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
-    let source_input = lower_table_format_zero_column_count_source(scan_exec, &mut builder)?;
+    let count_weight_input = table_format_zero_column_count_metadata_is_available(scan_exec.scan_plan())
+        || table_format_count_star_mixed_row_count_metadata_can_split(scan_exec.scan_plan())
+        || table_format_count_star_probe_can_lower(scan_exec.scan_plan());
+    let source_input = if scan_exec.scan_plan().data_files.is_empty() {
+        lower_empty_table_format_count_star_source(scan_exec, &mut builder)?
+    } else if table_format_zero_column_count_metadata_is_available(scan_exec.scan_plan()) {
+        lower_table_format_zero_column_count_source(scan_exec, &mut builder)?
+    } else if table_format_count_star_mixed_row_count_metadata_can_split(scan_exec.scan_plan()) {
+        lower_table_format_count_star_mixed_row_count_source(scan_exec, &mut builder)?
+    } else {
+        lower_table_format_count_star_fallback_source(scan_exec, &mut builder)?
+    };
     let (aggregate_output_schema, aggregate_output_bindings) =
         executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
-    let aggregate_spec =
-        rename_aggregate_spec_outputs(lower_zero_column_count_aggregate_spec(aggregate)?, &aggregate_output_bindings)?;
+    let aggregate_spec = if count_weight_input {
+        rename_aggregate_spec_outputs(lower_zero_column_count_aggregate_spec(aggregate)?, &aggregate_output_bindings)?
+    } else {
+        let prepared_aggregate_input =
+            prepare_aggregate_input_with_full_synthetic_projection(&mut builder, source_input, aggregate)?;
+        let aggregate_spec = rename_aggregate_spec_outputs(
+            lower_aggregate_spec(aggregate, &prepared_aggregate_input)?,
+            &aggregate_output_bindings,
+        )?;
+        let aggregate_output = LoweredNativeInput::with_bindings(
+            builder.add_aggregate(
+                prepared_aggregate_input.input.node,
+                aggregate_spec,
+                Arc::clone(&aggregate_output_schema),
+            ),
+            aggregate_output_schema,
+            aggregate_output_bindings,
+        );
+        let sort_input = if let Some(projection) = post_aggregate_projection {
+            add_projection_node_with_input(&mut builder, aggregate_output, projection)?
+        } else {
+            aggregate_output
+        };
+        let sorted_or_projected = if let Some(sort) = sort {
+            lower_sort_with_input(&mut builder, sort, sort_input, &RequiredFields::all())?
+        } else {
+            sort_input
+        };
+        let output = if let Some(limit) = normalized.limit {
+            let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
+            LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
+        } else {
+            sorted_or_projected
+        };
+
+        return Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?));
+    };
     let aggregate_output = LoweredNativeInput::with_bindings(
         builder.add_aggregate(source_input.node, aggregate_spec, Arc::clone(&aggregate_output_schema)),
         aggregate_output_schema,

@@ -1800,3 +1800,149 @@ fn sql_info_bitmask(values: impl IntoIterator<Item = i32>) -> i32 {
         mask | 1_i32.checked_shl(shift).expect("Flight SQL SqlInfo bit index must fit in i32")
     })
 }
+
+#[cfg(all(test, feature = "iceberg"))]
+mod tests {
+    use futures::future::BoxFuture;
+
+    use super::*;
+    use crate::{
+        GpuFallbackPolicy,
+        server::{
+            auth::{AuthMode, TokenStore},
+            error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
+        },
+        table_format::{
+            iceberg::CudfIcebergTableProvider,
+            scan::{
+                TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+                TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability,
+                TableFormatScanPlan, TableFormatScanRequest,
+            },
+        },
+    };
+
+    #[derive(Debug)]
+    struct SleepingPlanner {
+        plan: TableFormatScanPlan,
+        delay: Duration,
+    }
+
+    impl SleepingPlanner {
+        fn new(plan: TableFormatScanPlan, delay: Duration) -> Self {
+            Self { plan, delay }
+        }
+    }
+
+    impl TableFormatPlanner for SleepingPlanner {
+        fn plan_scan<'a>(
+            &'a self,
+            _request: TableFormatScanRequest,
+        ) -> BoxFuture<'a, crate::Result<TableFormatScanPlan>> {
+            let plan = self.plan.clone();
+            let delay = self.delay;
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                Ok(plan)
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planning_timeout_releases_single_flight_sql_admission_permit() {
+        let schema = iceberg_test_schema();
+        let planner =
+            Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
+        let provider = Arc::new(
+            CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+                .with_catalog_type("local")
+                .with_scan_planning_timeout(Some(Duration::from_millis(1))),
+        );
+        let ctx = Arc::new(SessionContext::new());
+        ctx.register_table("iceberg_t", provider).expect("test registers table once");
+
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            1,
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        );
+
+        issue_statement_ticket(&service, "SELECT COUNT(*) AS c FROM iceberg_t")
+            .await
+            .expect("logical planning should issue a ticket before table scan planning");
+        let query_id = only_ticket_query_id(&service);
+        let status = match service.execute_ticket(query_id).await {
+            Ok(_) => panic!("physical scan planning should time out"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_status_metadata(&status, "planning_timeout", "planning", "permanent");
+        assert!(service.tickets.is_empty(), "timed-out statement ticket should be consumed");
+
+        tokio::time::timeout(Duration::from_secs(1), issue_statement_ticket(&service, "SELECT 1 AS one"))
+            .await
+            .expect("second statement should not wait on the timed-out query's admission permit")
+            .expect("second statement should acquire admission and issue a ticket");
+    }
+
+    async fn issue_statement_ticket(
+        service: &DatafusionCudfFlightSqlService,
+        sql: &str,
+    ) -> Result<Response<FlightInfo>, Status> {
+        service
+            .get_flight_info_statement(
+                CommandStatementQuery { query: sql.to_string(), transaction_id: None },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+    }
+
+    fn only_ticket_query_id(service: &DatafusionCudfFlightSqlService) -> String {
+        let query_ids = service.tickets.iter().map(|entry| entry.key().clone()).collect::<Vec<_>>();
+        assert_eq!(query_ids.len(), 1, "expected exactly one live statement ticket, got {query_ids:?}");
+        query_ids[0].clone()
+    }
+
+    fn assert_status_metadata(status: &Status, code: &str, kind: &str, error_status: &str) {
+        assert_eq!(status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()), Some(code));
+        assert_eq!(status.metadata().get(ERROR_KIND_METADATA_KEY).and_then(|value| value.to_str().ok()), Some(kind));
+        assert_eq!(
+            status.metadata().get(ERROR_STATUS_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some(error_status)
+        );
+    }
+
+    fn iceberg_test_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
+    }
+
+    fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+        TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_snapshot_id("12345")
+            .with_catalog_type("local")
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(schema)
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "data-0001",
+                    "/tmp/iceberg/data-0001.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::local_file_system(),
+                )
+                .with_size_bytes(4096)
+                .with_row_count(11),
+            )
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(1),
+                "id",
+                Some("id"),
+                DataType::Int64,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
+            ))
+    }
+}

@@ -7,11 +7,12 @@ use std::{
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::physical_plan::ExecutionPlan;
 use nexus_query_engine::{
-    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
-    LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
-    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
-    SourceNode as NativeSourceNode,
+    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralBatchSource as NativeLiteralBatchSource,
+    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
+    LocalParquetSource as NativeLocalParquetSource, MissingColumn as NativeMissingColumn,
+    PartitionColumn as NativePartitionColumn, QueryPlanBuilder as NativeQueryPlanBuilder,
+    SourceColumnRef as NativeSourceColumnRef, SourceNode as NativeSourceNode,
+    ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
 };
 use parquet::file::reader::FileReader;
 
@@ -46,6 +47,9 @@ pub(super) fn lower_table_format_source_input(
     pushed_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
+    if table_format_scan_plan_is_empty_admissible(scan_plan) {
+        return lower_empty_table_format_source_input(scan_exec, filter, builder, required_output_fields);
+    }
     validate_table_format_scan_plan(scan_plan)?;
     validate_schema(scan_exec.schema())?;
     if let Some(filter) = filter {
@@ -55,7 +59,7 @@ pub(super) fn lower_table_format_source_input(
     let file_schema = table_format_file_schema(scan_plan);
     let requirements =
         table_format_column_requirements(scan_plan, &file_schema, scan_exec.schema(), filter, required_output_fields)?;
-    let source_output_schema = table_format_source_output_schema(&requirements, &file_schema);
+    let source_output_schema = table_format_source_output_schema(&requirements, &file_schema)?;
     validate_schema(Arc::clone(&source_output_schema))?;
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
     let native_file_paths =
@@ -157,6 +161,20 @@ pub(super) fn lower_table_format_source_input(
     } else {
         Ok(scan_output)
     }
+}
+
+fn lower_empty_table_format_source_input(
+    scan_exec: &CudfTableFormatScanExec,
+    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_fields: &RequiredFields,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let source_schema = filter.map_or_else(|| scan_exec.schema(), |filter| filter.schema());
+    validate_schema(Arc::clone(&source_schema))?;
+    let source_node =
+        builder.add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::empty(Arc::clone(&source_schema))));
+    let source_bindings = source_bindings_for_schema(&source_schema, Arc::clone(&source_schema));
+    project_scan_output_columns(builder, source_node, source_schema, source_bindings, required_output_fields)
 }
 
 fn reader_predicate_proves_table_format_source_at_most_one_row(
@@ -295,6 +313,14 @@ pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
     validate_table_format_scan_plan(scan_plan)?;
+    let source_node = add_table_format_zero_column_count_source_node(scan_plan, builder)?;
+    Ok(LoweredNativeInput::with_bindings(source_node, scan_exec.schema(), Vec::new()))
+}
+
+fn add_table_format_zero_column_count_source_node(
+    scan_plan: &TableFormatScanPlan,
+    builder: &mut NativeQueryPlanBuilder,
+) -> Result<nexus_query_engine::NodeId, FallbackReason> {
     let requirements = NativeParquetColumnRequirements {
         read_columns: Vec::new(),
         read_column_file_indices: Vec::new(),
@@ -309,8 +335,196 @@ pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
     };
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
     let source = NativeLocalParquetSource::zero_column_count(native_files).with_scan_limit(scan_plan.scan_limit);
+    Ok(builder.add_source(NativeSourceNode::LocalParquet(source)))
+}
+
+pub(in crate::native::lowering) fn table_format_zero_column_count_metadata_is_available(
+    scan_plan: &TableFormatScanPlan,
+) -> bool {
+    !scan_plan.data_files.is_empty()
+        && scan_plan.data_files.iter().all(|file| file.row_count.is_some() && file.row_groups.is_none())
+}
+
+pub(in crate::native::lowering) fn table_format_count_star_mixed_row_count_metadata_can_split(
+    scan_plan: &TableFormatScanPlan,
+) -> bool {
+    table_format_count_star_probe_can_lower(scan_plan)
+        && scan_plan.data_files.iter().any(|file| file.row_count.is_some())
+        && scan_plan.data_files.iter().any(|file| file.row_count.is_none())
+}
+
+pub(in crate::native::lowering) fn table_format_count_star_probe_can_lower(scan_plan: &TableFormatScanPlan) -> bool {
+    scan_plan.scan_limit.is_none()
+        && !scan_plan.data_files.is_empty()
+        && scan_plan.data_files.iter().all(|file| file.row_groups.is_none())
+}
+
+pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count_source(
+    scan_exec: &CudfTableFormatScanExec,
+    builder: &mut NativeQueryPlanBuilder,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let scan_plan = scan_exec.scan_plan();
+    if !table_format_count_star_mixed_row_count_metadata_can_split(scan_plan) {
+        return Err(FallbackReason::TableFormatUnsupported);
+    }
+    validate_table_format_scan_plan(scan_plan)?;
+
+    let metadata_plan = table_format_scan_plan_with_data_files(
+        scan_plan,
+        scan_plan.data_files.iter().filter(|file| file.row_count.is_some()).cloned().collect(),
+    );
+    let fallback_plan = table_format_scan_plan_with_data_files(
+        scan_plan,
+        scan_plan.data_files.iter().filter(|file| file.row_count.is_none()).cloned().collect(),
+    );
+
+    let count_weight_schema = table_format_count_weight_schema();
+    let mut inputs = Vec::with_capacity(2);
+    if !metadata_plan.data_files.is_empty() {
+        inputs.push(add_table_format_zero_column_count_source_node(&metadata_plan, builder)?);
+    }
+    if !fallback_plan.data_files.is_empty() {
+        let fallback_input = lower_table_format_count_star_fallback_source_for_plan(&fallback_plan, builder)?;
+        inputs.push(fallback_input.node);
+    }
+
+    let node = match inputs.as_slice() {
+        [] => return Err(FallbackReason::NativeSourceEmpty),
+        [node] => *node,
+        _ => builder.add_union(inputs, Arc::clone(&count_weight_schema)),
+    };
+    Ok(LoweredNativeInput::with_bindings(node, count_weight_schema, Vec::new()))
+}
+
+pub(in crate::native::lowering) fn lower_table_format_count_star_fallback_source(
+    scan_exec: &CudfTableFormatScanExec,
+    builder: &mut NativeQueryPlanBuilder,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let scan_plan = scan_exec.scan_plan();
+    validate_table_format_scan_plan(scan_plan)?;
+    lower_table_format_count_star_fallback_source_for_plan(scan_plan, builder)
+}
+
+fn lower_table_format_count_star_fallback_source_for_plan(
+    scan_plan: &TableFormatScanPlan,
+    builder: &mut NativeQueryPlanBuilder,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let file_schema = table_format_file_schema(scan_plan);
+    let (read_column, read_column_file_index) = table_format_count_star_fallback_column(scan_plan, &file_schema)?;
+    let requirements = NativeParquetColumnRequirements {
+        read_columns: vec![read_column.clone()],
+        read_column_file_indices: vec![read_column_file_index],
+        projected_output_columns: Vec::new(),
+        projected_output_column_source_refs: Vec::new(),
+        pure_filter_columns: vec![read_column],
+        pure_filter_column_source_refs: vec![NativeSourceColumnRef::File(read_column_file_index)],
+        partition_columns: Vec::new(),
+        partition_column_indices: Vec::new(),
+        missing_columns: Vec::new(),
+        scan_output_columns: Vec::new(),
+    };
+    let source_output_schema = Arc::new(Schema::new(vec![
+        file_schema
+            .fields()
+            .get(read_column_file_index)
+            .ok_or(FallbackReason::NativeSourceSchemaMapping)?
+            .as_ref()
+            .clone(),
+    ]));
+    validate_schema(Arc::clone(&source_output_schema))?;
+    let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
+    let source = if table_format_count_star_probe_can_lower(scan_plan) {
+        NativeLocalParquetSource::count_star_probe(
+            native_files,
+            Arc::clone(&source_output_schema),
+            requirements.read_columns.clone(),
+        )
+    } else {
+        NativeLocalParquetSource::from_files(
+            native_files,
+            Arc::clone(&source_output_schema),
+            requirements.read_columns.clone(),
+        )
+    }
+    .with_column_roles(Vec::new(), requirements.pure_filter_columns.clone())
+    .with_column_source_refs(
+        requirements.read_column_file_indices,
+        requirements.projected_output_column_source_refs,
+        requirements.pure_filter_column_source_refs,
+    )
+    .with_file_column_count(file_schema.fields().len())
+    .with_scan_limit(scan_plan.scan_limit);
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
-    Ok(LoweredNativeInput::with_bindings(source_node, scan_exec.schema(), Vec::new()))
+    Ok(LoweredNativeInput::with_bindings(source_node, source_output_schema, Vec::new()))
+}
+
+fn table_format_scan_plan_with_data_files(
+    scan_plan: &TableFormatScanPlan,
+    data_files: Vec<TableFormatDataFile>,
+) -> TableFormatScanPlan {
+    let mut plan = scan_plan.clone();
+    plan.data_files = data_files;
+    plan
+}
+
+fn table_format_count_weight_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new(NATIVE_ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]))
+}
+
+pub(in crate::native::lowering) fn lower_empty_table_format_count_star_source(
+    scan_exec: &CudfTableFormatScanExec,
+    builder: &mut NativeQueryPlanBuilder,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    if !table_format_scan_plan_is_empty_admissible(scan_exec.scan_plan()) {
+        return Err(table_format_scan_plan_rejection(scan_exec.scan_plan()));
+    }
+    let schema = scan_exec.schema();
+    validate_schema(Arc::clone(&schema))?;
+    let source_node =
+        builder.add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::empty(Arc::clone(&schema))));
+    Ok(LoweredNativeInput::with_bindings(source_node, schema, Vec::new()))
+}
+
+fn table_format_count_star_fallback_column(
+    scan_plan: &TableFormatScanPlan,
+    file_schema: &SchemaRef,
+) -> Result<(String, usize), FallbackReason> {
+    if let Some(column) = table_format_explicit_count_star_probe_column(scan_plan, file_schema) {
+        return Ok(column);
+    }
+    if table_format_local_footer_schema(scan_plan).is_some() {
+        return table_format_first_supported_file_column(file_schema);
+    }
+    Err(FallbackReason::NativeSourceSchemaMapping)
+}
+
+fn table_format_explicit_count_star_probe_column(
+    scan_plan: &TableFormatScanPlan,
+    file_schema: &SchemaRef,
+) -> Option<(String, usize)> {
+    scan_plan
+        .pure_filter_columns
+        .iter()
+        .chain(scan_plan.projected_columns.iter())
+        .filter(|mapping| mapping.source == TableFormatColumnSource::DirectTopLevelFileColumn)
+        .filter_map(|mapping| {
+            let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
+            let index = file_schema.index_of(source_name).ok()?;
+            let field = file_schema.fields().get(index)?;
+            (field.data_type() == &mapping.data_type && is_supported_native_type(field.data_type()))
+                .then(|| (source_name.clone(), index))
+        })
+        .next()
+}
+
+fn table_format_first_supported_file_column(file_schema: &SchemaRef) -> Result<(String, usize), FallbackReason> {
+    file_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .find(|(_index, field)| is_supported_native_type(field.data_type()))
+        .map(|(index, field)| (field.name().clone(), index))
+        .ok_or(FallbackReason::UnsupportedType)
 }
 
 pub(in crate::native::lowering) fn table_format_scan_rejection(source: &NormalizedNativeSource<'_>) -> FallbackReason {
@@ -350,6 +564,10 @@ fn table_format_scan_plan_rejection(plan: &TableFormatScanPlan) -> FallbackReaso
         return FallbackReason::IcebergObjectStoreReadUnsupported;
     }
     FallbackReason::TableFormatUnsupported
+}
+
+fn table_format_scan_plan_is_empty_admissible(plan: &TableFormatScanPlan) -> bool {
+    plan.unsupported_features.is_empty() && plan.delete_files.is_empty() && plan.data_files.is_empty()
 }
 
 fn table_format_column_requirements(
@@ -393,7 +611,7 @@ fn table_format_column_requirements(
         }
     }
 
-    let mappings = table_format_column_mapping_by_name(scan_plan);
+    let mappings = table_format_column_mapping_by_name(scan_plan)?;
     let mut read_columns: Vec<String> = Vec::new();
     let mut read_columns_seen: BTreeSet<String> = BTreeSet::new();
     let mut partition_columns: Vec<NativePartitionColumn> = Vec::new();
@@ -451,10 +669,20 @@ fn table_format_column_requirements(
         .iter()
         .map(|column| file_schema.index_of(column).map_err(|_error| FallbackReason::NativeSourceSchemaMapping))
         .collect::<Result<Vec<_>, _>>()?;
-    let projected_output_column_source_refs =
-        table_format_column_source_refs(file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
-    let pure_filter_column_source_refs =
-        table_format_column_source_refs(file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
+    let projected_output_column_source_refs = table_format_column_source_refs(
+        &mappings,
+        file_schema,
+        &partition_columns,
+        &missing_columns,
+        &projected_output_columns,
+    )?;
+    let pure_filter_column_source_refs = table_format_column_source_refs(
+        &mappings,
+        file_schema,
+        &partition_columns,
+        &missing_columns,
+        &pure_filter_columns,
+    )?;
     let scan_output_columns = ordered_required_columns;
 
     Ok(NativeParquetColumnRequirements {
@@ -471,19 +699,25 @@ fn table_format_column_requirements(
     })
 }
 
-fn table_format_column_mapping_by_name(scan_plan: &TableFormatScanPlan) -> BTreeMap<&str, &TableFormatColumnMapping> {
-    scan_plan
-        .projected_columns
-        .iter()
-        .chain(scan_plan.pure_filter_columns.iter())
-        .flat_map(|mapping| {
-            let source_name = mapping.source_name.as_deref().map(|name| (name, mapping));
-            [(mapping.logical_name.as_str(), mapping)].into_iter().chain(source_name)
-        })
-        .collect()
+fn table_format_column_mapping_by_name(
+    scan_plan: &TableFormatScanPlan,
+) -> Result<BTreeMap<&str, &TableFormatColumnMapping>, FallbackReason> {
+    let mut mappings = BTreeMap::new();
+    for mapping in scan_plan.projected_columns.iter().chain(scan_plan.pure_filter_columns.iter()) {
+        for key in [Some(mapping.logical_name.as_str()), mapping.source_name.as_deref()].into_iter().flatten() {
+            if let Some(existing) = mappings.get(key)
+                && *existing != mapping
+            {
+                return Err(FallbackReason::NativeSourceSchemaMapping);
+            }
+            mappings.insert(key, mapping);
+        }
+    }
+    Ok(mappings)
 }
 
 fn table_format_column_source_refs(
+    mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
     file_schema: &SchemaRef,
     partition_columns: &[NativePartitionColumn],
     missing_columns: &[NativeMissingColumn],
@@ -492,20 +726,29 @@ fn table_format_column_source_refs(
     columns
         .iter()
         .map(|column| {
-            if let Ok(index) = file_schema.index_of(column) {
-                return Ok(NativeSourceColumnRef::File(index));
+            let mapping = mappings.get(column.as_str()).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            match mapping.source {
+                TableFormatColumnSource::DirectTopLevelFileColumn => {
+                    let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
+                    file_schema
+                        .index_of(source_name)
+                        .map(NativeSourceColumnRef::File)
+                        .map_err(|_error| FallbackReason::NativeSourceSchemaMapping)
+                },
+                TableFormatColumnSource::IdentityPartitionValue => partition_columns
+                    .iter()
+                    .position(|field| field.name == mapping.logical_name)
+                    .map(NativeSourceColumnRef::Partition)
+                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                TableFormatColumnSource::MissingNullableColumn => missing_columns
+                    .iter()
+                    .position(|field| field.name == mapping.logical_name)
+                    .map(NativeSourceColumnRef::MissingNull)
+                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                TableFormatColumnSource::UnsupportedNestedProjection => {
+                    Err(FallbackReason::IcebergNestedProjectionUnsupported)
+                },
             }
-            partition_columns
-                .iter()
-                .position(|field| &field.name == column)
-                .map(NativeSourceColumnRef::Partition)
-                .or_else(|| {
-                    missing_columns
-                        .iter()
-                        .position(|field| &field.name == column)
-                        .map(NativeSourceColumnRef::MissingNull)
-                })
-                .ok_or(FallbackReason::UnsupportedExpression)
         })
         .collect()
 }
@@ -513,31 +756,43 @@ fn table_format_column_source_refs(
 fn table_format_source_output_schema(
     requirements: &NativeParquetColumnRequirements,
     file_schema: &SchemaRef,
-) -> SchemaRef {
-    let mut fields = Vec::with_capacity(
-        requirements.read_columns.len() + requirements.partition_columns.len() + requirements.missing_columns.len(),
-    );
-    for column in &requirements.read_columns {
-        match file_schema.field_with_name(column) {
-            Ok(field) => fields.push(field.clone()),
-            Err(_) => fields.push(Field::new(column, DataType::Null, true)),
+) -> Result<SchemaRef, FallbackReason> {
+    let mut fields =
+        Vec::with_capacity(requirements.projected_output_columns.len() + requirements.pure_filter_columns.len());
+    let mut seen = BTreeSet::new();
+    for (column, source_ref) in requirements
+        .projected_output_columns
+        .iter()
+        .zip(requirements.projected_output_column_source_refs.iter())
+        .chain(requirements.pure_filter_columns.iter().zip(requirements.pure_filter_column_source_refs.iter()))
+    {
+        if seen.insert(column.clone()) {
+            fields.push(table_format_source_output_field(column, source_ref, requirements, file_schema)?);
         }
     }
-    for partition_column in &requirements.partition_columns {
-        fields.push(Field::new(
-            partition_column.name.as_str(),
-            partition_column.data_type.clone(),
-            partition_column.nullable,
-        ));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn table_format_source_output_field(
+    column: &str,
+    source_ref: &NativeSourceColumnRef,
+    requirements: &NativeParquetColumnRequirements,
+    file_schema: &SchemaRef,
+) -> Result<Field, FallbackReason> {
+    match source_ref {
+        NativeSourceColumnRef::File(index) => {
+            let field = file_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            Ok(Field::new(column, field.data_type().clone(), field.is_nullable()))
+        },
+        NativeSourceColumnRef::Partition(index) => {
+            let column = requirements.partition_columns.get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            Ok(Field::new(column.name.as_str(), column.data_type.clone(), column.nullable))
+        },
+        NativeSourceColumnRef::MissingNull(index) => {
+            let column = requirements.missing_columns.get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            Ok(Field::new(column.name.as_str(), column.data_type.clone(), column.nullable))
+        },
     }
-    for missing_column in &requirements.missing_columns {
-        fields.push(Field::new(
-            missing_column.name.as_str(),
-            missing_column.data_type.clone(),
-            missing_column.nullable,
-        ));
-    }
-    Arc::new(Schema::new(fields))
 }
 
 fn table_format_local_parquet_files(
@@ -569,6 +824,12 @@ fn table_format_local_parquet_file(
     if let Some(row_groups) = file.row_groups.clone() {
         native_file = native_file.with_row_groups(row_groups);
     }
+    if requirements.read_columns.is_empty()
+        && file.row_groups.is_none()
+        && let Some(row_count) = file.row_count
+    {
+        native_file = native_file.with_row_group_rows(vec![row_count]);
+    }
     if !requirements.partition_columns.is_empty() {
         native_file = native_file.with_partition_values(table_format_partition_values(file, requirements)?);
     }
@@ -586,7 +847,7 @@ fn table_format_partition_values(
             let value = file
                 .partition_values
                 .iter()
-                .find(|value| value.column_name == column.name)
+                .find(|value| value.native_materialized_column_name() == column.name)
                 .ok_or(FallbackReason::NativeSourcePartitionValues)?;
             if value.transform != TableFormatPartitionTransform::Identity {
                 return Err(FallbackReason::IcebergPartitionTransformUnsupported);
@@ -604,7 +865,24 @@ fn table_format_scalar_value_to_native_literal(
         TableFormatScalarValue::Null => NativeLiteralValue::Null(data_type.clone()),
         TableFormatScalarValue::Boolean(value) => NativeLiteralValue::Boolean(*value),
         TableFormatScalarValue::Int32(value) => NativeLiteralValue::Int32(*value),
+        TableFormatScalarValue::Int64(value) if matches!(data_type, DataType::Timestamp(_, None)) => {
+            let DataType::Timestamp(unit, None) = data_type else { unreachable!("timestamp type checked in guard") };
+            NativeLiteralValue::Timestamp { raw: *value, unit: *unit }
+        },
+        TableFormatScalarValue::Int64(value) if matches!(data_type, DataType::Decimal128(_, _)) => {
+            let DataType::Decimal128(precision, scale) = data_type else {
+                unreachable!("decimal type checked in guard")
+            };
+            NativeLiteralValue::Decimal128 { raw: i128::from(*value), precision: *precision, scale: *scale }
+        },
         TableFormatScalarValue::Int64(value) => NativeLiteralValue::Int64(*value),
+        TableFormatScalarValue::Int128(value) if matches!(data_type, DataType::Decimal128(_, _)) => {
+            let DataType::Decimal128(precision, scale) = data_type else {
+                unreachable!("decimal type checked in guard")
+            };
+            NativeLiteralValue::Decimal128 { raw: *value, precision: *precision, scale: *scale }
+        },
+        TableFormatScalarValue::Int128(_) => return Err(FallbackReason::UnsupportedType),
         TableFormatScalarValue::UInt32(value) => NativeLiteralValue::UInt32(*value),
         TableFormatScalarValue::UInt64(value) => NativeLiteralValue::UInt64(*value),
         TableFormatScalarValue::Float64(value) => NativeLiteralValue::Float64(*value),
@@ -648,6 +926,11 @@ fn table_format_native_parquet_file(file: &TableFormatDataFile) -> Result<Native
 }
 
 fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
+    table_format_local_footer_schema(scan_plan)
+        .unwrap_or_else(|| strip_table_format_schema_metadata(&scan_plan.native_source_schema))
+}
+
+fn table_format_local_footer_schema(scan_plan: &TableFormatScanPlan) -> Option<SchemaRef> {
     scan_plan
         .data_files
         .iter()
@@ -660,7 +943,6 @@ fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
             })
         })
         .map(strip_table_format_file_schema_metadata)
-        .unwrap_or_else(|| strip_table_format_schema_metadata(&scan_plan.native_source_schema))
 }
 
 fn strip_table_format_file_schema_metadata(schema: Schema) -> SchemaRef {
@@ -688,7 +970,10 @@ mod tests {
     use nexus_query_engine::{CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef};
 
     use super::*;
-    use crate::table_format::{TableFormat, TableFormatReadCapability};
+    use crate::table_format::{
+        TableFormat, TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatReadCapability,
+        TableFormatScalarValue,
+    };
 
     fn test_column_requirements() -> NativeParquetColumnRequirements {
         NativeParquetColumnRequirements {
@@ -717,6 +1002,13 @@ mod tests {
             )
             .with_size_bytes(1024)
             .with_row_count(123)
+            .with_partition_values(vec![TableFormatPartitionValue::new(
+                "part",
+                DataType::Int32,
+                false,
+                TableFormatPartitionTransform::Identity,
+                TableFormatScalarValue::Int32(7),
+            )])
             .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
                 "s3://bucket/table/part-0.parquet",
                 "s3://bucket/table/part-0.parquet",
@@ -730,5 +1022,45 @@ mod tests {
         assert_eq!(files[0].row_groups, None);
         assert_eq!(files[0].row_group_rows, None);
         assert_eq!(files[0].selected_row_group_count(), 0);
+    }
+
+    #[test]
+    fn table_format_partition_only_file_row_count_creates_synthetic_row_group_metadata() {
+        let mut scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg);
+        scan_plan.data_files.push(
+            TableFormatDataFile::new(
+                "file-0",
+                "s3://bucket/table/part-0.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(1024)
+            .with_row_count(123)
+            .with_partition_values(vec![TableFormatPartitionValue::new(
+                "part",
+                DataType::Int32,
+                false,
+                TableFormatPartitionTransform::Identity,
+                TableFormatScalarValue::Int32(7),
+            )])
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
+                "s3://bucket/table/part-0.parquet",
+                "s3://bucket/table/part-0.parquet",
+                CredentialMode::SharedProcessEnv,
+            )),
+        );
+        let mut requirements = test_column_requirements();
+        requirements.read_columns.clear();
+        requirements.read_column_file_indices.clear();
+        requirements.projected_output_columns = vec!["part".to_string()];
+        requirements.projected_output_column_source_refs = vec![NativeSourceColumnRef::Partition(0)];
+        requirements.partition_columns = vec![nexus_query_engine::PartitionColumn::new("part", DataType::Int32, false)];
+        requirements.partition_column_indices = vec![0];
+        requirements.scan_output_columns = vec!["part".to_string()];
+
+        let files = table_format_local_parquet_files(&scan_plan, &requirements).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].row_group_rows.as_deref(), Some(&[123][..]));
     }
 }
