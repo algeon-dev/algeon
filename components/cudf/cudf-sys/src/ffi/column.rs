@@ -207,8 +207,13 @@ extern "C" {
 
     pub fn cudf_column_view_data_ptr(handle: cudf_column_view_handle, out: *mut *const c_void) -> cudf_status_t;
 
-    /// Return a STRING chars pointer and active byte length with explicit
-    /// execution options.
+    /// Return the STRING chars base pointer and the byte span it must cover,
+    /// with explicit execution options.
+    ///
+    /// `*out_ptr` is the base of the chars child buffer; the view's offsets
+    /// index from that base, so for sliced parent views `*out_size` ends at
+    /// the last byte referenced by the logical slice (it is NOT the active
+    /// byte count `last_offset - first_offset`).
     ///
     /// `options` must be non-null and must name an explicit valid device,
     /// non-null stream, and non-null memory resource.

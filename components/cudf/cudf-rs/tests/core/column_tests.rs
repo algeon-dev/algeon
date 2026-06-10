@@ -266,6 +266,23 @@ fn test_testing_slice_view_uses_column_execution_domain_execution_resources() {
 }
 
 #[test]
+fn test_to_vec_for_sliced_view_starts_at_sliced_element_offset() {
+    let col = column_from_slice(&[10i32, 20, 30, 40, 50, 60]).unwrap();
+    let sliced = col.testing_slice_view(2, 3).unwrap();
+
+    assert_eq!(sliced.to_vec::<i32>().unwrap(), vec![30, 40, 50]);
+}
+
+#[test]
+fn test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset() {
+    let col =
+        column_from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();
+    let sliced = col.testing_slice_view(1, 4).unwrap();
+
+    assert_eq!(sliced.to_optional_vec::<i32>().unwrap(), vec![None, Some(30), Some(40), None]);
+}
+
+#[test]
 fn test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range() {
     let col =
         column_from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();

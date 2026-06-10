@@ -1123,7 +1123,10 @@ mod device_export_contracts {
         assert_eq!(offsets_binding.bytes().byte_len(), 4 * std::mem::size_of::<i32>());
         let data_binding = binding(sliced_export.bindings(), *data);
         assert_eq!(data_binding.bytes().base_ptr(), base_data_binding.bytes().base_ptr());
-        assert_eq!(data_binding.bytes().byte_len(), "onetwo".len());
+        // The data binding starts at the chars BASE and the exported offsets
+        // are not rebased (rows index chars[4..10] for "one"/"two"), so the
+        // declared span must reach the last referenced byte.
+        assert_eq!(data_binding.bytes().byte_len(), "zeroonetwo".len());
     }
 
     #[test]

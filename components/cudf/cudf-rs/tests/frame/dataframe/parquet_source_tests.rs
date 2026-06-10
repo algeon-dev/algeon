@@ -329,6 +329,54 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
 }
 
 #[test]
+fn read_parquet_source_chunk_does_not_confuse_top_level_column_with_same_named_nested_leaf() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nested_leaf_shadow.parquet");
+    let rt = sample_runtime();
+    // The struct comes first so its all-null leaf `s.id` precedes the
+    // top-level `id` in the footer's flattened leaf list.
+    let inner_field = Arc::new(Field::new("id", ArrowDataType::Int64, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("s", ArrowDataType::Struct(vec![Arc::clone(&inner_field)].into()), true),
+        Field::new("id", ArrowDataType::Int64, true),
+    ]));
+    let inner: arrow::array::ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, None]));
+    let struct_array = arrow::array::StructArray::from(vec![(inner_field, inner)]);
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(struct_array), Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
+    )
+    .unwrap();
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "nested-leaf-shadow", [])
+            .unwrap()
+            .with_row_group_metadata(vec![88], vec![4])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), true).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 1);
+
+    let df =
+        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
+
+    // The all-null statistics of the nested leaf `s.id` must not be attributed
+    // to the top-level `id` column.
+    assert_eq!(df.series("id").unwrap().null_count(), 0);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3, 4]);
+}
+
+#[test]
 fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("mixed_all_null_optional.parquet");

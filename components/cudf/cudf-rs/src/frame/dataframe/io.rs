@@ -1239,7 +1239,11 @@ fn footer_column_index(columns: &[Arc<ColumnDescriptor>], read_index: usize, rea
 }
 
 fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {
-    descriptor.name() == column_name || descriptor.path().parts().last().is_some_and(|part| part == column_name)
+    // `column_name` is a top-level schema column, so it may only match a leaf
+    // whose full dotted path is exactly that name (depth 1). Matching on leaf
+    // name alone would let a nested leaf like `s.id` shadow top-level `id`.
+    let parts = descriptor.path().parts();
+    parts.len() == 1 && parts[0] == column_name
 }
 
 fn footer_column_all_null(metadata: &ParquetMetaData, row_groups: &[usize], column_index: usize) -> Result<bool> {
