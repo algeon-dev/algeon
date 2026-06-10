@@ -41,7 +41,6 @@ cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::concatenate(views, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -77,7 +76,6 @@ cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::concatenate(views, exec->stream, *exec->mr);
       *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }

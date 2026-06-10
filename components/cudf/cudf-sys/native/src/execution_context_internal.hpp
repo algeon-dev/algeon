@@ -12,7 +12,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <mutex>
 
 /// RAII guard that saves the calling thread's current CUDA device and restores
 /// it on destruction. Used inside `cudf_resolve_exec_options()` to activate
@@ -59,30 +58,12 @@ private:
   bool active_ = false;
 };
 
-/// RAII guard for libcudf APIs whose public constructor surface still resolves
-/// allocations through RMM's current device resource instead of an explicit MR
-/// parameter. Keep this scoped to the smallest call that performs the
-/// allocation and prefer explicit `mr` arguments whenever libcudf offers them.
-class cudf_current_device_resource_guard {
-public:
-  explicit cudf_current_device_resource_guard(
-      rmm::mr::device_memory_resource *target);
-
-  ~cudf_current_device_resource_guard();
-
-  cudf_current_device_resource_guard(
-      cudf_current_device_resource_guard const &) = delete;
-
-  cudf_current_device_resource_guard &
-  operator=(cudf_current_device_resource_guard const &) = delete;
-
-private:
-  std::unique_lock<std::recursive_mutex> lock_;
-  rmm::mr::device_memory_resource *previous_;
-  bool restore_previous_ = false;
-};
-
-std::recursive_mutex &cudf_current_device_resource_mutex();
+// Device-domain invariant: each device's current RMM resource is installed
+// once when its memory domain is created (manager creation or lazy default)
+// and never changes afterwards. Operations must never swap it; libcudf
+// temporaries deliberately resolve through the long-lived per-device adaptor
+// and are accounted per stream by the reservation-aware adaptor. The
+// identity map behind these helpers carries its own internal lock.
 
 rmm::mr::device_memory_resource *cudf_tracked_current_device_resource_raw();
 
@@ -97,9 +78,6 @@ struct cudf_exec_context {
   std::shared_ptr<void> mr_lifetime;
   int32_t device;
   cudf_device_guard guard;
-  std::unique_lock<std::recursive_mutex> current_resource_lock;
-  rmm::mr::device_memory_resource *previous_mr_raw = nullptr;
-  bool current_resource_installed = false;
 
   cudf_exec_context(rmm::cuda_stream_view stream,
                     std::shared_ptr<void> stream_lifetime,
@@ -108,14 +86,10 @@ struct cudf_exec_context {
                     std::shared_ptr<void> mr_lifetime, int32_t device,
                     cudf_device_guard guard = {});
 
-  ~cudf_exec_context();
-
   cudf_exec_context(cudf_exec_context const &) = delete;
   cudf_exec_context &operator=(cudf_exec_context const &) = delete;
-  cudf_exec_context(cudf_exec_context &&other) noexcept;
+  cudf_exec_context(cudf_exec_context &&other) noexcept = default;
   cudf_exec_context &operator=(cudf_exec_context &&) noexcept = delete;
-
-  void install_current_device_resource();
 };
 
 cudf_exec_context cudf_make_exec_context();

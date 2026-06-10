@@ -127,7 +127,6 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
       CUDF_RUST_NULL_CHECK(value, "value is null");
     }
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::INT8:
         s = make_numeric_scalar<int8_t>(value, valid, exec->stream, *exec->mr);
@@ -193,7 +192,6 @@ cudf_status_t cudf_scalar_create_decimal_raw_ex(
 
     std::unique_ptr<cudf::scalar> s;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::DECIMAL32:
         s = make_decimal_scalar<numeric::decimal32>(value, scale, valid,
@@ -236,7 +234,6 @@ cudf_status_t cudf_scalar_create_timestamp_raw_ex(
     bool valid = is_valid != 0;
     cudf_status_t status = CUDF_SUCCESS;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::TIMESTAMP_DAYS:
         status = make_timestamp_scalar<cudf::timestamp_D>(
@@ -290,7 +287,6 @@ cudf_status_t cudf_scalar_create_duration_raw_ex(
     bool valid = is_valid != 0;
     cudf_status_t status = CUDF_SUCCESS;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::DURATION_DAYS:
         status = make_duration_scalar<cudf::duration_D>(
@@ -347,7 +343,6 @@ cudf_status_t cudf_scalar_create_string_ex(const char *value, int32_t is_valid,
         (value != nullptr) ? std::string(value) : std::string();
     std::unique_ptr<cudf::string_scalar> s;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0,
                                                 exec->stream, *exec->mr);
     }
@@ -378,7 +373,6 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
     std::unique_ptr<cudf::scalar> copy;
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (s.type().id()) {
         // Numeric types
 #define CUDF_COPY_NUMERIC(ENUM, TYPE)                                          \

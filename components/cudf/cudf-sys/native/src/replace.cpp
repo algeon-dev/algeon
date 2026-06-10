@@ -31,7 +31,6 @@ cudf_status_t cudf_replace_nulls_scalar_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::replace_nulls(*view, scalar, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -58,7 +57,6 @@ cudf_status_t cudf_replace_nulls_column_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::replace_nulls(*view_input, *view_replacement, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -91,7 +89,6 @@ cudf_status_t cudf_replace_nulls_policy_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::replace_nulls(*view, rp, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }

@@ -29,7 +29,6 @@ cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::contains(*haystack_view, *needles_view, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }

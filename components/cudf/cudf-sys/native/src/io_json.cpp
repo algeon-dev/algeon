@@ -33,7 +33,6 @@ cudf_status_t cudf_io_read_json_ex(const char* filepath,
     auto builder = cudf::io::json_reader_options::builder(source).lines(lines != 0);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options         = builder.build();
       auto [tbl, metadata] = cudf::io::read_json(options, exec->stream, *exec->mr);
 
@@ -69,7 +68,6 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_json(options, exec->stream, *exec->mr);
     }
@@ -159,7 +157,6 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
 
     auto options = builder.build();
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::io::write_json(options, exec->stream);
     }
     return CUDF_SUCCESS;

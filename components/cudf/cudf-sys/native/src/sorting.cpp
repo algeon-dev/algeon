@@ -95,7 +95,6 @@ cudf_status_t is_sorted_impl(cudf_table_view_handle input,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       *out = cudf::is_sorted(*view, orders, null_orders, exec->stream) ? 1 : 0;
     }
     return CUDF_SUCCESS;
@@ -144,7 +143,6 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
           cudf::sort(*view, orders, null_orders, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -193,7 +191,6 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
           cudf::stable_sort(*view, orders, null_orders, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -247,7 +244,6 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::sort_by_key(*vals, *ks, orders, null_orders,
                                       exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -299,7 +295,6 @@ cudf_status_t cudf_stable_sort_by_key_ex(
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::stable_sort_by_key(*vals, *ks, orders, null_orders,
                                              exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -348,7 +343,6 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::sorted_order(*view, orders, null_orders, exec->stream,
                                        *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));

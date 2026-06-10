@@ -149,12 +149,12 @@ fn cached_join_owners_retain_stream_lifetime_and_destroy_under_captured_mr() {
     }
 
     let destroy_helper = sources.function_body("cudf_destroy_under_provenance").body;
-    if !source_contract_support::contains_normalized(
-        destroy_helper,
-        "cudf_current_device_resource_guard current_mr{provenance.mr_raw};",
-    ) {
+    // Device-domain model: destruction must not swap the device's current
+    // resource. Retained GPU state releases through the resource refs captured
+    // inside each buffer; the provenance only pins the device and lifetimes.
+    if destroy_helper.contains("cudf_current_device_resource_guard") {
         violations.push(
-            "cudf_destroy_under_provenance must install the captured memory resource while destroying retained GPU state"
+            "cudf_destroy_under_provenance must not swap the device's current resource while destroying retained GPU state"
                 .to_string(),
         );
     }

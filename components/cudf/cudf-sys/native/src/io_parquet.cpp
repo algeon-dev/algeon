@@ -671,7 +671,6 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
     if (config_status != CUDF_SUCCESS) { return config_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options         = builder.build();
       auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, *exec->mr);
 
@@ -716,7 +715,6 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
     if (config_status != CUDF_SUCCESS) { return config_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options         = builder.build();
       auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, *exec->mr);
 
@@ -778,7 +776,6 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
         return CUDF_ERROR_INVALID_OPERATION;
     }
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::io::write_parquet(options, exec->stream);
     }
     return CUDF_SUCCESS;
@@ -823,7 +820,6 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
@@ -890,7 +886,6 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
@@ -970,7 +965,6 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
@@ -1074,7 +1068,6 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
@@ -1222,7 +1215,6 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
@@ -1297,7 +1289,6 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
 
     cudf::io::table_with_metadata result;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options = builder.build();
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }

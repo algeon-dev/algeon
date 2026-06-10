@@ -75,7 +75,6 @@ cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
     auto partitioned = [&] {
       // libcudf hash_partition passes `mr` to the output table, but some
       // temporaries still allocate through RMM's current resource.
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       return cudf::hash_partition(*view,
                                   columns,
                                   static_cast<int>(num_partitions),

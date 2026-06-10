@@ -57,18 +57,16 @@ fn column_slice_resolves_active_range_null_count_with_required_exec_options() {
         "column.cpp still depends on the non-exported cudf::detail::null_count symbol"
     );
     assert!(
-        source_contract_support::contains_normalized(
-            slice_ex_body,
-            "cudf_current_device_resource_guard current_mr{exec->mr_raw}; null_count = view->null_count(start, start + len, exec->stream);"
-        ),
-        "expected column_view_slice_ex to scope lazy active-range null-count computation under the caller's execution memory resource"
+        !slice_ex_body.contains("cudf_current_device_resource_guard"),
+        "column_view_slice_ex must not swap the device's current resource; lazy null-count temporaries \
+         deliberately resolve through the long-lived per-device domain adaptor (device-domain invariant)"
     );
     assert!(
         source_contract_support::contains_normalized(
             null_count_ex_body,
-            "return resolve_column_view_null_count(*view, exec->stream, exec->mr_raw, out);"
+            "return resolve_column_view_null_count(*view, exec->stream, out);"
         ),
-        "expected column_view_null_count_ex to pass the resolved memory resource into the null-count helper"
+        "expected column_view_null_count_ex to resolve null counts on the caller's execution stream"
     );
 }
 

@@ -530,7 +530,6 @@ cudf_status_t cudf_column_copy_from_prepared_device_export_ex(
     auto const view =
         build_prepared_column_view(root_column_id, col_index, bind_index);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::column>(view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
                                         cudf_capture_exec_provenance(*exec));
@@ -592,7 +591,6 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::table>(cudf::table_view(columns),
                                                 exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(copy),

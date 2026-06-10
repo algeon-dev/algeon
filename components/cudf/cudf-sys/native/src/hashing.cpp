@@ -25,7 +25,6 @@ cudf_status_t cudf_hashing_murmurhash3_x86_32_ex(cudf_table_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::hashing::murmurhash3_x86_32(*view, seed, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -49,7 +48,6 @@ cudf_status_t cudf_hashing_xxhash_64_ex(cudf_table_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::hashing::xxhash_64(*view, seed, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }

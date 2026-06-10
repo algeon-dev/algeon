@@ -155,24 +155,31 @@ fn execution_context_memory_resource_ref_retains_type_erased_resource_lifetime()
 }
 
 #[test]
-fn permissive_exec_options_resolver_guards_current_resource_identity_map() {
+fn permissive_exec_options_resolver_never_swaps_current_resource() {
     let body = function_region(
         EXECUTION_CONTEXT_CPP,
         "cudf_status_t cudf_resolve_exec_options",
         "cudf_status_t\ncudf_resolve_required_exec_options",
     );
 
-    let mut default_mr_lookups = 0;
-    for (index, _) in body.match_indices("out->mr_raw = cudf_tracked_current_device_resource_raw();") {
-        default_mr_lookups += 1;
-        let prefix_start = index.saturating_sub(256);
-        let lookup_prefix = &body[prefix_start..index];
+    // Device-domain invariant: the current resource is installed once when a
+    // device's memory domain is created and never changes afterwards, so
+    // resolution may read the tracked identity (the helper carries its own
+    // map lock) but must never install, swap, or lock around it.
+    for forbidden_marker in [
+        "install_current_device_resource",
+        "cudf_set_current_device_resource_raw",
+        "cudf_current_device_resource_mutex",
+        "cudf_current_device_resource_guard",
+    ] {
         assert!(
-            lookup_prefix.contains("std::scoped_lock lock{cudf_current_device_resource_mutex()}"),
-            "permissive/default execution resolution must guard current-resource identity lookups"
+            !body.contains(forbidden_marker),
+            "permissive resolver must not touch process/device current-resource state via `{forbidden_marker}`"
         );
     }
 
+    let default_mr_lookups =
+        body.match_indices("out->mr_raw = cudf_tracked_current_device_resource_raw();").count();
     assert_eq!(
         default_mr_lookups, 2,
         "permissive resolver should only read ambient current-resource identity for the null-options and default-options paths"

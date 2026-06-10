@@ -18,8 +18,6 @@ cudf_capture_exec_provenance(cudf_exec_context const &exec) noexcept {
 }
 
 cudf_handle_provenance cudf_capture_current_handle_provenance() {
-  std::scoped_lock lock{cudf_current_device_resource_mutex()};
-
   int32_t device = 0;
   CUDF_CUDA_TRY(cudaGetDevice(&device));
   auto *mr_raw = cudf_tracked_current_device_resource_raw();
