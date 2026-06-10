@@ -5,11 +5,11 @@
 #   bash scripts/run_server.sh             # start the server
 #   bash scripts/run_server.sh --dry-run   # print the env + command without executing
 #
-# The release binary must already be built. For the Iceberg+cuGraph production
-# path this script configures, use:
+# The release binary must already be built. Either artifact flavor works:
+#   cargo build --release --features server,iceberg --bin datafusion_nexus_server
 #   cargo build --release --features server,iceberg,cugraph --bin datafusion_nexus_server
-# or, without Iceberg:
-#   cargo build --release --features server-cugraph --bin datafusion_nexus_server
+# The cuGraph SQL UDTFs stay disabled unless NEXUS_SERVER_CUGRAPH_ENABLED=true
+# is exported before calling this script (requires the cugraph build).
 #
 # AWS credentials (short-lived STS tokens) must be in the host environment:
 #   export AWS_ACCESS_KEY_ID=...
@@ -28,7 +28,8 @@ BINARY="${TARGET_ROOT}/release/datafusion_nexus_server"
 
 if [[ ! -x "${BINARY}" ]]; then
     echo "ERROR: binary not found at ${BINARY}" >&2
-    echo "       Run: cargo build --release --features server,iceberg,cugraph --bin datafusion_nexus_server" >&2
+    echo "       Run: cargo build --release --features server,iceberg --bin datafusion_nexus_server" >&2
+    echo "       (add ,cugraph to the feature list for the cuGraph SQL UDTFs)" >&2
     exit 1
 fi
 
@@ -64,7 +65,7 @@ export NEXUS_SERVER_MAX_IN_FLIGHT="${NEXUS_SERVER_MAX_IN_FLIGHT:-1}"
 # ---------------------------------------------------------------------------
 # cuGraph SQL DSL
 #
-# NEXUS_SERVER_CUGRAPH_ENABLED              true | false
+# NEXUS_SERVER_CUGRAPH_ENABLED              true | false (unset = disabled)
 # NEXUS_SERVER_CUGRAPH_ALGORITHMS           optional allowlist by SQL
 #                                                     function name, e.g.
 #                                                     cugraph_pagerank,cugraph_bfs
@@ -72,11 +73,13 @@ export NEXUS_SERVER_MAX_IN_FLIGHT="${NEXUS_SERVER_MAX_IN_FLIGHT:-1}"
 # NEXUS_SERVER_CUGRAPH_RENUMBER             default cuGraph renumber flag
 # NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY  python_cugraph | raw_libcugraph
 #
-# The binary must be built with the `cugraph` feature. The env gate remains
-# explicit so operators can ship one artifact and choose whether the SQL UDTFs
-# are exposed at runtime.
+# No default is exported here: unset is valid for every artifact flavor (a
+# cugraph build keeps the SQL UDTFs disabled; a no-cugraph build rejects any
+# cuGraph env except an explicit `false`). To expose the UDTFs, export
+# NEXUS_SERVER_CUGRAPH_ENABLED=true before calling this script — that requires
+# a binary built with the `cugraph` feature.
 # ---------------------------------------------------------------------------
-export NEXUS_SERVER_CUGRAPH_ENABLED="${NEXUS_SERVER_CUGRAPH_ENABLED:-true}"
+# export NEXUS_SERVER_CUGRAPH_ENABLED=true
 # export NEXUS_SERVER_CUGRAPH_ALGORITHMS="cugraph_pagerank,cugraph_bfs"
 # export NEXUS_SERVER_CUGRAPH_DIRECTED=true
 # export NEXUS_SERVER_CUGRAPH_RENUMBER=true
@@ -180,7 +183,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "Binary: ${BINARY}"
     echo ""
     echo "Environment:"
-    env | grep -E '^(DATAFUSION|CUDF|AWS)' | sort
+    env | grep -E '^(DATAFUSION|CUDF|AWS|NEXUS)' | sort
 else
     echo "Starting datafusion_nexus_server ..."
     exec "${BINARY}"
