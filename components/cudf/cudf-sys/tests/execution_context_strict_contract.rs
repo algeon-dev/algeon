@@ -178,8 +178,7 @@ fn permissive_exec_options_resolver_never_swaps_current_resource() {
         );
     }
 
-    let default_mr_lookups =
-        body.match_indices("out->mr_raw = cudf_tracked_current_device_resource_raw();").count();
+    let default_mr_lookups = body.match_indices("out->mr_raw = cudf_tracked_current_device_resource_raw();").count();
     assert_eq!(
         default_mr_lookups, 2,
         "permissive resolver should only read ambient current-resource identity for the null-options and default-options paths"

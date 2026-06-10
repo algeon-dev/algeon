@@ -288,7 +288,10 @@ impl DeviceMemoryManager {
     ///
     /// // Service startup: claim every device the service will use.
     /// for ordinal in 0..DeviceId::count().unwrap() {
-    ///     DeviceMemoryManager::install_for_device(DeviceId::new(ordinal).unwrap()).unwrap();
+    ///     DeviceMemoryManager::install_for_device(
+    ///         DeviceId::new(ordinal).unwrap(),
+    ///     )
+    ///     .unwrap();
     /// }
     ///
     /// // Each pipeline then gets its own Runtime (own stream) plus a

@@ -5,9 +5,11 @@ use std::{ptr, sync::Arc};
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Result},
-        types::DataType,
+        error::{self, Error, ErrorCode, Result},
+        types::{DataType, TypeId},
     },
+    frame::series::{Series, reduction::scalar_to_optional_value},
+    ops::reduction,
     runtime::{
         execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
@@ -221,6 +223,7 @@ pub(crate) fn cast_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let input_type = input.data_type()?;
+    validate_float64_to_int64_cast_input(input, &input_type, output_type, output_domain, exec_options, operation)?;
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
@@ -241,6 +244,49 @@ pub(crate) fn cast_impl(
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+const INT64_EXCLUSIVE_UPPER_BOUND_AS_F64: f64 = 9_223_372_036_854_775_808.0;
+
+fn validate_float64_to_int64_cast_input(
+    input: &ColumnView<'_>,
+    input_type: &DataType,
+    output_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<()> {
+    if input_type.id() != TypeId::Float64 || output_type.id() != TypeId::Int64 {
+        return Ok(());
+    }
+
+    let nan_mask = is_nan_impl(input, output_domain, exec_options, operation)?;
+    if Series::from_column(nan_mask)?.any_value()? {
+        return Err(float64_to_int64_cast_error(operation, "nan"));
+    }
+
+    let (min_scalar, max_scalar) = reduction::minmax_impl(input, output_domain, exec_options, operation)?;
+    let min_value = scalar_to_optional_value::<f64>(min_scalar)?;
+    let max_value = scalar_to_optional_value::<f64>(max_scalar)?;
+    if min_value.is_some_and(|value| !value.is_finite() || value < i64::MIN as f64) {
+        return Err(float64_to_int64_cast_error(operation, "below_int64_range"));
+    }
+    if max_value.is_some_and(|value| !value.is_finite() || value >= INT64_EXCLUSIVE_UPPER_BOUND_AS_F64) {
+        return Err(float64_to_int64_cast_error(operation, "above_int64_range"));
+    }
+
+    Ok(())
+}
+
+fn float64_to_int64_cast_error(operation: &'static str, reason: &'static str) -> Error {
+    Error::new_with(
+        ErrorCode::ValueOutOfRange,
+        operation,
+        "Float64 to Int64 cast input cannot be represented as a DataFusion-compatible Int64",
+    )
+    .with_detail("reason", reason)
+    .with_detail("source_type_id", "float64")
+    .with_detail("target_type_id", "int64")
 }
 
 /// Check whether a cast between two data types is supported.

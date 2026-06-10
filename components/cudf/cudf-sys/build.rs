@@ -132,6 +132,61 @@ fn locate_prebuilt_libcudf() -> Option<PathBuf> {
     None
 }
 
+/// Locate a shared runtime dependency library (e.g. `librmm.so`) shipped by
+/// the libcudf build, using the same discovery env vars as
+/// `locate_prebuilt_libcudf`: `CUDF_INSTALL_DIR` (preferred) or
+/// `CUDF_CPP_BUILD_DIR`.
+fn locate_runtime_dep_library(file_name: &str, build_dir_subpath: &str) -> Option<PathBuf> {
+    if let Ok(install_dir) = env::var("CUDF_INSTALL_DIR") {
+        for sub in ["lib", "lib64"] {
+            let candidate = PathBuf::from(&install_dir).join(sub).join(file_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(build_dir) = env::var("CUDF_CPP_BUILD_DIR") {
+        let candidate = PathBuf::from(build_dir).join(build_dir_subpath).join(file_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Expose the resolved shared RMM / rapids_logger runtime libraries to
+/// downstream crates (as `DEP_CUDF_RUST_RMM_RUNTIME_LIB` /
+/// `DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB`), so integration builds that link
+/// a second RAPIDS consumer (e.g. cugraph-sys) can assert both resolve the
+/// same single librmm.so build. A process must never carry two RMM builds:
+/// the dynamic loader binds every rmm symbol to one copy and any divergence
+/// in object layout or per-device resource state corrupts execution.
+fn emit_runtime_dep_library_metadata() {
+    let discovery_env_present =
+        env::var_os("CUDF_INSTALL_DIR").is_some() || env::var_os("CUDF_CPP_BUILD_DIR").is_some();
+    for (key, file_name, build_dir_subpath) in [
+        ("rmm-runtime-lib", "librmm.so", "_deps/rmm-build"),
+        ("rapids-logger-runtime-lib", "librapids_logger.so", "_deps/rapids_logger-build"),
+    ] {
+        match locate_runtime_dep_library(file_name, build_dir_subpath) {
+            Some(path) => {
+                println!("cargo:rerun-if-changed={}", path.display());
+                println!("cargo:{key}={}", path.display());
+                println!("cargo:metadata={key}={}", path.display());
+            },
+            None if discovery_env_present => {
+                println!(
+                    "cargo:warning=no shared {file_name} found under the libcudf discovery prefix \
+                     (CUDF_INSTALL_DIR/CUDF_CPP_BUILD_DIR); downstream builds that link a second RAPIDS \
+                     consumer (e.g. cugraph) cannot verify the single-RMM invariant. Rebuild libcudf with \
+                     CUDF_RMM_BUILD_SHARED=ON and re-run `cmake --install` if this is unexpected."
+                );
+            },
+            None => {},
+        }
+    }
+}
+
 /// Walk `dir` and return the most recently modified C++ source/header file
 /// (path and mtime) along with the count of files newer than `baseline`.
 fn find_newest_source(
@@ -262,6 +317,7 @@ fn main() {
         println!("cargo:runtime-lib-dir={}", path.display());
         println!("cargo:metadata=runtime-lib-dir={}", path.display());
     }
+    emit_runtime_dep_library_metadata();
 
     // Re-run if native sources or build inputs change.
     rerun_if_changed_recursive(&native_dir.join("src"));

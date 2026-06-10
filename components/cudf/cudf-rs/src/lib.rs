@@ -148,7 +148,9 @@
 //!
 //! // Each pipeline: its own Runtime (own stream) + a budget reservation.
 //! let rt = Runtime::builder().build().unwrap();
-//! let lease = rt.stream_reservation(/* pipeline id */ 7, /* bytes */ 1 << 30).unwrap();
+//! let lease = rt
+//!     .stream_reservation(/* pipeline id */ 7, /* bytes */ 1 << 30)
+//!     .unwrap();
 //! # drop(lease);
 //! ```
 //!
