@@ -21,6 +21,7 @@ LOAD_GLUE=0
 RUN_REST=1
 RUN_GLUE=1
 RUN_SERVER=1
+RUN_REMOTE_DIRECT=0
 GPU_PARITY=0
 
 REST_URI="${NEXUS_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
@@ -58,6 +59,10 @@ Options:
   --glue-only            Run only the Glue/Moto backend E2E runner
   --server-only          Run only the server + Glue/Moto E2E runner
   --no-server            Run REST and Glue/Moto backend runners, but not server E2E
+  --remote-direct        Also run the credentialless Glue/S3 remote-direct server
+                         E2E (GPU required; serialized via flock /tmp/cudf-gpu.lock;
+                         loads Glue tables unless --no-load)
+  --remote-direct-only   Run only the credentialless remote-direct server E2E
   --gpu-parity           Enable NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
   --rest-table NAME      REST table used for scan/planning checks (default: nation)
   --rest-group-col NAME  REST group column for planning checks (default: n_regionkey)
@@ -232,22 +237,36 @@ while [[ $# -gt 0 ]]; do
       RUN_REST=1
       RUN_GLUE=0
       RUN_SERVER=0
+      RUN_REMOTE_DIRECT=0
       shift
       ;;
     --glue-only)
       RUN_REST=0
       RUN_GLUE=1
       RUN_SERVER=0
+      RUN_REMOTE_DIRECT=0
       shift
       ;;
     --server-only)
       RUN_REST=0
       RUN_GLUE=0
       RUN_SERVER=1
+      RUN_REMOTE_DIRECT=0
       shift
       ;;
     --no-server)
       RUN_SERVER=0
+      shift
+      ;;
+    --remote-direct)
+      RUN_REMOTE_DIRECT=1
+      shift
+      ;;
+    --remote-direct-only)
+      RUN_REST=0
+      RUN_GLUE=0
+      RUN_SERVER=0
+      RUN_REMOTE_DIRECT=1
       shift
       ;;
     --gpu-parity)
@@ -291,8 +310,13 @@ case "${WORKLOAD}" in
     ;;
 esac
 
-if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" ]]; then
+if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" && "${RUN_REMOTE_DIRECT}" != "1" ]]; then
   die "no E2E runners selected"
+fi
+
+# The remote-direct runner queries a loaded data-bearing Glue namespace.
+if [[ "${RUN_REMOTE_DIRECT}" == "1" && "${NO_LOAD}" != "1" ]]; then
+  LOAD_GLUE=1
 fi
 
 require_loopback_http_url "NEXUS_ICEBERG_REST_URI" "${REST_URI}"
@@ -324,7 +348,7 @@ validate_s3_bucket
 if [[ "${RUN_REST}" == "1" ]]; then
   wait_url "Iceberg REST" "${REST_URI}/v1/config" 1
 fi
-if [[ "${RUN_GLUE}" == "1" || "${RUN_SERVER}" == "1" || "${LOAD_GLUE}" == "1" ]]; then
+if [[ "${RUN_GLUE}" == "1" || "${RUN_SERVER}" == "1" || "${RUN_REMOTE_DIRECT}" == "1" || "${LOAD_GLUE}" == "1" ]]; then
   wait_url "Moto Glue" "${GLUE_URI}/moto-api/" 1
 fi
 
@@ -419,6 +443,31 @@ if [[ "${RUN_SERVER}" == "1" ]]; then
   step "running server + Glue/Moto E2E"
   env "${glue_env[@]}" \
     cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e
+fi
+
+if [[ "${RUN_REMOTE_DIRECT}" == "1" ]]; then
+  step "running credentialless Glue/S3 remote-direct server E2E (GPU, flock /tmp/cudf-gpu.lock)"
+  # RustFS credentials flow ONLY through the provider-path env pair
+  # (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) so the runner exercises the
+  # default credential chain; static NEXUS_ICEBERG_S3_* credentials and
+  # ambient session state are scrubbed.
+  env \
+    NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \
+    NEXUS_ICEBERG_GLUE_URI="${GLUE_URI}" \
+    NEXUS_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
+    NEXUS_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
+    NEXUS_ICEBERG_S3_REGION="${S3_REGION}" \
+    NEXUS_ICEBERG_NAMESPACE="${namespace}" \
+    AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY}" \
+    AWS_SECRET_ACCESS_KEY="${S3_SECRET_KEY}" \
+    AWS_SESSION_TOKEN= \
+    AWS_SECURITY_TOKEN= \
+    AWS_PROFILE= \
+    NEXUS_ICEBERG_S3_ACCESS_KEY_ID= \
+    NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY= \
+    NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+    flock /tmp/cudf-gpu.lock \
+    cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
 fi
 
 step "iceberg-local E2E suite passed"
