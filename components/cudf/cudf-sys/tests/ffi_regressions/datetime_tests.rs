@@ -66,11 +66,11 @@ fn read_i16_column_data_with_exec(
 
 fn assert_column_type(col: *mut c_void, expected_type: cudf_sys::cudf_type_id_t) {
     let view = make_column_view(col);
-    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
     let mut scale = -1;
     let status = unsafe { cudf_sys::cudf_column_view_data_type(view, &mut type_id, &mut scale) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, expected_type);
+    assert_eq!(type_id, expected_type as i32);
     assert_eq!(scale, 0);
     unsafe { cudf_sys::cudf_column_view_destroy(view) };
 }

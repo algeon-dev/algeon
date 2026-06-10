@@ -16,8 +16,8 @@ fn export_column_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void, O
     let options = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
+    let mut materialization: i32 =
+        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
 
     let status = unsafe {
         cudf_sys::cudf_arrow_device_column_export(view, &options, &mut schema, &mut array, &mut materialization)
@@ -36,8 +36,8 @@ fn export_table_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void, Ow
     let options = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
+    let mut materialization: i32 =
+        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
 
     let status = unsafe {
         cudf_sys::cudf_arrow_device_table_export(

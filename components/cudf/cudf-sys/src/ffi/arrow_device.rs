@@ -1,8 +1,7 @@
 use std::os::raw::{c_char, c_void};
 
 use crate::{
-    cudf_arrow_device_array_handle, cudf_arrow_device_export_materialization_t,
-    cudf_arrow_device_import_materialization_t, cudf_arrow_schema_handle, cudf_column_handle, cudf_column_view_handle,
+    cudf_arrow_device_array_handle, cudf_arrow_schema_handle, cudf_column_handle, cudf_column_view_handle,
     cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
@@ -20,7 +19,10 @@ extern "C" {
         options: *const cudf_exec_options_t,
         out_schema: *mut cudf_arrow_schema_handle,
         out_array: *mut cudf_arrow_device_array_handle,
-        out_materialization: *mut cudf_arrow_device_export_materialization_t,
+        // Raw `cudf_arrow_device_export_materialization_t` discriminant.
+        // Declared as `i32` so an unmirrored C-side value never materializes
+        // an invalid Rust enum; callers must validate before converting.
+        out_materialization: *mut i32,
     ) -> cudf_status_t;
 
     /// Export a table view through Arrow C Device ABI using strict explicit
@@ -36,7 +38,10 @@ extern "C" {
         num_column_names: i32,
         out_schema: *mut cudf_arrow_schema_handle,
         out_array: *mut cudf_arrow_device_array_handle,
-        out_materialization: *mut cudf_arrow_device_export_materialization_t,
+        // Raw `cudf_arrow_device_export_materialization_t` discriminant.
+        // Declared as `i32` so an unmirrored C-side value never materializes
+        // an invalid Rust enum; callers must validate before converting.
+        out_materialization: *mut i32,
     ) -> cudf_status_t;
 
     /// Import an Arrow C Device ABI column using strict explicit execution
@@ -50,7 +55,9 @@ extern "C" {
         array: cudf_arrow_device_array_handle,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
-        out_materialization: *mut cudf_arrow_device_import_materialization_t,
+        // Raw `cudf_arrow_device_import_materialization_t` discriminant; see
+        // the export note above.
+        out_materialization: *mut i32,
     ) -> cudf_status_t;
 
     /// Import an Arrow C Device ABI table using strict explicit execution
@@ -64,7 +71,9 @@ extern "C" {
         array: cudf_arrow_device_array_handle,
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
-        out_materialization: *mut cudf_arrow_device_import_materialization_t,
+        // Raw `cudf_arrow_device_import_materialization_t` discriminant; see
+        // the export note above.
+        out_materialization: *mut i32,
     ) -> cudf_status_t;
 
     pub fn cudf_arrow_device_schema_destroy(schema: cudf_arrow_schema_handle);

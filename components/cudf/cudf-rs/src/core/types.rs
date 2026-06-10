@@ -106,40 +106,56 @@ impl TypeId {
         }
     }
 
-    /// Convert from the raw FFI type_id enum, returning an error for unknown values.
-    pub(crate) fn from_raw(raw: cudf_sys::cudf_type_id_t) -> Result<Self> {
-        use cudf_sys::cudf_type_id_t::*;
-        match raw {
-            CUDF_TYPE_EMPTY => Ok(TypeId::Empty),
-            CUDF_TYPE_INT8 => Ok(TypeId::Int8),
-            CUDF_TYPE_INT16 => Ok(TypeId::Int16),
-            CUDF_TYPE_INT32 => Ok(TypeId::Int32),
-            CUDF_TYPE_INT64 => Ok(TypeId::Int64),
-            CUDF_TYPE_UINT8 => Ok(TypeId::UInt8),
-            CUDF_TYPE_UINT16 => Ok(TypeId::UInt16),
-            CUDF_TYPE_UINT32 => Ok(TypeId::UInt32),
-            CUDF_TYPE_UINT64 => Ok(TypeId::UInt64),
-            CUDF_TYPE_FLOAT32 => Ok(TypeId::Float32),
-            CUDF_TYPE_FLOAT64 => Ok(TypeId::Float64),
-            CUDF_TYPE_BOOL8 => Ok(TypeId::Bool8),
-            CUDF_TYPE_TIMESTAMP_DAYS => Ok(TypeId::TimestampDays),
-            CUDF_TYPE_TIMESTAMP_SECONDS => Ok(TypeId::TimestampSeconds),
-            CUDF_TYPE_TIMESTAMP_MILLISECONDS => Ok(TypeId::TimestampMilliseconds),
-            CUDF_TYPE_TIMESTAMP_MICROSECONDS => Ok(TypeId::TimestampMicroseconds),
-            CUDF_TYPE_TIMESTAMP_NANOSECONDS => Ok(TypeId::TimestampNanoseconds),
-            CUDF_TYPE_DURATION_DAYS => Ok(TypeId::DurationDays),
-            CUDF_TYPE_DURATION_SECONDS => Ok(TypeId::DurationSeconds),
-            CUDF_TYPE_DURATION_MILLISECONDS => Ok(TypeId::DurationMilliseconds),
-            CUDF_TYPE_DURATION_MICROSECONDS => Ok(TypeId::DurationMicroseconds),
-            CUDF_TYPE_DURATION_NANOSECONDS => Ok(TypeId::DurationNanoseconds),
-            CUDF_TYPE_DICTIONARY32 => Ok(TypeId::Dictionary32),
-            CUDF_TYPE_STRING => Ok(TypeId::String),
-            CUDF_TYPE_LIST => Ok(TypeId::List),
-            CUDF_TYPE_DECIMAL32 => Ok(TypeId::Decimal32),
-            CUDF_TYPE_DECIMAL64 => Ok(TypeId::Decimal64),
-            CUDF_TYPE_DECIMAL128 => Ok(TypeId::Decimal128),
-            CUDF_TYPE_STRUCT => Ok(TypeId::Struct),
-        }
+    /// Every mirrored type id, in discriminant order.
+    pub(crate) const ALL: [TypeId; 29] = [
+        TypeId::Empty,
+        TypeId::Int8,
+        TypeId::Int16,
+        TypeId::Int32,
+        TypeId::Int64,
+        TypeId::UInt8,
+        TypeId::UInt16,
+        TypeId::UInt32,
+        TypeId::UInt64,
+        TypeId::Float32,
+        TypeId::Float64,
+        TypeId::Bool8,
+        TypeId::TimestampDays,
+        TypeId::TimestampSeconds,
+        TypeId::TimestampMilliseconds,
+        TypeId::TimestampMicroseconds,
+        TypeId::TimestampNanoseconds,
+        TypeId::DurationDays,
+        TypeId::DurationSeconds,
+        TypeId::DurationMilliseconds,
+        TypeId::DurationMicroseconds,
+        TypeId::DurationNanoseconds,
+        TypeId::Dictionary32,
+        TypeId::String,
+        TypeId::List,
+        TypeId::Decimal32,
+        TypeId::Decimal64,
+        TypeId::Decimal128,
+        TypeId::Struct,
+    ];
+
+    /// Convert from a raw FFI type-id discriminant, returning an error for
+    /// unknown values.
+    ///
+    /// The raw value arrives as `i32` (not as the mirrored FFI enum) so a
+    /// libcudf type id this binding does not mirror yet stays a recoverable
+    /// error instead of materializing an invalid Rust enum value.
+    pub(crate) fn from_raw(raw: i32) -> Result<Self> {
+        Self::ALL.iter().copied().find(|id| id.to_raw() as i32 == raw).ok_or_else(|| {
+            error::foreign_invariant_violation(
+                "type_id::from_raw",
+                "libcudf returned a type id this binding does not mirror",
+                "type_id",
+                "unmirrored_foreign_type_id",
+                "upgrade cudf-rs to a version that mirrors this libcudf type id",
+            )
+            .with_detail("raw_type_id", raw.to_string())
+        })
     }
 
     /// Convert to the raw FFI type_id enum.
@@ -341,7 +357,7 @@ impl DataType {
         self.scale
     }
 
-    pub(crate) fn from_raw_parts(raw_id: cudf_sys::cudf_type_id_t, scale: i32) -> Result<Self> {
+    pub(crate) fn from_raw_parts(raw_id: i32, scale: i32) -> Result<Self> {
         let id = TypeId::from_raw(raw_id)?;
         Ok(if id.is_decimal() { Self::fixed_point(id, scale) } else { Self::new(id) })
     }
@@ -553,5 +569,31 @@ impl DataType {
             )?;
         }
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::error::ErrorCode;
+
+    #[test]
+    fn type_id_from_raw_round_trips_every_mirrored_discriminant() {
+        for id in TypeId::ALL {
+            assert_eq!(TypeId::from_raw(id.to_raw() as i32).unwrap(), id);
+        }
+    }
+
+    #[test]
+    fn type_id_from_raw_rejects_unmirrored_discriminants() {
+        // NUM_TYPE_IDS (one past the last mirrored id) is exactly what a newer
+        // libcudf would hand back for a type this binding does not mirror yet.
+        let one_past_last = TypeId::ALL.len() as i32;
+        for raw in [one_past_last, -1, i32::MAX] {
+            let err = TypeId::from_raw(raw).expect_err("unmirrored type id must be rejected");
+            assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
+            assert_eq!(err.operation(), "type_id::from_raw");
+            assert_eq!(err.detail_value("raw_type_id"), Some(raw.to_string().as_str()));
+        }
     }
 }

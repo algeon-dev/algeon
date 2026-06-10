@@ -564,7 +564,9 @@ impl Scalar {
 
     /// Returns the data type of this scalar.
     pub fn data_type(&self) -> Result<DataType> {
-        let mut raw_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+        // Raw discriminant: validated by `DataType::from_raw_parts` so an
+        // unmirrored libcudf type id stays a recoverable error, not UB.
+        let mut raw_id: i32 = 0;
         let mut scale = 0;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(

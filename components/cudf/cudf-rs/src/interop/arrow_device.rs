@@ -112,29 +112,42 @@ impl DeviceArrowDeviceType {
     }
 }
 
-fn export_materialization_from_raw(
-    raw: cudf_sys::cudf_arrow_device_export_materialization_t,
-) -> DeviceArrowExportMaterialization {
-    match raw {
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW => {
-            DeviceArrowExportMaterialization::ProducerRetainedView
-        },
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY => {
-            DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy
-        },
+// The materialization out-params cross the FFI as raw `i32` discriminants so
+// an unmirrored C-side value never materializes an invalid Rust enum; these
+// converters perform the actual validation.
+fn export_materialization_from_raw(raw: i32, operation: &'static str) -> Result<DeviceArrowExportMaterialization> {
+    use cudf_sys::cudf_arrow_device_export_materialization_t as Raw;
+    if raw == Raw::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32 {
+        Ok(DeviceArrowExportMaterialization::ProducerRetainedView)
+    } else if raw == Raw::CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY as i32 {
+        Ok(DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy)
+    } else {
+        Err(foreign_metadata_violation(
+            operation,
+            "Arrow device export reported a materialization this binding does not mirror",
+            "export_materialization",
+            "unmirrored_export_materialization",
+            "upgrade cudf-rs to a version that mirrors this export materialization",
+        )
+        .with_detail("raw_materialization", raw.to_string()))
     }
 }
 
-fn import_materialization_from_raw(
-    raw: cudf_sys::cudf_arrow_device_import_materialization_t,
-) -> DeviceArrowImportMaterialization {
-    match raw {
-        cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW => {
-            DeviceArrowImportMaterialization::ForeignRetainedView
-        },
-        cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY => {
-            DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy
-        },
+fn import_materialization_from_raw(raw: i32, operation: &'static str) -> Result<DeviceArrowImportMaterialization> {
+    use cudf_sys::cudf_arrow_device_import_materialization_t as Raw;
+    if raw == Raw::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32 {
+        Ok(DeviceArrowImportMaterialization::ForeignRetainedView)
+    } else if raw == Raw::CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY as i32 {
+        Ok(DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy)
+    } else {
+        Err(foreign_metadata_violation(
+            operation,
+            "Arrow device import reported a materialization this binding does not mirror",
+            "import_materialization",
+            "unmirrored_import_materialization",
+            "upgrade cudf-rs to a version that mirrors this import materialization",
+        )
+        .with_detail("raw_materialization", raw.to_string()))
     }
 }
 
@@ -865,8 +878,8 @@ fn export_device_arrow_column_from_view(
         column_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
+    let mut materialization: i32 =
+        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
 
     error::check_status_in(
         unsafe {
@@ -881,8 +894,10 @@ fn export_device_arrow_column_from_view(
         operation,
     )?;
 
-    let export_materialization =
-        reported_materialization.unwrap_or_else(|| export_materialization_from_raw(materialization));
+    // Always validate the C-written discriminant, even when the caller
+    // supplies the reported materialization for the API surface.
+    let ffi_materialization = export_materialization_from_raw(materialization, operation)?;
+    let export_materialization = reported_materialization.unwrap_or(ffi_materialization);
     let import_materialization = foreign_import_materialization_for_column_view(view)?;
     let inner = Arc::new(DeviceArrowAbiRootInner {
         schema: error::require_non_null(schema, operation, "ArrowSchema")?,
@@ -908,8 +923,8 @@ fn export_device_arrow_table_from_view(
         table_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
+    let mut materialization: i32 =
+        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
     let (raw_names_ptr, raw_names_len) = match raw_names {
         Some(raw_names) => (
             raw_names.as_ptr(),
@@ -934,8 +949,10 @@ fn export_device_arrow_table_from_view(
         operation,
     )?;
 
-    let export_materialization =
-        reported_materialization.unwrap_or_else(|| export_materialization_from_raw(materialization));
+    // Always validate the C-written discriminant, even when the caller
+    // supplies the reported materialization for the API surface.
+    let ffi_materialization = export_materialization_from_raw(materialization, operation)?;
+    let export_materialization = reported_materialization.unwrap_or(ffi_materialization);
     let import_materialization = foreign_import_materialization_for_table_view(view)?;
     let inner = Arc::new(DeviceArrowAbiRootInner {
         schema: error::require_non_null(schema, operation, "ArrowSchema")?,
@@ -1557,8 +1574,8 @@ impl Column {
 
         let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();
-        let mut materialization =
-            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
+        let mut materialization: i32 =
+            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
 
         error::check_status_in(
             unsafe {
@@ -1589,7 +1606,10 @@ impl Column {
             .with_query_stage(QueryStageKind::InteropImport),
         );
 
-        debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
+        // Underscore-prefixed: only read by the debug assertion, but the
+        // validation itself must run in release builds too.
+        let _imported_materialization = import_materialization_from_raw(materialization, operation)?;
+        debug_assert_eq!(_imported_materialization, input.materialization());
         Ok(column)
     }
 }
@@ -1623,8 +1643,8 @@ impl Table {
 
         let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();
-        let mut materialization =
-            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
+        let mut materialization: i32 =
+            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
 
         error::check_status_in(
             unsafe {
@@ -1653,7 +1673,10 @@ impl Table {
         };
         record_boundary_observation_in_domain(runtime.execution_domain(), observation);
 
-        debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
+        // Underscore-prefixed: only read by the debug assertion, but the
+        // validation itself must run in release builds too.
+        let _imported_materialization = import_materialization_from_raw(materialization, operation)?;
+        debug_assert_eq!(_imported_materialization, input.materialization());
         Ok(columns)
     }
 }

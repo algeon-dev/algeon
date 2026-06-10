@@ -15,10 +15,10 @@ use crate::{
 fn read_bool8_column_data(col: *mut c_void) -> Vec<u8> {
     let view = make_column_view(col);
 
-    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
     let status = unsafe { cudf_sys::cudf_column_view_type(view, &mut type_id) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8);
+    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8 as i32);
 
     let mut size = 0;
     let status = unsafe { cudf_sys::cudf_column_view_size(view, &mut size) };
@@ -676,11 +676,11 @@ fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
     assert!(!out.is_null());
 
     let view = make_column_view(out);
-    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
     let mut scale = 0;
     let status = unsafe { cudf_sys::cudf_column_view_data_type(view, &mut type_id, &mut scale) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128);
+    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128 as i32);
     assert_eq!(scale, -2);
 
     unsafe {

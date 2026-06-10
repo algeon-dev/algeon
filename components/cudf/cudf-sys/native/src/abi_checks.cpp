@@ -2,6 +2,7 @@
 // Rust declares FFI enums with `#[repr(i32)]`, so the C/C++ shim must keep
 // them 32-bit and preserve the discriminants expected by Rust.
 
+#include "arrow_device.h"
 #include "ast.h"
 #include "binary.h"
 #include "copying.h"
@@ -67,6 +68,14 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
 static_assert(sizeof(cudf_strip_side_t) == sizeof(int32_t), "cudf_strip_side_t must be 32-bit");
+static_assert(sizeof(cudf_arrow_device_export_materialization_t) == sizeof(int32_t),
+              "cudf_arrow_device_export_materialization_t must be 32-bit");
+static_assert(sizeof(cudf_arrow_device_import_materialization_t) == sizeof(int32_t),
+              "cudf_arrow_device_import_materialization_t must be 32-bit");
+static_assert(CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW == 0);
+static_assert(CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
+static_assert(CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW == 0);
+static_assert(CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
 static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
@@ -143,6 +152,7 @@ static_assert(CUDF_ERROR_INDEX == 7);
 static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
+static_assert(CUDF_ERROR_UNSUPPORTED == 11);
 
 static_assert(CUDF_AST_TABLE_REFERENCE_LEFT == static_cast<int>(cudf::ast::table_reference::LEFT));
 static_assert(CUDF_AST_TABLE_REFERENCE_RIGHT ==
@@ -208,6 +218,11 @@ static_assert(CUDF_TYPE_DECIMAL32 == static_cast<int>(cudf::type_id::DECIMAL32))
 static_assert(CUDF_TYPE_DECIMAL64 == static_cast<int>(cudf::type_id::DECIMAL64));
 static_assert(CUDF_TYPE_DECIMAL128 == static_cast<int>(cudf::type_id::DECIMAL128));
 static_assert(CUDF_TYPE_STRUCT == static_cast<int>(cudf::type_id::STRUCT));
+// Exhaustiveness pin: if libcudf adds a type id, this fails the build so the
+// new value gets mirrored in types.h, cudf-sys/src/types.rs, and
+// TypeId::from_raw before any column metadata read can observe it.
+static_assert(static_cast<int>(cudf::type_id::NUM_TYPE_IDS) == CUDF_TYPE_STRUCT + 1,
+              "libcudf added a cudf::type_id value that is not mirrored in the FFI enums");
 
 static_assert(CUDF_ORDER_ASCENDING == static_cast<int>(cudf::order::ASCENDING));
 static_assert(CUDF_ORDER_DESCENDING == static_cast<int>(cudf::order::DESCENDING));
