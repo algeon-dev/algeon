@@ -173,10 +173,11 @@ impl FilteredJoin {
     /// Return exact device bytes that must be reserved before building a
     /// reusable filtered-join artifact from this right-side build key table.
     ///
-    /// This is a planning contract for bounded engines. libcudf does not
-    /// expose a formula-only filtered-join sizing entry point, so the FFI shim
-    /// builds the artifact against an observing memory resource, reports the
-    /// retained bytes, and immediately releases it.
+    /// This is a planning contract for bounded engines, computed from
+    /// libcudf's formula-only sizing entry point
+    /// (`cudf::filtered_join::pre_build_reservation_size`): hash-table bucket
+    /// storage plus the flat preprocessed device view of the build table. No
+    /// join artifact is constructed to answer the query.
     pub fn pre_build_reservation_size_bytes(build: &Table, options: FilteredJoinOptions) -> Result<usize> {
         let ctx = ExecutionOverrides::new();
         Self::pre_build_reservation_size_bytes_in(build, options, &ctx)

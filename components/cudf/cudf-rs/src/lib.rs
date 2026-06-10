@@ -111,6 +111,47 @@
 //! [`interop::arrow_device`] is the Arrow C Device ABI path for
 //! device-backed interop.
 //!
+//! # Concurrency Model: Device Memory Domains
+//!
+//! cudf-rs is built for multi-GPU nodes running independent per-device work,
+//! with several data pipelines sharing each GPU. Three layers carry the
+//! model, and none of them takes a host-side lock around GPU work:
+//!
+//! - **Device domain** — each CUDA device gets exactly one memory domain
+//!   (cuda resource → pool → reservation-aware adaptor). The adaptor is
+//!   installed as RMM's per-device current resource when the domain is
+//!   created and **never changes afterwards**. libcudf temporaries
+//!   deliberately resolve through this long-lived adaptor and are accounted
+//!   to the stream they allocate on. Device domains share no allocator or
+//!   pool state with one another; the only cross-device state is a
+//!   registry-lookup lock that never spans GPU work. cudf-rs owns the
+//!   memory management of the devices it uses;
+//!   services should claim devices explicitly at startup via
+//!   [`DeviceMemoryManager::install_for_device`].
+//! - **Pipeline** — one pipeline = one [`Runtime`] (its own CUDA stream),
+//!   plus a [`StreamReservationLease`] when the pipeline needs a memory
+//!   budget. Pipelines on the same device share the physical pool and are
+//!   partitioned logically by reservation accounting. Anti-pattern: do
+//!   **not** share one `Runtime` across pipelines — they would serialize on
+//!   its stream and their budget accounting would blur together.
+//! - **Operation** — every operation executes with explicit
+//!   device + stream + memory resource. The memory resource governs
+//!   **outputs only**, exactly like upstream libcudf's `mr` parameter;
+//!   temporaries belong to the device domain and are charged to the
+//!   operation's stream.
+//!
+//! ```no_run
+//! use cudf::{DeviceId, DeviceMemoryManager, Runtime};
+//!
+//! // Service startup: one explicit memory-domain install per device.
+//! DeviceMemoryManager::install_for_device(DeviceId::new(0).unwrap()).unwrap();
+//!
+//! // Each pipeline: its own Runtime (own stream) + a budget reservation.
+//! let rt = Runtime::builder().build().unwrap();
+//! let lease = rt.stream_reservation(/* pipeline id */ 7, /* bytes */ 1 << 30).unwrap();
+//! # drop(lease);
+//! ```
+//!
 //! # Stream Synchronization Strategy
 //!
 //! Every owned GPU object ([`core::Column`], [`core::Table`], [`DataFrame`],
@@ -127,11 +168,14 @@
 //! [`Runtime`] instances are combined by data operations that can safely
 //! reassemble onto one output domain (for example `merge`, `concat`,
 //! gather/filter-style row ops, and scalar/column replacement paths),
-//! cudf-rs automatically inserts a device-side CUDA event barrier from each
-//! secondary input stream into the authoritative output stream
-//! (`cudaEventRecord` + `cudaStreamWaitEvent`) before the operation
-//! proceeds. This preserves correctness without blocking the calling CPU
-//! thread.
+//! cudf-rs automatically inserts device-side CUDA event ordering in both
+//! directions (`cudaEventRecord` + `cudaStreamWaitEvent`): before the
+//! operation, the output stream waits for work already enqueued on each
+//! input's retained stream; after the operation is enqueued, each
+//! cross-stream input's retained stream waits for the operation's completion
+//! event, so dropping an input can never release its buffers under a
+//! consumer that is still reading them. Neither direction blocks the calling
+//! CPU thread.
 //!
 //! **Mixed-provenance structural operations:** Schema-changing operations
 //! that retain incoming columns as-is, such as [`DataFrame::with_column`] and

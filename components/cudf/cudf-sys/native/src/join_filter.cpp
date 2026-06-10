@@ -41,13 +41,19 @@ cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_h
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
-  cudf_filtered_join_handle handle = nullptr;
-  cudf_status_t const status = filtered_join_create_impl(build, null_equality, load_factor, &handle, options);
-  if (status != CUDF_SUCCESS) { return status; }
-  auto* owner = static_cast<filtered_join_owner*>(handle);
-  *out        = owner->device_allocated_size_bytes;
-  cudf_filtered_join_destroy(handle);
-  return CUDF_SUCCESS;
+  CUDF_RUST_NULL_CHECK(build, "build is null");
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+    (void)null_equality;
+
+    auto* build_view = static_cast<cudf::table_view*>(build);
+    *out = cudf::filtered_join::pre_build_reservation_size(*build_view, load_factor);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 
 void cudf_filtered_join_destroy(cudf_filtered_join_handle handle)

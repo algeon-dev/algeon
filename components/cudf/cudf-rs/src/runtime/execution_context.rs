@@ -39,6 +39,12 @@ impl<'a> ExecutionOverrides<'a> {
 
     /// Override the effective memory resource for one operation.
     ///
+    /// **Outputs-only semantics** (matching upstream libcudf's `mr`
+    /// parameter): the override receives the operation's output allocations.
+    /// libcudf temporaries resolve through the device's long-lived memory
+    /// domain and are accounted to the operation's stream; for budgeting,
+    /// attach a stream reservation instead of overriding the resource.
+    ///
     /// `mr` must have been created on the same CUDA device as the primary
     /// input runtime, or the operation fails with a runtime-binding mismatch.
     /// This borrow does not replace the runtime's owned default allocator for

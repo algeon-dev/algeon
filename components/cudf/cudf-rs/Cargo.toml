@@ -11,6 +11,14 @@ keywords = ["cuda", "cudf", "dataframe", "gpu", "rapids"]
 categories = ["api-bindings", "science"]
 autoexamples = false
 
+[[example]]
+name = "dual_pipeline_bench"
+path = "examples/dual_pipeline_bench.rs"
+
+[[example]]
+name = "io_flake_repro"
+path = "examples/io_flake_repro.rs"
+
 [dependencies]
 cudf-sys.workspace = true
 rapids-interop.workspace = true
