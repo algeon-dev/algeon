@@ -57,7 +57,12 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
-    if source.read_columns.is_empty() && !source.is_zero_column_count_source() && source.missing_columns.is_empty() {
+    if source.read_columns.is_empty()
+        && !source.is_zero_column_count_source()
+        && !source.is_count_star_probe_source()
+        && source.missing_columns.is_empty()
+        && source.partition_columns.is_empty()
+    {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.local_parquet_source.validate",
@@ -65,13 +70,13 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         )
         .with_fact("reason", "empty_read_columns"));
     }
-    if source.read_columns.is_empty() && !source.missing_columns.is_empty() {
+    if source.read_columns.is_empty() && (!source.missing_columns.is_empty() || !source.partition_columns.is_empty()) {
         for (file_index, file) in source.files.iter().enumerate() {
             if file.row_group_rows.is_none() {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "nexus_query_engine.local_parquet_source.validate",
-                    "local parquet source with only missing columns requires row-count metadata",
+                    "local parquet source with only synthetic columns requires row-count metadata",
                 )
                 .with_fact("reason", "missing_row_count_metadata")
                 .with_fact("file_index", file_index)
@@ -93,6 +98,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     }
 
     validate_local_parquet_source_contract(source)?;
+    validate_count_star_probe_source(source)?;
 
     for projected_column in &source.projected_output_columns {
         if source.source_column_ref(projected_column).is_none() {
@@ -149,6 +155,37 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
+    Ok(())
+}
+
+fn validate_count_star_probe_source(source: &LocalParquetSource) -> Result<()> {
+    if !source.is_count_star_probe_source() {
+        return Ok(());
+    }
+    if source.output_schema_override.is_none()
+        || source.output_schema().field_with_name(ZERO_COLUMN_COUNT_COLUMN).is_err()
+        || source.read_columns.is_empty()
+        || !source.projected_output_columns.is_empty()
+        || source.pure_filter_columns.len() != source.read_columns.len()
+        || source.reader_predicate.is_some()
+        || source.scan_limit.is_some()
+        || !source.partition_columns.is_empty()
+        || !source.missing_columns.is_empty()
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.validate",
+            "count-star probe source must read carrier columns and expose only the row-count weight column",
+        )
+        .with_fact("reason", "invalid_count_star_probe_contract")
+        .with_fact("read_columns", source.read_columns.len())
+        .with_fact("projected_output_columns", source.projected_output_columns.len())
+        .with_fact("pure_filter_columns", source.pure_filter_columns.len())
+        .with_fact("reader_predicate", source.reader_predicate.is_some())
+        .with_fact("scan_limit", source.scan_limit.is_some())
+        .with_fact("partition_columns", source.partition_columns.len())
+        .with_fact("missing_columns", source.missing_columns.len()));
+    }
     Ok(())
 }
 

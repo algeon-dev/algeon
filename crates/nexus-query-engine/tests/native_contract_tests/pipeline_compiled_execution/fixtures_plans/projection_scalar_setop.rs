@@ -60,6 +60,129 @@ pub(super) fn projection_root_setop_distinct_aggregate_plan() -> QueryPlan {
 }
 
 #[allow(dead_code)]
+pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+    let count_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-left-anti-count-left.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into(), "value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-left-anti-count-right.parquet",
+        right_schema,
+        vec!["id".into()],
+    )));
+    let anti = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftAnti,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        left_schema,
+    );
+    let count_input = builder
+        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema));
+    let count = builder.add_aggregate(
+        count_input,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
+        ),
+        Arc::clone(&count_schema),
+    );
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema));
+    builder.finish_with_host_sink(projection)
+}
+
+#[allow(dead_code)]
+pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("vendor", DataType::Utf8, true),
+        Field::new("score", DataType::Float64, true),
+    ]));
+    let grouped_schema = Arc::new(Schema::new(vec![
+        Field::new("vendor", DataType::Utf8, true),
+        Field::new("avg_score", DataType::Float64, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("score", DataType::Float64, true),
+        Field::new("avg_score", DataType::Float64, true),
+    ]));
+    let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+    let count_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-scalar-join-grouped-avg-left.parquet",
+        Arc::clone(&left_schema),
+        vec!["vendor".into(), "score".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-scalar-join-grouped-avg-right.parquet",
+        Arc::clone(&left_schema),
+        vec!["vendor".into(), "score".into()],
+    )));
+    let grouped = builder.add_aggregate(
+        right,
+        AggregateSpec::new(
+            vec![Expr::column("vendor")],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("score"), "avg_score")],
+        ),
+        Arc::clone(&grouped_schema),
+    );
+    let join = builder.add_join(
+        left,
+        grouped,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "vendor", "left_vendor"),
+                ColumnRef::input(1, "vendor", "right_vendor"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "score", "score"), "score"),
+            JoinOutputColumn::right(ColumnRef::input(1, "avg_score", "avg_score"), "avg_score"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let filtered = builder.add_filter(
+        join,
+        Expr::binary(Expr::column("score"), BinaryOp::Gt, Expr::column("avg_score")),
+        join_schema,
+    );
+    let count_input = builder.add_projection(
+        filtered,
+        projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema),
+    );
+    let count = builder.add_aggregate(
+        count_input,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
+        ),
+        Arc::clone(&count_schema),
+    );
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema));
+    builder.finish_with_host_sink(projection)
+}
+
+#[allow(dead_code)]
 pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),

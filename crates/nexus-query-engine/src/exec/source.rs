@@ -122,7 +122,7 @@ fn read_cacheable_local_parquet_source(
 
     let key = GpuLocalParquetSourceCacheKey::from_source(source);
     let lookup_timer = Instant::now();
-    let cached = cache.get(&key, context, &source.schema)?;
+    let cached = cache.get(&key, context, source.output_schema())?;
     metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
     if let Some((handle, _retained_device_bytes)) = cached {
         metrics.record_source_cache_hit(cache.retained_device_bytes()?);
@@ -132,7 +132,7 @@ fn read_cacheable_local_parquet_source(
     metrics.record_source_cache_miss(cache.retained_device_bytes()?);
     let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
     let retained_device_bytes = frame.device_allocated_size_bytes()?;
-    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
+    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(source.output_schema()))?;
     match cache.insert_if_absent(key, handle, retained_device_bytes)? {
         GpuLocalParquetSourceCacheInsert::Inserted => {
             metrics.record_source_cache_insert(cache.retained_device_bytes()?);
@@ -206,10 +206,19 @@ fn read_local_parquet_source_uncached(
             record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
             frame
         };
+        if source.is_count_star_probe_source() {
+            let row_count = frame.num_rows() as u64;
+            let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
+            let frame = append_source_order_columns(context, frame, file_index)?;
+            frames.push(frame);
+            continue;
+        }
         let frame = if file.resolved_source.uses_host_buffer() && !columns.is_empty() {
             frame
         } else {
-            let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
+            let frame =
+                inject_partition_columns(context, source, &file.partition_values, frame, row_count_override, metrics)?
+                    .into_frame();
             materialize_missing_columns(context, source, frame, row_count_override, metrics)?
         };
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
@@ -302,6 +311,14 @@ fn read_object_store_parquet_source_with_fetch_pipeline(
             metrics,
         )?;
         record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
+        if source.is_count_star_probe_source() {
+            let row_count = frame.num_rows() as u64;
+            let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
+            let frame = append_source_order_columns(context, frame, file_index)?;
+            frames.push(frame);
+            start_object_store_file_fetches(context, source, max_in_flight, &mut next_file_index, &mut pending)?;
+            continue;
+        }
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = append_source_order_columns(context, frame, file_index)?;
         frames.push(frame);
@@ -534,6 +551,21 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value().into_frame();
+    if source.is_count_star_probe_source() {
+        let row_count = frame.num_rows() as u64;
+        record_source_chunk_read_runtime(
+            source,
+            chunk,
+            observed_row_group_count,
+            row_count,
+            read_elapsed,
+            reader_dynamic_filter_count,
+            &host_buffer_fetch,
+            read_evidence.as_ref(),
+            metrics,
+        );
+        return count_star_probe_weight_frame(context, row_count, true, metrics);
+    }
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
@@ -557,6 +589,43 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         metrics,
     );
     metrics.record_input_batch(frame.num_rows() as u64);
+    Ok(GpuDataFrame::new(frame))
+}
+
+fn count_star_probe_weight_frame(
+    context: &ExecutionContext,
+    row_count: u64,
+    record_input_rows: bool,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let count = i64::try_from(row_count).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.count_star_probe",
+            "parquet row count exceeds native Int64 count representation",
+        )
+        .with_fact("row_count", row_count)
+        .with_fact("max_row_count", i64::MAX)
+    })?;
+    let timer = Instant::now();
+    let series = context.runtime().series(&[count]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.count_star_probe",
+            "failed to construct native count-star probe weight input",
+            error,
+        )
+    })?;
+    let frame = DataFrame::from_series([(crate::source::ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.count_star_probe",
+            "failed to construct native count-star probe weight frame",
+            error,
+        )
+    })?;
+    metrics.source_read_time += timer.elapsed();
+    if record_input_rows {
+        metrics.record_input_batch(row_count);
+    }
     Ok(GpuDataFrame::new(frame))
 }
 
@@ -664,6 +733,23 @@ pub(super) fn read_local_parquet_chunk_batch(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value().into_frame();
+    if source.is_count_star_probe_source() {
+        let row_count = frame.num_rows() as u64;
+        record_source_chunk_batch_read_runtime(
+            source,
+            batch,
+            "chunk_batch",
+            row_count,
+            read_elapsed,
+            reader_dynamic_filter_count,
+            read_evidence.as_ref(),
+            metrics,
+        );
+        let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+        let frame = count_star_probe_weight_frame(context, row_count, true, metrics)?.into_frame();
+        let frame = append_source_order_columns(context, frame, first_chunk.chunk_index)?;
+        return Ok(GpuDataFrame::new(frame));
+    }
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     record_source_chunk_batch_read_runtime(
         source,

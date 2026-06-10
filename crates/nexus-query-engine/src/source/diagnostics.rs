@@ -132,7 +132,10 @@ impl SourceDiagnostics {
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
         let selected_row_group_stats = selected_row_group_stats_for_files(files);
-        let zero_column_count_disposition = if columns.read_columns.is_empty() && columns.missing_columns.is_empty() {
+        let zero_column_count_disposition = if columns.read_columns.is_empty()
+            && columns.missing_columns.is_empty()
+            && columns.partition_columns.is_empty()
+        {
             ZeroColumnCountDisposition::Rejected
         } else {
             ZeroColumnCountDisposition::NotRequired

@@ -119,12 +119,18 @@ pub(in crate::capability) fn projection_scalar_setop_shape_decision(
     {
         ProjectionScalarSetopKind::ScalarFanout
     } else if !left_anti_join_ids.is_empty()
+        && !grouped_dedup_aggregate_ids.is_empty()
         && projection_scalar_setop_has_final_scalar_aggregate(plan, final_projection.input)
     {
         ProjectionScalarSetopKind::SetopDedupScalar
+    } else if projection_scalar_setop_has_final_scalar_aggregate(plan, final_projection.input)
+        && projection_scalar_setop_has_grouped_aggregate_input(plan, &aggregate_ids, &scalar_aggregate_ids)
+        && !join_ids.is_empty()
+    {
+        ProjectionScalarSetopKind::ScalarJoinGroupedAggregateInput
     } else if scalar_aggregate_ids.len() == aggregate_ids.len() && join_ids.len() > 1 {
         ProjectionScalarSetopKind::ScalarJoinAggregateInput
-    } else if !left_anti_join_ids.is_empty() || !grouped_dedup_aggregate_ids.is_empty() {
+    } else if !left_anti_join_ids.is_empty() && !grouped_dedup_aggregate_ids.is_empty() {
         ProjectionScalarSetopKind::SetopDedupInput
     } else if !keyless_or_cross_join_ids.is_empty() {
         ProjectionScalarSetopKind::KeylessOrCrossJoinInput
@@ -154,7 +160,7 @@ fn projection_scalar_setop_input_kind(
             [("final_projection_id", final_projection_id.to_string())],
         ));
     }
-    if !components.left_anti_join_ids.is_empty() {
+    if !components.left_anti_join_ids.is_empty() && !components.grouped_dedup_aggregate_ids.is_empty() {
         return Ok(ProjectionScalarSetopKind::SetopDedupInput);
     }
     if !components.keyless_or_cross_join_ids.is_empty() {
@@ -270,6 +276,23 @@ fn projection_scalar_setop_has_final_scalar_aggregate(plan: &QueryPlan, mut curr
             _ => return false,
         }
     }
+}
+
+fn projection_scalar_setop_has_grouped_aggregate_input(
+    plan: &QueryPlan,
+    aggregate_ids: &[NodeId],
+    scalar_aggregate_ids: &[NodeId],
+) -> bool {
+    aggregate_ids.iter().any(|aggregate_id| {
+        !scalar_aggregate_ids.contains(aggregate_id)
+            && matches!(
+                plan.node(*aggregate_id).map(|node| &node.kind),
+                Some(PlanNode::Aggregate(aggregate))
+                    if !aggregate.spec.group_exprs.is_empty()
+                        && aggregate.spec.grouping_sets.is_none()
+                        && !aggregate.spec.aggr_exprs.is_empty()
+            )
+    })
 }
 
 fn node_ids_fact(node_ids: &[NodeId]) -> String {

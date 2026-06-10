@@ -390,6 +390,28 @@ fn local_parquet_source_represents_partition_columns_as_synthetic_source_columns
 }
 
 #[test]
+fn local_parquet_source_allows_partition_only_columns_with_row_count_metadata() {
+    let schema = Arc::new(Schema::new(vec![Field::new("part", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/source-contract.parquet")
+                .with_partition_values(vec![LiteralValue::Int32(7)])
+                .with_row_group_rows(vec![3]),
+        ],
+        schema,
+        Vec::new(),
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)])
+    .with_column_roles(vec!["part".to_string()], Vec::new());
+
+    validate_local_parquet_source(&source).unwrap();
+    assert_eq!(source.read_columns, Vec::<String>::new());
+    assert_eq!(source.partition_column_count(), 1);
+    assert_eq!(source.projected_output_column_source_refs, vec![SourceColumnRef::Partition(0)]);
+    assert!(source.diagnostics.rejected_features.is_empty());
+}
+
+#[test]
 fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),

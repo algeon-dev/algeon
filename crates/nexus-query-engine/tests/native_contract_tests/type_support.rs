@@ -57,3 +57,16 @@ fn decimal128_cast_support_uses_type_support_policy() {
     assert!(!is_supported_arrow_cast(&valid_source, &invalid_decimal));
     assert!(!is_supported_arrow_cast(&float64_source, &invalid_decimal));
 }
+
+#[test]
+fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
+    let float64_source = DataType::Float64;
+    let int64_target = DataType::Int64;
+    let int32_target = DataType::Int32;
+    let float32_source = DataType::Float32;
+
+    assert!(is_supported_arrow_cast(&float64_source, &int64_target));
+    assert!(!is_supported_arrow_implicit_cast(&float64_source, &int64_target));
+    assert!(!is_supported_arrow_cast(&float64_source, &int32_target));
+    assert!(!is_supported_arrow_cast(&float32_source, &int64_target));
+}

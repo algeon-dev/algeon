@@ -70,6 +70,8 @@ pub(in crate::capability) enum ProjectionScalarSetopKind {
     SetopDedupScalar,
     /// A scalar aggregate over a multi-join input is present, but child cardinality is not yet modeled.
     ScalarJoinAggregateInput,
+    /// A scalar aggregate consumes a keyed join with a grouped aggregate input.
+    ScalarJoinGroupedAggregateInput,
     /// Keyless/cross join work is present, but its scalar output proof is not yet modeled.
     KeylessOrCrossJoinInput,
     /// Setop/dedup input work is present, but its final scalar proof is not yet modeled.
@@ -82,6 +84,7 @@ impl ProjectionScalarSetopKind {
             Self::ScalarFanout => "scalar_fanout",
             Self::SetopDedupScalar => "setop_dedup_scalar",
             Self::ScalarJoinAggregateInput => "scalar_join_aggregate_input",
+            Self::ScalarJoinGroupedAggregateInput => "scalar_join_grouped_aggregate_input",
             Self::KeylessOrCrossJoinInput => "keyless_or_cross_join_input",
             Self::SetopDedupInput => "setop_dedup_input",
         }

@@ -73,6 +73,7 @@ pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowD
         || is_supported_decimal_to_float64_cast(source_type, target_type)
         || is_supported_numeric_to_decimal_cast(source_type, target_type)
         || is_supported_decimal_to_integral_cast(source_type, target_type)
+        || is_supported_float64_to_int64_cast(source_type, target_type)
 }
 
 /// Returns whether the native engine may insert or preserve an implicit cast.
@@ -169,6 +170,10 @@ fn is_supported_decimal_to_integral_cast(source_type: &ArrowDataType, target_typ
         ) => is_supported_decimal128(*source_precision, 0),
         _ => false,
     }
+}
+
+fn is_supported_float64_to_int64_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    matches!((source_type, target_type), (ArrowDataType::Float64, ArrowDataType::Int64))
 }
 
 fn is_supported_decimal128(precision: u8, scale: i8) -> bool {

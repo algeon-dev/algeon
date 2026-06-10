@@ -193,6 +193,98 @@ fn native_query_executes_bitwise_scalar_expressions() {
 }
 
 #[test]
+fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semantics() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-f64-i64-cast");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Float64Array::from(vec![Some(1.9), Some(-1.9), None, Some(0.0)]))],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let output_schema = Arc::new(Schema::new(vec![Field::new("score_i", DataType::Int64, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["score".to_string()],
+    );
+    let projection = vec![Expr::cast(Expr::column("score"), DataType::Int64).alias("score_i")];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let values = int64_array(batch, 0);
+    assert_eq!(values.value(0), 1);
+    assert_eq!(values.value(1), -1);
+    assert!(values.is_null(2));
+    assert_eq!(values.value(3), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-f64-i64-cast-invalid");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Float64Array::from(vec![Some(f64::NAN), Some(f64::INFINITY), Some(1.0e40)]))],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let output_schema = Arc::new(Schema::new(vec![Field::new("score_i", DataType::Int64, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["score".to_string()],
+    );
+    let projection = vec![Expr::cast(Expr::column("score"), DataType::Int64).alias("score_i")];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("invalid Float64 -> Int64 casts must fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(
+            error.code(),
+            QueryErrorCode::CudfInvalidInput
+                | QueryErrorCode::CudfUnsupported
+                | QueryErrorCode::CudfPersistentFailure
+                | QueryErrorCode::CudfInvariantViolation
+        ),
+        "invalid Float64 -> Int64 cast should be rejected by the native cast contract, got {error:?}",
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_regexp_replace_projection_with_backrefs() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-regexp-replace");
     let path = dir.join("referers.parquet");

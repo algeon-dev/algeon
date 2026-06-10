@@ -1037,6 +1037,14 @@ fn push_schema(output: &mut String, schema: &SchemaRef) {
 
 fn push_source_scan_contract(output: &mut String, source: &LocalParquetSource) {
     push_schema(output, &source.schema);
+    push_token(output, "count_star_probe", source.is_count_star_probe_source().to_string());
+    match &source.output_schema_override {
+        Some(schema) => {
+            push_token(output, "output_schema_override", "some");
+            push_schema(output, schema);
+        },
+        None => push_token(output, "output_schema_override", "none"),
+    }
     push_string_vec(output, "read_columns", &source.read_columns);
     push_usize_vec(output, "read_column_file_indices", &source.read_column_file_indices);
     push_string_vec(output, "projected_output_columns", &source.projected_output_columns);
