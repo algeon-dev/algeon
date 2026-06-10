@@ -324,11 +324,30 @@ unsafe extern "C" fn release_owned_arrow_schema(schema: *mut ArrowSchema) {
     }
 
     let state = (*schema).private_data.cast::<DeviceArrowAbiTransferState>();
-    if !state.is_null() {
-        (*schema).release = (*state).schema_release;
-        (*schema).private_data = (*state).schema_private_data;
+    if state.is_null() {
+        return;
     }
-    cudf_sys::cudf_arrow_device_schema_destroy(schema.cast());
+    // Restore the producer's release/private_data on whatever struct the
+    // consumer is releasing (possibly the consumer's own moved copy) and run
+    // it in place. The Arrow C Data Interface forbids the release callback
+    // from freeing the struct itself: spec-compliant consumers move the
+    // struct into their own storage, so the pointer passed here need not be
+    // the bridge's heap allocation.
+    (*schema).release = (*state).schema_release;
+    (*schema).private_data = (*state).schema_private_data;
+    if let Some(release) = (*schema).release {
+        release(schema);
+    }
+    if (*schema).release.is_some() {
+        // The producer declined to run cleanup now and re-installed itself
+        // for retry. Re-wrap so a consumer retry routes back through this
+        // owned-ABI shim, and keep the shared transfer state alive.
+        (*state).schema_release = (*schema).release;
+        (*state).schema_private_data = (*schema).private_data;
+        (*schema).release = Some(release_owned_arrow_schema);
+        (*schema).private_data = state.cast();
+        return;
+    }
     finish_transfer_state(state);
 }
 
@@ -338,11 +357,30 @@ unsafe extern "C" fn release_owned_arrow_array(array: *mut ArrowArray) {
     }
 
     let state = (*array).private_data.cast::<DeviceArrowAbiTransferState>();
-    if !state.is_null() {
-        (*array).release = (*state).array_release;
-        (*array).private_data = (*state).array_private_data;
+    if state.is_null() {
+        return;
     }
-    cudf_sys::cudf_arrow_device_array_destroy(array.cast());
+    // See `release_owned_arrow_schema`: release contents in place and never
+    // free the struct. The pointer may also be a bare `ArrowArray` copy
+    // (e.g. arrow-rs moves only the embedded array out of an
+    // `ArrowDeviceArray`), so it must never be treated as a device-array
+    // shim allocation here.
+    (*array).release = (*state).array_release;
+    (*array).private_data = (*state).array_private_data;
+    if let Some(release) = (*array).release {
+        release(array);
+    }
+    if (*array).release.is_some() {
+        // The producer declined to run cleanup now (the provenance wrapper
+        // re-installs itself when its device cannot be activated) and expects
+        // a retry. Re-wrap so the retry routes back through this owned-ABI
+        // shim, and keep the shared transfer state alive.
+        (*state).array_release = (*array).release;
+        (*state).array_private_data = (*array).private_data;
+        (*array).release = Some(release_owned_arrow_array);
+        (*array).private_data = state.cast();
+        return;
+    }
     finish_transfer_state(state);
 }
 
@@ -611,8 +649,15 @@ impl Drop for DeviceArrowAbiRootInner {
                     cudf_sys::cudf_arrow_device_array_destroy(self.array.as_ptr());
                 },
                 DeviceArrowAbiOwnership::ArrowRelease => {
+                    // Run the Arrow release callbacks first (these free the
+                    // contents and null out `release`), then reclaim the
+                    // bridge-allocated root structs themselves. The
+                    // `from_raw_abi_parts` safety contract guarantees these
+                    // pointers are this bridge's own heap allocations.
                     release_arrow_schema_handle(self.schema.as_ptr().cast());
                     release_arrow_device_array_handle(self.array.as_ptr().cast());
+                    cudf_sys::cudf_arrow_device_schema_destroy(self.schema.as_ptr());
+                    cudf_sys::cudf_arrow_device_array_destroy(self.array.as_ptr());
                 },
             }
         }
@@ -1057,7 +1102,12 @@ impl DeviceArrowColumnOwnedAbiParts {
     /// Consume this wrapper and return raw Arrow C ABI ownership.
     ///
     /// The caller now owns the schema/array handles and must eventually run
-    /// the Arrow `release` callbacks exactly once.
+    /// the Arrow `release` callbacks exactly once. Per the Arrow C Data
+    /// Interface the release callbacks free the exported contents but never
+    /// the root structs themselves; the two bridge-allocated root structs are
+    /// reclaimed when the parts are handed back to `from_raw_abi_parts`.
+    /// Handing the parts to an external consumer instead leaves those two
+    /// small root allocations to the process allocator.
     pub fn into_raw_abi(self) -> (*mut c_void, *mut c_void, DeviceArrowImportMaterialization) {
         let this = ManuallyDrop::new(self);
         (this.inner.schema.as_ptr(), this.inner.array.as_ptr(), this.inner.materialization)
@@ -1300,7 +1350,12 @@ impl DeviceArrowTableOwnedAbiParts {
     /// Consume this wrapper and return raw Arrow C ABI ownership.
     ///
     /// The caller now owns the schema/array handles and must eventually run
-    /// the Arrow `release` callbacks exactly once.
+    /// the Arrow `release` callbacks exactly once. Per the Arrow C Data
+    /// Interface the release callbacks free the exported contents but never
+    /// the root structs themselves; the two bridge-allocated root structs are
+    /// reclaimed when the parts are handed back to `from_raw_abi_parts`.
+    /// Handing the parts to an external consumer instead leaves those two
+    /// small root allocations to the process allocator.
     pub fn into_raw_abi(self) -> (*mut c_void, *mut c_void, DeviceArrowImportMaterialization) {
         let this = ManuallyDrop::new(self);
         (this.inner.schema.as_ptr(), this.inner.array.as_ptr(), this.inner.materialization)

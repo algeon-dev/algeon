@@ -396,7 +396,7 @@ impl Table {
     ) -> Result<PreparedTableExport<'static>, InteropError> {
         let operation = "interop::Table::try_into_prepared_device_table_export_with_event";
         let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
-        prepare_into_owned_table_root_with_readiness(self, None, operation, readiness)
+        prepare_into_owned_table_root_with_readiness(self, None, operation, readiness, Some(event.clone()))
     }
 }
 
