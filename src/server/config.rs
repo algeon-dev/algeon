@@ -123,6 +123,12 @@ pub const NEXUS_ICEBERG_S3_REGION_ENV: &str = "NEXUS_ICEBERG_S3_REGION";
 /// Enables path-style S3 addressing for Iceberg object storage. Use `true` for
 /// many local S3-compatible stores.
 pub const NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str = "NEXUS_ICEBERG_S3_PATH_STYLE";
+/// Explicit S3 credential source for Iceberg object storage. The only accepted
+/// value is `default_chain`: an operator opt-in to the ambient AWS default
+/// credential chain (env vars, profile, IMDS instance role), including with a
+/// custom `NEXUS_ICEBERG_S3_ENDPOINT` where the default is otherwise unsigned
+/// requests. Mutually exclusive with static `NEXUS_ICEBERG_S3_*` credentials.
+pub const NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV: &str = "NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE";
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -553,6 +559,7 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         NEXUS_ICEBERG_S3_ENDPOINT_ENV,
         NEXUS_ICEBERG_S3_REGION_ENV,
         NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
         NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
         NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
         NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
@@ -710,8 +717,28 @@ fn table_format_parquet_read_strategy_config(
         values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV).is_some()
             || values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV).is_some()
             || values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV).is_some();
+    let credential_source = values.string(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV);
+    if let Some(raw) = credential_source.as_deref() {
+        if !raw.eq_ignore_ascii_case(crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN) {
+            return Err(ServerError::invalid_config(
+                NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+                format!("must be `default_chain` when set, got `{raw}`"),
+            ));
+        }
+        if has_explicit_s3_credentials {
+            return Err(ServerError::invalid_config(
+                NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+                "cannot be combined with static NEXUS_ICEBERG_S3_ACCESS_KEY_ID / \
+                 NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY / NEXUS_ICEBERG_S3_SESSION_TOKEN credentials",
+            ));
+        }
+    }
     let has_storage_region = values.string(NEXUS_ICEBERG_S3_REGION_ENV).is_some();
-    let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
+    let credential_mode = if storage_endpoint.is_some()
+        || has_storage_region
+        || has_explicit_s3_credentials
+        || credential_source.is_some()
+    {
         nexus_query_engine::CredentialMode::ScopedResolved
     } else {
         nexus_query_engine::CredentialMode::SharedProcessEnv
@@ -950,6 +977,7 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         NEXUS_ICEBERG_S3_ENDPOINT_ENV,
         NEXUS_ICEBERG_S3_REGION_ENV,
         NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
         crate::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
         crate::NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
         crate::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,

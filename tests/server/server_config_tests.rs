@@ -641,6 +641,121 @@ fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
 
 #[cfg(feature = "iceberg")]
 #[test]
+fn server_iceberg_s3_credential_source_default_chain_keeps_default_chain_with_endpoint() {
+    use datafusion_nexus::server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+    };
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
+        (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+        // Ambient AWS env credentials must flow through the provider-side
+        // default chain, not be converted into static profile credentials.
+        (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_AMBIENT".to_string()),
+        (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "ambient-secret".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
+    assert_eq!(profiles.len(), 1);
+    let s3_profile = profiles[0].s3_profile();
+    assert_eq!(s3_profile.endpoint.as_deref(), Some("http://localhost:9000"));
+    assert_eq!(s3_profile.virtual_hosted_style_request, Some(false));
+    assert!(
+        matches!(s3_profile.credential, S3SourceStorageCredential::DefaultChain),
+        "explicit default_chain opt-in must keep the default-chain credential with a custom endpoint, got {:?}",
+        s3_profile.credential
+    );
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+    assert_eq!(
+        iceberg.parquet_read_strategy_config.credential_mode,
+        nexus_query_engine::CredentialMode::ScopedResolved
+    );
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_s3_credential_source_default_chain_applies_to_rest_backend() {
+    use datafusion_nexus::server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+    };
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
+    assert_eq!(profiles.len(), 1);
+    let s3_profile = profiles[0].s3_profile();
+    assert_eq!(s3_profile.endpoint.as_deref(), Some("http://localhost:9000"));
+    assert!(
+        matches!(s3_profile.credential, S3SourceStorageCredential::DefaultChain),
+        "REST default_chain opt-in must keep the default-chain credential with a custom endpoint, got {:?}",
+        s3_profile.credential
+    );
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_s3_credential_source_rejects_unknown_value() {
+    use datafusion_nexus::server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+    };
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
+        (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "imds".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert!(error.to_string().contains(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV), "{error}");
+    assert!(error.to_string().contains("default_chain"), "error should name the accepted value: {error}");
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_s3_credential_source_rejects_static_credential_combination() {
+    use datafusion_nexus::server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+    };
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
+        (NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, "default_chain".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert!(error.to_string().contains(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV), "{error}");
+    assert!(
+        error.to_string().contains("NEXUS_ICEBERG_S3_ACCESS_KEY_ID"),
+        "error should name the conflicting static credentials: {error}"
+    );
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
 fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
     use datafusion_nexus::server::{
         NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
