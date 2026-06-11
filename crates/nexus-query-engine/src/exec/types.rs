@@ -652,6 +652,11 @@ impl GpuLocalParquetSourceCacheKey {
                 format!("file.{index}.reader_decimal_types"),
                 &file.reader_decimal_types,
             );
+            push_position_delete_files(
+                &mut fingerprint,
+                format!("file.{index}.position_delete_files"),
+                &file.position_delete_files,
+            );
             let partition_values = file.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
             push_string_vec(&mut fingerprint, format!("file.{index}.partition_values"), &partition_values);
         }
@@ -740,6 +745,11 @@ impl GpuLocalParquetSourceCacheKey {
         );
         push_string_vec(&mut fingerprint, "chunk.read_columns", &chunk.read_columns);
         push_reader_decimal_types(&mut fingerprint, "chunk.reader_decimal_types", &chunk.reader_decimal_types);
+        if let Some(file) = source.files.get(chunk.file_index) {
+            push_position_delete_files(&mut fingerprint, "chunk.position_delete_files", &file.position_delete_files);
+        } else {
+            push_token(&mut fingerprint, "chunk.position_delete_files.len", "missing");
+        }
         push_token(
             &mut fingerprint,
             "chunk.reader_decimal_types_footer_verified",
@@ -748,7 +758,7 @@ impl GpuLocalParquetSourceCacheKey {
         let partition_values = chunk.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
         push_string_vec(&mut fingerprint, "chunk.partition_values", &partition_values);
         let mut diagnostic_fingerprint = fingerprint.clone();
-        redact_source_chunk_cache_fingerprint(&mut diagnostic_fingerprint, chunk);
+        redact_source_chunk_cache_fingerprint(&mut diagnostic_fingerprint, source, chunk);
         Self { fingerprint, diagnostic_fingerprint }
     }
 
@@ -1103,6 +1113,24 @@ fn push_resolved_source_contract(output: &mut String, label: impl AsRef<str>, re
     push_optional_string(output, format!("{label}.fallback_reason"), resolved_source.fallback_reason.as_deref());
 }
 
+fn push_position_delete_files(
+    output: &mut String,
+    label: impl AsRef<str>,
+    delete_files: &[crate::source::ParquetPositionDeleteFile],
+) {
+    let label = label.as_ref();
+    push_token(output, format!("{label}.len"), delete_files.len().to_string());
+    for (index, delete_file) in delete_files.iter().enumerate() {
+        let label = format!("{label}.{index}");
+        push_token(output, format!("{label}.id"), delete_file.id.as_str());
+        push_token(output, format!("{label}.location"), delete_file.location.reader_path());
+        push_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
+        push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
+        push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
+    }
+}
+
 fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSource) {
     for (index, file) in source.files.iter().enumerate() {
         replace_token_value(
@@ -1118,10 +1146,26 @@ fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSou
             file.location.diagnostic_stable_id(file.stable_id.as_str()).as_str(),
         );
         redact_resolved_source_contract(output, format!("file.{index}.resolved"), &file.resolved_source);
+        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
+            let label = format!("file.{index}.position_delete_files.{delete_index}");
+            replace_token_value(
+                output,
+                format!("{label}.location"),
+                delete_file.location.reader_path().as_str(),
+                delete_file.location.diagnostic_location().as_str(),
+            );
+            replace_token_value(
+                output,
+                format!("{label}.stable_id"),
+                delete_file.stable_id.as_str(),
+                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
+            );
+            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        }
     }
 }
 
-fn redact_source_chunk_cache_fingerprint(output: &mut String, chunk: &SourceChunk) {
+fn redact_source_chunk_cache_fingerprint(output: &mut String, source: &LocalParquetSource, chunk: &SourceChunk) {
     replace_token_value(
         output,
         "chunk.location",
@@ -1135,6 +1179,24 @@ fn redact_source_chunk_cache_fingerprint(output: &mut String, chunk: &SourceChun
         chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()).as_str(),
     );
     redact_resolved_source_contract(output, "chunk.resolved", &chunk.resolved_source);
+    if let Some(file) = source.files.get(chunk.file_index) {
+        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
+            let label = format!("chunk.position_delete_files.{delete_index}");
+            replace_token_value(
+                output,
+                format!("{label}.location"),
+                delete_file.location.reader_path().as_str(),
+                delete_file.location.diagnostic_location().as_str(),
+            );
+            replace_token_value(
+                output,
+                format!("{label}.stable_id"),
+                delete_file.stable_id.as_str(),
+                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
+            );
+            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        }
+    }
 }
 
 fn redact_resolved_source_contract(

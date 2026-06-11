@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::{Field, SchemaRef};
 
-use super::*;
+use super::{source::local_parquet_execution_frame_schema, *};
 use crate::{
-    datatypes::is_supported_arrow_type,
+    datatypes::{arrow_fields_match_except_name, is_supported_arrow_type},
     plan::{QueryNode, UnionNode},
 };
 
@@ -14,7 +14,7 @@ mod types;
 
 use expressions::{comma_separated, validate_expr, validate_projection_output_expr};
 use join::validate_join_capability;
-use types::require_boolean;
+use types::{require_boolean, require_scalar_operator_value, require_timezone_free_operator_key};
 
 pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_reachability(plan)?;
@@ -56,10 +56,12 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input = input_node(plan, aggregate.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, aggregate.input)?;
                 for expr in &aggregate.spec.group_exprs {
-                    validate_expr(expr, input.output_schema(), input_available)?;
+                    let data_type = validate_expr(expr, input.output_schema(), input_available)?;
+                    require_timezone_free_operator_key(&data_type, "aggregate group key")?;
                 }
                 for expr in &aggregate.spec.aggr_exprs {
-                    validate_expr(&expr.expr, input.output_schema(), input_available)?;
+                    let data_type = validate_expr(&expr.expr, input.output_schema(), input_available)?;
+                    require_timezone_free_operator_key(&data_type, "aggregate input")?;
                     if let Some(filter) = &expr.filter {
                         let filter_type = validate_expr(filter, input.output_schema(), input_available)?;
                         require_boolean(&filter_type, "aggregate filter predicate")?;
@@ -73,19 +75,23 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input = input_node(plan, window.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, window.input)?;
                 for expr in &window.spec.partition_by {
-                    validate_expr(expr, input.output_schema(), input_available)?;
+                    let data_type = validate_expr(expr, input.output_schema(), input_available)?;
+                    require_timezone_free_operator_key(&data_type, "window partition key")?;
                 }
                 for sort_expr in &window.spec.order_by {
-                    validate_expr(&sort_expr.expr, input.output_schema(), input_available)?;
+                    let data_type = validate_expr(&sort_expr.expr, input.output_schema(), input_available)?;
+                    require_timezone_free_operator_key(&data_type, "window order key")?;
                 }
                 for function in &window.spec.functions {
                     match function {
                         crate::plan::WindowFunction::Aggregate { expr, .. } => {
-                            validate_expr(expr, input.output_schema(), input_available)?;
+                            let data_type = validate_expr(expr, input.output_schema(), input_available)?;
+                            require_scalar_operator_value(&data_type, "window aggregate input")?;
                         },
                         crate::plan::WindowFunction::Rank { .. } | crate::plan::WindowFunction::RowNumber { .. } => {},
                         crate::plan::WindowFunction::LagLead { expr, .. } => {
-                            validate_expr(expr, input.output_schema(), input_available)?;
+                            let data_type = validate_expr(expr, input.output_schema(), input_available)?;
+                            require_scalar_operator_value(&data_type, "window LAG / LEAD input")?;
                         },
                     }
                 }
@@ -96,7 +102,8 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input = input_node(plan, sort.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, sort.input)?;
                 for sort_expr in &sort.spec.expressions {
-                    validate_expr(&sort_expr.expr, input.output_schema(), input_available)?;
+                    let data_type = validate_expr(&sort_expr.expr, input.output_schema(), input_available)?;
+                    require_timezone_free_operator_key(&data_type, "sort key")?;
                 }
                 lower_sort_spec(&sort.spec)?;
                 filter_available_columns(input_available, node.output_schema())
@@ -201,7 +208,7 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
 }
 
 fn fields_match_except_name(sink_field: &Field, root_field: &Field) -> bool {
-    sink_field.clone().with_name(root_field.name().clone()) == *root_field
+    arrow_fields_match_except_name(sink_field, root_field)
 }
 
 fn validate_reachability(plan: &QueryPlan) -> Result<()> {
@@ -239,7 +246,7 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
     match source {
         crate::source::SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source)?;
-            Ok(schema_column_names(source.output_schema()))
+            Ok(schema_column_names(&local_parquet_execution_frame_schema(source)?))
         },
         crate::source::SourceNode::GpuResident(source) => {
             if source.input_name.is_empty() {

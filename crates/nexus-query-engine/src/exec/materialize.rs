@@ -1,4 +1,8 @@
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::{
+    array::ArrayRef,
+    compute::cast,
+    datatypes::{Field, SchemaRef},
+};
 
 use super::*;
 
@@ -134,7 +138,14 @@ fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Resu
             .with_fact("sink_metadata", format!("{:?}", sink_field.metadata())));
         }
     }
-    RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).map_err(|error| {
+    let columns = batch
+        .columns()
+        .iter()
+        .zip(schema.fields().iter())
+        .enumerate()
+        .map(|(index, (column, field))| column_with_sink_field_contract(column, field.as_ref(), index))
+        .collect::<Result<Vec<_>>>()?;
+    RecordBatch::try_new(schema.clone(), columns).map_err(|error| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.host_arrow.materialize_schema",
@@ -145,7 +156,25 @@ fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Resu
 }
 
 fn fields_match_except_name(sink_field: &Field, materialized_field: &Field) -> bool {
-    sink_field.clone().with_name(materialized_field.name().clone()) == *materialized_field
+    crate::datatypes::arrow_fields_match_except_name(sink_field, materialized_field)
+}
+
+fn column_with_sink_field_contract(column: &ArrayRef, sink_field: &Field, field_index: usize) -> Result<ArrayRef> {
+    if column.data_type() == sink_field.data_type() {
+        return Ok(Arc::clone(column));
+    }
+    cast(column.as_ref(), sink_field.data_type()).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.host_arrow.materialize_schema",
+            "failed to cast materialized Arrow column to host sink schema field type",
+        )
+        .with_fact("field_index", field_index)
+        .with_fact("sink_field", sink_field.name())
+        .with_fact("materialized_type", format!("{:?}", column.data_type()))
+        .with_fact("sink_type", format!("{:?}", sink_field.data_type()))
+        .with_source(error)
+    })
 }
 
 pub(super) fn host_materialization_failure_facts(metrics: &QueryMetrics) -> RetryFacts {

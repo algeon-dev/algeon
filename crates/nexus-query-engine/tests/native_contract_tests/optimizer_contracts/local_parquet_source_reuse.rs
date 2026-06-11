@@ -11,7 +11,23 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     assert_eq!(candidate.reuse_count, 2);
     assert_eq!(candidate.branch_filter_count, 1);
     assert_eq!(candidate.superset_read_columns, vec!["id", "state", "zip"]);
-    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address"), 1);
+    let sources = local_parquet_sources_for_stable_id(&result.plan, "customer_address");
+    assert_eq!(sources.len(), 1);
+    validate_local_parquet_source(sources[0]).expect("shared source must retain a valid schema mapping contract");
+    assert_eq!(sources[0].diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
+    assert!(sources[0].diagnostics.rejected_features.is_empty());
+    assert_eq!(
+        sources[0].projected_output_columns.len(),
+        sources[0].projected_output_column_source_refs.len()
+    );
+    assert_eq!(sources[0].pure_filter_columns.len(), sources[0].pure_filter_column_source_refs.len());
+    assert!(
+        sources[0]
+            .projected_output_column_source_refs
+            .iter()
+            .chain(sources[0].pure_filter_column_source_refs.iter())
+            .all(|source_ref| matches!(source_ref, SourceColumnRef::File(_)))
+    );
     assert!(
         result.plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Filter(_))),
         "reader predicate should be replayed as a branch-local native filter"
@@ -84,6 +100,43 @@ fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
     assert!(host_buffer_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_host_buffer"));
     assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types.0.type_id=decimal64"));
     assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types_footer_verified=false"));
+}
+
+#[test]
+fn gpu_local_parquet_source_cache_key_isolates_position_delete_files() {
+    let base_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract());
+    let delete_a_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
+        .with_position_delete_file("delete-a", "s3://warehouse/customer_address-delete-a.parquet");
+    let delete_b_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
+        .with_position_delete_file("delete-b", "s3://warehouse/customer_address-delete-b.parquet");
+
+    let base_key = GpuLocalParquetSourceCacheKey::from_source(&base_source);
+    let delete_a_key = GpuLocalParquetSourceCacheKey::from_source(&delete_a_source);
+    let delete_b_key = GpuLocalParquetSourceCacheKey::from_source(&delete_b_source);
+
+    assert_ne!(base_key, delete_a_key, "whole-source GPU cache keys must include position delete files");
+    assert_ne!(delete_a_key, delete_b_key, "whole-source GPU cache keys must distinguish delete file identity");
+    assert!(delete_a_key.as_str().contains("file.0.position_delete_files.len=1"));
+    assert!(delete_a_key.as_str().contains("file.0.position_delete_files.0.id=delete-a"));
+    assert!(!delete_a_key.as_str().contains("customer_address-delete-a.parquet"));
+
+    let mut builder = QueryPlanBuilder::new();
+    let base_source_id = builder.add_source(SourceNode::LocalParquet(base_source.clone()));
+    let delete_source_id = builder.add_source(SourceNode::LocalParquet(delete_a_source.clone()));
+    let base_chunk_plan =
+        plan_local_parquet_source_chunks(base_source_id, &base_source, SourceChunkPlanningPolicy::new(None, 1))
+            .unwrap();
+    let delete_chunk_plan =
+        plan_local_parquet_source_chunks(delete_source_id, &delete_a_source, SourceChunkPlanningPolicy::new(None, 1))
+            .unwrap();
+    let base_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&base_source, &base_chunk_plan.chunks[0]);
+    let delete_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&delete_a_source, &delete_chunk_plan.chunks[0]);
+
+    assert_ne!(base_chunk_key, delete_chunk_key, "chunk GPU cache keys must include position delete files");
+    assert!(delete_chunk_key.as_str().contains("chunk.position_delete_files.len=1"));
+    assert!(!delete_chunk_key.as_str().contains("customer_address-delete-a.parquet"));
 }
 
 #[test]
@@ -773,6 +826,7 @@ trait LocalParquetSourceTestExt {
         type_id: ParquetReaderDecimalTypeId,
         cudf_scale: i32,
     ) -> Self;
+    fn with_position_delete_file(self, id: &str, location: &str) -> Self;
 }
 
 impl LocalParquetSourceTestExt for LocalParquetSource {
@@ -784,6 +838,17 @@ impl LocalParquetSourceTestExt for LocalParquetSource {
     ) -> Self {
         self.files[0].reader_decimal_types =
             vec![ParquetReaderDecimalType::new(column_name.to_string(), type_id, cudf_scale)];
+        self.refresh_diagnostics();
+        self
+    }
+
+    fn with_position_delete_file(mut self, id: &str, location: &str) -> Self {
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+            id,
+            ResolvedParquetSource::remote_direct(location, CredentialMode::SharedProcessEnv),
+        )
+        .unwrap();
+        self.files[0].position_delete_files = vec![delete_file];
         self.refresh_diagnostics();
         self
     }

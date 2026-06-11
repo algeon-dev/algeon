@@ -121,6 +121,243 @@ fn native_execution_boundary_policy_reports_direct_source_and_explicit_host_mate
 }
 
 #[test]
+fn native_local_parquet_source_applies_iceberg_position_deletes_before_output_and_count_probe() {
+    let dir = unique_temp_dir("nexus-query-engine-native-position-deletes");
+    let data_path = dir.join("data.parquet");
+    let delete_path = dir.join("delete.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    write_input_parquet(&runtime, &data_path);
+    write_position_delete_parquet(&delete_path, data_path.display().to_string().as_str(), &[1, 3], &[0]);
+
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-0001",
+        ResolvedParquetSource::local_kvikio(delete_path.display().to_string()),
+    )
+    .unwrap()
+    .with_file_size_bytes(fs::metadata(&delete_path).unwrap().len());
+    let data_file = LocalParquetFile::new(&data_path)
+        .with_file_size_bytes(fs::metadata(&data_path).unwrap().len())
+        .with_position_delete_files(vec![delete_file]);
+
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![data_file.clone()],
+        Arc::clone(&projected_schema),
+        vec!["key".to_string(), "payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_node = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 1]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[5, 20]);
+
+    let limited_source = LocalParquetSource::from_files(
+        vec![data_file.clone()],
+        projected_schema,
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_scan_limit(Some(1));
+    let mut builder = QueryPlanBuilder::new();
+    let source_node = builder.add_source(SourceNode::LocalParquet(limited_source));
+    let plan = builder.finish_with_host_sink(source_node);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize scan-limited RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[5]);
+
+    let carrier_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let count_source = LocalParquetSource::count_star_probe(vec![data_file], carrier_schema, vec!["key".to_string()])
+        .with_column_roles(Vec::new(), vec!["key".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_node = builder.add_source(SourceNode::LocalParquet(count_source));
+    let plan = builder.finish_with_host_sink(source_node);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize count probe RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[2]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
+    let dir = unique_temp_dir("nexus-query-engine-native-timestamp-tz");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![Some(1_700_000_000_000_000), None, Some(1_700_000_000_000_123)])
+                    .with_timezone("UTC"),
+            ),
+        ],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(file, Arc::clone(&schema), Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["id".to_string(), "event_ts".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize timestamp-with-timezone output");
+    };
+    assert_eq!(batch.schema(), schema);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    let event_ts = batch.column(1).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+    assert_eq!(event_ts.values().as_ref(), &[1_700_000_000_000_000, 0, 1_700_000_000_000_123]);
+    assert!(event_ts.is_valid(0));
+    assert!(!event_ts.is_valid(1));
+    assert!(event_ts.is_valid(2));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_output() {
+    let dir = unique_temp_dir("nexus-query-engine-native-list-utf8");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("tags", DataType::List(Arc::new(Field::new("element", DataType::Utf8, true))), true),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let tags = ListArray::new(
+        Arc::new(Field::new("element", DataType::Utf8, true)),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 4, 5])),
+        Arc::new(StringArray::from(vec![Some("red"), Some("blue"), None, Some("green"), Some("gold")])),
+        Some(NullBuffer::from(vec![true, false, true, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&source_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(tags),
+            Arc::new(Int64Array::from(vec![10, 20, 30, 40])),
+        ],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(file, Arc::clone(&source_schema), Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&source_schema),
+        vec!["id".to_string(), "tags".to_string(), "payload".to_string()],
+    );
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("tags", DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))), true),
+    ]));
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(30)));
+    let projection = projection_outputs(vec![Expr::column("id"), Expr::column("tags")], Arc::clone(&output_schema));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&source_schema));
+    let projection = builder.add_projection(filter, projection);
+    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&output_schema));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize list output");
+    };
+    assert_eq!(batch.schema(), output_schema);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 4]);
+    let tags = batch.column(1).as_any().downcast_ref::<ListArray>().unwrap();
+    assert_string_list_value(tags, 0, &[None, Some("green")]);
+    assert_string_list_value(tags, 1, &[Some("gold")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
+    let dir = unique_temp_dir("nexus-query-engine-native-large-list-utf8");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("tags", DataType::LargeList(Arc::new(Field::new("element", DataType::LargeUtf8, true))), true),
+    ]));
+    let tags = LargeListArray::new(
+        Arc::new(Field::new("element", DataType::LargeUtf8, true)),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 1, 3])),
+        Arc::new(LargeStringArray::from(vec![Some("north"), None, Some("south")])),
+        None,
+    );
+    let batch =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(tags)])
+            .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(file, Arc::clone(&source_schema), Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&source_schema),
+        vec!["id".to_string(), "tags".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize large-list output");
+    };
+    assert_eq!(batch.schema(), source_schema);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2]);
+    let tags = batch.column(1).as_any().downcast_ref::<LargeListArray>().unwrap();
+    assert_large_string_list_value(tags, 0, &[Some("north")]);
+    assert_large_string_list_value(tags, 1, &[None, Some("south")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_union_over_gpu_resident_inputs() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let schema = Arc::new(Schema::new(vec![
@@ -171,6 +408,50 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+}
+
+fn write_position_delete_parquet(path: &Path, data_file_path: &str, positions: &[i64], other_positions: &[i64]) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("pos", DataType::Int64, false),
+    ]));
+    let mut file_paths = vec![data_file_path.to_string(); positions.len()];
+    file_paths.extend(std::iter::repeat("file:/tmp/other.parquet".to_string()).take(other_positions.len()));
+    let mut all_positions = positions.to_vec();
+    all_positions.extend_from_slice(other_positions);
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(file_paths)), Arc::new(Int64Array::from(all_positions))],
+    )
+    .unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn assert_string_list_value(array: &ListArray, index: usize, expected: &[Option<&str>]) {
+    let values = array.value(index);
+    let strings = values.as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(strings.len(), expected.len());
+    for (value_index, expected_value) in expected.iter().enumerate() {
+        match expected_value {
+            Some(expected_value) => assert_eq!(strings.value(value_index), *expected_value),
+            None => assert!(strings.is_null(value_index), "value {value_index} should be null"),
+        }
+    }
+}
+
+fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected: &[Option<&str>]) {
+    let values = array.value(index);
+    let strings = values.as_any().downcast_ref::<LargeStringArray>().unwrap();
+    assert_eq!(strings.len(), expected.len());
+    for (value_index, expected_value) in expected.iter().enumerate() {
+        match expected_value {
+            Some(expected_value) => assert_eq!(strings.value(value_index), *expected_value),
+            None => assert!(strings.is_null(value_index), "value {value_index} should be null"),
+        }
+    }
 }
 
 #[test]

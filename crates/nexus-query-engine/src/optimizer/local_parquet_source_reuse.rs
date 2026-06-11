@@ -546,6 +546,14 @@ impl SourceReuseRewrite {
             .filter(|column| !projected_output_columns.contains(*column))
             .cloned()
             .collect::<Vec<_>>();
+        let file_indices_by_column = superset_read_columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.file_index))
+            .collect::<BTreeMap<_, _>>();
+        let projected_output_column_file_indices =
+            source_file_indices_for_columns(&file_indices_by_column, &projected_output_columns);
+        let pure_filter_column_file_indices =
+            source_file_indices_for_columns(&file_indices_by_column, &pure_filter_columns);
         let mut files = representative.source.files.clone();
         for file in &mut files {
             file.projected_row_group_compressed_bytes = None;
@@ -556,11 +564,26 @@ impl SourceReuseRewrite {
 
         let schema = Arc::new(Schema::new(fields));
         let shared_source = LocalParquetSource::from_files(files, schema, read_columns)
-            .with_column_file_indices(read_column_file_indices, Vec::new(), Vec::new())
-            .with_column_roles(projected_output_columns, pure_filter_columns);
+            .with_column_roles(projected_output_columns, pure_filter_columns)
+            .with_column_file_indices(
+                read_column_file_indices,
+                projected_output_column_file_indices,
+                pure_filter_column_file_indices,
+            );
         let variants = variants.into_iter().map(|variant| (variant.source_node_id, variant)).collect();
         Self { variants, shared_source, replay_branch_predicates: true }
     }
+}
+
+fn source_file_indices_for_columns(file_indices_by_column: &BTreeMap<&str, usize>, columns: &[String]) -> Vec<usize> {
+    columns
+        .iter()
+        .map(|column| {
+            *file_indices_by_column
+                .get(column.as_str())
+                .expect("source reuse role columns must be read by the shared source")
+        })
+        .collect()
 }
 
 fn projected_columns_for_shared_source(variants: &[SourceVariant], read_columns: &[String]) -> Vec<String> {

@@ -132,7 +132,7 @@ fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowData
             context.runtime().null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Date32 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
-        ArrowDataType::Timestamp(unit, None) => {
+        ArrowDataType::Timestamp(unit, _) => {
             context.runtime().null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
         },
         ArrowDataType::Duration(unit) => {

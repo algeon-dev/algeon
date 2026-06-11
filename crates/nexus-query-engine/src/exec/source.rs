@@ -41,6 +41,10 @@ use crate::{
     metrics::SourceReadParquetEvidenceMetrics,
 };
 
+const ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN: &str = "file_path";
+const ICEBERG_POSITION_DELETE_POS_COLUMN: &str = "pos";
+const ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN: &str = "__nexus_iceberg_row_position";
+
 /// Read a local Parquet source into a GPU dataframe.
 ///
 /// The source is validated before reading. When a compatible source cache is
@@ -206,6 +210,8 @@ fn read_local_parquet_source_uncached(
             record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
             frame
         };
+        let frame =
+            apply_position_deletes_to_data_file(context, source, source_node_id, file, file_index, frame, metrics)?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
             let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
@@ -312,6 +318,8 @@ fn read_object_store_parquet_source_with_fetch_pipeline(
             metrics,
         )?;
         record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
+        let frame =
+            apply_position_deletes_to_data_file(context, source, source_node_id, file, file_index, frame, metrics)?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
             let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
@@ -559,6 +567,17 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value().into_frame();
+    let file =
+        crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
+    let frame = apply_position_deletes_to_data_file(
+        context,
+        source,
+        chunk.source_node_id,
+        file,
+        chunk.file_index,
+        frame,
+        metrics,
+    )?;
     if source.is_count_star_probe_source() {
         let row_count = frame.num_rows() as u64;
         record_source_chunk_read_runtime(
@@ -598,6 +617,215 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     );
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
+}
+
+fn apply_position_deletes_to_data_file(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    source_node_id: NodeId,
+    file: &LocalParquetFile,
+    file_index: usize,
+    mut frame: DataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    if file.position_delete_files.is_empty() || frame.num_rows() == 0 {
+        return Ok(frame);
+    }
+    if source.read_columns.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.position_deletes",
+            "Iceberg position deletes require at least one decoded data column",
+        )
+        .with_fact("reason", "position_deletes_require_data_column")
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("file_index", file_index));
+    }
+
+    let row_position_column = unique_position_delete_column_name(&frame);
+    let timer = Instant::now();
+    let row_positions = frame.row_positions().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
+            "failed to construct Iceberg position-delete row positions",
+            error,
+        )
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("file_index", file_index)
+    })?;
+    frame = frame.with_column(row_position_column.as_str(), row_positions).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
+            "failed to append Iceberg position-delete row positions",
+            error,
+        )
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("file_index", file_index)
+    })?;
+    frame = frame
+        .with_execution(&execution_overrides(context))
+        .with_columns([col(row_position_column.as_str())
+            .cast(cudf::DataType::new(cudf::TypeId::Int64))
+            .alias(row_position_column.as_str())])
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
+                "failed to cast Iceberg position-delete row positions to Int64",
+                error,
+            )
+            .with_fact("path", file_path_fact(file))
+            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("file_index", file_index)
+        })?;
+
+    let data_file_path = file.resolved_source.original_location.as_str();
+    for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
+        context.check_cancellation("nexus_query_engine.local_parquet_source.position_deletes")?;
+        if delete_file.row_count == Some(0) {
+            continue;
+        }
+        let delete_frame =
+            read_position_delete_file(context, source_node_id, delete_file, file_index, delete_index, metrics)?;
+        if delete_frame.num_rows() == 0 {
+            continue;
+        }
+        let matching_deletes = delete_frame
+            .with_execution(&execution_overrides(context))
+            .filter_expr(col(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN).eq(lit(data_file_path)))
+            .and_then(|frame| frame.select([ICEBERG_POSITION_DELETE_POS_COLUMN]))
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.local_parquet_source.position_deletes.filter",
+                    "failed to filter Iceberg position-delete rows for the current data file",
+                    error,
+                )
+                .with_fact("path", file_path_fact(file))
+                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index)
+                .with_fact(
+                    "delete_stable_id",
+                    delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()),
+                )
+            })?;
+        if matching_deletes.num_rows() == 0 {
+            continue;
+        }
+        frame = frame
+            .with_execution(&execution_overrides(context))
+            .left_anti_join(
+                &matching_deletes,
+                cudf::DataFrameJoinOptions::new()
+                    .left_on([row_position_column.as_str()])
+                    .right_on([ICEBERG_POSITION_DELETE_POS_COLUMN])
+                    .null_equality(cudf::NullEquality::Unequal),
+            )
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.local_parquet_source.position_deletes.apply",
+                    "failed to apply Iceberg position deletes with native cudf anti join",
+                    error,
+                )
+                .with_fact("path", file_path_fact(file))
+                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index)
+                .with_fact("delete_rows", matching_deletes.num_rows())
+            })?;
+    }
+    frame = frame
+        .with_execution(&execution_overrides(context))
+        .sort_values([row_position_column.as_str()], CudfSortOptions::new().with_stable(true))
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.local_parquet_source.position_deletes.order",
+                "failed to restore Iceberg data-file row order after applying position deletes",
+                error,
+            )
+            .with_fact("path", file_path_fact(file))
+            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("file_index", file_index)
+        })?;
+    frame = frame.without_columns([row_position_column.as_str()]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.position_deletes.cleanup",
+            "failed to remove Iceberg position-delete work column",
+            error,
+        )
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("file_index", file_index)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(frame)
+}
+
+fn read_position_delete_file(
+    context: &ExecutionContext,
+    source_node_id: NodeId,
+    delete_file: &crate::source::ParquetPositionDeleteFile,
+    data_file_index: usize,
+    delete_index: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let file = delete_file.to_local_parquet_file();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ArrowDataType::Utf8, false),
+        Field::new(ICEBERG_POSITION_DELETE_POS_COLUMN, ArrowDataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![file.clone()],
+        schema,
+        vec![ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN.to_string(), ICEBERG_POSITION_DELETE_POS_COLUMN.to_string()],
+    );
+    let columns = [ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ICEBERG_POSITION_DELETE_POS_COLUMN];
+    let frame = if file.resolved_source.uses_host_buffer() {
+        read_object_store_parquet_file(context, &source, source_node_id, &file, data_file_index, delete_index, metrics)?
+    } else {
+        let _cache_read_pin =
+            if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                ensure_local_cache_parquet_file(context, &file, metrics)?;
+                Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
+            } else {
+                None
+            };
+        let (cudf_source, cudf_chunk) =
+            cudf_local_parquet_source_file_selection(context, &source, &file, data_file_index, delete_index)?;
+        read_local_parquet_file(
+            context,
+            &source,
+            source_node_id,
+            &file,
+            data_file_index,
+            &cudf_source,
+            &cudf_chunk,
+            &columns,
+            metrics,
+        )?
+    };
+    coerce_local_parquet_source_schema(frame, &source, None, metrics).map_err(|error| {
+        error.with_fact("position_delete_index", delete_index).with_fact(
+            "position_delete_stable_id",
+            delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()),
+        )
+    })
+}
+
+fn unique_position_delete_column_name(frame: &DataFrame) -> String {
+    let names = frame.column_names();
+    if !names.contains(&ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN) {
+        return ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN.to_string();
+    }
+    for index in 0usize.. {
+        let candidate = format!("{ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN}_{index}");
+        if !names.contains(&candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!("usize suffix space is finite but practically inexhaustible")
 }
 
 fn count_star_probe_weight_frame(

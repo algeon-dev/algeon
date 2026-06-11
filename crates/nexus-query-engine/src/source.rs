@@ -17,7 +17,7 @@ pub(crate) use diagnostics::{redacted_object_store_path_diagnostic, redacted_pat
 pub use model::{
     CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
     LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetFieldIdReadBinding,
-    ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, PartitionColumn,
-    RemoteParquetReadMode, ResolvedParquetSource, SourceColumnRef, SourceDecodeInput, SourceNode,
-    ZERO_COLUMN_COUNT_COLUMN,
+    ParquetPositionDeleteFile, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
+    ParquetSourceLocation, PartitionColumn, RemoteParquetReadMode, ResolvedParquetSource, SourceColumnRef,
+    SourceDecodeInput, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
 };

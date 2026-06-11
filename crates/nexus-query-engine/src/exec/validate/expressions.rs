@@ -6,8 +6,8 @@ use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 use super::{
     types::{
         is_decimal_type, require_arithmetic_type, require_boolean, require_comparable_types, require_compatible_types,
-        require_date_or_timestamp, require_integral_type, require_string, require_timestamp_second,
-        temporal_duration_binary_output_type,
+        require_date_or_timestamp, require_integral_type, require_scalar_operator_value, require_string,
+        require_timestamp_second, temporal_duration_binary_output_type,
     },
     *,
 };
@@ -31,7 +31,8 @@ pub(super) fn validate_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-            validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_scalar_operator_value(&data_type, "IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
