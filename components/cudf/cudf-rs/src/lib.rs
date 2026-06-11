@@ -70,7 +70,7 @@
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
-//! - [`DataFrame::table_view`] — zero-copy bridge from high-level
+//! - [`DataFrame::view`] — zero-copy bridge from high-level
 //!   `DataFrame` into low-level [`core::TableView`] workflows.
 //! - [`interop`] — the preferred external interop boundary for the shared
 //!   borrowed compatibility profile, producer-rooted prepared exports, and

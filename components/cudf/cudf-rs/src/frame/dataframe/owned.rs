@@ -6,12 +6,11 @@
 //! data.
 use std::sync::Arc;
 
-use super::DataFrameTableView;
 use crate::{
     core::{
         column::{Column, ColumnView},
         error::{Error, ErrorKind, Result},
-        table::Table,
+        table::{Table, TableView},
     },
     frame::series::Series,
     internal::{
@@ -472,32 +471,31 @@ impl DataFrame {
         Ok((table, names))
     }
 
-    /// Create a public zero-copy table-view bridge over this DataFrame.
+    /// Borrow this `DataFrame` as a low-level [`TableView`].
     ///
-    /// The returned [`DataFrameTableView`] keeps the intermediate
-    /// [`ColumnView`] values alive alongside the final [`crate::core::TableView`],
-    /// so the borrowed table view remains valid. Call `.table()` on the
-    /// returned bridge when passing a `&TableView` to low-level libcudf-style
-    /// APIs.
+    /// The returned table view is zero-copy with respect to device column
+    /// data. It borrows the existing GPU columns and retains the intermediate
+    /// column-view backing internally so the returned `TableView` remains
+    /// valid for the lifetime of the `DataFrame` borrow.
     ///
     /// # Cost
     ///
     /// Zero-copy with respect to GPU column data: this reuses the existing
     /// device memory and creates only lightweight FFI view handles.
-    pub fn table_view(&self) -> Result<DataFrameTableView<'_>> {
+    pub fn view(&self) -> Result<TableView<'_>> {
         self.build_table_view()
     }
 
     // -- Internal helpers ----------------------------------------------------
 
-    /// Build a [`DataFrameTableView`] from the individual `Arc<Column>`s.
-    ///
-    /// The returned value owns the column views and the table view,
-    /// solving the lifetime management problem where column views must
-    /// outlive the table view.
-    pub(crate) fn build_table_view(&self) -> Result<DataFrameTableView<'_>> {
+    /// Build a borrowed [`TableView`] from the individual `Arc<Column>`s.
+    pub(crate) fn build_table_view(&self) -> Result<TableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
-        DataFrameTableView::from_column_views_in_domain(views, Arc::clone(&self.domain), "dataframe::build_table_view")
+        TableView::from_borrowed_column_views_in_domain(
+            views,
+            Some(Arc::clone(&self.domain)),
+            "dataframe::build_table_view",
+        )
     }
 
     /// Create a DataFrame from a Table and column names, decomposing the

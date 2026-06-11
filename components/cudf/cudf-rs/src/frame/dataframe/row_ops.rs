@@ -182,7 +182,7 @@ impl DataFrame {
         }
         let tv = self.build_table_view()?;
         let result_table = copying::gather_impl(
-            tv.table(),
+            &tv,
             indices,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
@@ -211,7 +211,7 @@ impl DataFrame {
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
         let result_table =
-            filter::apply_boolean_mask_impl(tv.table(), mask, &output_domain, exec_options.as_ref(), operation)?;
+            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, exec_options.as_ref(), operation)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
@@ -271,7 +271,7 @@ impl DataFrame {
 
         let tv = self.build_table_view()?;
         let result_table = copying::gather_impl(
-            tv.table(),
+            &tv,
             &map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",

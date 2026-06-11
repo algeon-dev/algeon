@@ -273,7 +273,7 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
         let result_table = stream_compaction::distinct_impl(
-            tv.table(),
+            &tv,
             &key_indices,
             keep,
             NullEquality::Equal,
@@ -300,7 +300,7 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
         let result_table = stream_compaction::drop_nulls_impl(
-            tv.table(),
+            &tv,
             &key_indices,
             keep_threshold,
             &output_domain,

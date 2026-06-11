@@ -151,17 +151,17 @@ fn test_filter_series_with_le_scalar_mask() {
 }
 
 // ---------------------------------------------------------------------------
-// Advanced low-level path uses table_view() + cudf::ops::filter
+// Advanced low-level path uses view() + cudf::ops::filter
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_advanced_low_level_filter_still_works_via_table_view() {
+fn test_advanced_low_level_filter_still_works_via_view() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false, true, false, true]).unwrap();
     let mask_view = mask_col.view().unwrap();
-    let table_view = df.table_view().unwrap();
+    let table_view = df.view().unwrap();
 
-    let filtered = low_level_filter::apply_boolean_mask(table_view.table(), &mask_view).unwrap();
+    let filtered = low_level_filter::apply_boolean_mask(&table_view, &mask_view).unwrap();
     let filtered = DataFrame::from_table(filtered, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
@@ -173,9 +173,9 @@ fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
     let mask_view = mask_col.view().unwrap();
-    let table_view = df.table_view().unwrap();
+    let table_view = df.view().unwrap();
 
-    let err = match low_level_filter::apply_boolean_mask(table_view.table(), &mask_view) {
+    let err = match low_level_filter::apply_boolean_mask(&table_view, &mask_view) {
         Ok(_) => panic!("expected non-bool mask to be rejected"),
         Err(err) => err,
     };
@@ -188,9 +188,9 @@ fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false]).unwrap();
     let mask_view = mask_col.view().unwrap();
-    let table_view = df.table_view().unwrap();
+    let table_view = df.view().unwrap();
 
-    let err = match low_level_filter::apply_boolean_mask(table_view.table(), &mask_view) {
+    let err = match low_level_filter::apply_boolean_mask(&table_view, &mask_view) {
         Ok(_) => panic!("expected wrong-length mask to be rejected"),
         Err(err) => err,
     };

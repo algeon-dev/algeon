@@ -100,12 +100,24 @@ fn advanced_core_and_low_level_ops_smoke() {
     let df = DataFrame::from_series([ids, scores]).unwrap();
     let gather_map = column_from_slice(&[2i32, 0]).unwrap();
 
-    let table_view = df.table_view().unwrap();
-    let gathered = copying::gather(table_view.table(), &gather_map.view().unwrap()).unwrap();
+    let table_view = df.view().unwrap();
+    let gathered = copying::gather(&table_view, &gather_map.view().unwrap()).unwrap();
     let gathered = DataFrame::from_table(gathered, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(gathered.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(30), Some(10)]);
     assert_eq!(gathered.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(3.0), Some(1.0)]);
+}
+
+#[test]
+fn empty_dataframe_view_smoke() {
+    use cudf::Runtime;
+
+    let rt = Runtime::builder().build().unwrap();
+    let df = rt.empty_dataframe();
+    let view = df.view().unwrap();
+
+    assert_eq!(view.num_columns().unwrap(), 0);
+    assert_eq!(view.num_rows().unwrap(), 0);
 }
 
 #[test]
@@ -137,6 +149,7 @@ fn core_and_runtime_modules_keep_explicit_compatibility_surface() {
     fn assert_column_view_return(_f: for<'a> fn(&'a Column) -> Result<ColumnView<'a>>) {}
     fn assert_table_view_return(_f: for<'a> fn(&'a Table) -> Result<TableView<'a>>) {}
     fn assert_device_slice<'a>(_slice: Option<DeviceSlice<'a>>) {}
+    fn assert_dataframe_view_return(_f: for<'a> fn(&'a cudf::DataFrame) -> Result<TableView<'a>>) {}
 
     assert_send_sync::<DeviceId>();
     assert_send_sync::<CudaStream>();
@@ -152,6 +165,7 @@ fn core_and_runtime_modules_keep_explicit_compatibility_surface() {
     assert_cudf_type::<i32>();
     assert_column_view_return(Column::view);
     assert_table_view_return(Table::view);
+    assert_dataframe_view_return(cudf::DataFrame::view);
     assert_device_slice(None);
 
     let _ = DataType::new(TypeId::Int32);

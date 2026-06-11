@@ -267,9 +267,9 @@ impl DataFrame {
         let other_tvs: Vec<_> = others.iter().map(|df| df.build_table_view()).collect::<Result<_>>()?;
 
         let mut table_refs: Vec<&crate::core::table::TableView<'_>> = Vec::with_capacity(1 + others.len());
-        table_refs.push(self_tv.table());
+        table_refs.push(&self_tv);
         for tv in &other_tvs {
-            table_refs.push(tv.table());
+            table_refs.push(tv);
         }
 
         let result_table =
