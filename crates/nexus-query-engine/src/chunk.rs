@@ -32,7 +32,7 @@ pub use metadata::SourceMetadataCache;
 use metadata::{FooterMetadataLoad, SourceMetadataLoadContext};
 #[cfg(test)]
 use metadata::{SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity};
-pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan};
+pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkRowPositionRange};
 pub use planner::{annotate_source_chunk_batching_reasons, plan_source_chunk_batches};
 pub use policy::{
     LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
@@ -62,6 +62,114 @@ pub(crate) fn source_file_for_chunk<'a>(
     })?;
     validate_source_chunk_identity(source, file, chunk, operation)?;
     Ok(file)
+}
+
+/// Computes the file-global row-position range for a row-group chunk.
+///
+/// `None` means the chunk reads the whole file, so decoded row positions are
+/// already file-global. Explicit row-group chunks require contiguous row groups
+/// and per-row-group row counts.
+pub(crate) fn source_chunk_row_position_range(chunk: &SourceChunk) -> Result<Option<SourceChunkRowPositionRange>> {
+    if chunk.reads_all_row_groups {
+        return Ok(None);
+    }
+    if chunk.row_group_indexes.is_empty() {
+        return Ok(Some(SourceChunkRowPositionRange { start: 0, end: 0 }));
+    }
+    let row_group_rows = chunk.source_file_row_group_rows.as_ref().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_chunk.row_position_range",
+            "Iceberg position-delete row-group chunks require per-row-group row-count metadata",
+        )
+        .with_fact("reason", "position_deletes_require_row_group_rows")
+        .with_fact("path", source_chunk_path_fact(chunk))
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
+    })?;
+    contiguous_row_group_position_range(&chunk.row_group_indexes, row_group_rows).map(Some).map_err(|error| {
+        error
+            .with_fact("path", source_chunk_path_fact(chunk))
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
+    })
+}
+
+pub(crate) fn contiguous_row_group_position_range(
+    row_group_indexes: &[usize],
+    source_file_row_group_rows: &[u64],
+) -> Result<SourceChunkRowPositionRange> {
+    let Some(first_row_group) = row_group_indexes.first().copied() else {
+        return Ok(SourceChunkRowPositionRange { start: 0, end: 0 });
+    };
+    let mut previous = first_row_group;
+    if previous >= source_file_row_group_rows.len() {
+        return Err(row_position_range_error(
+            "position_delete_row_group_out_of_range",
+            previous,
+            source_file_row_group_rows.len(),
+        ));
+    }
+    for row_group in row_group_indexes.iter().copied().skip(1) {
+        if row_group >= source_file_row_group_rows.len() {
+            return Err(row_position_range_error(
+                "position_delete_row_group_out_of_range",
+                row_group,
+                source_file_row_group_rows.len(),
+            ));
+        }
+        if previous.checked_add(1) != Some(row_group) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_chunk.row_position_range",
+                "Iceberg position-delete row-group chunks must be contiguous",
+            )
+            .with_fact("reason", "position_delete_row_groups_not_contiguous")
+            .with_fact("previous_row_group", previous)
+            .with_fact("row_group", row_group));
+        }
+        previous = row_group;
+    }
+
+    let start = source_file_row_group_rows
+        .iter()
+        .take(first_row_group)
+        .try_fold(0u64, |total, rows| total.checked_add(*rows))
+        .ok_or_else(row_position_range_overflow_error)?;
+    let selected_rows = row_group_indexes
+        .iter()
+        .try_fold(0u64, |total, row_group| {
+            source_file_row_group_rows.get(*row_group).and_then(|rows| total.checked_add(*rows))
+        })
+        .ok_or_else(row_position_range_overflow_error)?;
+    let end = start.checked_add(selected_rows).ok_or_else(row_position_range_overflow_error)?;
+    Ok(SourceChunkRowPositionRange { start, end })
+}
+
+fn row_position_range_error(reason: &'static str, row_group: usize, row_group_count: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.source_chunk.row_position_range",
+        "Iceberg position-delete row group is outside row-count metadata",
+    )
+    .with_fact("reason", reason)
+    .with_fact("row_group", row_group)
+    .with_fact("row_group_count", row_group_count)
+}
+
+fn row_position_range_overflow_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.source_chunk.row_position_range",
+        "Iceberg position-delete row-position range exceeds native row-count range",
+    )
+    .with_fact("reason", "position_delete_row_position_range_overflow")
+}
+
+fn source_chunk_row_groups_fact(chunk: &SourceChunk) -> String {
+    chunk.row_group_indexes.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn validate_source_chunk_identity(
@@ -285,6 +393,12 @@ fn apply_source_scan_limit_to_chunks(
     let Some(scan_limit) = source.scan_limit else {
         return Ok(chunks);
     };
+    if source.files.iter().any(LocalParquetFile::has_position_delete_files) {
+        // Raw-row prefix trimming can under-produce visible rows when the
+        // prefix is deleted. Execution must apply deletes per chunk before
+        // deciding whether a scan limit is satisfied.
+        return Ok(chunks);
+    }
     if chunks.is_empty() {
         return Ok(chunks);
     }
@@ -702,11 +816,9 @@ fn planned_row_groups(
     file_index: usize,
     metadata: Option<&RowGroupMetadata>,
 ) -> Result<Option<Vec<usize>>> {
-    if file.has_position_delete_files() {
-        return Ok(None);
-    }
     if let Some(row_groups) = &file.row_groups {
         validate_selected_row_groups(file, file_index, row_groups, metadata)?;
+        validate_position_delete_planned_row_groups(file, file_index, row_groups, metadata)?;
         return Ok(Some(row_groups.clone()));
     }
 
@@ -714,7 +826,9 @@ fn planned_row_groups(
         return Ok(None);
     };
 
-    Ok(Some((0..metadata.row_group_count()).collect()))
+    let row_groups = (0..metadata.row_group_count()).collect::<Vec<_>>();
+    validate_position_delete_planned_row_groups(file, file_index, &row_groups, Some(metadata))?;
+    Ok(Some(row_groups))
 }
 
 fn validate_selected_row_groups(
@@ -745,6 +859,35 @@ fn validate_selected_row_groups(
 
     Ok(())
 }
+
+fn validate_position_delete_planned_row_groups(
+    file: &LocalParquetFile,
+    file_index: usize,
+    row_groups: &[usize],
+    metadata: Option<&RowGroupMetadata>,
+) -> Result<()> {
+    if !file.has_position_delete_files() || row_groups.is_empty() {
+        return Ok(());
+    }
+    let row_group_rows = metadata.and_then(RowGroupMetadata::row_group_rows_vec).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_chunk.plan",
+            "Iceberg position-delete row-group planning requires row-count metadata",
+        )
+        .with_fact("reason", "position_deletes_require_row_group_rows")
+        .with_fact("path", file.location.diagnostic_location())
+        .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+        .with_fact("file_index", file_index)
+    })?;
+    contiguous_row_group_position_range(row_groups, &row_group_rows).map(|_range| ()).map_err(|error| {
+        error
+            .with_fact("path", file.location.diagnostic_location())
+            .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+            .with_fact("file_index", file_index)
+    })
+}
+
 fn append_row_group_chunks(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -1211,8 +1354,9 @@ mod tests {
         expr::{BinaryOp, Expr, LiteralValue},
         runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
         source::{
-            CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy,
-            ParquetReaderDecimalTypeId, ParquetSourceLocation, RemoteParquetReadMode, ResolvedParquetSource,
+            CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetPositionDeleteFile,
+            ParquetReadStrategy, ParquetReaderDecimalTypeId, ParquetSourceLocation, RemoteParquetReadMode,
+            ResolvedParquetSource,
         },
     };
 
@@ -1298,6 +1442,14 @@ mod tests {
 
     fn local_source() -> LocalParquetSource {
         source_from_file(local_source_file())
+    }
+
+    fn position_delete_file() -> ParquetPositionDeleteFile {
+        ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-0",
+            ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
+        )
+        .unwrap()
     }
 
     fn missing_metadata_source() -> LocalParquetSource {
@@ -1653,6 +1805,55 @@ mod tests {
         assert!(plan.chunks[0].reads_all_row_groups);
         assert!(plan.chunks[0].row_group_indexes.is_empty());
         assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+    }
+
+    #[test]
+    fn source_chunk_planning_splits_position_delete_files_into_row_position_chunks() {
+        let file = LocalParquetFile::new("/tmp/position-delete-source.parquet")
+            .with_row_group_bytes(vec![100, 200, 300])
+            .with_projected_row_group_bytes(vec![50, 100, 150], vec![100, 200, 300])
+            .with_pure_filter_row_group_bytes(vec![0, 0, 0], vec![0, 0, 0])
+            .with_row_group_rows(vec![10, 20, 30])
+            .with_position_delete_files(vec![position_delete_file()]);
+        let source = source_from_file(file);
+
+        let plan = plan_local_parquet_source_chunks(
+            NodeId::from_index_for_internal_use(3),
+            &source,
+            SourceChunkPlanningPolicy::for_position_delete_scan_limit(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.chunk_count(), 3);
+        assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
+        assert_eq!(plan.chunks[1].row_group_indexes, vec![1]);
+        assert_eq!(
+            source_chunk_row_position_range(&plan.chunks[1]).unwrap(),
+            Some(SourceChunkRowPositionRange { start: 10, end: 30 })
+        );
+    }
+
+    #[test]
+    fn position_delete_source_scan_limit_does_not_raw_trim_chunk_plan() {
+        let mut source = source_from_file(
+            LocalParquetFile::new("/tmp/position-delete-source.parquet")
+                .with_row_group_bytes(vec![100, 200, 300])
+                .with_projected_row_group_bytes(vec![50, 100, 150], vec![100, 200, 300])
+                .with_pure_filter_row_group_bytes(vec![0, 0, 0], vec![0, 0, 0])
+                .with_row_group_rows(vec![10, 20, 30])
+                .with_position_delete_files(vec![position_delete_file()]),
+        );
+        source.scan_limit = Some(1);
+
+        let plan = plan_local_parquet_source_chunks(
+            NodeId::from_index_for_internal_use(3),
+            &source,
+            SourceChunkPlanningPolicy::for_position_delete_scan_limit(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.chunk_count(), 3);
+        assert!(plan.chunks.iter().all(|chunk| chunk.scan_limit_rows.is_none()));
     }
 
     #[test]

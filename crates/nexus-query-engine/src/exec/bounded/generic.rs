@@ -187,9 +187,11 @@ fn execute_bounded_generic_node(
         },
         PlanNode::Aggregate(aggregate) => {
             let input = match plan.node(aggregate.input).map(|node| &node.kind) {
-                Some(PlanNode::Aggregate(_)) => {
-                    let bounded = BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input)?;
-                    execute_bounded_aggregate_to_frame(context, &bounded, reservations, metrics)?
+                Some(PlanNode::Aggregate(_)) => match BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input) {
+                    Ok(bounded) => execute_bounded_aggregate_to_frame(context, &bounded, reservations, metrics)?,
+                    Err(_error) => {
+                        execute_bounded_generic_node(context, plan, aggregate.input, gpu_inputs, reservations, metrics)?
+                    },
                 },
                 _ => execute_bounded_generic_node(context, plan, aggregate.input, gpu_inputs, reservations, metrics)?,
             };
@@ -378,6 +380,9 @@ fn try_execute_bounded_generic_source_adjacent_stream(
     let Some((source_id, source, stages)) = collect_bounded_generic_source_adjacent_stages(plan, root_id)? else {
         return Ok(None);
     };
+    if source.has_position_delete_visible_scan_limit() {
+        return Ok(None);
+    }
     execute_bounded_generic_local_parquet_source_with_stages(context, source, source_id, &stages, reservations, metrics)
         .map(Some)
 }

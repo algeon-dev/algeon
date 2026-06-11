@@ -3,7 +3,12 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-use std::{collections::HashSet, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::Arc,
+    time::Duration,
+};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
 use async_trait::async_trait;
@@ -19,7 +24,9 @@ use futures::{StreamExt, future::BoxFuture};
 use iceberg::{
     expr::Reference,
     io::{FileIO, FileRead},
-    metadata_columns::{get_metadata_field_id, is_metadata_column_name},
+    metadata_columns::{
+        RESERVED_FIELD_ID_DELETE_FILE_POS, RESERVED_FIELD_ID_POS, get_metadata_field_id, is_metadata_column_name,
+    },
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
         DataContentType, DataFile, DataFileFormat, Datum, Literal, Manifest, ManifestContentType, ManifestEntry,
@@ -573,7 +580,7 @@ impl IcebergTableFormatPlanner {
                 );
                 append_task_facts(&mut plan, task_index, task, &self.parquet_read_strategy_config, false)?;
                 let data_file_index = plan.data_files.len() - 1;
-                attach_manifest_delete_row_counts(&mut plan, data_file_index, &limited_deletes);
+                attach_manifest_delete_metadata(&mut plan, data_file_index, &limited_deletes);
                 task_index += 1;
 
                 if scan_plan_live_row_lower_bound(&plan).is_some_and(|rows| rows >= limit) {
@@ -1040,6 +1047,8 @@ struct LimitedDeleteFile {
     record_count: u64,
     partition: Struct,
     referenced_data_file: Option<String>,
+    position_lower_bound: Option<u64>,
+    position_upper_bound: Option<u64>,
 }
 
 impl LimitedDeleteFile {
@@ -1055,6 +1064,8 @@ impl LimitedDeleteFile {
             record_count: entry.record_count(),
             partition: data_file.partition().clone(),
             referenced_data_file: data_file.referenced_data_file(),
+            position_lower_bound: iceberg_position_delete_bound(data_file.lower_bounds()),
+            position_upper_bound: iceberg_position_delete_bound(data_file.upper_bounds()),
         }
     }
 
@@ -1095,7 +1106,21 @@ impl LimitedDeleteFile {
     }
 }
 
-fn attach_manifest_delete_row_counts(
+fn iceberg_position_delete_bound(bounds: &HashMap<i32, Datum>) -> Option<u64> {
+    [RESERVED_FIELD_ID_DELETE_FILE_POS, RESERVED_FIELD_ID_POS]
+        .into_iter()
+        .find_map(|field_id| bounds.get(&field_id).and_then(iceberg_position_bound_value))
+}
+
+fn iceberg_position_bound_value(value: &Datum) -> Option<u64> {
+    match value.literal() {
+        PrimitiveLiteral::Long(value) => u64::try_from(*value).ok(),
+        PrimitiveLiteral::Int(value) => u64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn attach_manifest_delete_metadata(
     plan: &mut TableFormatScanPlan,
     data_file_index: usize,
     delete_files: &[LimitedDeleteFile],
@@ -1111,11 +1136,15 @@ fn attach_manifest_delete_row_counts(
             .filter(|delete_file| delete_file.location == limited_delete.file_path)
         {
             delete_file.row_count = Some(limited_delete.record_count);
+            delete_file.position_lower_bound = limited_delete.position_lower_bound;
+            delete_file.position_upper_bound = limited_delete.position_upper_bound;
         }
         for delete_file in plan.delete_files.iter_mut().filter(|delete_file| {
             delete_file.data_file_id == data_file_id && delete_file.location == limited_delete.file_path
         }) {
             delete_file.row_count = Some(limited_delete.record_count);
+            delete_file.position_lower_bound = limited_delete.position_lower_bound;
+            delete_file.position_upper_bound = limited_delete.position_upper_bound;
         }
     }
 }
@@ -1875,9 +1904,6 @@ fn append_delete_file_facts(
     plan.delete_files.push(table_delete.clone());
     if supported {
         data_file.push_position_delete_file(table_delete);
-        if data_file.row_groups.is_some() {
-            data_file.row_groups = None;
-        }
     } else {
         let reason = if content != TableFormatDeleteFileContent::PositionDeletes {
             format!("Iceberg {} delete files are not supported by native position-delete execution", content.code())
@@ -2064,6 +2090,7 @@ mod tests {
             Struct, Type,
         },
     };
+    use nexus_query_engine::source::{CredentialMode, ResolvedParquetSource};
 
     use super::*;
     use crate::{
@@ -2207,6 +2234,28 @@ mod tests {
         assert!(!file_id.contains("secret-bucket"));
         assert!(!file_id.contains("X-Amz-Signature"));
         assert!(!file_id.contains("do-not-leak"));
+    }
+
+    #[test]
+    fn iceberg_position_delete_bounds_use_reserved_manifest_fields() {
+        assert_eq!(
+            iceberg_position_delete_bound(&std::collections::HashMap::from([(
+                RESERVED_FIELD_ID_DELETE_FILE_POS,
+                Datum::long(7),
+            )])),
+            Some(7)
+        );
+        assert_eq!(
+            iceberg_position_delete_bound(&std::collections::HashMap::from([(RESERVED_FIELD_ID_POS, Datum::long(9))])),
+            Some(9)
+        );
+        assert_eq!(
+            iceberg_position_delete_bound(&std::collections::HashMap::from([(
+                RESERVED_FIELD_ID_DELETE_FILE_POS,
+                Datum::long(-1),
+            )])),
+            None
+        );
     }
 
     #[test]
@@ -2456,6 +2505,31 @@ mod tests {
         assert!(!delete_id.contains("data-token"));
     }
 
+    #[test]
+    fn iceberg_task_delete_attachment_preserves_data_row_groups() {
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg);
+        let mut data_file = TableFormatDataFile::new(
+            "data-0",
+            "s3://bucket/table/data.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_row_groups(vec![2, 3]);
+        let delete_file = FileScanTaskDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type: DataContentType::PositionDeletes,
+            partition_spec_id: 0,
+            equality_ids: None,
+        };
+
+        append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file, &Default::default()).unwrap();
+
+        assert_eq!(data_file.row_groups, Some(vec![2, 3]));
+        assert_eq!(data_file.position_delete_files.len(), 1);
+        assert_eq!(plan.delete_files.len(), 1);
+    }
+
     fn test_data_file(path: &str, partition_spec_id: i32) -> DataFile {
         DataFileBuilder::default()
             .content(DataContentType::Data)
@@ -2486,7 +2560,48 @@ mod tests {
             record_count: 1,
             partition: Struct::empty(),
             referenced_data_file: referenced_data_file.map(str::to_string),
+            position_lower_bound: None,
+            position_upper_bound: None,
         }
+    }
+
+    #[test]
+    fn attach_manifest_delete_metadata_copies_row_count_and_position_bounds_to_associated_delete_files() {
+        let table_delete = TableFormatDeleteFile::for_data_file(
+            "delete-0",
+            "data-0",
+            "s3://bucket/table/delete.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::PositionDeletes,
+        )
+        .with_read_capability(TableFormatReadCapability::object_store("s3"))
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/delete.parquet",
+            CredentialMode::SharedProcessEnv,
+        ));
+        let data_file = TableFormatDataFile::new(
+            "data-0",
+            "s3://bucket/table/data.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_position_delete_files(vec![table_delete.clone()]);
+        let mut plan =
+            TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(data_file).with_delete_file(table_delete);
+        let mut limited_delete = test_limited_delete(DataContentType::PositionDeletes, 0, Some(10), None, None);
+        limited_delete.record_count = 7;
+        limited_delete.position_lower_bound = Some(11);
+        limited_delete.position_upper_bound = Some(29);
+
+        attach_manifest_delete_metadata(&mut plan, 0, &[limited_delete]);
+
+        let associated_delete = &plan.data_files[0].position_delete_files[0];
+        assert_eq!(associated_delete.row_count, Some(7));
+        assert_eq!(associated_delete.position_lower_bound, Some(11));
+        assert_eq!(associated_delete.position_upper_bound, Some(29));
+        assert_eq!(plan.delete_files[0].row_count, Some(7));
+        assert_eq!(plan.delete_files[0].position_lower_bound, Some(11));
+        assert_eq!(plan.delete_files[0].position_upper_bound, Some(29));
     }
 
     #[test]

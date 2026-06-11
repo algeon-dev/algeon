@@ -7,7 +7,7 @@ use std::{
 
 use arrow::{
     array::{Int64Array, StringArray},
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use datafusion::{
@@ -155,6 +155,110 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
     let source = native_local_parquet_source(&lowering.plans[0]);
     assert_eq!(source.read_columns, vec!["value".to_string()]);
     assert_eq!(source.projected_output_columns, vec!["value".to_string()]);
+}
+
+#[tokio::test]
+async fn iceberg_provider_unprojected_unsupported_map_field_does_not_block_native_projection() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("allRiskEvents", map_utf8_int32_type(), true),
+    ]));
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            None,
+            "id",
+            Some("id"),
+            DataType::Int64,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let planner = Arc::new(RecordingPlanner::new(plan));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select id from iceberg_t limit 1").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(planner.requests().len(), 1);
+    assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&["id".to_string()][..]));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["id".to_string()]);
+    assert_eq!(source.projected_output_columns, vec!["id".to_string()]);
+}
+
+#[tokio::test]
+async fn iceberg_provider_projected_unsupported_map_field_rejects_native_projection() {
+    let map_type = map_utf8_int32_type();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("allRiskEvents", map_type.clone(), true),
+    ]));
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(Arc::clone(&schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            None,
+            "id",
+            Some("id"),
+            DataType::Int64,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            None,
+            "allRiskEvents",
+            Some("allRiskEvents"),
+            map_type,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let planner = Arc::new(RecordingPlanner::new(plan));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select * from iceberg_t limit 1").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
 }
 
 #[tokio::test]
@@ -1057,6 +1161,20 @@ fn table_format_scan_preserves_unsupported_feature_reason_and_never_executes_cpu
 
 fn iceberg_test_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("value", DataType::Utf8, true)]))
+}
+
+fn map_utf8_int32_type() -> DataType {
+    DataType::Map(
+        Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(Field::new("value", DataType::Int32, true)),
+            ])),
+            false,
+        )),
+        false,
+    )
 }
 
 fn direct_friendly_session_config() -> SessionConfig {

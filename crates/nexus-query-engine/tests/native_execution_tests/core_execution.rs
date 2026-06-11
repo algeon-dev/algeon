@@ -197,6 +197,59 @@ fn native_local_parquet_source_applies_iceberg_position_deletes_before_output_an
 }
 
 #[test]
+fn native_scan_limited_position_delete_source_reads_until_visible_row() {
+    let dir = unique_temp_dir("nexus-query-engine-native-position-delete-limit");
+    let data_path = dir.join("data.parquet");
+    let delete_first_path = dir.join("delete-first.parquet");
+    let delete_late_path = dir.join("delete-late.parquet");
+    let projected_schema = write_single_i32_row_grouped_parquet(&data_path, 1);
+    write_position_delete_parquet(&delete_first_path, data_path.display().to_string().as_str(), &[0], &[]);
+    write_position_delete_parquet(&delete_late_path, data_path.display().to_string().as_str(), &[3], &[]);
+
+    let delete_first = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-first",
+        ResolvedParquetSource::local_kvikio(delete_first_path.display().to_string()),
+    )
+    .unwrap()
+    .with_file_size_bytes(fs::metadata(&delete_first_path).unwrap().len())
+    .with_row_count(1)
+    .with_position_bounds(Some(0), Some(0));
+    let delete_late = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-late",
+        ResolvedParquetSource::local_kvikio(delete_late_path.display().to_string()),
+    )
+    .unwrap()
+    .with_file_size_bytes(fs::metadata(&delete_late_path).unwrap().len())
+    .with_row_count(1)
+    .with_position_bounds(Some(3), Some(3));
+    let data_file = LocalParquetFile::new(&data_path)
+        .with_file_size_bytes(fs::metadata(&data_path).unwrap().len())
+        .with_position_delete_files(vec![delete_first, delete_late]);
+    let source = LocalParquetSource::from_files(vec![data_file], projected_schema, vec!["id".to_string()])
+        .with_scan_limit(Some(1));
+    let mut builder = QueryPlanBuilder::new();
+    let source_node = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node);
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize scan-limited RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
+
+    let chunk_reads =
+        metrics.source_read_runtime_rows.iter().filter(|row| row.read_kind == "chunk").collect::<Vec<_>>();
+    assert_eq!(chunk_reads.len(), 2);
+    assert!(chunk_reads.iter().all(|row| row.row_group_count == 1));
+    assert_eq!(metrics.source_read_runtime_rows.iter().filter(|row| row.read_kind == "file").count(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-timestamp-tz");
     let path = dir.join("input.parquet");

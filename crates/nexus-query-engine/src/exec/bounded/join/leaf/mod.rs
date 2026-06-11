@@ -210,6 +210,9 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
     match source {
         crate::source::SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source)?;
+            if source.has_position_delete_visible_scan_limit() {
+                return execute_bounded_generic_local_parquet_source(context, source, node_id, reservations, metrics);
+            }
             execute_bounded_join_leaf_local_parquet_source(context, source, node_id, reservations, metrics)
         },
         crate::source::SourceNode::GpuResident(source) => {

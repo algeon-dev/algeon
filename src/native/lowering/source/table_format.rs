@@ -116,11 +116,10 @@ pub(super) fn lower_table_format_source_input(
     let read_groups = table_format_source_read_groups(scan_plan, &requirements, Arc::clone(&source_output_schema))?;
     let effective_scan_limit =
         if filter.is_none() { combine_scan_limits(scan_plan.scan_limit, pushed_scan_limit) } else { None };
-    let source_scan_limit = if scan_plan.data_files.iter().any(TableFormatDataFile::has_position_delete_files) {
-        None
-    } else {
-        effective_scan_limit
-    };
+    // Iceberg position-delete sources treat this as a non-guaranteed visible-row
+    // stop bound. The native upper Limit remains above the source, so connector
+    // planning can read smaller chunks without changing SQL limit semantics.
+    let source_scan_limit = effective_scan_limit;
     let (scan_output, reader_pushdown_covers_filter) = if let [group] = read_groups.as_slice() {
         let (native_source, reader_pushdown_covers_filter) = table_format_native_source_for_group(
             scan_plan,
@@ -1393,9 +1392,7 @@ fn table_format_local_parquet_file(
     if let Some(file_size_bytes) = file.size_bytes {
         native_file = native_file.with_file_size_bytes(file_size_bytes);
     }
-    if let Some(row_groups) = file.row_groups.clone()
-        && !file.has_position_delete_files()
-    {
+    if let Some(row_groups) = file.row_groups.clone() {
         native_file = native_file.with_row_groups(row_groups);
     }
     if !file.position_delete_files.is_empty() {
@@ -1434,6 +1431,8 @@ fn table_format_position_delete_files(
             if let Some(row_count) = delete_file.row_count {
                 native_delete = native_delete.with_row_count(row_count);
             }
+            native_delete =
+                native_delete.with_position_bounds(delete_file.position_lower_bound, delete_file.position_upper_bound);
             Ok(native_delete)
         })
         .collect()
@@ -2089,6 +2088,53 @@ mod tests {
     }
 
     #[test]
+    fn table_format_position_delete_scan_limit_is_pushed_with_upper_limit() {
+        let dir = unique_table_format_temp_dir("position-delete-scan-limit");
+        let data_path = dir.join("part.parquet");
+        let delete_path = dir.join("delete.parquet");
+        write_field_id_parquet_file(&data_path, "status", 2);
+        write_field_id_parquet_file(&delete_path, "pos", 1);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let delete_file = TableFormatDeleteFile::for_data_file(
+            "delete-0",
+            "file-0",
+            delete_path.display().to_string(),
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::PositionDeletes,
+        )
+        .with_read_capability(TableFormatReadCapability::local_file_system())
+        .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio(delete_path.display().to_string()))
+        .with_position_bounds(Some(0), Some(10));
+        let mut scan_plan =
+            single_projected_file_scan_plan(&data_path, Arc::clone(&scan_schema), 2).with_scan_limit(Some(1));
+        scan_plan.data_files[0] = scan_plan.data_files[0].clone().with_position_delete_files(vec![delete_file.clone()]);
+        scan_plan.delete_files.push(delete_file);
+        let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+        let mut builder = NativeQueryPlanBuilder::new();
+
+        let lowered =
+            lower_table_format_source_input(&scan_exec, None, &mut builder, &RequiredFields::all(), None).unwrap();
+        let plan = builder.finish_with_host_sink(lowered.node);
+        let source = plan
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.kind {
+                PlanNode::Source(source) => match source.as_ref() {
+                    NativeSourceNode::LocalParquet(source) => Some(source),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("lowered plan should contain one local parquet source");
+
+        assert_eq!(source.scan_limit, Some(1));
+        assert_eq!(source.files[0].position_delete_files[0].position_lower_bound, Some(0));
+        assert_eq!(source.files[0].position_delete_files[0].position_upper_bound, Some(10));
+        assert!(matches!(plan.root_node().kind, PlanNode::Limit(_)));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn table_format_local_footer_renamed_physical_columns_lower_as_union_groups() {
         let dir = unique_table_format_temp_dir("field-id-rename-union");
         let old_path = dir.join("part-old.parquet");
@@ -2501,7 +2547,7 @@ mod tests {
     }
 
     #[test]
-    fn table_format_position_deletes_force_full_file_native_reads() {
+    fn table_format_position_deletes_preserve_contiguous_native_row_group_reads() {
         let delete_file = TableFormatDeleteFile::for_data_file(
             "delete-0",
             "file-0",
@@ -2524,7 +2570,7 @@ mod tests {
                 TableFormatReadCapability::object_store("s3"),
             )
             .with_size_bytes(1024)
-            .with_row_groups(vec![1, 3])
+            .with_row_groups(vec![1, 2])
             .with_position_delete_files(vec![delete_file.clone()])
             .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
                 "s3://bucket/table/part-0.parquet",
@@ -2537,8 +2583,8 @@ mod tests {
         let files = table_format_local_parquet_files(&scan_plan, &test_column_requirements()).unwrap();
 
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].row_groups, None);
-        assert_eq!(files[0].selected_row_group_count(), 0);
+        assert_eq!(files[0].row_groups, Some(vec![1, 2]));
+        assert_eq!(files[0].selected_row_group_count(), 2);
         assert_eq!(files[0].position_delete_files.len(), 1);
     }
 

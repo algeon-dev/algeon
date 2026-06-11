@@ -1088,6 +1088,8 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 mod tests {
     use std::{collections::BTreeMap, fs};
 
+    use arrow::datatypes::{Field, Fields};
+
     use super::*;
 
     #[test]
@@ -1248,11 +1250,81 @@ mod tests {
     }
 
     #[test]
+    fn first_rejection_reason_ignores_unprojected_unsupported_schema_fields() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("allRiskEvents", map_utf8_int32_type(), true),
+        ]));
+        let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(schema)
+            .with_data_file(test_table_format_parquet_file())
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "id",
+                Some("id"),
+                DataType::Int64,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
+            ));
+
+        assert_eq!(plan.first_rejection_reason(), None);
+    }
+
+    #[test]
+    fn first_rejection_reason_rejects_projected_unsupported_schema_fields() {
+        let map_type = map_utf8_int32_type();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("allRiskEvents", map_type.clone(), true),
+        ]));
+        let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(schema)
+            .with_data_file(test_table_format_parquet_file())
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "allRiskEvents",
+                Some("allRiskEvents"),
+                map_type,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
+            ));
+
+        assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::UnsupportedType));
+    }
+
+    #[test]
     fn local_file_uri_reader_paths_are_normalized_for_local_cudf_reads() {
         assert_eq!(table_format_local_path_text("/tmp/table.parquet"), "/tmp/table.parquet");
         assert_eq!(table_format_local_path_text("file:/tmp/table.parquet"), "/tmp/table.parquet");
         assert_eq!(table_format_local_path_text("file:///tmp/table.parquet"), "/tmp/table.parquet");
         assert_eq!(table_format_local_path_text("file://localhost/tmp/table.parquet"), "/tmp/table.parquet");
+    }
+
+    fn test_table_format_parquet_file() -> TableFormatDataFile {
+        TableFormatDataFile::new(
+            "data-0001",
+            "/tmp/iceberg/data-0001.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::local_file_system(),
+        )
+    }
+
+    fn map_utf8_int32_type() -> DataType {
+        DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Arc::new(Field::new("key", DataType::Utf8, false)),
+                    Arc::new(Field::new("value", DataType::Int32, true)),
+                ])),
+                false,
+            )),
+            false,
+        )
     }
 
     fn assert_expected_remote_foreground_source(source: &ResolvedParquetSource) {
@@ -2065,6 +2137,10 @@ pub struct TableFormatDeleteFile {
     pub size_bytes: Option<u64>,
     /// Optional delete row count from metadata.
     pub row_count: Option<u64>,
+    /// Inclusive lower bound for the Iceberg position-delete `pos` column.
+    pub position_lower_bound: Option<u64>,
+    /// Inclusive upper bound for the Iceberg position-delete `pos` column.
+    pub position_upper_bound: Option<u64>,
     /// Required read capability for this delete file.
     pub read_capability: TableFormatReadCapability,
     /// Resolved Parquet read strategy for native source lowering.
@@ -2081,6 +2157,8 @@ impl fmt::Debug for TableFormatDeleteFile {
             .field("content", &self.content)
             .field("size_bytes", &self.size_bytes)
             .field("row_count", &self.row_count)
+            .field("position_lower_bound", &self.position_lower_bound)
+            .field("position_upper_bound", &self.position_upper_bound)
             .field("read_capability", &self.read_capability)
             .field("resolved_parquet_source", &self.resolved_parquet_source)
             .finish()
@@ -2114,6 +2192,8 @@ impl TableFormatDeleteFile {
             content,
             size_bytes: None,
             row_count: None,
+            position_lower_bound: None,
+            position_upper_bound: None,
             read_capability: TableFormatReadCapability::unsupported("unresolved"),
             resolved_parquet_source: None,
         }
@@ -2128,6 +2208,13 @@ impl TableFormatDeleteFile {
     /// Records delete-file row count.
     pub fn with_row_count(mut self, row_count: u64) -> Self {
         self.row_count = Some(row_count);
+        self
+    }
+
+    /// Records inclusive Iceberg position-delete `pos` bounds.
+    pub fn with_position_bounds(mut self, lower_bound: Option<u64>, upper_bound: Option<u64>) -> Self {
+        self.position_lower_bound = lower_bound;
+        self.position_upper_bound = upper_bound;
         self
     }
 
@@ -2569,16 +2656,10 @@ impl TableFormatScanPlan {
             return Some(FallbackReason::IcebergObjectStoreReadUnsupported);
         }
         if self
-            .logical_schema
-            .fields()
+            .projected_columns
             .iter()
-            .chain(self.native_source_schema.fields().iter())
-            .any(|field| !nexus_query_engine::is_supported_arrow_type(field.data_type()))
-            || self
-                .projected_columns
-                .iter()
-                .chain(self.pure_filter_columns.iter())
-                .any(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
+            .chain(self.pure_filter_columns.iter())
+            .any(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
         {
             return Some(FallbackReason::UnsupportedType);
         }

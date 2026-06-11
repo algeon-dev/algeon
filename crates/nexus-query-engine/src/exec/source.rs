@@ -166,6 +166,10 @@ fn read_local_parquet_source_uncached(
         return read_zero_column_count_source(context, source, metrics);
     }
 
+    if source_requires_position_delete_chunk_reads(source) {
+        return read_position_delete_parquet_source_as_chunks(context, source_node_id, source, metrics);
+    }
+
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     if should_pipeline_object_store_file_fetches(context, source, &columns) {
         return read_object_store_parquet_source_with_fetch_pipeline(context, source_node_id, source, metrics);
@@ -210,8 +214,16 @@ fn read_local_parquet_source_uncached(
             record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
             frame
         };
-        let frame =
-            apply_position_deletes_to_data_file(context, source, source_node_id, file, file_index, frame, metrics)?;
+        let frame = apply_position_deletes_to_data_file(
+            context,
+            source,
+            source_node_id,
+            file,
+            file_index,
+            None,
+            frame,
+            metrics,
+        )?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
             let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
@@ -292,6 +304,195 @@ fn object_store_file_fetch_pipeline_enabled(
         && source.files.iter().all(|file| object_store_file_fetch_pipeline_compatible(source, file))
 }
 
+fn source_requires_position_delete_chunk_reads(source: &LocalParquetSource) -> bool {
+    source.has_position_delete_files()
+        && !source.is_count_star_probe_source()
+        && (source.scan_limit.is_some()
+            || source
+                .files
+                .iter()
+                .any(|file| file.row_groups.as_ref().is_some_and(|row_groups| !row_groups.is_empty())))
+}
+
+fn read_position_delete_parquet_source_as_chunks(
+    context: &ExecutionContext,
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let chunk_source = source.clone().with_scan_limit(None);
+    let planning_policy = if source.scan_limit.is_some() {
+        crate::chunk::SourceChunkPlanningPolicy::for_position_delete_scan_limit()
+    } else {
+        crate::chunk::SourceChunkPlanningPolicy::default()
+    };
+    let chunk_plan = crate::chunk::plan_local_parquet_source_chunks_with_execution_context(
+        source_node_id,
+        &chunk_source,
+        planning_policy,
+        context,
+    )?;
+    metrics.source_metadata_load_time += chunk_plan.metadata_load_time;
+
+    let mut frames = Vec::with_capacity(chunk_plan.chunk_count());
+    let mut remaining_rows = source.scan_limit;
+    for chunk in &chunk_plan.chunks {
+        context.check_cancellation("nexus_query_engine.local_parquet_source.position_delete_chunks")?;
+        let frame = read_position_delete_source_chunk(context, &chunk_source, chunk, metrics)?.into_frame();
+        record_position_delete_source_chunk_top_level_metrics(chunk, metrics);
+        let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
+        remaining_rows = remaining;
+        if frame.num_rows() > 0 {
+            frames.push(frame);
+        }
+        if remaining_rows == Some(0) {
+            break;
+        }
+    }
+
+    let mut frames = frames.into_iter();
+    let Some(frame) = frames.next() else {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, 0)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    };
+    let other_frames = frames.collect::<Vec<_>>();
+    if other_frames.is_empty() {
+        return Ok(GpuDataFrame::new(frame));
+    }
+
+    let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.position_delete_chunks_concat",
+            "failed to concatenate native local parquet position-delete chunks",
+            error,
+        )
+        .with_fact("file_count", source.file_count())
+        .with_fact("read_columns", source.read_column_count())
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+fn read_position_delete_source_chunk(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    context.check_cancellation("nexus_query_engine.local_parquet_source.position_delete_chunk.read")?;
+    if chunk.scan_limit_rows == Some(0) {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    }
+    if chunk.zero_column_count {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.position_delete_chunk",
+            "Iceberg position-delete chunk reads require decoded data columns",
+        )
+        .with_fact("reason", "position_deletes_require_data_column")
+        .with_fact("path", chunk_path_fact(chunk))
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_row_group_facts(chunk));
+    }
+
+    let _cache_read_pin = if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio
+    {
+        ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
+        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+    } else {
+        None
+    };
+    let file =
+        crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
+    let row_position_range =
+        if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
+    let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
+    let read_timer = Instant::now();
+    let (output, observed_row_group_count, host_buffer_fetch) = if chunk.resolved_source.uses_host_buffer() {
+        let read =
+            read_object_store_parquet_chunk_unbounded(context, source, chunk, &cudf_source, &cudf_chunk, metrics)?;
+        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+        (
+            read.output,
+            read.observed_row_group_count.and_then(|count| usize::try_from(count).ok()),
+            read.host_buffer_fetch,
+        )
+    } else {
+        let output = DataFrame::read_parquet_source_chunk_with_evidence(
+            context.runtime(),
+            &cudf_source,
+            &cudf_chunk,
+            SourceReadMode::ExecutionFrame,
+        )
+        .map_err(|error| {
+            cudf_error_for_chunk_read(
+                "nexus_query_engine.local_parquet_source.position_delete_chunk.read",
+                "failed to read native local parquet position-delete chunk with cudf",
+                error,
+                chunk,
+            )
+            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len())
+            .with_row_group_facts(chunk)
+        })?;
+        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+        (output, None, HostBufferFetchRuntimeMetrics::default())
+    };
+    let read_evidence = output.read_evidence().cloned();
+    let read_elapsed = read_timer.elapsed();
+    metrics.parquet_read_time += read_elapsed;
+    metrics.source_read_time += read_elapsed;
+    let frame = output.into_frame();
+    let frame = apply_position_deletes_to_data_file(
+        context,
+        source,
+        chunk.source_node_id,
+        file,
+        chunk.file_index,
+        row_position_range,
+        frame,
+        metrics,
+    )?;
+    let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+    let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+    record_source_chunk_read_runtime(
+        source,
+        chunk,
+        observed_row_group_count,
+        frame.num_rows() as u64,
+        read_elapsed,
+        0,
+        &host_buffer_fetch,
+        read_evidence.as_ref(),
+        metrics,
+    );
+    metrics.record_input_batch(frame.num_rows() as u64);
+    Ok(GpuDataFrame::new(frame))
+}
+
+fn record_position_delete_source_chunk_top_level_metrics(chunk: &SourceChunk, metrics: &mut QueryMetrics) {
+    metrics.parquet_files = metrics.parquet_files.saturating_add(1);
+    metrics.parquet_bytes_known =
+        metrics.parquet_bytes_known.saturating_add(chunk.known_row_group_bytes.or(chunk.known_file_bytes).unwrap_or(0));
+    metrics.read_columns = metrics.read_columns.saturating_add(chunk.read_columns.len() as u64);
+    if let Some(row_group_count) = chunk.known_read_row_group_count() {
+        metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(row_group_count as u64);
+    }
+}
+
 fn read_object_store_parquet_source_with_fetch_pipeline(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -318,8 +519,16 @@ fn read_object_store_parquet_source_with_fetch_pipeline(
             metrics,
         )?;
         record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
-        let frame =
-            apply_position_deletes_to_data_file(context, source, source_node_id, file, file_index, frame, metrics)?;
+        let frame = apply_position_deletes_to_data_file(
+            context,
+            source,
+            source_node_id,
+            file,
+            file_index,
+            None,
+            frame,
+            metrics,
+        )?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
             let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
@@ -493,6 +702,10 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     } else {
         None
     };
+    let file =
+        crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
+    let row_position_range =
+        if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
         QueryError::new(
@@ -567,14 +780,13 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value().into_frame();
-    let file =
-        crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
     let frame = apply_position_deletes_to_data_file(
         context,
         source,
         chunk.source_node_id,
         file,
         chunk.file_index,
+        row_position_range,
         frame,
         metrics,
     )?;
@@ -625,6 +837,7 @@ fn apply_position_deletes_to_data_file(
     source_node_id: NodeId,
     file: &LocalParquetFile,
     file_index: usize,
+    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
     mut frame: DataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
@@ -665,21 +878,17 @@ fn apply_position_deletes_to_data_file(
         .with_fact("stable_id", file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
-    frame = frame
-        .with_execution(&execution_overrides(context))
-        .with_columns([col(row_position_column.as_str())
-            .cast(cudf::DataType::new(cudf::TypeId::Int64))
-            .alias(row_position_column.as_str())])
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
-                "failed to cast Iceberg position-delete row positions to Int64",
-                error,
-            )
-            .with_fact("path", file_path_fact(file))
-            .with_fact("stable_id", file_stable_id_fact(file))
-            .with_fact("file_index", file_index)
-        })?;
+    let row_position_expr = position_delete_row_position_expr(row_position_column.as_str(), row_position_range)?;
+    frame = frame.with_execution(&execution_overrides(context)).with_columns([row_position_expr]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
+            "failed to normalize Iceberg position-delete row positions",
+            error,
+        )
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("file_index", file_index)
+    })?;
 
     let data_file_path = file.resolved_source.original_location.as_str();
     for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
@@ -687,14 +896,18 @@ fn apply_position_deletes_to_data_file(
         if delete_file.row_count == Some(0) {
             continue;
         }
+        if row_position_range.is_some_and(|range| !position_delete_file_overlaps_row_range(delete_file, range)) {
+            continue;
+        }
         let delete_frame =
             read_position_delete_file(context, source_node_id, delete_file, file_index, delete_index, metrics)?;
         if delete_frame.num_rows() == 0 {
             continue;
         }
+        let predicates = position_delete_filter_predicates(data_file_path, row_position_range)?;
         let matching_deletes = delete_frame
             .with_execution(&execution_overrides(context))
-            .filter_expr(col(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN).eq(lit(data_file_path)))
+            .filter_all(predicates)
             .and_then(|frame| frame.select([ICEBERG_POSITION_DELETE_POS_COLUMN]))
             .map_err(|error| {
                 QueryError::from_cudf(
@@ -761,6 +974,66 @@ fn apply_position_deletes_to_data_file(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(frame)
+}
+
+fn position_delete_row_position_expr(
+    row_position_column: &str,
+    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+) -> Result<cudf::Expr> {
+    let int64 = cudf::DataType::new(cudf::TypeId::Int64);
+    let expr = col(row_position_column).cast(int64);
+    let expr = if let Some(range) = row_position_range
+        && range.start > 0
+    {
+        expr + lit(position_delete_i64_bound(range.start, "start")?)
+    } else {
+        expr
+    };
+    Ok(expr.alias(row_position_column))
+}
+
+fn position_delete_filter_predicates(
+    data_file_path: &str,
+    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+) -> Result<Vec<cudf::Expr>> {
+    let mut predicates = vec![col(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN).eq(lit(data_file_path))];
+    if let Some(range) = row_position_range {
+        let start = position_delete_i64_bound(range.start, "start")?;
+        let end = position_delete_i64_bound(range.end, "end")?;
+        predicates.push(col(ICEBERG_POSITION_DELETE_POS_COLUMN).ge(lit(start)));
+        predicates.push(col(ICEBERG_POSITION_DELETE_POS_COLUMN).lt(lit(end)));
+    }
+    Ok(predicates)
+}
+
+fn position_delete_i64_bound(value: u64, bound: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
+            "Iceberg position-delete row-position range exceeds Int64 delete column representation",
+        )
+        .with_fact("reason", "position_delete_row_position_i64_overflow")
+        .with_fact("bound", bound)
+        .with_fact("value", value)
+        .with_fact("max", i64::MAX)
+    })
+}
+
+fn position_delete_file_overlaps_row_range(
+    delete_file: &crate::source::ParquetPositionDeleteFile,
+    range: crate::chunk::SourceChunkRowPositionRange,
+) -> bool {
+    if range.start >= range.end {
+        return false;
+    }
+    if delete_file.position_upper_bound.is_some_and(|upper| upper < range.start) {
+        return false;
+    }
+    if delete_file.position_lower_bound.is_some_and(|lower| lower >= range.end) {
+        return false;
+    }
+    true
 }
 
 fn read_position_delete_file(
@@ -1558,6 +1831,7 @@ fn validate_local_parquet_chunk_batch(
             || chunk.row_group_indexes.is_empty()
             || chunk.read_columns.is_empty()
             || !chunk.partition_values.is_empty()
+            || source.files.get(chunk.file_index).is_some_and(LocalParquetFile::has_position_delete_files)
         {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -1611,6 +1885,19 @@ fn cudf_error_for_chunk_with_budget_details(
     }
 }
 
+fn cudf_error_for_chunk_read(
+    operation: &'static str,
+    message: &'static str,
+    error: cudf::Error,
+    chunk: &SourceChunk,
+) -> QueryError {
+    if chunk.location.is_local_path() {
+        QueryError::from_cudf(operation, message, error)
+    } else {
+        QueryError::from_cudf_without_source(operation, message, &error)
+    }
+}
+
 fn cudf_error_for_chunk_batch_with_budget_details(
     operation: &'static str,
     message: &'static str,
@@ -1649,7 +1936,7 @@ fn empty_local_parquet_execution_frame(context: &ExecutionContext, source: &Loca
     })
 }
 
-fn apply_source_scan_limit_to_frame(
+pub(in crate::exec) fn apply_source_scan_limit_to_frame(
     context: &ExecutionContext,
     frame: DataFrame,
     remaining_rows: Option<usize>,

@@ -308,9 +308,98 @@ pub(super) fn read_object_store_parquet_chunk(
     Ok(ObjectStoreParquetChunkRead { outcome, observed_row_group_count, host_buffer_fetch })
 }
 
+pub(super) fn read_object_store_parquet_chunk_unbounded(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    cudf_source: &cudf::io::source::LocalParquetSource,
+    cudf_chunk: &cudf::io::source::SourceChunk,
+    metrics: &mut QueryMetrics,
+) -> Result<UnboundedObjectStoreParquetChunkRead> {
+    let _source_file = crate::chunk::source_file_for_chunk(
+        source,
+        chunk,
+        "nexus_query_engine.source_decode.host_buffer_chunk.source_file",
+    )?;
+    let estimated_fetch_bytes = chunk.known_file_bytes.or(chunk.estimated_source_read_bytes);
+    let fetch = if let Some(request) = ranged_parquet_chunk_request(source, chunk) {
+        start_host_parquet_buffer_ranged_fetch(context, &chunk.location, &chunk.resolved_source, request)?
+    } else {
+        start_host_parquet_buffer_fetch(context, &chunk.location, &chunk.resolved_source, estimated_fetch_bytes)?
+    };
+    let mut fetch = finish_with_full_fetch_fallback(
+        context,
+        &chunk.location,
+        &chunk.resolved_source,
+        estimated_fetch_bytes,
+        fetch,
+    )?;
+    metrics.record_host_fetch_budget_wait(fetch.host_budget_wait_elapsed);
+    metrics.record_source_fetch_concurrency_wait(fetch.concurrency_wait_elapsed);
+    metrics.record_source_fetch(fetch.actual_bytes, fetch.fetch_elapsed);
+    let decode_timer = Instant::now();
+    let output = if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+        let reader_decimal_types = mini_host_buffer_reader_decimal_types_for_chunk(context, source, chunk)?;
+        let descriptor = MiniParquetHostBufferDescriptor::from_chunk(
+            chunk,
+            fetch.actual_bytes,
+            &ranged_fetch.mini_row_group_bytes,
+            &ranged_fetch.mini_row_group_rows,
+            reader_decimal_types,
+        );
+        let (mini_source, mini_chunk) = cudf_local_parquet_source_mini_host_buffer_chunk(context, source, descriptor)
+            .map_err(|error| attach_ranged_fetch_facts(error, ranged_fetch, chunk))?;
+        DataFrame::read_parquet_source_chunk_from_host_buffer_with_evidence(
+            context.runtime(),
+            &mini_source,
+            &mini_chunk,
+            SourceReadMode::ExecutionFrame,
+            fetch.bytes(),
+        )
+    } else {
+        DataFrame::read_parquet_source_chunk_from_host_buffer_with_evidence(
+            context.runtime(),
+            cudf_source,
+            cudf_chunk,
+            SourceReadMode::ExecutionFrame,
+            fetch.bytes(),
+        )
+    }
+    .map_err(|error| {
+        let error = QueryError::from_cudf(
+            "nexus_query_engine.source_decode.host_buffer_chunk",
+            "failed to decode unbounded object-store Parquet source chunk from host buffer",
+            error,
+        )
+        .with_fact("path", parquet_chunk_path_fact(chunk))
+        .with_fact("stable_id", parquet_chunk_stable_id_fact(chunk))
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("read_columns", chunk.read_columns.len())
+        .with_row_group_facts(chunk);
+        if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+            attach_ranged_fetch_facts(error, ranged_fetch, chunk)
+        } else {
+            error
+        }
+    })?;
+    let observed_row_group_count =
+        record_host_buffer_chunk_read_metrics(chunk, &fetch, decode_timer.elapsed(), metrics);
+    let host_buffer_fetch = fetch.runtime_metrics();
+    fetch.release_after_decode();
+    Ok(UnboundedObjectStoreParquetChunkRead { output, observed_row_group_count, host_buffer_fetch })
+}
+
 // Decoded object-store chunk result with the fetch evidence needed for metrics.
 pub(super) struct ObjectStoreParquetChunkRead {
     pub(super) outcome: BudgetedExecutionOutcome<cudf::frame::dataframe::ParquetSourceChunkReadOutput>,
+    pub(super) observed_row_group_count: Option<u64>,
+    pub(super) host_buffer_fetch: HostBufferFetchRuntimeMetrics,
+}
+
+// Decoded unbounded object-store chunk result with the fetch evidence needed for metrics.
+pub(super) struct UnboundedObjectStoreParquetChunkRead {
+    pub(super) output: cudf::frame::dataframe::ParquetSourceChunkReadOutput,
     pub(super) observed_row_group_count: Option<u64>,
     pub(super) host_buffer_fetch: HostBufferFetchRuntimeMetrics,
 }
@@ -1116,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn ranged_chunk_request_is_disabled_for_position_delete_files() {
+    fn ranged_chunk_request_uses_explicit_row_groups_for_position_delete_chunks() {
         let mut source = scan_limited_source().with_column_file_indices(vec![0], vec![0], vec![]);
         let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
             "delete-0",
@@ -1128,10 +1217,14 @@ mod tests {
         )
         .unwrap();
         source.files[0] = source.files[0].clone().with_position_delete_files(vec![delete_file]);
-        let mut chunk = source_chunk(&source, vec![0, 1, 2]);
-        chunk.scan_limit_rows = Some(15);
+        let chunk = source_chunk(&source, vec![0, 1]);
 
-        assert!(ranged_parquet_chunk_request(&source, &chunk).is_none());
+        let request = ranged_parquet_chunk_request(&source, &chunk).unwrap();
+
+        assert!(matches!(
+            request.row_group_selector,
+            ranged_parquet::RangedRowGroupSelector::Explicit(row_groups) if row_groups == vec![0, 1]
+        ));
     }
 
     #[test]

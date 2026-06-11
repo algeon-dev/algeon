@@ -124,6 +124,55 @@ fn local_parquet_source_rejects_reader_predicate_with_position_deletes() {
 }
 
 #[test]
+fn local_parquet_source_accepts_contiguous_row_groups_with_position_deletes() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-0001",
+        ResolvedParquetSource::local_kvikio("/tmp/delete-0001.parquet"),
+    )
+    .unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/position-delete-row-groups.parquet")
+                .with_stable_id("position-delete-row-groups")
+                .with_row_groups(vec![1, 2])
+                .with_row_group_rows(vec![10, 20, 30])
+                .with_position_delete_files(vec![delete_file]),
+        ],
+        schema,
+        vec!["key".to_string()],
+    );
+
+    validate_local_parquet_source(&source).unwrap();
+}
+
+#[test]
+fn local_parquet_source_rejects_noncontiguous_row_groups_with_position_deletes() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-0001",
+        ResolvedParquetSource::local_kvikio("/tmp/delete-0001.parquet"),
+    )
+    .unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/position-delete-row-groups.parquet")
+                .with_stable_id("position-delete-row-groups")
+                .with_row_groups(vec![0, 2])
+                .with_row_group_rows(vec![10, 20, 30])
+                .with_position_delete_files(vec![delete_file]),
+        ],
+        schema,
+        vec!["key".to_string()],
+    );
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("position_deletes_require_contiguous_row_groups"));
+}
+
+#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),

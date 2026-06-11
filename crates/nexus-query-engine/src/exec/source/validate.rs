@@ -37,17 +37,8 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
             )
             .with_fact("file_index", file_index));
         }
-        if file.has_position_delete_files() && file.row_groups.as_ref().is_some_and(|row_groups| !row_groups.is_empty())
-        {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.local_parquet_source.validate",
-                "local parquet source with Iceberg position deletes must read full data files",
-            )
-            .with_fact("reason", "position_deletes_require_full_file_read")
-            .with_fact("file_index", file_index)
-            .with_fact("path", file_path_fact(file))
-            .with_fact("stable_id", file_stable_id_fact(file)));
+        if file.has_position_delete_files() {
+            validate_position_delete_row_group_selection(file, file_index)?;
         }
         for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
             if delete_file.stable_id.is_empty() {
@@ -215,6 +206,57 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
+    Ok(())
+}
+
+fn validate_position_delete_row_group_selection(file: &LocalParquetFile, file_index: usize) -> Result<()> {
+    let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty()) else {
+        return Ok(());
+    };
+    let mut previous = row_groups[0];
+    validate_position_delete_row_group_index(file, file_index, 0, previous)?;
+    for (row_group_position, row_group) in row_groups.iter().copied().enumerate().skip(1) {
+        validate_position_delete_row_group_index(file, file_index, row_group_position, row_group)?;
+        if previous.checked_add(1) != Some(row_group) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet source with Iceberg position deletes requires contiguous row-group selections",
+            )
+            .with_fact("reason", "position_deletes_require_contiguous_row_groups")
+            .with_fact("file_index", file_index)
+            .with_fact("path", file_path_fact(file))
+            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("previous_row_group", previous)
+            .with_fact("row_group", row_group));
+        }
+        previous = row_group;
+    }
+    Ok(())
+}
+
+fn validate_position_delete_row_group_index(
+    file: &LocalParquetFile,
+    file_index: usize,
+    row_group_position: usize,
+    row_group: usize,
+) -> Result<()> {
+    if let Some(row_group_rows) = file.row_group_rows.as_ref()
+        && row_group >= row_group_rows.len()
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.validate",
+            "local parquet source with Iceberg position deletes selected a row group outside row-count metadata",
+        )
+        .with_fact("reason", "position_deletes_row_group_outside_row_count_metadata")
+        .with_fact("file_index", file_index)
+        .with_fact("path", file_path_fact(file))
+        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("row_group_position", row_group_position)
+        .with_fact("row_group", row_group)
+        .with_fact("row_group_count", row_group_rows.len()));
+    }
     Ok(())
 }
 

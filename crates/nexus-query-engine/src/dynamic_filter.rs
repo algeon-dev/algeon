@@ -623,6 +623,7 @@ fn prune_source_row_groups_by_key_filter(
                 None => retained.push(row_group_index),
             }
         }
+        let retained = if file.has_position_delete_files() { contiguous_row_group_cover(retained) } else { retained };
         retained_total = retained_total.saturating_add(retained.len());
         selections.push(Some(retained));
     }
@@ -654,6 +655,14 @@ fn mark_source_row_groups_empty(source: &mut LocalParquetSource) {
 
 fn selected_or_all_row_groups(selected: Option<&Vec<usize>>, row_group_count: usize) -> Vec<usize> {
     selected.cloned().unwrap_or_else(|| (0..row_group_count).collect())
+}
+
+fn contiguous_row_group_cover(row_groups: Vec<usize>) -> Vec<usize> {
+    let Some(first) = row_groups.iter().copied().min() else {
+        return row_groups;
+    };
+    let last = row_groups.iter().copied().max().expect("min proved non-empty row group selection");
+    (first..=last).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -811,6 +820,9 @@ fn merge_source_reader_predicate(source: &mut LocalParquetSource, predicate: Exp
 }
 
 fn source_reader_predicate_merge_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
+    if source.has_position_delete_files() {
+        return false;
+    }
     let predicate = match &source.reader_predicate {
         Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
         None => predicate.clone(),

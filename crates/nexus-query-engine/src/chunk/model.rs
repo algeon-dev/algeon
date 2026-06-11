@@ -26,6 +26,15 @@ pub struct SourceChunkPlan {
     pub metadata_load_count: u64,
 }
 
+/// File-global row-position range represented by one source chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceChunkRowPositionRange {
+    /// Inclusive file-global starting row position.
+    pub start: u64,
+    /// Exclusive file-global ending row position.
+    pub end: u64,
+}
+
 impl SourceChunkPlan {
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()

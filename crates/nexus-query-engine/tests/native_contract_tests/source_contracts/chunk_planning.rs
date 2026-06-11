@@ -632,6 +632,51 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
 }
 
 #[test]
+fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predicate() {
+    let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-position-delete");
+    let path = dir.join("input.parquet");
+    let schema = write_row_grouped_parquet(&path, 8, 2);
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-0",
+        ResolvedParquetSource::local_kvikio(dir.join("delete.parquet").display().to_string()),
+    )
+    .unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_row_group_rows(vec![2, 2, 2, 2])
+                .with_position_delete_files(vec![delete_file]),
+        ],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        nexus_query_engine::DynamicFilterId::new(0),
+        nexus_query_engine::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
+    );
+
+    let rewritten =
+        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.row_group_count(), 3);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1, 2]);
+    assert!(rewritten.reader_predicate.is_none());
+    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 3);
+    assert_eq!(stats.total_row_groups, 4);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
     let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-empty");
     let path = dir.join("input.parquet");

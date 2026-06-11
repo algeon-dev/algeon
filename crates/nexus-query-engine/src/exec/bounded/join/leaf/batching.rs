@@ -66,6 +66,9 @@ pub(super) fn join_leaf_source_batching_disabled_reason(source: &LocalParquetSou
     if !source.partition_columns.is_empty() {
         return Some("source_gate:partition_columns");
     }
+    if source.files.iter().any(LocalParquetFile::has_position_delete_files) {
+        return Some("source_gate:position_deletes");
+    }
     None
 }
 

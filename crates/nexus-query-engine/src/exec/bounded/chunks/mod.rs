@@ -4,14 +4,14 @@ use parquet::file::reader::FileReader;
 
 use super::{
     super::source::{
-        ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, local_parquet_execution_frame_schema,
-        read_local_parquet_chunk, read_local_parquet_chunk_batch,
+        ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame,
+        local_parquet_execution_frame_schema, read_local_parquet_chunk, read_local_parquet_chunk_batch,
     },
     *,
 };
 use crate::{
     exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
-    source::{ParquetReadStrategy, RemoteParquetReadMode},
+    source::{LocalParquetFile, ParquetReadStrategy, RemoteParquetReadMode},
 };
 
 const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
@@ -149,6 +149,7 @@ fn bounded_source_adjacent_chunk_batching_enabled(
     bounded.has_source_adjacent_stages()
         && context.local_parquet_source_cache().is_none()
         && bounded.source.partition_columns.is_empty()
+        && !bounded.source.files.iter().any(LocalParquetFile::has_position_delete_files)
         && bounded.source.scan_limit.is_none()
         && bounded
             .source
@@ -163,6 +164,9 @@ fn bounded_source_adjacent_chunk_batches(
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> Vec<SourceChunkBatch> {
+    if bounded.source.files.iter().any(LocalParquetFile::has_position_delete_files) {
+        return singleton_source_chunk_batches(chunks);
+    }
     let max_batch_source_read_bytes = match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
             Some(max_source_chunk_bytes.min(source_adjacent_raw_source_batch_max_bytes(
@@ -178,6 +182,23 @@ fn bounded_source_adjacent_chunk_batches(
         )),
     };
     plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+}
+
+fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(batch_index, chunk)| SourceChunkBatch {
+            batch_index,
+            chunks: vec![chunk.clone()],
+            estimated_source_read_bytes: chunk
+                .estimated_source_read_bytes
+                .or(chunk.known_row_group_bytes)
+                .or(chunk.estimated_chunk_bytes)
+                .or(chunk.known_file_bytes),
+            source_batching_reason: "source_gate:position_deletes".to_string(),
+        })
+        .collect()
 }
 
 fn source_adjacent_raw_source_batch_max_bytes(
