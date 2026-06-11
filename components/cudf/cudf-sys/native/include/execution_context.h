@@ -42,7 +42,7 @@ typedef struct cudf_exec_options_t {
 } cudf_exec_options_t;
 
 #define CUDF_EXEC_OPTIONS_INITIALIZER \
-  { sizeof(cudf_exec_options_t), -1, 0u, NULL, NULL, {0u, 0u, 0u, 0u} }
+  {sizeof(cudf_exec_options_t), -1, 0u, NULL, NULL, {0u, 0u, 0u, 0u}}
 
 #ifdef __cplusplus
 }

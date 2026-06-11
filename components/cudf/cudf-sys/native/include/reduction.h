@@ -1,11 +1,12 @@
 #ifndef CUDF_RUST_REDUCTION_H
 #define CUDF_RUST_REDUCTION_H
 
-#include "error.h"
 #include "column.h"
+#include "error.h"
 #include "execution_context.h"
 #include "scalar.h"
 #include "types.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -37,27 +38,22 @@ typedef enum {
 } cudf_scan_type_t;
 
 /// Create a simple reduce aggregation.
-cudf_status_t cudf_reduce_aggregation_create(
-    cudf_reduce_aggregation_kind_t kind,
-    cudf_reduce_aggregation_handle* out);
+cudf_status_t cudf_reduce_aggregation_create(cudf_reduce_aggregation_kind_t kind,
+                                             cudf_reduce_aggregation_handle* out);
 
 /// Create a VARIANCE reduce aggregation with ddof.
-cudf_status_t cudf_reduce_aggregation_create_variance(
-    int32_t ddof,
-    cudf_reduce_aggregation_handle* out);
+cudf_status_t cudf_reduce_aggregation_create_variance(int32_t ddof,
+                                                      cudf_reduce_aggregation_handle* out);
 
 /// Create a STD reduce aggregation with ddof.
-cudf_status_t cudf_reduce_aggregation_create_std(
-    int32_t ddof,
-    cudf_reduce_aggregation_handle* out);
+cudf_status_t cudf_reduce_aggregation_create_std(int32_t ddof, cudf_reduce_aggregation_handle* out);
 
 /// Destroy a reduce aggregation handle.
 void cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle);
 
 /// Create a simple scan aggregation.
-cudf_status_t cudf_scan_aggregation_create(
-    cudf_reduce_aggregation_kind_t kind,
-    cudf_scan_aggregation_handle* out);
+cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
+                                           cudf_scan_aggregation_handle* out);
 
 /// Destroy a scan aggregation handle.
 void cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle);

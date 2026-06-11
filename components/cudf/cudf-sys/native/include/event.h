@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "stream.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -70,10 +71,12 @@ cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out);
 cudf_status_t cudf_test_event_stream_wait_call_count(int32_t* out);
 
 /// Read the number of `cudaStreamWaitEvent` calls observed for one raw stream.
-cudf_status_t cudf_test_event_stream_wait_call_count_for_stream_raw(uintptr_t stream_raw, int32_t* out);
+cudf_status_t cudf_test_event_stream_wait_call_count_for_stream_raw(uintptr_t stream_raw,
+                                                                    int32_t* out);
 
 /// Read the number of `cudaStreamWaitEvent` calls observed for one raw event.
-cudf_status_t cudf_test_event_stream_wait_call_count_for_event_raw(uintptr_t event_raw, int32_t* out);
+cudf_status_t cudf_test_event_stream_wait_call_count_for_event_raw(uintptr_t event_raw,
+                                                                   int32_t* out);
 
 /// Read the last raw CUDA stream pointer passed to `cudaStreamWaitEvent`.
 cudf_status_t cudf_test_event_last_wait_stream_raw(uintptr_t* out);
@@ -85,7 +88,8 @@ cudf_status_t cudf_test_event_last_wait_event_raw(uintptr_t* out);
 cudf_status_t cudf_test_event_raw_record_call_count(int32_t* out);
 
 /// Read the number of raw `cudaEventRecord` calls observed for one raw stream.
-cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(uintptr_t stream_raw, int32_t* out);
+cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(uintptr_t stream_raw,
+                                                                   int32_t* out);
 
 /// Read the last raw CUDA stream pointer passed to `cudaEventRecord` via the raw shim.
 cudf_status_t cudf_test_event_last_raw_record_stream_raw(uintptr_t* out);

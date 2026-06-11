@@ -1,8 +1,8 @@
 #ifndef CUDF_RUST_SEARCH_H
 #define CUDF_RUST_SEARCH_H
 
-#include "error.h"
 #include "column.h"
+#include "error.h"
 #include "execution_context.h"
 
 #ifdef __cplusplus

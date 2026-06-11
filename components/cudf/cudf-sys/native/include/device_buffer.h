@@ -1,8 +1,9 @@
 #ifndef CUDF_RUST_DEVICE_BUFFER_H
 #define CUDF_RUST_DEVICE_BUFFER_H
 
-#include "error.h"
 #include "column.h"
+#include "error.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,8 +21,7 @@ typedef void* cudf_device_buffer_handle;
 /// are uninitialized.
 ///
 /// Returns CUDF_ERROR_OUT_OF_MEMORY if allocation fails.
-cudf_status_t cudf_device_buffer_create(size_t size,
-                                        cudf_device_buffer_handle* out);
+cudf_status_t cudf_device_buffer_create(size_t size, cudf_device_buffer_handle* out);
 
 /// Release a device buffer. Safe to call with NULL (no-op).
 ///
@@ -38,12 +38,10 @@ void cudf_device_buffer_destroy(cudf_device_buffer_handle handle);
 ///
 /// For zero-size buffers this call still succeeds, but the returned pointer
 /// may be NULL because there is no addressable device range.
-cudf_status_t cudf_device_buffer_data(cudf_device_buffer_handle handle,
-                                      void** out);
+cudf_status_t cudf_device_buffer_data(cudf_device_buffer_handle handle, void** out);
 
 /// Get the size in bytes of a buffer.
-cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle,
-                                      size_t* out);
+cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle, size_t* out);
 
 /// Copy host data into the device buffer.
 ///
@@ -52,10 +50,9 @@ cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle,
 /// and synchronized before return.
 ///
 /// Returns CUDF_ERROR_INVALID_OPERATION if `size > buffer_size`.
-cudf_status_t cudf_device_buffer_copy_from_host(
-    cudf_device_buffer_handle handle,
-    const void* host_data,
-    size_t size);
+cudf_status_t cudf_device_buffer_copy_from_host(cudf_device_buffer_handle handle,
+                                                const void* host_data,
+                                                size_t size);
 
 /// Create a column by adopting (moving) an existing device buffer.
 /// Zero-copy: no device-to-device memcpy occurs.
@@ -72,11 +69,10 @@ cudf_status_t cudf_device_buffer_copy_from_host(
 /// Buffer byte size must equal `row_count * element_size_of(type_id)`.
 ///
 /// The resulting column has no null mask (null_count = 0).
-cudf_status_t cudf_column_adopt_device_buffer(
-    cudf_type_id_t type_id,
-    cudf_device_buffer_handle buffer,
-    int32_t row_count,
-    cudf_column_handle* out);
+cudf_status_t cudf_column_adopt_device_buffer(cudf_type_id_t type_id,
+                                              cudf_device_buffer_handle buffer,
+                                              int32_t row_count,
+                                              cudf_column_handle* out);
 
 /// Create a nullable column by adopting data and null-mask buffers.
 /// Zero-copy: no device-to-device memcpy occurs.
@@ -88,13 +84,12 @@ cudf_status_t cudf_column_adopt_device_buffer(
 /// bitmask_allocation_size_bytes(row_count) bytes.
 ///
 /// `null_count` must be in [0, row_count].
-cudf_status_t cudf_column_adopt_device_buffer_nullable(
-    cudf_type_id_t type_id,
-    cudf_device_buffer_handle data_buffer,
-    cudf_device_buffer_handle null_mask_buffer,
-    int32_t null_count,
-    int32_t row_count,
-    cudf_column_handle* out);
+cudf_status_t cudf_column_adopt_device_buffer_nullable(cudf_type_id_t type_id,
+                                                       cudf_device_buffer_handle data_buffer,
+                                                       cudf_device_buffer_handle null_mask_buffer,
+                                                       int32_t null_count,
+                                                       int32_t row_count,
+                                                       cudf_column_handle* out);
 
 #ifdef __cplusplus
 }

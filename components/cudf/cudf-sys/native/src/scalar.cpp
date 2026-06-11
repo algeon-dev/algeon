@@ -1,18 +1,19 @@
-#include "execution_context_internal.hpp"
 #include "scalar.h"
+
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
+#include <cudf/fixed_point/fixed_point.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
-#include <cudf/wrappers/timestamps.hpp>
 #include <cudf/wrappers/durations.hpp>
-#include <cudf/fixed_point/fixed_point.hpp>
+#include <cudf/wrappers/timestamps.hpp>
 
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -22,19 +23,20 @@ template <typename T>
 static std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
                                                          bool is_valid,
                                                          rmm::cuda_stream_view stream,
-                                                         rmm::device_async_resource_ref mr) {
+                                                         rmm::device_async_resource_ref mr)
+{
   T val{};
-  if (value != nullptr) {
-    std::memcpy(&val, value, sizeof(T));
-  }
+  if (value != nullptr) { std::memcpy(&val, value, sizeof(T)); }
   return std::make_unique<cudf::numeric_scalar<T>>(val, is_valid, stream, mr);
 }
 
 extern "C" {
 
 cudf_status_t cudf_scalar_create_numeric(cudf_type_id_t type_id,
-                                         const void* value, int32_t is_valid,
-                                         cudf_scalar_handle* out) {
+                                         const void* value,
+                                         int32_t is_valid,
+                                         cudf_scalar_handle* out)
+{
   return cudf_scalar_create_numeric_ex(type_id, value, is_valid, nullptr, out);
 }
 
@@ -42,21 +44,20 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
                                             const void* value,
                                             int32_t is_valid,
                                             cudf_exec_options_t const* options,
-                                            cudf_scalar_handle* out) {
+                                            cudf_scalar_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     std::unique_ptr<cudf::scalar> s;
     bool valid = is_valid != 0;
-    if (valid) {
-      CUDF_RUST_NULL_CHECK(value, "value is null");
-    }
+    if (valid) { CUDF_RUST_NULL_CHECK(value, "value is null"); }
     switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::INT8:
         s = make_numeric_scalar<int8_t>(value, valid, exec.stream, exec.mr);
@@ -91,9 +92,7 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
       case cudf::type_id::BOOL8:
         s = make_numeric_scalar<bool>(value, valid, exec.stream, exec.mr);
         break;
-      default:
-        set_error("Unsupported type for numeric scalar");
-        return CUDF_ERROR_TYPE;
+      default: set_error("Unsupported type for numeric scalar"); return CUDF_ERROR_TYPE;
     }
     *out = static_cast<cudf_scalar_handle>(s.release());
     return CUDF_SUCCESS;
@@ -101,30 +100,30 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_create_string(const char* value, int32_t is_valid,
-                                        cudf_scalar_handle* out) {
+cudf_status_t cudf_scalar_create_string(const char* value,
+                                        int32_t is_valid,
+                                        cudf_scalar_handle* out)
+{
   return cudf_scalar_create_string_ex(value, is_valid, nullptr, out);
 }
 
 cudf_status_t cudf_scalar_create_string_ex(const char* value,
                                            int32_t is_valid,
                                            cudf_exec_options_t const* options,
-                                           cudf_scalar_handle* out) {
+                                           cudf_scalar_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
-  if (is_valid != 0) {
-    CUDF_RUST_NULL_CHECK(value, "value is null");
-  }
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  if (is_valid != 0) { CUDF_RUST_NULL_CHECK(value, "value is null"); }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     std::string str_val = (value != nullptr) ? std::string(value) : std::string();
-    auto s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0,
-                                                   exec.stream, exec.mr);
+    auto s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0, exec.stream, exec.mr);
     exec.stream.synchronize();
     cudf_record_synchronized_stream(exec.stream);
     *out = static_cast<cudf_scalar_handle>(s.release());
@@ -133,21 +132,22 @@ cudf_status_t cudf_scalar_create_string_ex(const char* value,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_copy(cudf_scalar_handle src,
-                                cudf_scalar_handle* out) {
+cudf_status_t cudf_scalar_copy(cudf_scalar_handle src, cudf_scalar_handle* out)
+{
   return cudf_scalar_copy_ex(src, nullptr, out);
 }
 
 cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
-                                   cudf_exec_options_t const* options,
-                                   cudf_scalar_handle* out) {
+                                  cudf_exec_options_t const* options,
+                                  cudf_scalar_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(src, "src is null");
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -156,11 +156,11 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
 
     switch (s->type().id()) {
       // Numeric types
-#define CUDF_COPY_NUMERIC(ENUM, TYPE) \
-      case cudf::type_id::ENUM: \
-        copy = std::make_unique<cudf::numeric_scalar<TYPE>>( \
-            static_cast<cudf::numeric_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
-        break;
+#define CUDF_COPY_NUMERIC(ENUM, TYPE)                                            \
+  case cudf::type_id::ENUM:                                                      \
+    copy = std::make_unique<cudf::numeric_scalar<TYPE>>(                         \
+      static_cast<cudf::numeric_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+    break;
       CUDF_COPY_NUMERIC(INT8, int8_t)
       CUDF_COPY_NUMERIC(INT16, int16_t)
       CUDF_COPY_NUMERIC(INT32, int32_t)
@@ -175,11 +175,11 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
 #undef CUDF_COPY_NUMERIC
 
       // Timestamp types
-#define CUDF_COPY_TIMESTAMP(ENUM, TYPE) \
-      case cudf::type_id::ENUM: \
-        copy = std::make_unique<cudf::timestamp_scalar<TYPE>>( \
-            static_cast<cudf::timestamp_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
-        break;
+#define CUDF_COPY_TIMESTAMP(ENUM, TYPE)                                            \
+  case cudf::type_id::ENUM:                                                        \
+    copy = std::make_unique<cudf::timestamp_scalar<TYPE>>(                         \
+      static_cast<cudf::timestamp_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+    break;
       CUDF_COPY_TIMESTAMP(TIMESTAMP_DAYS, cudf::timestamp_D)
       CUDF_COPY_TIMESTAMP(TIMESTAMP_SECONDS, cudf::timestamp_s)
       CUDF_COPY_TIMESTAMP(TIMESTAMP_MILLISECONDS, cudf::timestamp_ms)
@@ -188,11 +188,11 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
 #undef CUDF_COPY_TIMESTAMP
 
       // Duration types
-#define CUDF_COPY_DURATION(ENUM, TYPE) \
-      case cudf::type_id::ENUM: \
-        copy = std::make_unique<cudf::duration_scalar<TYPE>>( \
-            static_cast<cudf::duration_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
-        break;
+#define CUDF_COPY_DURATION(ENUM, TYPE)                                            \
+  case cudf::type_id::ENUM:                                                       \
+    copy = std::make_unique<cudf::duration_scalar<TYPE>>(                         \
+      static_cast<cudf::duration_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+    break;
       CUDF_COPY_DURATION(DURATION_DAYS, cudf::duration_D)
       CUDF_COPY_DURATION(DURATION_SECONDS, cudf::duration_s)
       CUDF_COPY_DURATION(DURATION_MILLISECONDS, cudf::duration_ms)
@@ -203,41 +203,42 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
       // String
       case cudf::type_id::STRING:
         copy = std::make_unique<cudf::string_scalar>(
-            static_cast<cudf::string_scalar const&>(*s), exec.stream, exec.mr);
+          static_cast<cudf::string_scalar const&>(*s), exec.stream, exec.mr);
         break;
 
       // Fixed-point decimal
       case cudf::type_id::DECIMAL32:
         copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal32>>(
-            static_cast<cudf::fixed_point_scalar<numeric::decimal32> const&>(*s),
-            exec.stream, exec.mr);
+          static_cast<cudf::fixed_point_scalar<numeric::decimal32> const&>(*s),
+          exec.stream,
+          exec.mr);
         break;
       case cudf::type_id::DECIMAL64:
         copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal64>>(
-            static_cast<cudf::fixed_point_scalar<numeric::decimal64> const&>(*s),
-            exec.stream, exec.mr);
+          static_cast<cudf::fixed_point_scalar<numeric::decimal64> const&>(*s),
+          exec.stream,
+          exec.mr);
         break;
       case cudf::type_id::DECIMAL128:
         copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal128>>(
-            static_cast<cudf::fixed_point_scalar<numeric::decimal128> const&>(*s),
-            exec.stream, exec.mr);
+          static_cast<cudf::fixed_point_scalar<numeric::decimal128> const&>(*s),
+          exec.stream,
+          exec.mr);
         break;
 
       // List
       case cudf::type_id::LIST:
         copy = std::make_unique<cudf::list_scalar>(
-            static_cast<cudf::list_scalar const&>(*s), exec.stream, exec.mr);
+          static_cast<cudf::list_scalar const&>(*s), exec.stream, exec.mr);
         break;
 
       // Struct
       case cudf::type_id::STRUCT:
         copy = std::make_unique<cudf::struct_scalar>(
-            static_cast<cudf::struct_scalar const&>(*s), exec.stream, exec.mr);
+          static_cast<cudf::struct_scalar const&>(*s), exec.stream, exec.mr);
         break;
 
-      default:
-        set_error("Unsupported type for scalar copy");
-        return CUDF_ERROR_TYPE;
+      default: set_error("Unsupported type for scalar copy"); return CUDF_ERROR_TYPE;
     }
 
     *out = static_cast<cudf_scalar_handle>(copy.release());
@@ -246,18 +247,17 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
   CUDF_RUST_CATCH
 }
 
-void cudf_scalar_destroy(cudf_scalar_handle handle) {
-  delete static_cast<cudf::scalar*>(handle);
-}
+void cudf_scalar_destroy(cudf_scalar_handle handle) { delete static_cast<cudf::scalar*>(handle); }
 
-cudf_status_t cudf_scalar_type(cudf_scalar_handle handle,
-                               cudf_type_id_t* out) {
+cudf_status_t cudf_scalar_type(cudf_scalar_handle handle, cudf_type_id_t* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = CUDF_TYPE_EMPTY;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto* s = static_cast<cudf::scalar*>(handle);
-    *out = static_cast<cudf_type_id_t>(s->type().id());
+    *out    = static_cast<cudf_type_id_t>(s->type().id());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -265,70 +265,78 @@ cudf_status_t cudf_scalar_type(cudf_scalar_handle handle,
 
 cudf_status_t cudf_scalar_data_type(cudf_scalar_handle handle,
                                     cudf_type_id_t* out_type_id,
-                                    int32_t* out_scale) {
+                                    int32_t* out_scale)
+{
   CUDF_RUST_NULL_CHECK(out_type_id, "out_type_id is null");
   CUDF_RUST_NULL_CHECK(out_scale, "out_scale is null");
   *out_type_id = CUDF_TYPE_EMPTY;
-  *out_scale = 0;
+  *out_scale   = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
-    auto* s = static_cast<cudf::scalar*>(handle);
-    auto dtype = s->type();
+  CUDF_RUST_TRY
+  {
+    auto* s      = static_cast<cudf::scalar*>(handle);
+    auto dtype   = s->type();
     *out_type_id = static_cast<cudf_type_id_t>(dtype.id());
-    *out_scale = dtype.scale();
+    *out_scale   = dtype.scale();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out) {
+cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out)
+{
   return cudf_scalar_is_valid_ex(handle, out, nullptr);
 }
 
-cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle, int32_t* out,
-                                      cudf_exec_options_t const* options) {
+cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle,
+                                      int32_t* out,
+                                      cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* s = static_cast<cudf::scalar*>(handle);
-    *out = s->is_valid(exec.stream) ? 1 : 0;
+    *out    = s->is_valid(exec.stream) ? 1 : 0;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out) {
+cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out)
+{
   return cudf_scalar_value_ex(handle, out, nullptr);
 }
 
-cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle, void* out,
-                                   cudf_exec_options_t const* options) {
+cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle,
+                                   void* out,
+                                   cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* s = static_cast<cudf::scalar*>(handle);
+    auto* s  = static_cast<cudf::scalar*>(handle);
     auto tid = s->type().id();
 
     // Dispatch to the correct numeric_scalar<T>::value().
     switch (tid) {
-#define CUDF_SCALAR_CASE(ENUM, TYPE)                                       \
-  case cudf::type_id::ENUM: {                                              \
+#define CUDF_SCALAR_CASE(ENUM, TYPE)                                            \
+  case cudf::type_id::ENUM: {                                                   \
     auto val = static_cast<cudf::numeric_scalar<TYPE>*>(s)->value(exec.stream); \
-    std::memcpy(out, &val, sizeof(TYPE));                                  \
-    break;                                                                 \
+    std::memcpy(out, &val, sizeof(TYPE));                                       \
+    break;                                                                      \
   }
       CUDF_SCALAR_CASE(INT8, int8_t)
       CUDF_SCALAR_CASE(INT16, int16_t)
@@ -342,32 +350,32 @@ cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle, void* out,
       CUDF_SCALAR_CASE(FLOAT64, double)
       CUDF_SCALAR_CASE(BOOL8, bool)
 #undef CUDF_SCALAR_CASE
-      default:
-        set_error("Unsupported type for scalar value extraction");
-        return CUDF_ERROR_TYPE;
+      default: set_error("Unsupported type for scalar value extraction"); return CUDF_ERROR_TYPE;
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
-                                       char** out, int32_t* len_out) {
+cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle, char** out, int32_t* len_out)
+{
   return cudf_scalar_string_value_ex(handle, out, len_out, nullptr);
 }
 
 cudf_status_t cudf_scalar_string_value_ex(cudf_scalar_handle handle,
-                                          char** out, int32_t* len_out,
-                                          cudf_exec_options_t const* options) {
+                                          char** out,
+                                          int32_t* len_out,
+                                          cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(len_out, "len_out is null");
   *len_out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
-    cudf_exec_context exec{cudf::get_default_stream(),
-                           cudf::get_current_device_resource_ref(),
-                           nullptr};
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -377,32 +385,28 @@ cudf_status_t cudf_scalar_string_value_ex(cudf_scalar_handle handle,
       return CUDF_ERROR_TYPE;
     }
     auto* str_scalar = static_cast<cudf::string_scalar*>(s);
-    auto host_value = str_scalar->to_string(exec.stream);
+    auto host_value  = str_scalar->to_string(exec.stream);
     if (host_value.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
       set_error("String scalar value exceeds supported host length");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
     auto const length = static_cast<int32_t>(host_value.size());
-    auto* copied = static_cast<char*>(std::malloc(static_cast<size_t>(length) + 1));
+    auto* copied      = static_cast<char*>(std::malloc(static_cast<size_t>(length) + 1));
     if (copied == nullptr) {
       set_error("Out of memory allocating string scalar host copy");
       return CUDF_ERROR_OUT_OF_MEMORY;
     }
-    if (length > 0) {
-      std::memcpy(copied, host_value.data(), static_cast<size_t>(length));
-    }
+    if (length > 0) { std::memcpy(copied, host_value.data(), static_cast<size_t>(length)); }
     copied[length] = '\0';
 
-    *out = copied;
+    *out     = copied;
     *len_out = length;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-void cudf_string_free(char* ptr) {
-  std::free(ptr);
-}
+void cudf_string_free(char* ptr) { std::free(ptr); }
 
 }  // extern "C"

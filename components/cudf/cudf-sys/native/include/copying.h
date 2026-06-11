@@ -1,10 +1,10 @@
 #ifndef CUDF_RUST_COPYING_H
 #define CUDF_RUST_COPYING_H
 
-#include "error.h"
-#include "table.h"
 #include "column.h"
+#include "error.h"
 #include "execution_context.h"
+#include "table.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,7 +12,7 @@ extern "C" {
 
 /// Out-of-bounds policy for gather operations.
 typedef enum {
-  CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY = 0,
+  CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY    = 0,
   CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK = 1,
 } cudf_out_of_bounds_policy_t;
 
@@ -41,16 +41,16 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
 /// `lhs` and `rhs` must have the same type and length as `boolean_mask`.
 /// `boolean_mask` must be of type BOOL8.
 cudf_status_t cudf_copy_if_else_vv(cudf_column_view_handle lhs,
-                                    cudf_column_view_handle rhs,
-                                    cudf_column_view_handle boolean_mask,
-                                    cudf_column_handle* out);
+                                   cudf_column_view_handle rhs,
+                                   cudf_column_view_handle boolean_mask,
+                                   cudf_column_handle* out);
 
 /// Conditionally select elements with explicit execution options.
 cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
-                                       cudf_column_view_handle rhs,
-                                       cudf_column_view_handle boolean_mask,
-                                       cudf_column_handle* out,
-                                       const cudf_exec_options_t* options);
+                                      cudf_column_view_handle rhs,
+                                      cudf_column_view_handle boolean_mask,
+                                      cudf_column_handle* out,
+                                      const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

@@ -1,10 +1,10 @@
 #ifndef CUDF_RUST_STRINGS_H
 #define CUDF_RUST_STRINGS_H
 
-#include "error.h"
 #include "column.h"
-#include "scalar.h"
+#include "error.h"
 #include "execution_context.h"
+#include "scalar.h"
 
 #include <stdint.h>
 
@@ -14,9 +14,9 @@ extern "C" {
 
 /// Strip side type matching cudf::strings::side_type.
 typedef enum {
-  CUDF_STRIP_LEFT = 0,
+  CUDF_STRIP_LEFT  = 0,
   CUDF_STRIP_RIGHT = 1,
-  CUDF_STRIP_BOTH = 2,
+  CUDF_STRIP_BOTH  = 2,
 } cudf_strip_side_t;
 
 // ---------------------------------------------------------------------------
@@ -24,8 +24,7 @@ typedef enum {
 // ---------------------------------------------------------------------------
 
 /// Convert string column to lowercase.
-cudf_status_t cudf_strings_to_lower(cudf_column_view_handle input,
-                                    cudf_column_handle* out);
+cudf_status_t cudf_strings_to_lower(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Convert string column to lowercase with explicit execution context.
 cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
@@ -33,8 +32,7 @@ cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
                                        const cudf_exec_options_t* options);
 
 /// Convert string column to uppercase.
-cudf_status_t cudf_strings_to_upper(cudf_column_view_handle input,
-                                    cudf_column_handle* out);
+cudf_status_t cudf_strings_to_upper(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Convert string column to uppercase with explicit execution context.
 cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
@@ -102,8 +100,7 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 
 /// Character count (not byte count) per string. Returns INT32 column.
-cudf_status_t cudf_strings_count_characters(cudf_column_view_handle input,
-                                            cudf_column_handle* out);
+cudf_status_t cudf_strings_count_characters(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Character count with explicit execution context.
 cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
@@ -111,8 +108,7 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
                                                const cudf_exec_options_t* options);
 
 /// Byte count per string. Returns INT32 column.
-cudf_status_t cudf_strings_count_bytes(cudf_column_view_handle input,
-                                       cudf_column_handle* out);
+cudf_status_t cudf_strings_count_bytes(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Byte count with explicit execution context.
 cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,

@@ -1,4 +1,5 @@
 #include "device_buffer.h"
+
 #include "device.h"
 #include "shim_common.h"
 
@@ -15,48 +16,50 @@
 
 extern "C" {
 
-cudf_status_t cudf_device_buffer_create(size_t size,
-                                        cudf_device_buffer_handle* out) {
+cudf_status_t cudf_device_buffer_create(size_t size, cudf_device_buffer_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto* buf = new rmm::device_buffer(size, stream, mr);
-    *out = static_cast<cudf_device_buffer_handle>(buf);
+    auto mr     = cudf::get_current_device_resource_ref();
+    auto* buf   = new rmm::device_buffer(size, stream, mr);
+    *out        = static_cast<cudf_device_buffer_handle>(buf);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-void cudf_device_buffer_destroy(cudf_device_buffer_handle handle) {
+void cudf_device_buffer_destroy(cudf_device_buffer_handle handle)
+{
   delete static_cast<rmm::device_buffer*>(handle);
 }
 
-cudf_status_t cudf_device_buffer_data(cudf_device_buffer_handle handle,
-                                      void** out) {
+cudf_status_t cudf_device_buffer_data(cudf_device_buffer_handle handle, void** out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   auto* buf = static_cast<rmm::device_buffer*>(handle);
-  *out = buf->data();
+  *out      = buf->data();
   return CUDF_SUCCESS;
 }
 
-cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle,
-                                      size_t* out) {
+cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle, size_t* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   auto* buf = static_cast<rmm::device_buffer*>(handle);
-  *out = buf->size();
+  *out      = buf->size();
   return CUDF_SUCCESS;
 }
 
-cudf_status_t cudf_device_buffer_copy_from_host(
-    cudf_device_buffer_handle handle,
-    const void* host_data,
-    size_t size) {
+cudf_status_t cudf_device_buffer_copy_from_host(cudf_device_buffer_handle handle,
+                                                const void* host_data,
+                                                size_t size)
+{
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(host_data, "host_data is null");
   auto* buf = static_cast<rmm::device_buffer*>(handle);
@@ -64,21 +67,22 @@ cudf_status_t cudf_device_buffer_copy_from_host(
     set_error("copy size exceeds buffer size");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto stream = cudf::get_default_stream();
-    CUDF_CUDA_TRY(cudaMemcpyAsync(buf->data(), host_data, size,
-                                  cudaMemcpyHostToDevice, stream.value()));
+    CUDF_CUDA_TRY(
+      cudaMemcpyAsync(buf->data(), host_data, size, cudaMemcpyHostToDevice, stream.value()));
     stream.synchronize();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_column_adopt_device_buffer(
-    cudf_type_id_t type_id,
-    cudf_device_buffer_handle buffer,
-    int32_t row_count,
-    cudf_column_handle* out) {
+cudf_status_t cudf_column_adopt_device_buffer(cudf_type_id_t type_id,
+                                              cudf_device_buffer_handle buffer,
+                                              int32_t row_count,
+                                              cudf_column_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   if (row_count < 0) {
@@ -86,15 +90,16 @@ cudf_status_t cudf_column_adopt_device_buffer(
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_NULL_CHECK(buffer, "buffer is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     cudf::data_type dtype(to_cudf_type_id(type_id));
     if (!cudf::is_fixed_width(dtype)) {
       set_error("only fixed-width types are supported for buffer adoption");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    auto* buf = static_cast<rmm::device_buffer*>(buffer);
-    auto elem_size = cudf::size_of(dtype);
+    auto* buf       = static_cast<rmm::device_buffer*>(buffer);
+    auto elem_size  = cudf::size_of(dtype);
     size_t expected = static_cast<size_t>(row_count) * elem_size;
     if (buf->size() != expected) {
       set_error("buffer size does not match row_count * element_size");
@@ -102,12 +107,11 @@ cudf_status_t cudf_column_adopt_device_buffer(
     }
 
     // Move the rmm::device_buffer into the column — zero copy.
-    auto col = std::make_unique<cudf::column>(
-        dtype,
-        static_cast<cudf::size_type>(row_count),
-        std::move(*buf),           // ownership transfer
-        rmm::device_buffer{},      // no null mask
-        0);                        // null_count = 0
+    auto col = std::make_unique<cudf::column>(dtype,
+                                              static_cast<cudf::size_type>(row_count),
+                                              std::move(*buf),       // ownership transfer
+                                              rmm::device_buffer{},  // no null mask
+                                              0);                    // null_count = 0
 
     // The original rmm::device_buffer object is now moved-from.
     // Delete the heap wrapper so the Rust side doesn't double-free.
@@ -119,13 +123,13 @@ cudf_status_t cudf_column_adopt_device_buffer(
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_column_adopt_device_buffer_nullable(
-    cudf_type_id_t type_id,
-    cudf_device_buffer_handle data_buffer,
-    cudf_device_buffer_handle null_mask_buffer,
-    int32_t null_count,
-    int32_t row_count,
-    cudf_column_handle* out) {
+cudf_status_t cudf_column_adopt_device_buffer_nullable(cudf_type_id_t type_id,
+                                                       cudf_device_buffer_handle data_buffer,
+                                                       cudf_device_buffer_handle null_mask_buffer,
+                                                       int32_t null_count,
+                                                       int32_t row_count,
+                                                       cudf_column_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   if (row_count < 0) {
@@ -138,7 +142,8 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
   }
   CUDF_RUST_NULL_CHECK(data_buffer, "data_buffer is null");
   CUDF_RUST_NULL_CHECK(null_mask_buffer, "null_mask_buffer is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     cudf::data_type dtype(to_cudf_type_id(type_id));
     if (!cudf::is_fixed_width(dtype)) {
       set_error("only fixed-width types are supported for buffer adoption");
@@ -148,15 +153,14 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
     auto* data_buf = static_cast<rmm::device_buffer*>(data_buffer);
     auto* mask_buf = static_cast<rmm::device_buffer*>(null_mask_buffer);
 
-    auto elem_size = cudf::size_of(dtype);
+    auto elem_size       = cudf::size_of(dtype);
     size_t expected_data = static_cast<size_t>(row_count) * elem_size;
     if (data_buf->size() != expected_data) {
       set_error("data buffer size does not match row_count * element_size");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    size_t min_mask = cudf::bitmask_allocation_size_bytes(
-        static_cast<cudf::size_type>(row_count));
+    size_t min_mask = cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(row_count));
     if (mask_buf->size() < min_mask) {
       set_error("null mask buffer is too small");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -165,12 +169,12 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
     if (expected_data > 0 && min_mask > 0) {
       int32_t data_device = -1;
       cudf_status_t const data_device_status =
-          cudf_cuda_pointer_get_device(data_buf->data(), &data_device);
+        cudf_cuda_pointer_get_device(data_buf->data(), &data_device);
       if (data_device_status != CUDF_SUCCESS) { return data_device_status; }
 
       int32_t mask_device = -1;
       cudf_status_t const mask_device_status =
-          cudf_cuda_pointer_get_device(mask_buf->data(), &mask_device);
+        cudf_cuda_pointer_get_device(mask_buf->data(), &mask_device);
       if (mask_device_status != CUDF_SUCCESS) { return mask_device_status; }
 
       if (data_device != mask_device) {
@@ -180,12 +184,11 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
     }
 
     // Move both rmm::device_buffers into the column — zero copy.
-    auto col = std::make_unique<cudf::column>(
-        dtype,
-        static_cast<cudf::size_type>(row_count),
-        std::move(*data_buf),
-        std::move(*mask_buf),
-        static_cast<cudf::size_type>(null_count));
+    auto col = std::make_unique<cudf::column>(dtype,
+                                              static_cast<cudf::size_type>(row_count),
+                                              std::move(*data_buf),
+                                              std::move(*mask_buf),
+                                              static_cast<cudf::size_type>(null_count));
 
     // Both original rmm::device_buffer objects are now moved-from.
     // Delete the heap wrappers.

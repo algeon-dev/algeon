@@ -1,8 +1,8 @@
 #ifndef CUDF_RUST_REPLACE_H
 #define CUDF_RUST_REPLACE_H
 
-#include "error.h"
 #include "column.h"
+#include "error.h"
 #include "execution_context.h"
 #include "scalar.h"
 

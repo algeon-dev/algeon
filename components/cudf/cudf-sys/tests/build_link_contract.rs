@@ -4,6 +4,7 @@ mod build_support;
 
 use std::{
     fs,
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -126,6 +127,35 @@ fn build_script_tracks_native_build_env_changes() {
 }
 
 #[test]
+fn build_script_requires_clang_tools_and_tracks_path_changes() {
+    for tool in ["clang-format", "clang-tidy"] {
+        let expected = format!("find_required_executable(\"{tool}\")");
+        assert!(BUILD_RS.contains(&expected), "expected build.rs to hard-require {tool} via `{expected}`");
+    }
+
+    assert!(
+        BUILD_RS.contains("cargo:rerun-if-env-changed=PATH"),
+        "expected build.rs to rerun when PATH changes so clang tool discovery stays current"
+    );
+}
+
+#[test]
+fn build_script_runs_clang_format_against_native_sources_only() {
+    for expected in [
+        "collect_native_clang_lint_files",
+        "run_clang_format_check",
+        "--dry-run",
+        "--Werror",
+        "clang-format check failed for cudf-sys/native",
+    ] {
+        assert!(
+            BUILD_RS.contains(expected),
+            "expected build.rs to contain native clang-format enforcement snippet `{expected}`"
+        );
+    }
+}
+
+#[test]
 fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
     assert!(
         BUILD_RS.contains("cargo:rustc-link-search=native="),
@@ -171,4 +201,116 @@ fn native_cmakelists_preserves_existing_prefix_path_when_using_install_dir() {
         NATIVE_CMAKELISTS.contains(required_snippet),
         "expected native/CMakeLists.txt to prepend CUDF install paths instead of overwriting CMAKE_PREFIX_PATH"
     );
+}
+
+#[test]
+fn clang_lint_file_matcher_accepts_supported_c_family_sources_only() {
+    for path in [
+        "native/src/error.cpp",
+        "native/src/c_header_smoke.c",
+        "native/include/error.h",
+        "native/src/handle_access.hpp",
+    ] {
+        assert!(build_support::is_clang_lintable_path(Path::new(path)), "expected {path} to be clang-lintable");
+    }
+
+    for path in [
+        "native/cmake/cargo-link.txt.in",
+        "native/src/owning_handle_fwd.hpp.in",
+        "native/src/README.md",
+        "native/src/not_a_source.rs",
+    ] {
+        assert!(
+            !build_support::is_clang_lintable_path(Path::new(path)),
+            "expected {path} to be excluded from clang linting"
+        );
+    }
+}
+
+#[test]
+fn collect_native_clang_lint_files_is_scoped_to_src_and_include() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lint_files = build_support::collect_native_clang_lint_files(manifest_dir).unwrap();
+
+    assert!(!lint_files.is_empty(), "expected cudf-sys/native to expose at least one clang-lintable file");
+    assert!(
+        lint_files.iter().all(|path| path.starts_with(manifest_dir.join("native/src"))
+            || path.starts_with(manifest_dir.join("native/include"))),
+        "expected clang lint files to stay within cudf-sys/native/src and cudf-sys/native/include: {lint_files:?}"
+    );
+    assert!(
+        lint_files.iter().all(|path| build_support::is_clang_lintable_path(path)),
+        "expected every collected file to satisfy the lintable-path predicate: {lint_files:?}"
+    );
+    assert!(
+        !lint_files.iter().any(|path| path.to_string_lossy().contains("/cudf/")),
+        "expected upstream cudf files to stay out of cudf-sys lint scope: {lint_files:?}"
+    );
+}
+
+#[test]
+fn clang_format_config_path_points_at_upstream_rapids_style_file() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config_path = build_support::clang_format_config_path(manifest_dir);
+
+    assert_eq!(
+        config_path,
+        manifest_dir.parent().unwrap().join("cudf/.clang-format"),
+        "expected clang-format config to come from the vendored cudf style file"
+    );
+}
+
+#[test]
+fn native_cmakelists_enables_clang_tidy_for_cudf_rust_target_only() {
+    for expected in ["CXX_CLANG_TIDY", "enable_clang_tidy(cudf_rust)", "CUDF_RUST_CLANG_TIDY_CONFIG_FILE"] {
+        assert!(
+            NATIVE_CMAKELISTS.contains(expected),
+            "expected native/CMakeLists.txt to contain `{expected}` for cudf_rust clang-tidy wiring"
+        );
+    }
+
+    assert!(
+        !NATIVE_CMAKELISTS.contains("enable_clang_tidy(cudf::cudf)"),
+        "did not expect upstream cudf target to be included in cudf-sys clang-tidy scope"
+    );
+}
+
+#[test]
+fn find_executable_in_path_reports_missing_binary() {
+    let error =
+        build_support::find_executable_in_path("clang-format", std::env::join_paths(["/definitely/missing"]).unwrap())
+            .unwrap_err();
+    assert!(error.contains("clang-format"), "unexpected error: {error}");
+    assert!(error.contains("PATH"), "unexpected error: {error}");
+}
+
+#[test]
+fn find_executable_in_path_finds_executable_binaries() {
+    #[cfg(not(unix))]
+    {
+        let _ = ();
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("cudf-sys-build-tool-contract-{unique}"));
+        let executable_path = temp_dir.join("clang-tidy");
+
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(&executable_path, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = fs::metadata(&executable_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable_path, permissions).unwrap();
+
+        let discovered =
+            build_support::find_executable_in_path("clang-tidy", std::env::join_paths([&temp_dir]).unwrap()).unwrap();
+
+        assert_eq!(discovered, executable_path);
+
+        fs::remove_file(&executable_path).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
 }

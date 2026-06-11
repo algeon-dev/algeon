@@ -1,10 +1,11 @@
 #ifndef CUDF_RUST_SORTING_H
 #define CUDF_RUST_SORTING_H
 
+#include "column.h"
 #include "error.h"
 #include "execution_context.h"
 #include "table.h"
-#include "column.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -13,13 +14,13 @@ extern "C" {
 
 /// Column sort order.
 typedef enum {
-  CUDF_ORDER_ASCENDING = 0,
+  CUDF_ORDER_ASCENDING  = 0,
   CUDF_ORDER_DESCENDING = 1,
 } cudf_order_t;
 
 /// Null ordering within sorted output.
 typedef enum {
-  CUDF_NULL_ORDER_AFTER = 0,
+  CUDF_NULL_ORDER_AFTER  = 0,
   CUDF_NULL_ORDER_BEFORE = 1,
 } cudf_null_order_t;
 
@@ -37,11 +38,11 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
 /// Pass NULL for `options` to use process defaults (identical to cudf_sort).
 /// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
-                            const cudf_order_t* column_order,
-                            const cudf_null_order_t* null_precedence,
-                            int32_t num_keys,
-                            cudf_table_handle* out,
-                            const cudf_exec_options_t* options);
+                           const cudf_order_t* column_order,
+                           const cudf_null_order_t* null_precedence,
+                           int32_t num_keys,
+                           cudf_table_handle* out,
+                           const cudf_exec_options_t* options);
 
 /// Stable sort (preserves relative order of equal elements).
 cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
@@ -53,11 +54,11 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
 /// Stable sort with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
-                                   const cudf_order_t* column_order,
-                                   const cudf_null_order_t* null_precedence,
-                                   int32_t num_keys,
-                                   cudf_table_handle* out,
-                                   const cudf_exec_options_t* options);
+                                  const cudf_order_t* column_order,
+                                  const cudf_null_order_t* null_precedence,
+                                  int32_t num_keys,
+                                  cudf_table_handle* out,
+                                  const cudf_exec_options_t* options);
 
 /// Sort `values` table by a separate `keys` table (unstable).
 cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
@@ -70,12 +71,12 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
 /// Sort by key with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
-                                   cudf_table_view_handle keys,
-                                   const cudf_order_t* column_order,
-                                   const cudf_null_order_t* null_precedence,
-                                   int32_t num_key_columns,
-                                   cudf_table_handle* out,
-                                   const cudf_exec_options_t* options);
+                                  cudf_table_view_handle keys,
+                                  const cudf_order_t* column_order,
+                                  const cudf_null_order_t* null_precedence,
+                                  int32_t num_key_columns,
+                                  cudf_table_handle* out,
+                                  const cudf_exec_options_t* options);
 
 /// Stable sort `values` table by a separate `keys` table.
 cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
@@ -88,12 +89,12 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
 /// Stable sort by key with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
-                                          cudf_table_view_handle keys,
-                                          const cudf_order_t* column_order,
-                                          const cudf_null_order_t* null_precedence,
-                                          int32_t num_key_columns,
-                                          cudf_table_handle* out,
-                                          const cudf_exec_options_t* options);
+                                         cudf_table_view_handle keys,
+                                         const cudf_order_t* column_order,
+                                         const cudf_null_order_t* null_precedence,
+                                         int32_t num_key_columns,
+                                         cudf_table_handle* out,
+                                         const cudf_exec_options_t* options);
 
 /// Return the row indices that would sort the table.
 /// Output is a single INT32 column.
@@ -106,11 +107,11 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
 /// Sorted order with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
-                                    const cudf_order_t* column_order,
-                                    const cudf_null_order_t* null_precedence,
-                                    int32_t num_keys,
-                                    cudf_column_handle* out,
-                                    const cudf_exec_options_t* options);
+                                   const cudf_order_t* column_order,
+                                   const cudf_null_order_t* null_precedence,
+                                   int32_t num_keys,
+                                   cudf_column_handle* out,
+                                   const cudf_exec_options_t* options);
 
 /// Check whether the table is already sorted.
 cudf_status_t cudf_is_sorted(cudf_table_view_handle input,

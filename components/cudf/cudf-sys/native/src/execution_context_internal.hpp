@@ -25,26 +25,27 @@ class cudf_device_guard {
   /// `target` matches the current device.
   cudf_status_t activate(int32_t target);
 
-  ~cudf_device_guard() {
-    if (active_) {
-      cudaSetDevice(previous_);
-    }
+  ~cudf_device_guard()
+  {
+    if (active_) { cudaSetDevice(previous_); }
   }
 
   // non-copyable
-  cudf_device_guard(cudf_device_guard const&) = delete;
+  cudf_device_guard(cudf_device_guard const&)            = delete;
   cudf_device_guard& operator=(cudf_device_guard const&) = delete;
 
   // movable (transfer ownership of the restore obligation)
   cudf_device_guard(cudf_device_guard&& other) noexcept
-      : previous_(other.previous_), active_(other.active_) {
+    : previous_(other.previous_), active_(other.active_)
+  {
     other.active_ = false;
   }
-  cudf_device_guard& operator=(cudf_device_guard&& other) noexcept {
+  cudf_device_guard& operator=(cudf_device_guard&& other) noexcept
+  {
     if (this != &other) {
       if (active_) { cudaSetDevice(previous_); }
-      previous_ = other.previous_;
-      active_ = other.active_;
+      previous_     = other.previous_;
+      active_       = other.active_;
       other.active_ = false;
     }
     return *this;
@@ -52,7 +53,7 @@ class cudf_device_guard {
 
  private:
   int32_t previous_ = 0;
-  bool active_ = false;
+  bool active_      = false;
 };
 
 struct cudf_exec_context {
@@ -63,8 +64,7 @@ struct cudf_exec_context {
   cudf_device_guard guard;
 };
 
-cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options,
-                                        cudf_exec_context* out);
+cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out);
 void cudf_record_synchronized_stream(rmm::cuda_stream_view stream);
 
 #endif  // CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP

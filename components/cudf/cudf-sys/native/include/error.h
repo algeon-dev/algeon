@@ -9,17 +9,17 @@ extern "C" {
 /// This enum is part of the Rust FFI ABI and must remain 32-bit compatible
 /// with Rust `#[repr(i32)]`. Keep `native/src/abi_checks.cpp` in sync.
 typedef enum {
-  CUDF_SUCCESS = 0,
+  CUDF_SUCCESS                 = 0,
   CUDF_ERROR_INVALID_OPERATION = 1,
-  CUDF_ERROR_CUDA = 2,
-  CUDF_ERROR_OUT_OF_MEMORY = 3,
-  CUDF_ERROR_IO = 4,
-  CUDF_ERROR_TYPE = 5,
-  CUDF_ERROR_NULL = 6,
-  CUDF_ERROR_INDEX = 7,
-  CUDF_ERROR_UNKNOWN = 8,
-  CUDF_ERROR_FATAL_CUDA = 9,
-  CUDF_ERROR_INVALID_ARGUMENT = 10,
+  CUDF_ERROR_CUDA              = 2,
+  CUDF_ERROR_OUT_OF_MEMORY     = 3,
+  CUDF_ERROR_IO                = 4,
+  CUDF_ERROR_TYPE              = 5,
+  CUDF_ERROR_NULL              = 6,
+  CUDF_ERROR_INDEX             = 7,
+  CUDF_ERROR_UNKNOWN           = 8,
+  CUDF_ERROR_FATAL_CUDA        = 9,
+  CUDF_ERROR_INVALID_ARGUMENT  = 10,
 } cudf_status_t;
 
 /// Retrieve the thread-local error message from the last failed call.
