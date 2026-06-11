@@ -3,10 +3,11 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{collections::HashSet, fmt, sync::Arc, time::Duration};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
 use async_trait::async_trait;
+use bytes::BytesMut;
 use datafusion::{
     catalog::Session,
     common::{DataFusionError, ScalarValue, project_schema},
@@ -17,14 +18,21 @@ use datafusion::{
 use futures::{StreamExt, future::BoxFuture};
 use iceberg::{
     expr::Reference,
+    io::{FileIO, FileRead},
+    metadata_columns::{get_metadata_field_id, is_metadata_column_name},
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFileFormat, Datum, Literal, NestedField, PartitionSpec, PrimitiveLiteral,
-        Schema as IcebergSchema, Transform, Type,
+        DataContentType, DataFile, DataFileFormat, Datum, Literal, Manifest, ManifestContentType, ManifestEntry,
+        ManifestFile, ManifestList, NestedField, PartitionSpec, PrimitiveLiteral, Schema as IcebergSchema,
+        SchemaRef as IcebergSchemaRef, SnapshotRef, Struct, Transform, Type,
     },
     table::Table,
 };
 use nexus_query_engine::is_supported_arrow_type;
+use parquet::file::{
+    FOOTER_SIZE,
+    metadata::{FooterTail, ParquetMetaDataReader},
+};
 
 use crate::{
     Error, ErrorCode, Result,
@@ -45,6 +53,8 @@ use crate::{
 const PLAN_SCAN_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan";
 const PLAN_SCAN_TIMEOUT_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan_timeout";
 const TASK_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceberg.convert_file_scan_tasks";
+const REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY: usize = 128;
+const REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY: usize = 32;
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
 /// DataFusion table provider that plans Iceberg metadata into adapter-owned
@@ -338,21 +348,28 @@ impl IcebergTableFormatPlanner {
             .table
             .scan()
             .with_case_sensitive(request.case_sensitive)
+            .with_concurrency_limit(REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY)
             .with_row_group_filtering_enabled(request.row_group_filtering_enabled)
             .with_row_selection_enabled(request.row_selection_enabled);
 
-        if let Some(snapshot_id) = request.snapshot_id.as_deref() {
-            let parsed_snapshot_id = snapshot_id.parse::<i64>().map_err(|error| {
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    PLAN_SCAN_OPERATION,
-                    "invalid Iceberg snapshot id in table-format scan request",
-                )
-                .with_fact("table_format", TableFormat::Iceberg.code())
-                .with_fact("snapshot_id", snapshot_id)
-                .with_source(error)
-            })?;
-            scan_builder = scan_builder.snapshot_id(parsed_snapshot_id);
+        let parsed_snapshot_id = request
+            .snapshot_id
+            .as_deref()
+            .map(|snapshot_id| {
+                snapshot_id.parse::<i64>().map_err(|error| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        PLAN_SCAN_OPERATION,
+                        "invalid Iceberg snapshot id in table-format scan request",
+                    )
+                    .with_fact("table_format", TableFormat::Iceberg.code())
+                    .with_fact("snapshot_id", snapshot_id)
+                    .with_source(error)
+                })
+            })
+            .transpose()?;
+        if let Some(snapshot_id) = parsed_snapshot_id {
+            scan_builder = scan_builder.snapshot_id(snapshot_id);
         }
 
         scan_builder = match request.projected_column_names.as_ref() {
@@ -375,50 +392,77 @@ impl IcebergTableFormatPlanner {
         if let Some(context) = timeout_context.as_ref() {
             context.check("after_build")?;
         }
-        let mut task_stream = if let Some(context) = timeout_context.as_ref() {
-            context.check("before_plan_files")?;
-            tokio::time::timeout(context.remaining("plan_files")?, scan.plan_files())
-                .await
-                .map_err(|_elapsed| context.error("plan_files"))?
-                .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
+        let catalog_type = request.catalog_type.clone().or_else(|| self.catalog_type.clone());
+        let snapshot_id = request
+            .snapshot_id
+            .clone()
+            .or_else(|| self.table.metadata().current_snapshot_id().map(|id| id.to_string()));
+        let request_has_predicate = request.predicate.is_some();
+        let mut plan = if let Some(plan) = self
+            .try_plan_predicate_free_limited_scan(
+                &request,
+                scan.snapshot().cloned(),
+                snapshot_id.clone(),
+                catalog_type.clone(),
+                timeout_context.as_ref(),
+            )
+            .await?
+        {
+            plan
         } else {
-            scan.plan_files()
-                .await
-                .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
-        };
-
-        let mut tasks = Vec::new();
-        loop {
-            let task = if let Some(context) = timeout_context.as_ref() {
-                context.check("before_next_file_scan_task")?;
-                tokio::time::timeout(context.remaining("next_file_scan_task")?, task_stream.next())
+            let mut task_stream = if let Some(context) = timeout_context.as_ref() {
+                context.check("before_plan_files")?;
+                tokio::time::timeout(context.remaining("plan_files")?, scan.plan_files())
                     .await
-                    .map_err(|_elapsed| context.error("next_file_scan_task"))?
+                    .map_err(|_elapsed| context.error("plan_files"))?
+                    .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
             } else {
-                task_stream.next().await
+                scan.plan_files()
+                    .await
+                    .map_err(|error| iceberg_planning_error("failed to plan Iceberg data files", error))?
             };
-            let Some(task) = task else {
-                break;
-            };
-            if let Some(context) = timeout_context.as_ref() {
-                context.check("after_next_file_scan_task")?;
-            }
-            tasks
-                .push(task.map_err(|error| iceberg_planning_error("failed to resolve Iceberg file scan task", error))?);
-        }
 
-        let catalog_type = request.catalog_type.or_else(|| self.catalog_type.clone());
-        let snapshot_id =
-            request.snapshot_id.or_else(|| self.table.metadata().current_snapshot_id().map(|id| id.to_string()));
-        let mut plan = iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enforcement(
-            snapshot_id,
-            catalog_type,
-            tasks,
-            &self.parquet_read_strategy_config,
-            parent_filter_enforces_iceberg_predicate,
-            timeout_context.as_ref(),
-        )?
+            let mut tasks = Vec::new();
+            loop {
+                let task = if let Some(context) = timeout_context.as_ref() {
+                    context.check("before_next_file_scan_task")?;
+                    tokio::time::timeout(context.remaining("next_file_scan_task")?, task_stream.next())
+                        .await
+                        .map_err(|_elapsed| context.error("next_file_scan_task"))?
+                } else {
+                    task_stream.next().await
+                };
+                let Some(task) = task else {
+                    break;
+                };
+                if let Some(context) = timeout_context.as_ref() {
+                    context.check("after_next_file_scan_task")?;
+                }
+                tasks.push(
+                    task.map_err(|error| iceberg_planning_error("failed to resolve Iceberg file scan task", error))?,
+                );
+            }
+
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enforcement(
+                snapshot_id,
+                catalog_type,
+                tasks,
+                &self.parquet_read_strategy_config,
+                parent_filter_enforces_iceberg_predicate,
+                timeout_context.as_ref(),
+            )?
+        }
         .with_scan_limit(request.scan_limit);
+        attach_remote_delete_file_row_counts_for_scan_limit(
+            &mut plan,
+            self.table.file_io(),
+            request_has_predicate,
+            timeout_context.as_ref(),
+        )
+        .await?;
+        trim_predicate_free_scan_limit_data_files(&mut plan, request_has_predicate);
+        attach_remote_footer_schemas_for_field_id_proof(&mut plan, self.table.file_io(), timeout_context.as_ref())
+            .await?;
         if row_selection_enabled {
             plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
                 TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,
@@ -426,6 +470,119 @@ impl IcebergTableFormatPlanner {
             ));
         }
         Ok(plan)
+    }
+
+    async fn try_plan_predicate_free_limited_scan(
+        &self,
+        request: &TableFormatScanRequest,
+        snapshot: Option<SnapshotRef>,
+        snapshot_id: Option<String>,
+        catalog_type: Option<String>,
+        timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+    ) -> Result<Option<TableFormatScanPlan>> {
+        if request.predicate.is_some() {
+            return Ok(None);
+        }
+        let Some(scan_limit) = request.scan_limit else {
+            return Ok(None);
+        };
+        let Some(snapshot) = snapshot else {
+            return Ok(None);
+        };
+        if scan_limit == 0 {
+            return Ok(Some(TableFormatScanPlan::new(TableFormat::Iceberg)));
+        }
+        if let Some(context) = timeout_context {
+            context.check("before_predicate_free_limit_manifest_list")?;
+        }
+
+        let snapshot_schema = snapshot
+            .schema(self.table.metadata())
+            .map_err(|error| iceberg_planning_error("failed to resolve Iceberg snapshot schema", error))?;
+        let field_ids =
+            Arc::new(iceberg_project_field_ids(snapshot_schema.as_ref(), request.projected_column_names.as_deref())?);
+        let manifest_list = load_iceberg_manifest_list(&self.table, &snapshot, timeout_context).await?;
+        if !manifest_list.entries().iter().any(|manifest| manifest.content == ManifestContentType::Deletes) {
+            return Ok(None);
+        }
+
+        let delete_index = load_limited_delete_index(&manifest_list, self.table.file_io(), timeout_context).await?;
+        let logical_schema = iceberg_schema_to_datafusion_arrow_schema(snapshot_schema.as_ref())?;
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&logical_schema))
+            .with_native_source_schema(logical_schema);
+        if let Some(snapshot_id) = snapshot_id {
+            plan = plan.with_snapshot_id(snapshot_id);
+        }
+        if let Some(catalog_type) = catalog_type {
+            plan = plan.with_catalog_type(catalog_type);
+        }
+
+        let mut data_manifests = manifest_list
+            .entries()
+            .iter()
+            .filter(|manifest| manifest.content == ManifestContentType::Data)
+            .filter(|manifest| manifest.has_added_files() || manifest.has_existing_files())
+            .cloned()
+            .collect::<Vec<_>>();
+        data_manifests.sort_by(|left, right| manifest_live_rows(right).cmp(&manifest_live_rows(left)));
+
+        let limit = u64::try_from(scan_limit).unwrap_or(u64::MAX);
+        let mut task_index = 0usize;
+        for manifest_file in data_manifests {
+            if let Some(context) = timeout_context {
+                context.check("before_predicate_free_limit_data_manifest")?;
+            }
+            let data_partition_spec_id = manifest_file.partition_spec_id;
+            let manifest = load_iceberg_manifest(
+                self.table.file_io(),
+                &manifest_file,
+                timeout_context,
+                "predicate_free_limit_data_manifest",
+            )
+            .await?;
+            let mut entries = manifest
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry.is_alive() && entry.content_type() == DataContentType::Data && entry.record_count() > 0
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            entries.sort_by(|left, right| right.record_count().cmp(&left.record_count()));
+
+            for entry in entries {
+                if let Some(context) = timeout_context {
+                    context.check("before_predicate_free_limit_data_file")?;
+                }
+                let partition_spec = self.table.metadata().partition_spec_by_id(data_partition_spec_id).cloned();
+                let limited_deletes = delete_index.deletes_for_data_file(
+                    entry.data_file(),
+                    data_partition_spec_id,
+                    entry.sequence_number(),
+                );
+                let deletes =
+                    limited_deletes.iter().map(LimitedDeleteFile::to_file_scan_task_delete_file).collect::<Vec<_>>();
+                let task = file_scan_task_from_manifest_entry(
+                    entry.as_ref(),
+                    Arc::clone(&snapshot_schema),
+                    Arc::clone(&field_ids),
+                    partition_spec,
+                    deletes,
+                    request.case_sensitive,
+                );
+                append_task_facts(&mut plan, task_index, task, &self.parquet_read_strategy_config, false)?;
+                let data_file_index = plan.data_files.len() - 1;
+                attach_manifest_delete_row_counts(&mut plan, data_file_index, &limited_deletes);
+                task_index += 1;
+
+                if scan_plan_live_row_lower_bound(&plan).is_some_and(|rows| rows >= limit) {
+                    return Ok(Some(plan));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -727,6 +884,619 @@ fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enfo
     Ok(plan)
 }
 
+fn iceberg_project_field_ids(schema: &IcebergSchema, column_names: Option<&[String]>) -> Result<Vec<i32>> {
+    let column_names = column_names
+        .map(|column_names| column_names.to_vec())
+        .unwrap_or_else(|| schema.as_struct().fields().iter().map(|field| field.name.clone()).collect());
+    let mut field_ids = Vec::with_capacity(column_names.len());
+    for column_name in column_names {
+        if is_metadata_column_name(&column_name) {
+            field_ids.push(get_metadata_field_id(&column_name).map_err(|error| {
+                iceberg_planning_error("failed to bind Iceberg metadata column in table-format scan", error)
+            })?);
+            continue;
+        }
+        let field_id = schema.field_id_by_name(&column_name).ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                PLAN_SCAN_OPERATION,
+                "Iceberg scan projection references a column that is absent from the snapshot schema",
+            )
+            .with_fact("table_format", TableFormat::Iceberg.code())
+            .with_fact("column", column_name.clone())
+        })?;
+        if schema.as_struct().field_by_id(field_id).is_none() {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                PLAN_SCAN_OPERATION,
+                "Iceberg scan projection references a nested field that native table-format scans cannot bind",
+            )
+            .with_fact("table_format", TableFormat::Iceberg.code())
+            .with_fact("column", column_name)
+            .with_fact("field_id", field_id));
+        }
+        field_ids.push(field_id);
+    }
+    Ok(field_ids)
+}
+
+async fn load_iceberg_manifest_list(
+    table: &Table,
+    snapshot: &SnapshotRef,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+) -> Result<ManifestList> {
+    let reader = table.manifest_list_reader(snapshot);
+    let load = reader.load();
+    if let Some(context) = timeout_context {
+        tokio::time::timeout(context.remaining("predicate_free_limit_manifest_list")?, load)
+            .await
+            .map_err(|_elapsed| context.error("predicate_free_limit_manifest_list"))?
+            .map_err(|error| iceberg_planning_error("failed to load Iceberg manifest list", error))
+    } else {
+        load.await.map_err(|error| iceberg_planning_error("failed to load Iceberg manifest list", error))
+    }
+}
+
+async fn load_iceberg_manifest(
+    file_io: &FileIO,
+    manifest_file: &ManifestFile,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+    stage: &'static str,
+) -> Result<Manifest> {
+    let load = manifest_file.load_manifest(file_io);
+    if let Some(context) = timeout_context {
+        tokio::time::timeout(context.remaining(stage)?, load)
+            .await
+            .map_err(|_elapsed| context.error(stage))?
+            .map_err(|error| iceberg_planning_error("failed to load Iceberg manifest", error))
+    } else {
+        load.await.map_err(|error| iceberg_planning_error("failed to load Iceberg manifest", error))
+    }
+}
+
+async fn load_limited_delete_index(
+    manifest_list: &ManifestList,
+    file_io: &FileIO,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+) -> Result<LimitedDeleteIndex> {
+    if let Some(context) = timeout_context {
+        context.check("before_predicate_free_limit_delete_manifests")?;
+    }
+    let requests = manifest_list
+        .entries()
+        .iter()
+        .filter(|manifest| manifest.content == ManifestContentType::Deletes)
+        .filter(|manifest| manifest.has_added_files() || manifest.has_existing_files())
+        .cloned()
+        .collect::<Vec<_>>();
+    let fetches = requests.into_iter().map(|manifest_file| {
+        let file_io = file_io.clone();
+        async move {
+            let partition_spec_id = manifest_file.partition_spec_id;
+            load_iceberg_manifest(&file_io, &manifest_file, None, "predicate_free_limit_delete_manifest")
+                .await
+                .map(|manifest| (partition_spec_id, manifest))
+        }
+    });
+    let mut manifests = futures::stream::iter(fetches).buffer_unordered(REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY);
+    let mut index = LimitedDeleteIndex::default();
+    loop {
+        let result = if let Some(context) = timeout_context {
+            tokio::time::timeout(context.remaining("predicate_free_limit_delete_manifest")?, manifests.next())
+                .await
+                .map_err(|_elapsed| context.error("predicate_free_limit_delete_manifest"))?
+        } else {
+            manifests.next().await
+        };
+        let Some(result) = result else {
+            break;
+        };
+        let (partition_spec_id, manifest) = result?;
+        index.extend_manifest(partition_spec_id, &manifest);
+    }
+    Ok(index)
+}
+
+#[derive(Default)]
+struct LimitedDeleteIndex {
+    files: Vec<LimitedDeleteFile>,
+}
+
+impl LimitedDeleteIndex {
+    fn extend_manifest(&mut self, partition_spec_id: i32, manifest: &Manifest) {
+        self.files.extend(
+            manifest
+                .entries()
+                .iter()
+                .filter(|entry| entry.is_alive() && entry.content_type() != DataContentType::Data)
+                .map(|entry| LimitedDeleteFile::from_manifest_entry(partition_spec_id, entry.as_ref())),
+        );
+    }
+
+    fn deletes_for_data_file(
+        &self,
+        data_file: &DataFile,
+        data_partition_spec_id: i32,
+        data_sequence_number: Option<i64>,
+    ) -> Vec<LimitedDeleteFile> {
+        self.files
+            .iter()
+            .filter(|delete_file| {
+                delete_file.applies_to_data_file(data_file, data_partition_spec_id, data_sequence_number)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LimitedDeleteFile {
+    file_path: String,
+    file_size_in_bytes: u64,
+    file_type: DataContentType,
+    partition_spec_id: i32,
+    equality_ids: Option<Vec<i32>>,
+    sequence_number: Option<i64>,
+    record_count: u64,
+    partition: Struct,
+    referenced_data_file: Option<String>,
+}
+
+impl LimitedDeleteFile {
+    fn from_manifest_entry(partition_spec_id: i32, entry: &ManifestEntry) -> Self {
+        let data_file = entry.data_file();
+        Self {
+            file_path: entry.file_path().to_string(),
+            file_size_in_bytes: entry.file_size_in_bytes(),
+            file_type: entry.content_type(),
+            partition_spec_id,
+            equality_ids: data_file.equality_ids(),
+            sequence_number: entry.sequence_number(),
+            record_count: entry.record_count(),
+            partition: data_file.partition().clone(),
+            referenced_data_file: data_file.referenced_data_file(),
+        }
+    }
+
+    fn applies_to_data_file(
+        &self,
+        data_file: &DataFile,
+        data_partition_spec_id: i32,
+        data_sequence_number: Option<i64>,
+    ) -> bool {
+        match self.file_type {
+            DataContentType::PositionDeletes => {
+                self.partition_spec_id == data_partition_spec_id
+                    && self.partition == *data_file.partition()
+                    && position_delete_sequence_applies(self.sequence_number, data_sequence_number)
+                    && self
+                        .referenced_data_file
+                        .as_deref()
+                        .map_or(true, |referenced| referenced == data_file.file_path())
+            },
+            DataContentType::EqualityDeletes => {
+                equality_delete_sequence_applies(self.sequence_number, data_sequence_number)
+                    && (self.partition.fields().is_empty()
+                        || (self.partition_spec_id == data_partition_spec_id
+                            && self.partition == *data_file.partition()))
+            },
+            DataContentType::Data => false,
+        }
+    }
+
+    fn to_file_scan_task_delete_file(&self) -> FileScanTaskDeleteFile {
+        FileScanTaskDeleteFile::builder()
+            .with_file_path(self.file_path.clone())
+            .with_file_size_in_bytes(self.file_size_in_bytes)
+            .with_file_type(self.file_type)
+            .with_partition_spec_id(self.partition_spec_id)
+            .with_equality_ids(self.equality_ids.clone())
+            .build()
+    }
+}
+
+fn attach_manifest_delete_row_counts(
+    plan: &mut TableFormatScanPlan,
+    data_file_index: usize,
+    delete_files: &[LimitedDeleteFile],
+) {
+    let Some(data_file) = plan.data_files.get_mut(data_file_index) else {
+        return;
+    };
+    let data_file_id = data_file.id.clone();
+    for limited_delete in delete_files {
+        for delete_file in data_file
+            .position_delete_files
+            .iter_mut()
+            .filter(|delete_file| delete_file.location == limited_delete.file_path)
+        {
+            delete_file.row_count = Some(limited_delete.record_count);
+        }
+        for delete_file in plan.delete_files.iter_mut().filter(|delete_file| {
+            delete_file.data_file_id == data_file_id && delete_file.location == limited_delete.file_path
+        }) {
+            delete_file.row_count = Some(limited_delete.record_count);
+        }
+    }
+}
+
+fn position_delete_sequence_applies(delete_sequence_number: Option<i64>, data_sequence_number: Option<i64>) -> bool {
+    data_sequence_number
+        .map(|data_sequence_number| delete_sequence_number >= Some(data_sequence_number))
+        .unwrap_or(true)
+}
+
+fn equality_delete_sequence_applies(delete_sequence_number: Option<i64>, data_sequence_number: Option<i64>) -> bool {
+    data_sequence_number.map(|data_sequence_number| delete_sequence_number > Some(data_sequence_number)).unwrap_or(true)
+}
+
+fn file_scan_task_from_manifest_entry(
+    entry: &ManifestEntry,
+    schema: IcebergSchemaRef,
+    field_ids: Arc<Vec<i32>>,
+    partition_spec: Option<Arc<PartitionSpec>>,
+    deletes: Vec<FileScanTaskDeleteFile>,
+    case_sensitive: bool,
+) -> FileScanTask {
+    FileScanTask::builder()
+        .with_file_size_in_bytes(entry.file_size_in_bytes())
+        .with_start(0)
+        .with_length(entry.file_size_in_bytes())
+        .with_record_count(Some(entry.record_count()))
+        .with_data_file_path(entry.file_path().to_string())
+        .with_data_file_format(entry.file_format())
+        .with_schema(schema)
+        .with_project_field_ids(field_ids.to_vec())
+        .with_predicate(None)
+        .with_deletes(deletes)
+        .with_partition(Some(entry.data_file().partition().clone()))
+        .with_partition_spec(partition_spec)
+        .with_name_mapping(None)
+        .with_case_sensitive(case_sensitive)
+        .build()
+}
+
+fn manifest_live_rows(manifest: &ManifestFile) -> u64 {
+    manifest.added_rows_count.unwrap_or(0).saturating_add(manifest.existing_rows_count.unwrap_or(0))
+}
+
+fn scan_plan_live_row_lower_bound(plan: &TableFormatScanPlan) -> Option<u64> {
+    plan.data_files.iter().try_fold(0u64, |rows, file| Some(rows.saturating_add(data_file_live_row_lower_bound(file)?)))
+}
+
+fn trim_predicate_free_scan_limit_data_files(plan: &mut TableFormatScanPlan, request_has_predicate: bool) {
+    if request_has_predicate {
+        return;
+    }
+    let Some(limit) = plan.scan_limit else {
+        return;
+    };
+    let limit = u64::try_from(limit).unwrap_or(u64::MAX);
+    if limit == 0 {
+        plan.data_files.clear();
+        return;
+    }
+    let Some(total_live_lower_bound) = plan
+        .data_files
+        .iter()
+        .try_fold(0u64, |rows, file| Some(rows.saturating_add(data_file_live_row_lower_bound(file)?)))
+    else {
+        return;
+    };
+    if total_live_lower_bound < limit {
+        return;
+    }
+
+    plan.data_files.sort_by(|left, right| {
+        let left_rows = data_file_live_row_lower_bound(left).unwrap_or(0);
+        let right_rows = data_file_live_row_lower_bound(right).unwrap_or(0);
+        right_rows.cmp(&left_rows)
+    });
+
+    let mut retained = 0usize;
+    let mut rows = 0u64;
+    for file in &plan.data_files {
+        let live_lower_bound = data_file_live_row_lower_bound(file).unwrap_or(0);
+        retained += 1;
+        rows = rows.saturating_add(live_lower_bound);
+        if rows >= limit {
+            break;
+        }
+    }
+    if rows >= limit && retained < plan.data_files.len() {
+        let original_data_file_ids = plan.data_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+        let original_delete_file_ids = plan.delete_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+        plan.data_files.truncate(retained);
+        let retained_data_file_ids = plan.data_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+        plan.delete_files.retain(|delete_file| retained_data_file_ids.contains(&delete_file.data_file_id));
+        let retained_delete_file_ids = plan.delete_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+        prune_dropped_file_local_unsupported_features(
+            plan,
+            &original_data_file_ids,
+            &original_delete_file_ids,
+            &retained_data_file_ids,
+            &retained_delete_file_ids,
+        );
+    }
+}
+
+fn data_file_live_row_lower_bound(file: &TableFormatDataFile) -> Option<u64> {
+    let data_rows = file.row_count?;
+    let delete_rows = file
+        .position_delete_files
+        .iter()
+        .try_fold(0u64, |rows, delete_file| Some(rows.saturating_add(delete_file.row_count?)))?;
+    Some(data_rows.saturating_sub(delete_rows))
+}
+
+async fn attach_remote_delete_file_row_counts_for_scan_limit(
+    plan: &mut TableFormatScanPlan,
+    file_io: &FileIO,
+    request_has_predicate: bool,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+) -> Result<()> {
+    if request_has_predicate || plan.scan_limit.is_none() {
+        return Ok(());
+    }
+    if let Some(context) = timeout_context {
+        context.check("before_remote_delete_footer_row_count")?;
+    }
+    let limit = plan.scan_limit.and_then(|limit| u64::try_from(limit).ok()).unwrap_or(u64::MAX);
+    let mut candidate_indices = plan
+        .data_files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| file.row_count.map(|rows| (index, rows)))
+        .collect::<Vec<_>>();
+    candidate_indices.sort_by(|(_left_index, left_rows), (_right_index, right_rows)| right_rows.cmp(left_rows));
+
+    let mut retained_indices = Vec::new();
+    let mut retained_live_rows = 0u64;
+    for (data_file_index, _rows) in candidate_indices {
+        attach_remote_delete_file_row_counts_for_data_file(plan, file_io, data_file_index, timeout_context).await?;
+        let Some(live_rows) = plan.data_files.get(data_file_index).and_then(data_file_live_row_lower_bound) else {
+            continue;
+        };
+        if live_rows == 0 {
+            continue;
+        }
+        retained_indices.push(data_file_index);
+        retained_live_rows = retained_live_rows.saturating_add(live_rows);
+        if retained_live_rows >= limit {
+            let original_data_file_ids = plan.data_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+            let original_delete_file_ids = plan.delete_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+            let retained_data_files =
+                retained_indices.iter().filter_map(|index| plan.data_files.get(*index).cloned()).collect::<Vec<_>>();
+            let retained_data_file_ids = retained_data_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+            plan.data_files = retained_data_files;
+            plan.delete_files.retain(|delete_file| retained_data_file_ids.contains(&delete_file.data_file_id));
+            let retained_delete_file_ids = plan.delete_files.iter().map(|file| file.id.clone()).collect::<HashSet<_>>();
+            prune_dropped_file_local_unsupported_features(
+                plan,
+                &original_data_file_ids,
+                &original_delete_file_ids,
+                &retained_data_file_ids,
+                &retained_delete_file_ids,
+            );
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+fn prune_dropped_file_local_unsupported_features(
+    plan: &mut TableFormatScanPlan,
+    original_data_file_ids: &HashSet<String>,
+    original_delete_file_ids: &HashSet<String>,
+    retained_data_file_ids: &HashSet<String>,
+    retained_delete_file_ids: &HashSet<String>,
+) {
+    plan.unsupported_features.retain(|feature| {
+        let Some(file_id) = feature.file_id.as_deref() else {
+            return true;
+        };
+        let known_file_local = original_data_file_ids.contains(file_id) || original_delete_file_ids.contains(file_id);
+        !known_file_local || retained_data_file_ids.contains(file_id) || retained_delete_file_ids.contains(file_id)
+    });
+}
+
+async fn attach_remote_delete_file_row_counts_for_data_file(
+    plan: &mut TableFormatScanPlan,
+    file_io: &FileIO,
+    data_file_index: usize,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+) -> Result<()> {
+    let Some(data_file) = plan.data_files.get(data_file_index) else {
+        return Ok(());
+    };
+    let requests = data_file
+        .position_delete_files
+        .iter()
+        .enumerate()
+        .filter_map(|(delete_index, delete_file)| {
+            if delete_file.row_count.is_some()
+                || delete_file.format != TableFormatDataFileFormat::Parquet
+                || !delete_file.read_capability.is_native_parquet_capable()
+            {
+                return None;
+            }
+            Some((delete_index, delete_file.id.clone(), delete_file.location.clone(), delete_file.size_bytes))
+        })
+        .collect::<Vec<_>>();
+    let fetches = requests.into_iter().map(|(delete_index, delete_id, location, size_bytes)| {
+        let file_io = file_io.clone();
+        async move {
+            (delete_index, delete_id, remote_iceberg_parquet_footer_row_count(&file_io, &location, size_bytes).await)
+        }
+    });
+    let mut row_counts = futures::stream::iter(fetches).buffer_unordered(REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY);
+
+    loop {
+        let result = if let Some(context) = timeout_context {
+            tokio::time::timeout(context.remaining("remote_delete_footer_row_count")?, row_counts.next())
+                .await
+                .map_err(|_elapsed| context.error("remote_delete_footer_row_count"))?
+        } else {
+            row_counts.next().await
+        };
+        let Some((delete_index, delete_id, row_count)) = result else {
+            break;
+        };
+        if let Some(row_count) = row_count {
+            if let Some(delete_file) = plan
+                .data_files
+                .get_mut(data_file_index)
+                .and_then(|data_file| data_file.position_delete_files.get_mut(delete_index))
+            {
+                delete_file.row_count = Some(row_count);
+            }
+            if let Some(delete_file) = plan.delete_files.iter_mut().find(|delete_file| delete_file.id == delete_id) {
+                delete_file.row_count = Some(row_count);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn attach_remote_footer_schemas_for_field_id_proof(
+    plan: &mut TableFormatScanPlan,
+    file_io: &FileIO,
+    timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
+) -> Result<()> {
+    if !scan_plan_needs_field_id_footer_schema(plan) {
+        return Ok(());
+    }
+
+    if let Some(context) = timeout_context {
+        context.check("before_remote_footer_schema")?;
+    }
+
+    let requests = plan
+        .data_files
+        .iter()
+        .enumerate()
+        .filter(|(_index, data_file)| {
+            data_file.footer_schema.is_none()
+                && !data_file.read_capability.is_native_local_parquet_capable()
+                && data_file.is_native_parquet_representable()
+        })
+        .map(|(index, data_file)| (index, data_file.location.clone(), data_file.size_bytes))
+        .collect::<Vec<_>>();
+    let fetches = requests.into_iter().map(|(index, location, size_bytes)| {
+        let file_io = file_io.clone();
+        async move { (index, remote_iceberg_data_file_footer_arrow_schema(&file_io, &location, size_bytes).await) }
+    });
+    let mut footers = futures::stream::iter(fetches).buffer_unordered(REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY);
+
+    loop {
+        let result = if let Some(context) = timeout_context {
+            tokio::time::timeout(context.remaining("remote_footer_schema")?, footers.next())
+                .await
+                .map_err(|_elapsed| context.error("remote_footer_schema"))?
+        } else {
+            footers.next().await
+        };
+        let Some((index, footer_schema)) = result else {
+            break;
+        };
+        if let Some(footer_schema) = footer_schema {
+            if let Some(data_file) = plan.data_files.get_mut(index) {
+                data_file.footer_schema = Some(footer_schema);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn scan_plan_needs_field_id_footer_schema(plan: &TableFormatScanPlan) -> bool {
+    plan.format == TableFormat::Iceberg
+        && plan.projected_columns.iter().chain(plan.pure_filter_columns.iter()).any(|mapping| {
+            mapping.source == TableFormatColumnSource::DirectTopLevelFileColumn && mapping.field_id.is_some()
+        })
+}
+
+async fn remote_iceberg_data_file_footer_arrow_schema(
+    file_io: &FileIO,
+    location: &str,
+    known_file_size: Option<u64>,
+) -> Option<SchemaRef> {
+    remote_iceberg_parquet_footer(file_io, location, known_file_size).await.map(|footer| footer.schema)
+}
+
+async fn remote_iceberg_parquet_footer_row_count(
+    file_io: &FileIO,
+    location: &str,
+    known_file_size: Option<u64>,
+) -> Option<u64> {
+    remote_iceberg_parquet_footer(file_io, location, known_file_size).await.and_then(|footer| footer.row_count)
+}
+
+struct RemoteIcebergParquetFooter {
+    schema: SchemaRef,
+    row_count: Option<u64>,
+}
+
+async fn remote_iceberg_parquet_footer(
+    file_io: &FileIO,
+    location: &str,
+    known_file_size: Option<u64>,
+) -> Option<RemoteIcebergParquetFooter> {
+    let input = file_io.new_input(location).ok()?;
+    let file_size = match known_file_size {
+        Some(file_size) => file_size,
+        None => input.metadata().await.ok()?.size,
+    };
+    if file_size < FOOTER_SIZE as u64 {
+        return None;
+    }
+
+    let reader = input.reader().await.ok()?;
+    let prefetch = (64 * 1024).min(file_size);
+    let tail_start = file_size - prefetch;
+    let tail = reader.read(tail_start..file_size).await.ok()?;
+    if tail.len() < FOOTER_SIZE {
+        return None;
+    }
+    let footer_tail_bytes: [u8; FOOTER_SIZE] = tail[tail.len() - FOOTER_SIZE..].try_into().ok()?;
+    let footer_tail = FooterTail::try_from(footer_tail_bytes).ok()?;
+    if footer_tail.is_encrypted_footer() {
+        return None;
+    }
+
+    let total_footer_len = footer_tail.metadata_length() + FOOTER_SIZE;
+    if total_footer_len as u64 > file_size {
+        return None;
+    }
+    let metadata_bytes = if total_footer_len as u64 <= prefetch {
+        let start = tail.len() - total_footer_len;
+        let end = tail.len() - FOOTER_SIZE;
+        tail.slice(start..end)
+    } else {
+        let metadata_start = file_size - total_footer_len as u64;
+        let metadata_end = file_size - FOOTER_SIZE as u64;
+        reader.read(metadata_start..metadata_end).await.ok()?
+    };
+
+    let mut footer = BytesMut::with_capacity(total_footer_len);
+    footer.extend_from_slice(&metadata_bytes);
+    footer.extend_from_slice(&footer_tail_bytes);
+    let footer = footer.freeze();
+
+    let mut metadata_reader = ParquetMetaDataReader::new();
+    metadata_reader.try_parse_sized(&footer, file_size).ok()?;
+    let metadata = metadata_reader.finish().ok()?;
+    let file_metadata = metadata.file_metadata();
+    let schema =
+        parquet::arrow::parquet_to_arrow_schema(file_metadata.schema_descr(), file_metadata.key_value_metadata())
+            .ok()
+            .map(|schema| Arc::new(schema) as SchemaRef)?;
+    let row_count = u64::try_from(file_metadata.num_rows()).ok();
+    Some(RemoteIcebergParquetFooter { schema, row_count })
+}
+
 fn count_star_probe_column_mapping_for_tasks(tasks: &[FileScanTask]) -> Result<Option<TableFormatColumnMapping>> {
     if tasks.is_empty()
         || !tasks.iter().all(|task| task.project_field_ids.is_empty())
@@ -824,8 +1594,6 @@ fn append_task_facts(
         data_file = data_file.with_row_count(record_count);
     }
     append_partition_values(plan, &mut data_file, &file_id, &task)?;
-    plan.data_files.push(data_file);
-
     if task.data_file_format != DataFileFormat::Parquet {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergNonParquetDataFile,
@@ -864,8 +1632,17 @@ fn append_task_facts(
     }
 
     for (delete_index, delete_file) in task.deletes.iter().enumerate() {
-        append_delete_file_facts(plan, &file_id, delete_index, delete_file);
+        append_delete_file_facts(
+            plan,
+            &mut data_file,
+            &file_id,
+            delete_index,
+            delete_file,
+            parquet_read_strategy_config,
+        )?;
     }
+
+    plan.data_files.push(data_file);
 
     Ok(())
 }
@@ -1049,10 +1826,12 @@ fn table_format_partition_scalar_value(
 
 fn append_delete_file_facts(
     plan: &mut TableFormatScanPlan,
+    data_file: &mut TableFormatDataFile,
     data_file_id: &str,
     delete_index: usize,
     delete_file: &FileScanTaskDeleteFile,
-) {
+    parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
+) -> Result<()> {
     let delete_id = if delete_file.file_path.is_empty() {
         format!("{data_file_id}#delete-{delete_index}")
     } else {
@@ -1063,15 +1842,57 @@ fn append_delete_file_facts(
     };
     let format = table_format_data_file_format_from_path(&delete_file.file_path);
     let content = table_format_delete_content(delete_file.file_type);
-    let table_delete =
-        TableFormatDeleteFile::new(delete_id.clone(), delete_file.file_path.clone(), format, content.clone())
-            .with_size_bytes(delete_file.file_size_in_bytes);
-    plan.delete_files.push(table_delete);
-    plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
-        TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
-        delete_id,
-        format!("Iceberg {} delete files require Milestone 2 row-level semantics", content.code()),
-    ));
+    let read_capability = read_capability_for_location(&delete_file.file_path);
+    let resolved_parquet_source = if format == TableFormatDataFileFormat::Parquet
+        && content == TableFormatDeleteFileContent::PositionDeletes
+        && read_capability.is_native_parquet_capable()
+    {
+        let metadata =
+            TableFormatParquetSourceMetadata::from_size_and_row_count(Some(delete_file.file_size_in_bytes), None);
+        Some(resolve_table_format_parquet_source_with_metadata(
+            &delete_file.file_path,
+            &read_capability,
+            parquet_read_strategy_config,
+            &metadata,
+        )?)
+    } else {
+        None
+    };
+    let mut table_delete = TableFormatDeleteFile::for_data_file(
+        delete_id.clone(),
+        data_file_id.to_string(),
+        delete_file.file_path.clone(),
+        format.clone(),
+        content.clone(),
+    )
+    .with_size_bytes(delete_file.file_size_in_bytes)
+    .with_read_capability(read_capability.clone());
+    if let Some(resolved_parquet_source) = resolved_parquet_source {
+        table_delete = table_delete.with_resolved_parquet_source(resolved_parquet_source);
+    }
+
+    let supported = table_delete.is_supported_position_delete();
+    plan.delete_files.push(table_delete.clone());
+    if supported {
+        data_file.push_position_delete_file(table_delete);
+        if data_file.row_groups.is_some() {
+            data_file.row_groups = None;
+        }
+    } else {
+        let reason = if content != TableFormatDeleteFileContent::PositionDeletes {
+            format!("Iceberg {} delete files are not supported by native position-delete execution", content.code())
+        } else if format != TableFormatDataFileFormat::Parquet {
+            format!("Iceberg position delete file format {} is not native Parquet", format.code())
+        } else {
+            format!("Iceberg position delete file location requires {} read capability", read_capability.detail())
+        };
+        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+            TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
+            delete_id,
+            reason,
+        ));
+    }
+    Ok(())
 }
 
 fn iceberg_task_content_identity(snapshot_id: Option<&str>, task: &FileScanTask) -> Option<String> {
@@ -1171,7 +1992,7 @@ fn iceberg_field_to_arrow_data_type(field: &NestedField) -> Result<DataType> {
 }
 
 fn iceberg_type_to_arrow_data_type(field_type: &Type) -> Result<DataType> {
-    iceberg::arrow::type_to_arrow_type(field_type).map_err(|error| {
+    let data_type = iceberg::arrow::type_to_arrow_type(field_type).map_err(|error| {
         Error::new(
             ErrorCode::UnsupportedType,
             TASK_CONVERSION_OPERATION,
@@ -1179,7 +2000,8 @@ fn iceberg_type_to_arrow_data_type(field_type: &Type) -> Result<DataType> {
         )
         .with_fact("table_format", TableFormat::Iceberg.code())
         .with_source(error)
-    })
+    })?;
+    Ok(strip_arrow_data_type_metadata(&data_type))
 }
 
 fn table_format_data_file_format(format: DataFileFormat) -> TableFormatDataFileFormat {
@@ -1237,11 +2059,17 @@ mod tests {
     use datafusion::logical_expr::{Cast, col, lit};
     use iceberg::{
         scan::FileScanTask,
-        spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema, Struct, Type},
+        spec::{
+            DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema,
+            Struct, Type,
+        },
     };
 
     use super::*;
-    use crate::table_format::scan::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
+    use crate::{
+        FallbackReason,
+        table_format::scan::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference},
+    };
 
     fn iceberg_schema() -> Arc<IcebergSchema> {
         Arc::new(
@@ -1382,6 +2210,214 @@ mod tests {
     }
 
     #[test]
+    fn predicate_free_scan_limit_trims_data_files_before_footer_proof() {
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_scan_limit(Some(11))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-0",
+                    "s3://bucket/table/data-0.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(5),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-1",
+                    "s3://bucket/table/data-1.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(7),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-2",
+                    "s3://bucket/table/data-2.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(100),
+            );
+
+        trim_predicate_free_scan_limit_data_files(&mut plan, false);
+
+        assert_eq!(plan.data_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["file-2"]);
+    }
+
+    #[test]
+    fn predicate_free_scan_limit_prunes_dropped_file_local_unsupported_features() {
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_scan_limit(Some(3))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "dropped-file",
+                    "s3://bucket/table/dropped.orc",
+                    TableFormatDataFileFormat::Unknown("orc".to_string()),
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(2),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "retained-file",
+                    "s3://bucket/table/retained.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(10),
+            )
+            .with_unsupported_feature(TableFormatUnsupportedFeature::for_file(
+                TableFormatUnsupportedFeatureCode::IcebergNonParquetDataFile,
+                "dropped-file",
+                "dropped file should not keep blocking the trimmed plan",
+            ));
+
+        trim_predicate_free_scan_limit_data_files(&mut plan, false);
+
+        assert_eq!(plan.data_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["retained-file"]);
+        assert!(plan.unsupported_features.is_empty());
+    }
+
+    #[test]
+    fn predicate_free_scan_limit_keeps_all_files_when_delete_semantics_are_present() {
+        let delete_file = FileScanTaskDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type: DataContentType::PositionDeletes,
+            partition_spec_id: 0,
+            equality_ids: None,
+        };
+        let task = FileScanTask {
+            file_size_in_bytes: 4096,
+            start: 0,
+            length: 4096,
+            record_count: Some(17),
+            data_file_path: "s3://bucket/table/data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: iceberg_schema(),
+            project_field_ids: vec![1],
+            predicate: None,
+            deletes: vec![delete_file],
+            partition: Some(Struct::empty()),
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: true,
+        };
+        let mut plan =
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
+                .unwrap()
+                .with_scan_limit(Some(1));
+
+        trim_predicate_free_scan_limit_data_files(&mut plan, false);
+
+        assert_eq!(plan.data_files.len(), 1);
+        assert_eq!(plan.delete_files.len(), 1);
+    }
+
+    #[test]
+    fn predicate_free_scan_limit_trims_delete_files_when_live_lower_bound_covers_limit() {
+        let delete_0 = TableFormatDeleteFile::for_data_file(
+            "delete-0",
+            "file-0",
+            "s3://bucket/table/delete-0.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::PositionDeletes,
+        )
+        .with_row_count(9);
+        let delete_1 = TableFormatDeleteFile::for_data_file(
+            "delete-1",
+            "file-1",
+            "s3://bucket/table/delete-1.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::PositionDeletes,
+        )
+        .with_row_count(5);
+        let delete_2 = TableFormatDeleteFile::for_data_file(
+            "delete-2",
+            "file-2",
+            "s3://bucket/table/delete-2.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::PositionDeletes,
+        )
+        .with_row_count(1);
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_scan_limit(Some(2))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-0",
+                    "s3://bucket/table/data-0.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(10)
+                .with_position_delete_files(vec![delete_0.clone()]),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-1",
+                    "s3://bucket/table/data-1.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(10)
+                .with_position_delete_files(vec![delete_1.clone()]),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-2",
+                    "s3://bucket/table/data-2.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(10)
+                .with_position_delete_files(vec![delete_2.clone()]),
+            );
+        plan.delete_files = vec![delete_0, delete_1, delete_2];
+
+        trim_predicate_free_scan_limit_data_files(&mut plan, false);
+
+        assert_eq!(plan.data_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["file-2"]);
+        assert_eq!(plan.delete_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["delete-2"]);
+    }
+
+    #[test]
+    fn limited_delete_matching_preserves_iceberg_sequence_partition_and_reference_semantics() {
+        let data_file = test_data_file("s3://bucket/table/data.parquet", 7);
+        let same_sequence_position_delete =
+            test_limited_delete(DataContentType::PositionDeletes, 7, Some(10), None, None);
+        let older_position_delete = test_limited_delete(DataContentType::PositionDeletes, 7, Some(9), None, None);
+        let wrong_spec_position_delete = test_limited_delete(DataContentType::PositionDeletes, 8, Some(10), None, None);
+        let referenced_position_delete = test_limited_delete(
+            DataContentType::PositionDeletes,
+            7,
+            Some(10),
+            None,
+            Some("s3://bucket/table/data.parquet"),
+        );
+        let other_referenced_position_delete = test_limited_delete(
+            DataContentType::PositionDeletes,
+            7,
+            Some(10),
+            None,
+            Some("s3://bucket/table/other.parquet"),
+        );
+        let same_sequence_global_equality_delete =
+            test_limited_delete(DataContentType::EqualityDeletes, 99, Some(10), Some(vec![1]), None);
+        let newer_global_equality_delete =
+            test_limited_delete(DataContentType::EqualityDeletes, 99, Some(11), Some(vec![1]), None);
+
+        assert!(same_sequence_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(!older_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(!wrong_spec_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(referenced_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(!other_referenced_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(!same_sequence_global_equality_delete.applies_to_data_file(&data_file, 7, Some(10)));
+        assert!(newer_global_equality_delete.applies_to_data_file(&data_file, 7, Some(10)));
+    }
+
+    #[test]
     fn iceberg_delete_file_id_hashes_credential_free_object_path() {
         let delete_file = FileScanTaskDeleteFile {
             file_path: "s3://secret-bucket/table/delete.parquet?X-Amz-Signature=do-not-leak".to_string(),
@@ -1418,6 +2454,114 @@ mod tests {
         assert!(!delete_id.contains("X-Amz-Signature"));
         assert!(!delete_id.contains("do-not-leak"));
         assert!(!delete_id.contains("data-token"));
+    }
+
+    fn test_data_file(path: &str, partition_spec_id: i32) -> DataFile {
+        DataFileBuilder::default()
+            .content(DataContentType::Data)
+            .file_path(path.to_string())
+            .file_format(DataFileFormat::Parquet)
+            .partition(Struct::empty())
+            .partition_spec_id(partition_spec_id)
+            .record_count(10)
+            .file_size_in_bytes(1024)
+            .build()
+            .unwrap()
+    }
+
+    fn test_limited_delete(
+        file_type: DataContentType,
+        partition_spec_id: i32,
+        sequence_number: Option<i64>,
+        equality_ids: Option<Vec<i32>>,
+        referenced_data_file: Option<&str>,
+    ) -> LimitedDeleteFile {
+        LimitedDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type,
+            partition_spec_id,
+            equality_ids,
+            sequence_number,
+            record_count: 1,
+            partition: Struct::empty(),
+            referenced_data_file: referenced_data_file.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn iceberg_position_delete_files_are_associated_for_native_execution() {
+        let delete_file = FileScanTaskDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type: DataContentType::PositionDeletes,
+            partition_spec_id: 0,
+            equality_ids: None,
+        };
+        let task = FileScanTask {
+            file_size_in_bytes: 4096,
+            start: 0,
+            length: 4096,
+            record_count: Some(17),
+            data_file_path: "s3://bucket/table/data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: iceberg_schema(),
+            project_field_ids: vec![1],
+            predicate: None,
+            deletes: vec![delete_file],
+            partition: Some(Struct::empty()),
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: true,
+        };
+
+        let plan =
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
+                .unwrap();
+
+        assert!(plan.unsupported_features.is_empty());
+        assert_eq!(plan.delete_files.len(), 1);
+        assert_eq!(plan.data_files[0].position_delete_files.len(), 1);
+        assert_eq!(plan.delete_files[0].data_file_id, plan.data_files[0].id);
+        assert_eq!(plan.delete_files[0].id, plan.data_files[0].position_delete_files[0].id);
+        assert!(plan.delete_files[0].is_supported_position_delete());
+        assert!(plan.is_native_admissible());
+    }
+
+    #[test]
+    fn iceberg_equality_delete_files_remain_structured_rejections() {
+        let delete_file = FileScanTaskDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type: DataContentType::EqualityDeletes,
+            partition_spec_id: 0,
+            equality_ids: Some(vec![1]),
+        };
+        let task = FileScanTask {
+            file_size_in_bytes: 4096,
+            start: 0,
+            length: 4096,
+            record_count: Some(17),
+            data_file_path: "s3://bucket/table/data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: iceberg_schema(),
+            project_field_ids: vec![1],
+            predicate: None,
+            deletes: vec![delete_file],
+            partition: Some(Struct::empty()),
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: true,
+        };
+
+        let plan =
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
+                .unwrap();
+
+        assert_eq!(plan.data_files[0].position_delete_files.len(), 0);
+        assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
+        assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::IcebergDeleteFilesUnsupported));
+        assert!(!plan.is_native_admissible());
     }
 
     #[test]

@@ -251,7 +251,7 @@ fn identity_timestamp_and_decimal_partition_values_keep_typed_metadata_literals(
 }
 
 #[test]
-fn delete_files_are_preserved_and_reject_native_admission() {
+fn position_delete_files_are_preserved_and_admit_native_execution() {
     let delete_file = FileScanTaskDeleteFile {
         file_path: "/tmp/iceberg/table/delete-0001.parquet".to_string(),
         file_size_in_bytes: 512,
@@ -267,19 +267,21 @@ fn delete_files_are_preserved_and_reject_native_admission() {
     )
     .unwrap();
 
-    assert!(!plan.is_native_admissible());
+    assert!(plan.is_native_admissible());
     assert_eq!(plan.delete_files.len(), 1);
     assert_eq!(plan.delete_files[0].location, "/tmp/iceberg/table/delete-0001.parquet");
     assert_eq!(plan.delete_files[0].format, TableFormatDataFileFormat::Parquet);
     assert_eq!(plan.delete_files[0].content, TableFormatDeleteFileContent::PositionDeletes);
     assert_eq!(plan.delete_files[0].size_bytes, Some(512));
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
+    assert_eq!(plan.data_files[0].position_delete_files.len(), 1);
+    assert_eq!(plan.data_files[0].position_delete_files[0].id, plan.delete_files[0].id);
+    assert!(plan.unsupported_fallback_reasons().is_empty());
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.planned_delete_file_count, 1);
-    assert_eq!(diagnostics.admitted_native_source_file_count, 0);
-    assert_eq!(diagnostics.rejected_feature_list, vec!["iceberg_delete_files_unsupported"]);
-    assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Rejected);
+    assert_eq!(diagnostics.admitted_native_source_file_count, 1);
+    assert!(diagnostics.rejected_feature_list.is_empty());
+    assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Eligible);
 }
 
 #[test]

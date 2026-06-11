@@ -93,6 +93,7 @@ argon2 = { version = "0.5", optional = true }
 arrow-flight = { workspace = true, optional = true }
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
+bytes = "1"
 aws-config = { workspace = true, optional = true }
 aws-credential-types = { workspace = true, optional = true }
 cudf = { workspace = true }

@@ -1231,8 +1231,9 @@ mod tests {
                 TableFormatDataFileFormat::Parquet,
                 TableFormatReadCapability::object_store("s3"),
             ))
-            .with_delete_file(TableFormatDeleteFile::new(
+            .with_delete_file(TableFormatDeleteFile::for_data_file(
                 delete_location,
+                data_location,
                 delete_location,
                 TableFormatDataFileFormat::Parquet,
                 TableFormatDeleteFileContent::PositionDeletes,
@@ -1904,8 +1905,13 @@ pub struct TableFormatDataFile {
     pub read_capability: TableFormatReadCapability,
     /// Resolved Parquet read strategy for native source lowering.
     pub resolved_parquet_source: Option<ResolvedParquetSource>,
+    /// Footer Arrow schema with Parquet field-id metadata, when the table-format
+    /// planner fetched it during metadata planning.
+    pub footer_schema: Option<SchemaRef>,
     /// Partition values attached to this data file.
     pub partition_values: Vec<TableFormatPartitionValue>,
+    /// Supported position-delete files associated with this data file.
+    pub position_delete_files: Vec<TableFormatDeleteFile>,
 }
 
 impl fmt::Debug for TableFormatDataFile {
@@ -1919,7 +1925,9 @@ impl fmt::Debug for TableFormatDataFile {
             .field("row_groups", &self.row_groups)
             .field("read_capability", &self.read_capability)
             .field("resolved_parquet_source", &self.resolved_parquet_source)
+            .field("footer_schema_available", &self.footer_schema.is_some())
             .field("partition_values", &self.partition_values)
+            .field("position_delete_files", &self.position_delete_files)
             .finish()
     }
 }
@@ -1941,7 +1949,9 @@ impl TableFormatDataFile {
             row_groups: None,
             read_capability,
             resolved_parquet_source: None,
+            footer_schema: None,
             partition_values: Vec::new(),
+            position_delete_files: Vec::new(),
         }
     }
 
@@ -1969,10 +1979,32 @@ impl TableFormatDataFile {
         self
     }
 
+    /// Records the footer Arrow schema used for Iceberg field-id proof.
+    pub fn with_footer_schema(mut self, schema: SchemaRef) -> Self {
+        self.footer_schema = Some(schema);
+        self
+    }
+
     /// Records partition values attached to this file.
     pub fn with_partition_values(mut self, partition_values: Vec<TableFormatPartitionValue>) -> Self {
         self.partition_values = partition_values;
         self
+    }
+
+    /// Records supported position-delete files attached to this data file.
+    pub fn with_position_delete_files(mut self, position_delete_files: Vec<TableFormatDeleteFile>) -> Self {
+        self.position_delete_files = position_delete_files;
+        self
+    }
+
+    /// Adds one supported position-delete file attached to this data file.
+    pub fn push_position_delete_file(&mut self, delete_file: TableFormatDeleteFile) {
+        self.position_delete_files.push(delete_file);
+    }
+
+    /// Whether this data file has supported position deletes attached.
+    pub fn has_position_delete_files(&self) -> bool {
+        !self.position_delete_files.is_empty()
     }
 
     /// Whether the file can be represented by direct native Parquet reads.
@@ -2021,6 +2053,8 @@ impl TableFormatDeleteFileContent {
 pub struct TableFormatDeleteFile {
     /// Stable delete-file id within the resolved scan plan.
     pub id: String,
+    /// Stable data-file id this delete file applies to.
+    pub data_file_id: String,
     /// Delete file location. Diagnostics should avoid exposing credential-bearing URLs.
     pub location: String,
     /// Delete file format.
@@ -2031,17 +2065,24 @@ pub struct TableFormatDeleteFile {
     pub size_bytes: Option<u64>,
     /// Optional delete row count from metadata.
     pub row_count: Option<u64>,
+    /// Required read capability for this delete file.
+    pub read_capability: TableFormatReadCapability,
+    /// Resolved Parquet read strategy for native source lowering.
+    pub resolved_parquet_source: Option<ResolvedParquetSource>,
 }
 
 impl fmt::Debug for TableFormatDeleteFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableFormatDeleteFile")
             .field("id", &redacted_scan_debug_value("delete_file_id", &self.id))
+            .field("data_file_id", &redacted_scan_debug_value("data_file_id", &self.data_file_id))
             .field("location", &redacted_scan_location_debug_value(&self.location))
             .field("format", &self.format)
             .field("content", &self.content)
             .field("size_bytes", &self.size_bytes)
             .field("row_count", &self.row_count)
+            .field("read_capability", &self.read_capability)
+            .field("resolved_parquet_source", &self.resolved_parquet_source)
             .finish()
     }
 }
@@ -2054,7 +2095,28 @@ impl TableFormatDeleteFile {
         format: TableFormatDataFileFormat,
         content: TableFormatDeleteFileContent,
     ) -> Self {
-        Self { id: id.into(), location: location.into(), format, content, size_bytes: None, row_count: None }
+        Self::for_data_file(id, "", location, format, content)
+    }
+
+    /// Builds a delete-file fact associated with one planned data file.
+    pub fn for_data_file(
+        id: impl Into<String>,
+        data_file_id: impl Into<String>,
+        location: impl Into<String>,
+        format: TableFormatDataFileFormat,
+        content: TableFormatDeleteFileContent,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            data_file_id: data_file_id.into(),
+            location: location.into(),
+            format,
+            content,
+            size_bytes: None,
+            row_count: None,
+            read_capability: TableFormatReadCapability::unsupported("unresolved"),
+            resolved_parquet_source: None,
+        }
     }
 
     /// Records delete-file size in bytes.
@@ -2067,6 +2129,26 @@ impl TableFormatDeleteFile {
     pub fn with_row_count(mut self, row_count: u64) -> Self {
         self.row_count = Some(row_count);
         self
+    }
+
+    /// Records required read capability for this delete file.
+    pub fn with_read_capability(mut self, read_capability: TableFormatReadCapability) -> Self {
+        self.read_capability = read_capability;
+        self
+    }
+
+    /// Records the resolved Parquet source strategy for this delete file.
+    pub fn with_resolved_parquet_source(mut self, resolved_source: ResolvedParquetSource) -> Self {
+        self.resolved_parquet_source = Some(resolved_source);
+        self
+    }
+
+    /// Whether this delete file can be represented by native position-delete handling.
+    pub fn is_supported_position_delete(&self) -> bool {
+        self.format == TableFormatDataFileFormat::Parquet
+            && self.content == TableFormatDeleteFileContent::PositionDeletes
+            && self.read_capability.is_native_parquet_capable()
+            && self.resolved_parquet_source.is_some()
     }
 }
 
@@ -2285,7 +2367,9 @@ pub struct TableFormatScanPlan {
     pub native_source_schema: SchemaRef,
     /// Planned data files.
     pub data_files: Vec<TableFormatDataFile>,
-    /// Planned delete files that native admission must currently reject.
+    /// Planned delete files. Supported position deletes may be represented by
+    /// native source execution; unsupported delete content remains in
+    /// `unsupported_features`.
     pub delete_files: Vec<TableFormatDeleteFile>,
     /// Output column mappings.
     pub projected_columns: Vec<TableFormatColumnMapping>,
@@ -2416,14 +2500,16 @@ impl TableFormatScanPlan {
     /// All-or-nothing native-admission predicate for the current scan plan.
     ///
     /// A plan is admissible only when it has at least one native-readable
-    /// Parquet data file, no delete files, and no retained unsupported
-    /// features. Object-store S3 files are native-readable through the
-    /// host-buffer source pipeline, not through direct device reads.
+    /// Parquet data file, all associated delete files are supported position
+    /// deletes, and no retained unsupported features remain. Object-store S3
+    /// files are native-readable through the host-buffer source pipeline, not
+    /// through direct device reads.
     pub fn is_native_admissible(&self) -> bool {
-        self.delete_files.is_empty()
-            && self.unsupported_features.is_empty()
+        self.unsupported_features.is_empty()
             && !self.data_files.is_empty()
             && self.data_files.iter().all(TableFormatDataFile::is_native_parquet_representable)
+            && self.delete_files.iter().all(TableFormatDeleteFile::is_supported_position_delete)
+            && self.delete_files.iter().all(|delete_file| self.position_delete_file_is_associated(delete_file))
     }
 
     /// Number of source files native lowering may consume.
@@ -2467,7 +2553,10 @@ impl TableFormatScanPlan {
         if let Some(reason) = self.unsupported_fallback_reasons().into_iter().next() {
             return Some(reason);
         }
-        if !self.delete_files.is_empty() {
+        if self.delete_files.iter().any(|file| !file.is_supported_position_delete()) {
+            return Some(FallbackReason::IcebergDeleteFilesUnsupported);
+        }
+        if self.delete_files.iter().any(|file| !self.position_delete_file_is_associated(file)) {
             return Some(FallbackReason::IcebergDeleteFilesUnsupported);
         }
         if self.data_files.is_empty() {
@@ -2494,6 +2583,13 @@ impl TableFormatScanPlan {
             return Some(FallbackReason::UnsupportedType);
         }
         None
+    }
+
+    fn position_delete_file_is_associated(&self, delete_file: &TableFormatDeleteFile) -> bool {
+        self.data_files.iter().any(|data_file| {
+            data_file.id == delete_file.data_file_id
+                && data_file.position_delete_files.iter().any(|associated| associated.id == delete_file.id)
+        })
     }
 
     /// Comma-separated stable read-capability codes across data files.

@@ -24,12 +24,13 @@ use datafusion::{
 use datafusion_nexus::{
     CandidateOutcome, CudfTableFormatScanExec, ErrorCode, ErrorStatus, FallbackReason, TableFormat,
     TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
-    TableFormatDataFileFormat, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
-    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
-    TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
-    iceberg::CudfIcebergTableProvider, lower_physical_plan_to_native, resolve_table_format_parquet_source,
-    resolve_table_format_parquet_source_with_metadata, schema_with_source_unique_keys,
+    TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatLakehouseCachePolicy,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata,
+    TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability,
+    TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
+    TableFormatUnsupportedFeatureCode, iceberg::CudfIcebergTableProvider, lower_physical_plan_to_native,
+    resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
+    schema_with_source_unique_keys,
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
@@ -255,6 +256,36 @@ async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metada
     assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
     assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
     assert_eq!(fallback_source.schema.fields().len(), 1);
+}
+
+#[tokio::test]
+async fn iceberg_provider_count_star_reads_deleted_files_even_with_row_count_metadata() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(position_delete_row_count_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(native_plan_union_count(&result.plans[0]), 1);
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    let metadata_source = sources.iter().copied().find(|source| source.is_zero_column_count_source()).unwrap();
+    assert_eq!(metadata_source.files.len(), 1);
+    assert_eq!(metadata_source.files[0].stable_id, "table-format:iceberg:data-0001");
+    let fallback_source = sources.iter().copied().find(|source| !source.is_zero_column_count_source()).unwrap();
+    assert_eq!(fallback_source.files.len(), 1);
+    assert_eq!(fallback_source.files[0].stable_id, "table-format:iceberg:data-0002");
+    assert_eq!(fallback_source.files[0].row_group_rows, None);
+    assert_eq!(fallback_source.files[0].position_delete_files.len(), 1);
+    assert_eq!(fallback_source.read_columns, vec!["id".to_string()]);
+    assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
+    assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
 }
 
 #[tokio::test]
@@ -525,6 +556,29 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
     assert!(source.read_columns.contains(&"value".to_string()));
     assert!(source.reader_predicate.is_some());
     assert_eq!(source.diagnostics.predicate_disposition.as_str(), "reader_pushdown");
+}
+
+#[tokio::test]
+async fn iceberg_provider_keeps_filter_native_when_position_deletes_are_present() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(position_delete_projection_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select value from iceberg_t where id = 1").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].position_delete_files.len(), 1);
+    assert!(source.reader_predicate.is_none());
+    assert_eq!(source.diagnostics.predicate_disposition.as_str(), "absent");
+    assert!(
+        native_plan_filter_count(&result.plans[0]) >= 1,
+        "the native filter must run after position deletes so row ordinals remain file-global"
+    );
 }
 
 #[tokio::test]
@@ -1051,6 +1105,22 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
         ))
 }
 
+fn position_delete_projection_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    let delete_file = TableFormatDeleteFile::for_data_file(
+        "delete-0001",
+        "data-0001",
+        "/tmp/iceberg/delete-0001.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatDeleteFileContent::PositionDeletes,
+    )
+    .with_read_capability(TableFormatReadCapability::local_file_system())
+    .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio("/tmp/iceberg/delete-0001.parquet"));
+    let mut plan = native_admissible_scan_plan(schema);
+    plan.data_files[0] = plan.data_files[0].clone().with_position_delete_files(vec![delete_file.clone()]);
+    plan.delete_files.push(delete_file);
+    plan
+}
+
 fn native_admissible_scan_plan_for_schema(
     schema: Arc<Schema>,
     file_id: impl Into<String>,
@@ -1124,6 +1194,46 @@ fn mixed_row_count_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
             )
             .with_size_bytes(4096),
         )
+        .with_pure_filter_column(count_star_probe_carrier_mapping())
+}
+
+fn position_delete_row_count_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    let delete_file = TableFormatDeleteFile::for_data_file(
+        "delete-0002",
+        "data-0002",
+        "/tmp/iceberg/delete-0002.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatDeleteFileContent::PositionDeletes,
+    )
+    .with_read_capability(TableFormatReadCapability::local_file_system())
+    .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio("/tmp/iceberg/delete-0002.parquet"));
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0002",
+                "/tmp/iceberg/data-0002.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(7)
+            .with_position_delete_files(vec![delete_file.clone()]),
+        )
+        .with_delete_file(delete_file)
         .with_pure_filter_column(count_star_probe_carrier_mapping())
 }
 

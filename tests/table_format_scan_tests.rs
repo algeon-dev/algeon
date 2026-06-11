@@ -165,8 +165,9 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
         TableFormatReadCapability::object_store("s3"),
     )
     .with_size_bytes(2048);
-    let delete_file = TableFormatDeleteFile::new(
+    let delete_file = TableFormatDeleteFile::for_data_file(
         "delete-0001",
+        "data-0001",
         "s3://lakehouse/warehouse/tpch_sf1/lineitem/delete-0001.parquet",
         TableFormatDataFileFormat::Parquet,
         TableFormatDeleteFileContent::PositionDeletes,
@@ -221,6 +222,20 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
     assert!(!rendered.contains("AWS_SECRET_ACCESS_KEY"));
     assert!(!rendered.contains("AWS_SESSION_TOKEN"));
     assert!(!rendered.contains("local-dev"));
+}
+
+#[test]
+fn delete_file_legacy_constructor_remains_available_for_unassociated_facts() {
+    let delete_file = TableFormatDeleteFile::new(
+        "delete-legacy",
+        "s3://lakehouse/table/delete.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatDeleteFileContent::PositionDeletes,
+    );
+
+    assert_eq!(delete_file.id, "delete-legacy");
+    assert_eq!(delete_file.data_file_id, "");
+    assert_eq!(delete_file.location, "s3://lakehouse/table/delete.parquet");
 }
 
 #[test]

@@ -41,6 +41,7 @@ use crate::{
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
+    table_format::CudfTableFormatScanExec,
 };
 
 /// Optimizer attempt output, including the replacement plan and all report evidence.
@@ -820,7 +821,15 @@ fn join_boundary_should_keep_datafusion_child(parent: &dyn ExecutionPlan, child:
     if parent.downcast_ref::<HashJoinExec>().is_none() && parent.downcast_ref::<NestedLoopJoinExec>().is_none() {
         return false;
     }
+    if subtree_contains_table_format_scan(child) {
+        return false;
+    }
     child.downcast_ref::<DataSourceExec>().is_some() || child.downcast_ref::<FilterExec>().is_some()
+}
+
+fn subtree_contains_table_format_scan(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<CudfTableFormatScanExec>().is_some()
+        || plan.children().into_iter().any(|child| subtree_contains_table_format_scan(child.as_ref()))
 }
 
 fn window_boundary_should_preserve_sort_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {
