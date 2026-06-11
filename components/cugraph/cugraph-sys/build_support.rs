@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     ffi::OsString,
     fs, io,
@@ -228,7 +229,8 @@ fn resolve_native_build_contract_from_cmake_export_inner(
     probe_dir: &Path,
 ) -> Result<NativeBuildContract, String> {
     write_contract_probe_files(cmake_build_dir, probe_dir)?;
-    run_cmake_probe(probe_dir)?;
+    let package_prefixes = cmake_package_prefixes_from_cache(cmake_build_dir)?;
+    run_cmake_probe(probe_dir, &package_prefixes)?;
 
     let include_output = fs::read_to_string(probe_dir.join("build/includes.txt"))
         .map_err(|error| format!("Failed to read generated include metadata from CMake probe: {error}"))?;
@@ -305,6 +307,52 @@ fn ensure_contains_cugraph_libraries(env_name: &str, dirs: &[PathBuf]) -> Result
     }
 }
 
+pub(crate) fn cmake_package_prefixes_from_cache(cmake_build_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let cache_path = cmake_build_dir.join("CMakeCache.txt");
+    let contents = match fs::read_to_string(&cache_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!("Failed to read cuGraph native CMake cache '{}': {error}", cache_path.display()));
+        },
+    };
+
+    let mut prefixes = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+
+        let Some((name_and_type, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some((name, _type_name)) = name_and_type.split_once(':') else {
+            continue;
+        };
+        if name != "CMAKE_PREFIX_PATH" && !name.ends_with("_ROOT") {
+            continue;
+        }
+
+        for raw_path in value.split(';').map(str::trim).filter(|path| !path.is_empty()) {
+            if raw_path.ends_with("-NOTFOUND") {
+                continue;
+            }
+            let path = Path::new(raw_path);
+            if !path.is_dir() {
+                continue;
+            }
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if seen.insert(canonical.clone()) {
+                prefixes.push(canonical);
+            }
+        }
+    }
+
+    Ok(prefixes)
+}
+
 fn create_probe_dir() -> Result<PathBuf, String> {
     let unique = format!(
         "cugraph-cmake-probe-{}-{}",
@@ -355,12 +403,14 @@ int main() { return 0; }
     Ok(())
 }
 
-fn run_cmake_probe(probe_dir: &Path) -> Result<(), String> {
-    let configure_output = Command::new("cmake")
-        .arg("-S")
-        .arg(probe_dir)
-        .arg("-B")
-        .arg(probe_dir.join("build"))
+fn run_cmake_probe(probe_dir: &Path, package_prefixes: &[PathBuf]) -> Result<(), String> {
+    let mut configure_command = Command::new("cmake");
+    configure_command.arg("-S").arg(probe_dir).arg("-B").arg(probe_dir.join("build"));
+    if !package_prefixes.is_empty() {
+        configure_command.arg(format!("-DCMAKE_PREFIX_PATH={}", cmake_list(package_prefixes)));
+    }
+
+    let configure_output = configure_command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -395,6 +445,10 @@ fn run_cmake_probe(probe_dir: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn cmake_list(paths: &[PathBuf]) -> String {
+    paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(";")
 }
 
 fn find_cmake_link_command(build_dir: &Path) -> Result<String, String> {

@@ -196,6 +196,47 @@ fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
 }
 
 #[test]
+fn cmake_package_prefixes_replay_native_build_roots() {
+    let root = TestDir::new();
+    let build_dir = root.path().join("build");
+    let cudf_install = root.path().join("cudf-install");
+    let raft_prefix = root.path().join("raft-prefix");
+    let missing_prefix = root.path().join("missing-prefix");
+
+    fs::create_dir_all(&build_dir).expect("create build dir");
+    fs::create_dir_all(&cudf_install).expect("create cudf install prefix");
+    fs::create_dir_all(&raft_prefix).expect("create raft prefix");
+    fs::write(
+        build_dir.join("CMakeCache.txt"),
+        format!(
+            r#"# comment
+// another comment
+rmm_ROOT:UNINITIALIZED={cudf}
+nvtx3_ROOT:UNINITIALIZED={cudf}
+raft_ROOT:PATH={raft}
+CMAKE_PREFIX_PATH:STRING={cudf};{missing}
+ignored_DIR:PATH={missing}
+missing_ROOT:PATH={missing}-NOTFOUND
+"#,
+            cudf = cudf_install.display(),
+            raft = raft_prefix.display(),
+            missing = missing_prefix.display(),
+        ),
+    )
+    .expect("write CMake cache");
+
+    let prefixes = build_support::cmake_package_prefixes_from_cache(&build_dir).expect("read package prefixes");
+
+    assert_eq!(
+        prefixes,
+        vec![
+            cudf_install.canonicalize().expect("canonical cudf install"),
+            raft_prefix.canonicalize().expect("canonical raft prefix"),
+        ]
+    );
+}
+
+#[test]
 fn cmake_probe_parses_generated_include_and_link_outputs() {
     let root = TestDir::new();
     let include_a = root.path().join("include-a");
