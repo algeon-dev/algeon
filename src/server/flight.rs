@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Int32Array, StringArray, UInt8Array},
+    array::{Array, Int32Array, StringArray, UInt8Array},
     datatypes::{DataType, Field, Schema},
     ipc::writer::IpcWriteOptions,
 };
@@ -216,6 +216,113 @@ impl DatafusionCudfFlightSqlService {
     /// [`AuthMode::Disabled`]. Errors as `Status::unauthenticated`.
     fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<super::auth::Principal>, Status> {
         self.auth.check(request.metadata())
+    }
+
+    async fn build_get_tables_response(
+        &self,
+        query: CommandGetTables,
+    ) -> Result<(Arc<Schema>, arrow::record_batch::RecordBatch), Status> {
+        let include_schema = query.include_schema;
+        let filters = GetTablesPrefilters::from(&query);
+        let mut builder = GetTablesBuilder::from(query);
+        let empty_schema = Schema::empty();
+        for catalog_name in self.ctx.catalog_names() {
+            if !filters.catalog_matches(&catalog_name) {
+                continue;
+            }
+
+            let Some(catalog) = self.ctx.catalog(&catalog_name) else {
+                continue;
+            };
+            for schema_name in catalog.schema_names() {
+                if !filters.schema_matches(&schema_name) {
+                    continue;
+                }
+
+                let Some(schema_provider) = catalog.schema(&schema_name) else {
+                    continue;
+                };
+                for table_name in schema_provider.table_names() {
+                    if !filters.table_name_matches(&table_name) {
+                        continue;
+                    }
+
+                    let (table_schema, table_type_str) = if include_schema && !filters.has_table_type_filter() {
+                        match schema_provider.table(&table_name).await {
+                            Ok(Some(table)) => (Some(table.schema()), table_type_to_flight_sql(table.table_type())),
+                            Ok(None) => continue,
+                            Err(error) => {
+                                tracing::warn!(
+                                    catalog = %catalog_name,
+                                    schema = %schema_name,
+                                    table = %table_name,
+                                    error = %error,
+                                    "failed to load table for Flight SQL GetTables"
+                                );
+                                continue;
+                            },
+                        }
+                    } else {
+                        let table_type = match schema_provider.table_type(&table_name).await {
+                            Ok(Some(table_type)) => table_type,
+                            Ok(None) => continue,
+                            Err(error) if include_schema => {
+                                tracing::warn!(
+                                    catalog = %catalog_name,
+                                    schema = %schema_name,
+                                    table = %table_name,
+                                    error = %error,
+                                    "failed to resolve table type for Flight SQL GetTables"
+                                );
+                                continue;
+                            },
+                            Err(error) => {
+                                return Err(datafusion_error_to_status_for_operation(
+                                    error,
+                                    "datafusion_nexus.server.flight.do_get_tables.table_type",
+                                ));
+                            },
+                        };
+
+                        let table_type_str = table_type_to_flight_sql(table_type);
+                        if !filters.table_type_matches(table_type_str) {
+                            continue;
+                        }
+
+                        let table_schema = if include_schema {
+                            match schema_provider.table(&table_name).await {
+                                Ok(Some(table)) => Some(table.schema()),
+                                Ok(None) => None,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        catalog = %catalog_name,
+                                        schema = %schema_name,
+                                        table = %table_name,
+                                        error = %error,
+                                        "failed to load table for Flight SQL GetTables"
+                                    );
+                                    None
+                                },
+                            }
+                        } else {
+                            None
+                        };
+                        if include_schema && table_schema.is_none() {
+                            continue;
+                        }
+                        (table_schema, table_type_str)
+                    };
+
+                    let table_schema_ref: &Schema = table_schema.as_deref().unwrap_or(&empty_schema);
+                    builder
+                        .append(&catalog_name, &schema_name, &table_name, table_type_str, table_schema_ref)
+                        .map_err(arrow_flight_error_to_status)?;
+                }
+            }
+        }
+        let schema = builder.schema();
+        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        Ok((schema, batch))
     }
 
     pub(crate) fn admission(&self) -> &Arc<QueryAdmission> {
@@ -976,65 +1083,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        let include_schema = query.include_schema;
-        let mut builder = GetTablesBuilder::from(query);
-        let empty_schema = Schema::empty();
-        for catalog_name in self.ctx.catalog_names() {
-            let Some(catalog) = self.ctx.catalog(&catalog_name) else {
-                continue;
-            };
-            for schema_name in catalog.schema_names() {
-                let Some(schema_provider) = catalog.schema(&schema_name) else {
-                    continue;
-                };
-                for table_name in schema_provider.table_names() {
-                    // For `include_schema=true` we materialize the provider to
-                    // read its Arrow schema; this also exposes the canonical
-                    // `TableProvider::table_type()`. For Iceberg/Glue that
-                    // round-trip hits Glue + S3, so the cheaper path below
-                    // uses `SchemaProvider::table_type()` (which the Iceberg
-                    // provider implements without touching the backend).
-                    let (table_schema, resolved_type) = if include_schema {
-                        match schema_provider.table(&table_name).await {
-                            Ok(Some(table)) => (Some(table.schema()), Some(table.table_type())),
-                            Ok(None) => (None, None),
-                            Err(error) => {
-                                tracing::warn!(
-                                    catalog = %catalog_name,
-                                    schema = %schema_name,
-                                    table = %table_name,
-                                    error = %error,
-                                    "failed to load table for Flight SQL GetTables"
-                                );
-                                (None, None)
-                            },
-                        }
-                    } else {
-                        let table_type = schema_provider.table_type(&table_name).await.map_err(|error| {
-                            datafusion_error_to_status_for_operation(
-                                error,
-                                "datafusion_nexus.server.flight.do_get_tables.table_type",
-                            )
-                        })?;
-                        (None, table_type)
-                    };
-                    // A `None` here means the table vanished between
-                    // `table_names()` and the type lookup (TOCTOU race) or the
-                    // provider deliberately rejected it. Skip so the response
-                    // does not include a ghost row whose type would have to be
-                    // a guess.
-                    let Some(table_type_str) = resolved_type.map(table_type_to_flight_sql) else {
-                        continue;
-                    };
-                    let table_schema_ref: &Schema = table_schema.as_deref().unwrap_or(&empty_schema);
-                    builder
-                        .append(&catalog_name, &schema_name, &table_name, table_type_str, table_schema_ref)
-                        .map_err(arrow_flight_error_to_status)?;
-                }
-            }
-        }
-        let schema = builder.schema();
-        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        let (schema, batch) = self.build_get_tables_response(query).await?;
         Ok(Response::new(metadata_record_batch_stream(schema, batch)))
     }
 
@@ -1597,6 +1646,57 @@ fn build_table_types_batch() -> Result<arrow::record_batch::RecordBatch, arrow::
     arrow::record_batch::RecordBatch::try_new(flight_sql_table_types_schema(), vec![Arc::new(column)])
 }
 
+struct GetTablesPrefilters {
+    catalog: Option<String>,
+    db_schema_filter_pattern: Option<String>,
+    table_name_filter_pattern: Option<String>,
+    table_types: Vec<String>,
+}
+
+impl From<&CommandGetTables> for GetTablesPrefilters {
+    fn from(query: &CommandGetTables) -> Self {
+        Self {
+            catalog: query.catalog.clone(),
+            db_schema_filter_pattern: query.db_schema_filter_pattern.clone(),
+            table_name_filter_pattern: query.table_name_filter_pattern.clone(),
+            table_types: query.table_types.clone(),
+        }
+    }
+}
+
+impl GetTablesPrefilters {
+    fn catalog_matches(&self, catalog_name: &str) -> bool {
+        self.catalog.as_deref().is_none_or(|catalog| catalog == catalog_name)
+    }
+
+    fn schema_matches(&self, schema_name: &str) -> bool {
+        metadata_like_filter_matches(self.db_schema_filter_pattern.as_deref(), schema_name)
+    }
+
+    fn table_name_matches(&self, table_name: &str) -> bool {
+        metadata_like_filter_matches(self.table_name_filter_pattern.as_deref(), table_name)
+    }
+
+    fn table_type_matches(&self, table_type: &str) -> bool {
+        self.table_types.is_empty() || self.table_types.iter().any(|filter| filter == table_type)
+    }
+
+    fn has_table_type_filter(&self) -> bool {
+        !self.table_types.is_empty()
+    }
+}
+
+fn metadata_like_filter_matches(pattern: Option<&str>, value: &str) -> bool {
+    let Some(pattern) = pattern else {
+        return true;
+    };
+    let values = StringArray::from(vec![value]);
+    let patterns = StringArray::from(vec![pattern]);
+    arrow::compute::kernels::comparison::like(&values, &patterns)
+        .map(|matches| matches.is_valid(0) && matches.value(0))
+        .unwrap_or(true)
+}
+
 /// Map DataFusion's `TableType` to the Flight SQL wire string. `Temporary` has
 /// no dedicated Flight SQL value, so it surfaces as `"TABLE"` (matching how
 /// `information_schema.tables` reports temp tables).
@@ -1799,6 +1899,212 @@ fn sql_info_bitmask(values: impl IntoIterator<Item = i32>) -> i32 {
         let shift = u32::try_from(value).expect("Flight SQL SqlInfo bit index must be non-negative");
         mask | 1_i32.checked_shl(shift).expect("Flight SQL SqlInfo bit index must fit in i32")
     })
+}
+
+#[cfg(test)]
+mod get_tables_prefilter_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use arrow::datatypes::SchemaRef;
+    use datafusion::{
+        catalog::{CatalogProvider, SchemaProvider},
+        datasource::{MemTable, TableProvider},
+    };
+
+    use super::*;
+    use crate::{
+        GpuFallbackPolicy,
+        server::auth::{AuthMode, TokenStore},
+    };
+
+    #[derive(Debug)]
+    struct CountingCatalog {
+        schema: Arc<CountingSchemaProvider>,
+    }
+
+    impl CatalogProvider for CountingCatalog {
+        fn schema_names(&self) -> Vec<String> {
+            vec!["public".to_string()]
+        }
+
+        fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+            (name == "public").then(|| Arc::clone(&self.schema) as Arc<dyn SchemaProvider>)
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingSchemaProvider {
+        tables: BTreeMap<String, (TableType, SchemaRef)>,
+        table_type_error_names: BTreeSet<String>,
+        table_calls: Mutex<Vec<String>>,
+        table_type_calls: Mutex<Vec<String>>,
+    }
+
+    impl CountingSchemaProvider {
+        fn new(tables: impl IntoIterator<Item = (&'static str, TableType)>) -> Arc<Self> {
+            Arc::new(Self {
+                tables: tables
+                    .into_iter()
+                    .map(|(name, table_type)| (name.to_string(), (table_type, table_schema(name))))
+                    .collect(),
+                table_type_error_names: BTreeSet::new(),
+                table_calls: Mutex::default(),
+                table_type_calls: Mutex::default(),
+            })
+        }
+
+        fn with_table_type_errors(self: Arc<Self>, names: impl IntoIterator<Item = &'static str>) -> Arc<Self> {
+            let mut this = Arc::into_inner(self).expect("builder has the only Arc");
+            this.table_type_error_names = names.into_iter().map(str::to_string).collect();
+            Arc::new(this)
+        }
+
+        fn table_calls(&self) -> Vec<String> {
+            self.table_calls.lock().unwrap().clone()
+        }
+
+        fn table_type_calls(&self) -> Vec<String> {
+            self.table_type_calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SchemaProvider for CountingSchemaProvider {
+        fn table_names(&self) -> Vec<String> {
+            self.tables.keys().cloned().collect()
+        }
+
+        async fn table(&self, name: &str) -> datafusion::common::Result<Option<Arc<dyn TableProvider>>> {
+            self.table_calls.lock().unwrap().push(name.to_string());
+            let Some((_, schema)) = self.tables.get(name) else {
+                return Ok(None);
+            };
+            let provider = MemTable::try_new(Arc::clone(schema), vec![vec![]])?;
+            Ok(Some(Arc::new(provider)))
+        }
+
+        async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<TableType>> {
+            self.table_type_calls.lock().unwrap().push(name.to_string());
+            if self.table_type_error_names.contains(name) {
+                return Err(datafusion::common::DataFusionError::Execution(format!("table_type failed for {name}")));
+            }
+            Ok(self.tables.get(name).map(|(table_type, _)| *table_type))
+        }
+
+        fn table_exist(&self, name: &str) -> bool {
+            self.tables.contains_key(name)
+        }
+    }
+
+    fn table_schema(name: &str) -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(format!("{name}_id"), DataType::Int32, false)]))
+    }
+
+    fn service_with_schema(schema: Arc<CountingSchemaProvider>) -> DatafusionCudfFlightSqlService {
+        let ctx = Arc::new(SessionContext::new());
+        ctx.register_catalog("counting", Arc::new(CountingCatalog { schema }));
+        DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            1,
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        )
+    }
+
+    fn get_tables_query(
+        table_name_filter_pattern: Option<&str>,
+        table_types: Vec<&str>,
+        include_schema: bool,
+    ) -> CommandGetTables {
+        CommandGetTables {
+            catalog: Some("counting".to_string()),
+            db_schema_filter_pattern: Some("public".to_string()),
+            table_name_filter_pattern: table_name_filter_pattern.map(str::to_string),
+            table_types: table_types.into_iter().map(str::to_string).collect(),
+            include_schema,
+        }
+    }
+
+    fn table_names_from_batch(batch: &arrow::record_batch::RecordBatch) -> Vec<String> {
+        let index = batch.schema().index_of("table_name").unwrap();
+        let array = batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
+        (0..array.len()).map(|row| array.value(row).to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn include_schema_prefilters_table_name_before_table_load() {
+        let schema = CountingSchemaProvider::new([("other", TableType::Base), ("target", TableType::Base)]);
+        let service = service_with_schema(Arc::clone(&schema));
+
+        let (_, batch) =
+            service.build_get_tables_response(get_tables_query(Some("target"), vec![], true)).await.unwrap();
+
+        assert_eq!(table_names_from_batch(&batch), vec!["target"]);
+        assert!(schema.table_type_calls().is_empty());
+        assert_eq!(schema.table_calls(), vec!["target"]);
+    }
+
+    #[tokio::test]
+    async fn include_schema_missing_table_filter_loads_no_tables() {
+        let schema = CountingSchemaProvider::new([("other", TableType::Base), ("target", TableType::Base)]);
+        let service = service_with_schema(Arc::clone(&schema));
+
+        let (_, batch) =
+            service.build_get_tables_response(get_tables_query(Some("missing"), vec![], true)).await.unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
+        assert!(schema.table_type_calls().is_empty());
+        assert!(schema.table_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn include_schema_applies_table_type_filter_before_table_load() {
+        let schema = CountingSchemaProvider::new([("base_a", TableType::Base), ("base_b", TableType::Base)]);
+        let service = service_with_schema(Arc::clone(&schema));
+
+        let (_, batch) = service.build_get_tables_response(get_tables_query(None, vec!["VIEW"], true)).await.unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(schema.table_type_calls(), vec!["base_a", "base_b"]);
+        assert!(schema.table_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn include_schema_skips_table_type_errors_when_prefiltering_type() {
+        let schema = CountingSchemaProvider::new([("broken", TableType::Base), ("view", TableType::View)])
+            .with_table_type_errors(["broken"]);
+        let service = service_with_schema(Arc::clone(&schema));
+
+        let (_, batch) = service.build_get_tables_response(get_tables_query(None, vec!["VIEW"], true)).await.unwrap();
+
+        assert_eq!(table_names_from_batch(&batch), vec!["view"]);
+        assert_eq!(schema.table_type_calls(), vec!["broken", "view"]);
+        assert_eq!(schema.table_calls(), vec!["view"]);
+    }
+
+    #[tokio::test]
+    async fn escaped_like_prefilter_matches_arrow_semantics() {
+        let schema = CountingSchemaProvider::new([("fooXbar", TableType::Base), ("foo_bar", TableType::Base)]);
+        let service = service_with_schema(Arc::clone(&schema));
+
+        let (_, batch) =
+            service.build_get_tables_response(get_tables_query(Some(r"foo\_%"), vec![], true)).await.unwrap();
+
+        assert_eq!(table_names_from_batch(&batch), vec!["foo_bar"]);
+        assert_eq!(schema.table_calls(), vec!["foo_bar"]);
+    }
+
+    #[test]
+    fn metadata_like_filter_matches_flight_sql_wildcards() {
+        assert!(metadata_like_filter_matches(Some("target%"), "target_table"));
+        assert!(metadata_like_filter_matches(Some("target_"), "target1"));
+        assert!(!metadata_like_filter_matches(Some("target_"), "target12"));
+        assert!(!metadata_like_filter_matches(Some("target%"), "other"));
+        assert!(metadata_like_filter_matches(Some(r"foo\_%"), "foo_bar"));
+        assert!(!metadata_like_filter_matches(Some(r"foo\_%"), "fooXbar"));
+    }
 }
 
 #[cfg(all(test, feature = "iceberg"))]

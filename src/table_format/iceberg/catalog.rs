@@ -46,6 +46,28 @@ use crate::{
 
 const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
+#[cfg(feature = "server")]
+fn log_iceberg_metadata_lookup(
+    operation: &'static str,
+    catalog_type: &str,
+    namespace: &NamespaceIdent,
+    table: Option<&str>,
+    elapsed: Duration,
+    cache_hit: Option<bool>,
+    outcome: &'static str,
+) {
+    tracing::debug!(
+        operation,
+        catalog_type,
+        namespace = %namespace.as_ref().join("."),
+        table = table.unwrap_or(""),
+        elapsed_ms = elapsed.as_millis(),
+        cache_hit = ?cache_hit,
+        outcome,
+        "Iceberg catalog metadata lookup"
+    );
+}
+
 /// Which DataFusion [`TableProvider`] implementation to wrap loaded Iceberg
 /// tables in.
 ///
@@ -282,21 +304,73 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
     }
 
     async fn table(&self, name: &str) -> datafusion::common::Result<Option<Arc<dyn TableProvider>>> {
+        #[cfg(feature = "server")]
+        let lookup_started_at = std::time::Instant::now();
+
         // Fast path: check the cache (covers pre-seeded aliases and already-loaded tables).
         {
             let cache = self.table_cache.read().await;
             if let Some(provider) = cache.get(name) {
+                #[cfg(feature = "server")]
+                log_iceberg_metadata_lookup(
+                    "load_table",
+                    &self.catalog_type,
+                    &self.namespace,
+                    Some(name),
+                    lookup_started_at.elapsed(),
+                    Some(true),
+                    "hit",
+                );
                 return Ok(Some(Arc::clone(provider)));
             }
         }
 
         // Only load tables that were discovered during startup.
         if !self.table_exist(name) {
+            #[cfg(feature = "server")]
+            log_iceberg_metadata_lookup(
+                "load_table",
+                &self.catalog_type,
+                &self.namespace,
+                Some(name),
+                lookup_started_at.elapsed(),
+                Some(false),
+                "not_found",
+            );
             return Ok(None);
         }
 
         let ident = TableIdent::new(self.namespace.clone(), name.to_string());
-        let table = self.backend.load_table(&ident).await.map_err(DataFusionError::from)?;
+        #[cfg(feature = "server")]
+        let load_started_at = std::time::Instant::now();
+        let table = match self.backend.load_table(&ident).await {
+            Ok(table) => {
+                #[cfg(feature = "server")]
+                log_iceberg_metadata_lookup(
+                    "load_table",
+                    &self.catalog_type,
+                    &self.namespace,
+                    Some(name),
+                    load_started_at.elapsed(),
+                    Some(false),
+                    "loaded",
+                );
+                table
+            },
+            Err(error) => {
+                #[cfg(feature = "server")]
+                log_iceberg_metadata_lookup(
+                    "load_table",
+                    &self.catalog_type,
+                    &self.namespace,
+                    Some(name),
+                    load_started_at.elapsed(),
+                    Some(false),
+                    "error",
+                );
+                return Err(DataFusionError::from(error));
+            },
+        };
         let provider = build_table_provider(
             table,
             self.provider_kind,
@@ -430,7 +504,36 @@ async fn build_catalog_provider_for_namespaces(
         let ns_parts: &Vec<String> = namespace.as_ref();
         let schema_name = if ns_parts.len() == 1 { ns_parts[0].clone() } else { ns_parts.join(".") };
 
-        let table_idents = backend.list_tables(&namespace).await?;
+        #[cfg(feature = "server")]
+        let list_tables_started_at = std::time::Instant::now();
+        let table_idents = match backend.list_tables(&namespace).await {
+            Ok(table_idents) => {
+                #[cfg(feature = "server")]
+                log_iceberg_metadata_lookup(
+                    "list_tables",
+                    &catalog_type,
+                    &namespace,
+                    None,
+                    list_tables_started_at.elapsed(),
+                    None,
+                    "listed",
+                );
+                table_idents
+            },
+            Err(error) => {
+                #[cfg(feature = "server")]
+                log_iceberg_metadata_lookup(
+                    "list_tables",
+                    &catalog_type,
+                    &namespace,
+                    None,
+                    list_tables_started_at.elapsed(),
+                    None,
+                    "error",
+                );
+                return Err(error);
+            },
+        };
         let known_table_names: Vec<String> = table_idents.into_iter().map(|t| t.name).collect();
 
         let schema_provider = Arc::new(CudfIcebergSchemaProvider::new(
