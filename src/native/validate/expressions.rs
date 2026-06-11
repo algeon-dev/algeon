@@ -13,7 +13,10 @@ use datafusion::{
     },
 };
 
-use super::{is_supported_native_cast, is_supported_native_type, is_supported_to_timestamp_seconds_cast};
+use super::{
+    is_list_carry_type, is_supported_native_cast, is_supported_native_type, is_supported_to_timestamp_seconds_cast,
+    is_timestamp_with_timezone_type,
+};
 use crate::{
     native::literal::{NativeLiteralContext, parse_yyyy_mm_dd_date32, validate_native_literal},
     policy::FallbackReason,
@@ -36,10 +39,10 @@ pub(in crate::native) fn validate_physical_expr(
         return validate_physical_expr(not.arg(), input_schema);
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
-        return validate_physical_expr(is_null.arg(), input_schema);
+        return validate_null_predicate_arg(is_null.arg(), input_schema);
     }
     if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
-        return validate_physical_expr(is_not_null.arg(), input_schema);
+        return validate_null_predicate_arg(is_not_null.arg(), input_schema);
     }
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type =
@@ -84,6 +87,16 @@ fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> R
         return Err(FallbackReason::UnsupportedExpression);
     }
     validate_physical_expr(try_cast.expr(), input_schema)
+}
+
+fn validate_null_predicate_arg(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    validate_physical_expr(expr, input_schema)?;
+    let data_type = physical_expr_data_type(expr, input_schema)?;
+    if is_timestamp_with_timezone_type(&data_type) || is_list_carry_type(&data_type) {
+        Err(FallbackReason::UnsupportedType)
+    } else {
+        Ok(())
+    }
 }
 
 fn is_supported_try_cast_pair(source_type: &DataType, target_type: &DataType) -> bool {
@@ -402,6 +415,18 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
     validate_physical_expr(binary.left(), input_schema)?;
     validate_physical_expr(binary.right(), input_schema)?;
     validate_binary_operator(binary.op())?;
+    let left_type = physical_expr_data_type(binary.left(), input_schema)?;
+    let right_type = physical_expr_data_type(binary.right(), input_schema)?;
+    if binary_operator_rejects_timestamp_timezone(binary.op())
+        && (is_timestamp_with_timezone_type(&left_type) || is_timestamp_with_timezone_type(&right_type))
+    {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    if binary_operator_rejects_list_carry(binary.op())
+        && (is_list_carry_type(&left_type) || is_list_carry_type(&right_type))
+    {
+        return Err(FallbackReason::UnsupportedType);
+    }
     if matches!(binary.op(), Operator::StringConcat) {
         validate_string_expr(binary.left(), input_schema)?;
         validate_string_expr(binary.right(), input_schema)?;
@@ -507,6 +532,44 @@ fn validate_binary_operator(op: &Operator) -> Result<(), FallbackReason> {
         | Operator::IsNotDistinctFrom => Ok(()),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
+}
+
+fn binary_operator_rejects_timestamp_timezone(op: &Operator) -> bool {
+    matches!(
+        op,
+        Operator::Plus
+            | Operator::Minus
+            | Operator::Multiply
+            | Operator::Divide
+            | Operator::Modulo
+            | Operator::Eq
+            | Operator::NotEq
+            | Operator::Lt
+            | Operator::LtEq
+            | Operator::Gt
+            | Operator::GtEq
+            | Operator::IsDistinctFrom
+            | Operator::IsNotDistinctFrom
+    )
+}
+
+fn binary_operator_rejects_list_carry(op: &Operator) -> bool {
+    matches!(
+        op,
+        Operator::Plus
+            | Operator::Minus
+            | Operator::Multiply
+            | Operator::Divide
+            | Operator::Modulo
+            | Operator::Eq
+            | Operator::NotEq
+            | Operator::Lt
+            | Operator::LtEq
+            | Operator::Gt
+            | Operator::GtEq
+            | Operator::IsDistinctFrom
+            | Operator::IsNotDistinctFrom
+    )
 }
 
 pub(super) fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<(), FallbackReason> {
@@ -728,6 +791,13 @@ fn validate_boolean_type(data_type: &DataType) -> Result<(), FallbackReason> {
 }
 
 fn validate_compatible_expr_types(left: &DataType, right: &DataType) -> Result<(), FallbackReason> {
+    if is_timestamp_with_timezone_type(left)
+        || is_timestamp_with_timezone_type(right)
+        || is_list_carry_type(left)
+        || is_list_carry_type(right)
+    {
+        return Err(FallbackReason::UnsupportedType);
+    }
     if left == right || is_supported_native_cast(left, right) || is_supported_native_cast(right, left) {
         Ok(())
     } else {

@@ -7,7 +7,7 @@ use std::{
 
 use arrow::{
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit},
 };
 use datafusion::{
     common::{JoinSide, JoinType, NullEquality, ScalarValue},
@@ -32,7 +32,8 @@ use datafusion::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
         expressions::{
-            CaseExpr, CastExpr, DynamicFilterPhysicalExpr, LikeExpr, NotExpr, TryCastExpr, binary, col, in_list, lit,
+            CaseExpr, CastExpr, DynamicFilterPhysicalExpr, IsNullExpr, LikeExpr, NotExpr, TryCastExpr, binary, col,
+            in_list, is_null, lit,
         },
     },
     physical_plan::{

@@ -43,16 +43,16 @@ pub(super) fn native_literal_value(
             NativeLiteralValue::Decimal128 { raw: *raw, precision: *precision, scale: *scale }
         },
         ScalarValue::Date32(Some(value)) => NativeLiteralValue::Date32(*value),
-        ScalarValue::TimestampSecond(Some(raw), None) => {
+        ScalarValue::TimestampSecond(Some(raw), _) => {
             NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Second }
         },
-        ScalarValue::TimestampMillisecond(Some(raw), None) => {
+        ScalarValue::TimestampMillisecond(Some(raw), _) => {
             NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Millisecond }
         },
-        ScalarValue::TimestampMicrosecond(Some(raw), None) => {
+        ScalarValue::TimestampMicrosecond(Some(raw), _) => {
             NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Microsecond }
         },
-        ScalarValue::TimestampNanosecond(Some(raw), None) => {
+        ScalarValue::TimestampNanosecond(Some(raw), _) => {
             NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Nanosecond }
         },
         ScalarValue::DurationSecond(Some(raw)) => NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Second },
@@ -88,17 +88,17 @@ pub(super) fn native_literal_value(
             NativeLiteralValue::Null(DataType::Decimal128(*precision, *scale))
         },
         ScalarValue::Date32(None) => NativeLiteralValue::Null(DataType::Date32),
-        ScalarValue::TimestampSecond(None, None) => {
-            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Second, None))
+        ScalarValue::TimestampSecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Second, timezone.clone()))
         },
-        ScalarValue::TimestampMillisecond(None, None) => {
-            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Millisecond, None))
+        ScalarValue::TimestampMillisecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Millisecond, timezone.clone()))
         },
-        ScalarValue::TimestampMicrosecond(None, None) => {
-            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Microsecond, None))
+        ScalarValue::TimestampMicrosecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
         },
-        ScalarValue::TimestampNanosecond(None, None) => {
-            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Nanosecond, None))
+        ScalarValue::TimestampNanosecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Nanosecond, timezone.clone()))
         },
         ScalarValue::DurationSecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Second)),
         ScalarValue::DurationMillisecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Millisecond)),

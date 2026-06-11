@@ -15,6 +15,7 @@ use nexus_query_engine::{
     Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
     QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr,
     WindowFrame as NativeWindowFrame, WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
+    is_supported_list_carry_type, is_timestamp_with_timezone,
 };
 
 use super::{
@@ -112,7 +113,14 @@ fn validate_window_exprs(window_exprs: &[Arc<dyn WindowExpr>], input_schema: &Sc
 fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
     validate_physical_expr(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if is_supported_native_type(&data_type) { Ok(()) } else { Err(FallbackReason::UnsupportedType) }
+    if is_supported_native_type(&data_type)
+        && !is_timestamp_with_timezone(&data_type)
+        && !is_supported_list_carry_type(&data_type)
+    {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
 }
 
 fn validate_plain_aggregate_window(
@@ -139,7 +147,7 @@ fn validate_plain_aggregate_window(
     let [arg] = expressions.as_slice() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
-    validate_physical_expr(arg, input_schema)
+    validate_window_value_expr(arg, input_schema)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +221,10 @@ fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) 
     validate_physical_expr(&value_expr, input_schema)?;
     let value_type =
         value_expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if !is_supported_native_type(&value_type) {
+    if !is_supported_native_type(&value_type)
+        || is_timestamp_with_timezone(&value_type)
+        || is_supported_list_carry_type(&value_type)
+    {
         return Err(FallbackReason::UnsupportedType);
     }
     let offset = match args.get(1) {
@@ -225,6 +236,19 @@ fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) 
         Some(expr) => parse_lag_lead_default(expr, &value_type)?,
     };
     Ok(LagLeadArgs { value_expr, offset, default })
+}
+
+fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    validate_physical_expr(expr, input_schema)?;
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_supported_native_type(&data_type)
+        && !is_timestamp_with_timezone(&data_type)
+        && !is_supported_list_carry_type(&data_type)
+    {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
 }
 
 fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackReason> {

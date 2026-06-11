@@ -677,6 +677,127 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
 }
 
 #[test]
+fn list_utf8_projection_lowers_as_native_carry_column() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-carry");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &scan_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: col("tags", &scan_schema).unwrap(), alias: "tags".to_string() },
+            ],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "tags".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn list_utf8_sort_key_is_rejected_locally_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-sort-reject");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let sort_exprs =
+        LexOrdering::new([PhysicalSortExpr::new(col("tags", &scan_schema).unwrap(), ArrowSortOptions::default())])
+            .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, scan));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unprojected_struct_and_map_schema_fields_do_not_block_native_lowering() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-unprojected-struct-map");
+    let path = dir.join("input.parquet");
+    write_struct_map_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &scan_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: col("m00", &scan_schema).unwrap(), alias: "m00".to_string() },
+            ],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string()]);
+    assert!(source.schema.field_with_name("details").is_err());
+    assert!(source.schema.field_with_name("attrs").is_err());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn projected_struct_schema_field_is_rejected_with_unsupported_type() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-projected-struct-reject");
+    let path = dir.join("input.parquet");
+    write_struct_map_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("details", &scan_schema).unwrap(), alias: "details".to_string() }],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn projected_map_schema_field_is_rejected_with_unsupported_type() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-projected-map-reject");
+    let path = dir.join("input.parquet");
+    write_struct_map_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("attrs", &scan_schema).unwrap(), alias: "attrs".to_string() }],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-missing-nullable-columns");
     let path = dir.join("input.parquet");
