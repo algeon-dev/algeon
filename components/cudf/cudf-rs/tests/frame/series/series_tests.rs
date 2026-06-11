@@ -209,9 +209,9 @@ fn test_eq_scalar_i32() {
 }
 
 #[test]
-fn test_eq_scalar_str() {
+fn test_eq_scalar_string() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
-    let mask = s.eq_scalar_str("active").unwrap();
+    let mask = s.eq_scalar("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("status"));
@@ -219,9 +219,9 @@ fn test_eq_scalar_str() {
 }
 
 #[test]
-fn test_ne_scalar_str() {
+fn test_ne_scalar_string() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
-    let mask = s.ne_scalar_str("active").unwrap();
+    let mask = s.ne_scalar("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("status"));
@@ -229,10 +229,10 @@ fn test_ne_scalar_str() {
 }
 
 #[test]
-fn test_gt_scalar_str() {
+fn test_gt_scalar_string() {
     // Lexicographic: "banana" > "apple", "cherry" > "apple", "apple" == "apple"
     let s = crate::common::series("fruit", &["apple", "banana", "cherry"]).unwrap();
-    let mask = s.gt_scalar_str("apple").unwrap();
+    let mask = s.gt_scalar("apple").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
@@ -240,9 +240,9 @@ fn test_gt_scalar_str() {
 }
 
 #[test]
-fn test_lt_scalar_str() {
+fn test_lt_scalar_string() {
     let s = crate::common::series("fruit", &["apple", "banana", "cherry"]).unwrap();
-    let mask = s.lt_scalar_str("banana").unwrap();
+    let mask = s.lt_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
@@ -250,9 +250,9 @@ fn test_lt_scalar_str() {
 }
 
 #[test]
-fn test_ge_scalar_str() {
+fn test_ge_scalar_string() {
     let s = crate::common::series("fruit", &["apple", "banana", "cherry"]).unwrap();
-    let mask = s.ge_scalar_str("banana").unwrap();
+    let mask = s.ge_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
@@ -260,9 +260,9 @@ fn test_ge_scalar_str() {
 }
 
 #[test]
-fn test_le_scalar_str() {
+fn test_le_scalar_string() {
     let s = crate::common::series("fruit", &["apple", "banana", "cherry"]).unwrap();
-    let mask = s.le_scalar_str("banana").unwrap();
+    let mask = s.le_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));

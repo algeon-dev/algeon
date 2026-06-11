@@ -200,6 +200,40 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 }
 
 #[test]
+fn with_column_requires_explicit_relocation_for_cross_device_series() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
+    let foreign = right_rt.series("value", &[10i32, 20, 30]).unwrap();
+
+    assert_cross_device_result(
+        df.with_column("value", foreign),
+        "dataframe::with_column",
+        "cross-device with_column should require explicit relocation before structural insertion",
+    );
+}
+
+#[test]
+fn assign_requires_explicit_relocation_for_cross_device_series() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
+    let foreign = right_rt.series("value", &[10i32, 20, 30]).unwrap();
+
+    assert_cross_device_result(
+        df.assign([("value", foreign)]),
+        "dataframe::assign",
+        "cross-device assign should require explicit relocation before structural insertion",
+    );
+}
+
+#[test]
 fn device_guard_restores_device_across_scopes() {
     if !should_run_multi_gpu_test() {
         return;

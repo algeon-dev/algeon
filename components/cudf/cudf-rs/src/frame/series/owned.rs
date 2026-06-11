@@ -4,17 +4,17 @@ use crate::{
     core::{
         column::{Column, ColumnView},
         error::{Error, ErrorKind, Result},
-        scalar::Scalar,
+        scalar::{IntoRuntimeScalar, Scalar},
         types::{CudfType, DataType, TimestampResolution, TypeId},
     },
     frame::{
-        dataframe::{DataFrame, DropDuplicatesOptions, DropNaOptions},
+        dataframe::{DataFrame, DropDuplicatesOptions},
         factorization::{Codebook, CodebookOptions, CodebookOrder, EncodedSeries, Factorized},
     },
     internal::temp_table::TempTableView,
     ops::{
-        binary, concatenate,
-        groupby::{AggSpec, GroupByAgg},
+        binary, concatenate, copying, filter as filter_ops,
+        groupby::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate_impl},
         replace::{self, FillPolicy},
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
@@ -23,7 +23,6 @@ use crate::{
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
 
-pub(super) const SERIES_ROW_OP_FRAME_COLUMN_NAME: &str = "__cudf_series_value__";
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
 pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
 
@@ -96,10 +95,6 @@ impl Series {
         Scalar::from_value_in_domain(value, self.column.execution_domain())
     }
 
-    fn scalar_from_str_in_domain(&self, value: &str) -> Result<Scalar> {
-        Scalar::from_str_in_domain(value, self.column.execution_domain())
-    }
-
     pub(super) fn require_bool_binary_operands(&self, rhs: &Series, operation: &'static str) -> Result<()> {
         let lhs_type = self.dtype()?.id();
         let rhs_type = rhs.dtype()?.id();
@@ -162,6 +157,15 @@ impl Series {
         &self.column
     }
 
+    /// Clone and return the shared `Arc<Column>` without consuming the `Series`.
+    ///
+    /// This is the ownership-preserving accessor for callers that need to keep
+    /// a retained handle to the underlying column while also keeping the
+    /// `Series` wrapper alive.
+    pub fn arc(&self) -> Arc<Column> {
+        Arc::clone(&self.column)
+    }
+
     /// Consume this Series and return the underlying `Arc<Column>`.
     ///
     /// This is the idiomatic way to unwrap a Series when you no longer need
@@ -181,24 +185,26 @@ impl Series {
         self.column.view()
     }
 
-    pub(super) fn as_single_column_dataframe(&self, operation: &'static str) -> Result<(DataFrame, String)> {
-        let column_name = SERIES_ROW_OP_FRAME_COLUMN_NAME.to_string();
-        let frame = DataFrame::from_named_pairs([(column_name.clone(), self.clone())])
-            .map_err(|e| if e.operation().is_empty() { e.with_operation(operation) } else { e })?;
-        Ok((frame, column_name))
+    /// Build a single-column `TempTableView` over this series' data.
+    ///
+    /// This is the shared entry point for row-shape ops (`head`, `tail`,
+    /// `slice`, `gather`, `filter`, `dropna`, `drop_duplicates`,
+    /// `value_counts`). It keeps the `Series` on a direct column-primitive
+    /// path instead of detouring through a synthetic single-column
+    /// `DataFrame`.
+    fn single_column_table_view(&self, operation: &'static str) -> Result<TempTableView<'_>> {
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        TempTableView::from_column_views(vec![cv])
     }
 
-    pub(super) fn restore_single_column_result(
-        &self,
-        df: DataFrame,
-        column_name: &str,
-        operation: &'static str,
-    ) -> Result<Series> {
-        let series = df.series(column_name).map_err(|e| e.with_operation(operation))?;
-        match self.name() {
-            Some(name) => Ok(series.rename(name)),
-            None => Series::from_column_arc(series.into_inner()).map_err(|e| e.with_operation(operation)),
-        }
+    /// Extract the single result column from a row-shape op, reattaching the
+    /// source series name.
+    fn take_single_column_result(&self, table: crate::core::table::Table) -> Result<Series> {
+        let columns = table.into_columns()?;
+        let [col] = <[Column; 1]>::try_from(columns).map_err(|v| {
+            Error::new(ErrorKind::InvalidOperation, format!("series row op expected 1 output column, got {}", v.len()))
+        })?;
+        self.with_inherited_name(col)
     }
 
     /// Return the first `n` rows of the series.
@@ -207,9 +213,9 @@ impl Series {
     /// series name, including unnamed inputs.
     pub fn head(&self, n: usize) -> Result<Series> {
         let operation = "series::head";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.head(n).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let take = n.min(total);
+        self.gather_range_inner(0, take, operation)
     }
 
     /// Return the last `n` rows of the series.
@@ -218,9 +224,10 @@ impl Series {
     /// series name, including unnamed inputs.
     pub fn tail(&self, n: usize) -> Result<Series> {
         let operation = "series::tail";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.tail(n).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let take = n.min(total);
+        let start = total - take;
+        self.gather_range_inner(start, take, operation)
     }
 
     /// Return `length` rows starting at `offset`.
@@ -229,9 +236,47 @@ impl Series {
     /// out-of-range values yield fewer rows rather than an error.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Series> {
         let operation = "series::slice";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.slice(offset, length).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let start = offset.min(total);
+        let take = length.min(total - start);
+        self.gather_range_inner(start, take, operation)
+    }
+
+    /// Internal: gather a contiguous range of rows into a new `Series`.
+    fn gather_range_inner(&self, start: usize, len: usize, operation: &'static str) -> Result<Series> {
+        if len == 0 {
+            let domain = Arc::clone(self.column.execution_domain());
+            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, domain, operation)?;
+            return self.with_inherited_name(empty);
+        }
+
+        let domain = Arc::clone(self.column.execution_domain());
+        let end = start + len;
+        let start_i32: i32 = start.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "row range start exceeds i32::MAX").with_operation(operation)
+        })?;
+        let end_i32: i32 = end.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "row range end exceeds i32::MAX").with_operation(operation)
+        })?;
+        let indices: Vec<i32> = (start_i32..end_i32).collect();
+        let map = Column::from_slice_in_domain(&indices, &domain)?;
+        let map_view = map.view()?;
+
+        let ttv = self.single_column_table_view(operation)?;
+        let exec_options = domain.explicit_exec_options_raw();
+        // Indices are dense `start..end` with bounds already clamped, so
+        // DONT_CHECK is safe.
+        let result_table = copying::gather_impl(
+            ttv.table(),
+            &map_view,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+            "dont_check",
+            &domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        self.take_single_column_result(result_table)
     }
 
     /// Gather rows by an index `Series`.
@@ -240,9 +285,31 @@ impl Series {
     /// null rows in the result.
     pub fn gather(&self, indices: &Series) -> Result<Series> {
         let operation = "series::gather";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.gather(indices).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let idx_cv = indices.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let domain = Arc::clone(self.column.execution_domain());
+        ExecutionDomain::require_same_device_for_mixed_inputs(&domain, idx_cv.execution_domain(), operation)?;
+        if !ExecutionDomain::same_provenance(idx_cv.execution_domain(), &domain) {
+            idx_cv.execution_domain().fence_stream(operation)?;
+        }
+
+        if idx_cv.is_empty()? {
+            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, domain, operation)?;
+            return self.with_inherited_name(empty);
+        }
+
+        let ttv = self.single_column_table_view(operation)?;
+        let exec_options = domain.explicit_exec_options_raw();
+        let result_table = copying::gather_impl(
+            ttv.table(),
+            &idx_cv,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            "nullify",
+            &domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        self.take_single_column_result(result_table)
     }
 
     /// Filter rows using a BOOL8 mask.
@@ -251,9 +318,38 @@ impl Series {
     /// dropped.
     pub fn filter(&self, mask: &Series) -> Result<Series> {
         let operation = "series::filter";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.filter(mask).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let mask_cv = mask.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let mask_dtype = mask_cv.data_type()?;
+        if mask_dtype.id() != TypeId::Bool8 {
+            return Err(Error::new(
+                ErrorKind::TypeError,
+                format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
+            )
+            .with_operation(operation)
+            .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
+        }
+        let mask_len = mask_cv.len()?;
+        if mask_len != self.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("filter mask length ({}) does not match series length ({})", mask_len, self.len()),
+            )
+            .with_operation(operation)
+            .with_context("mask_length", mask_len.to_string())
+            .with_context("series_length", self.len().to_string()));
+        }
+
+        let domain = Arc::clone(self.column.execution_domain());
+        ExecutionDomain::require_same_device_for_mixed_inputs(&domain, mask_cv.execution_domain(), operation)?;
+        if !ExecutionDomain::same_provenance(mask_cv.execution_domain(), &domain) {
+            mask_cv.execution_domain().fence_stream(operation)?;
+        }
+
+        let ttv = self.single_column_table_view(operation)?;
+        let exec_options = domain.explicit_exec_options_raw();
+        let result_table =
+            filter_ops::apply_boolean_mask_impl(ttv.table(), &mask_cv, &domain, exec_options.as_ref(), operation)?;
+        self.take_single_column_result(result_table)
     }
 
     /// Drop null rows from the series.
@@ -262,9 +358,14 @@ impl Series {
     /// `Series.dropna()`.
     pub fn dropna(&self) -> Result<Series> {
         let operation = "series::dropna";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.dropna(DropNaOptions::default()).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        // Mirror DataFrame::dropna with default options: keep rows whose
+        // single key column is non-null (threshold = 1 of 1 key columns).
+        let domain = Arc::clone(self.column.execution_domain());
+        let ttv = self.single_column_table_view(operation)?;
+        let exec_options = domain.explicit_exec_options_raw();
+        let result_table =
+            stream_compaction::drop_nulls_impl(ttv.table(), &[0], 1, &domain, exec_options.as_ref(), operation)?;
+        self.take_single_column_result(result_table)
     }
 
     /// Remove duplicate values from the series.
@@ -273,9 +374,20 @@ impl Series {
     /// `Series.drop_duplicates()`.
     pub fn drop_duplicates(&self) -> Result<Series> {
         let operation = "series::drop_duplicates";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.drop_duplicates(DropDuplicatesOptions::default()).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let domain = Arc::clone(self.column.execution_domain());
+        let ttv = self.single_column_table_view(operation)?;
+        let exec_options = domain.explicit_exec_options_raw();
+        let result_table = stream_compaction::distinct_impl(
+            ttv.table(),
+            &[0],
+            DuplicateKeepOption::KeepAny,
+            NullEquality::Equal,
+            NanEquality::AllEqual,
+            &domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        self.take_single_column_result(result_table)
     }
 
     /// Count the frequency of each distinct non-null value.
@@ -284,21 +396,45 @@ impl Series {
     /// `count` column. Null values are excluded from the result.
     pub fn value_counts(&self) -> Result<DataFrame> {
         let operation = "series::value_counts";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
         let value_name =
             self.name().map(str::to_string).unwrap_or_else(|| SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string());
+        let domain = Arc::clone(self.column.execution_domain());
 
-        let mut counts = df
-            .groupby([column_name.as_str()])
-            .agg(&[AggSpec::new(column_name.as_str(), GroupByAgg::Count { include_nulls: false })
-                .with_alias(SERIES_VALUE_COUNTS_COUNT_NAME)])
-            .map_err(|e| e.with_operation(operation))?;
+        let keys_view = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let values_view = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![keys_view])?;
+        let aggs = [GroupByAgg::Count { include_nulls: false }];
+        let requests = [AggregationRequest { values: &values_view, aggregations: &aggs }];
+        let exec_options = domain.explicit_exec_options_raw();
+        let gb = groupby_aggregate_impl(
+            ttv.table(),
+            &requests,
+            NullPolicy::Exclude,
+            &domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
 
-        if value_name != column_name {
-            counts = counts.rename_column(&column_name, &value_name).map_err(|e| e.with_operation(operation))?;
-        }
+        let mut key_columns = gb.keys.into_columns()?;
+        let key_col = key_columns.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no key columns")
+                .with_operation(operation)
+        })?;
+        let mut agg_results = gb.results;
+        let mut count_cols = agg_results.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no count results")
+                .with_operation(operation)
+        })?;
+        let count_col = count_cols.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned empty count result")
+                .with_operation(operation)
+        })?;
 
-        Ok(counts)
+        DataFrame::from_named_pairs([
+            (value_name, Series::from_column(key_col)?),
+            (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
+        ])
+        .map_err(|e| e.with_operation(operation))
     }
 
     /// Copy fixed-width column data to a host `Vec<T>`, rejecting nullable
@@ -392,102 +528,43 @@ impl Series {
 
     /// Element-wise `self > scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn gt_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.gt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self < scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn lt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn lt_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.lt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self == scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn eq_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn eq_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.eq_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    // -- String scalar comparison ops ----------------------------------------
-
-    /// Element-wise `self == string_scalar`. Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.eq_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    /// Element-wise `self != string_scalar`. Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.ne_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    /// Element-wise `self > string_scalar` (lexicographic). Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.gt_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    /// Element-wise `self < string_scalar` (lexicographic). Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.lt_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    /// Element-wise `self >= string_scalar` (lexicographic). Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.ge_scalar(&s)?;
-        self.with_inherited_name(col)
-    }
-
-    /// Element-wise `self <= string_scalar` (lexicographic). Inherits the source Series' name.
-    ///
-    /// # Cost
-    /// GPU-allocating: creates a device scalar from the host string, then
-    /// produces a new `BOOL8` output column on the device.
-    pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_str_in_domain(rhs)?;
-        let col = self.column.le_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
@@ -495,35 +572,86 @@ impl Series {
 
     /// Element-wise `self != scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn ne_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.ne_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self >= scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn ge_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn ge_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.ge_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self <= scalar`. Inherits the source Series' name.
     ///
+    /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
+    /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
+    ///
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device and
     /// wraps it in a new `Series`.
-    pub fn le_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = self.scalar_from_value_in_domain(rhs)?;
+    pub fn le_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+        let s = rhs.into_runtime_scalar(self.column.execution_domain())?;
         let col = self.column.le_scalar(&s)?;
         self.with_inherited_name(col)
+    }
+
+    // -- String scalar comparison ops (deprecated aliases) --------------------
+    //
+    // The generic `*_scalar` methods above now accept `&str`/`String`/`&String`
+    // through `IntoRuntimeScalar`. These `*_scalar_str` aliases are kept as a
+    // one-release migration courtesy and simply delegate.
+
+    /// Deprecated: use [`Series::eq_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `eq_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.eq_scalar(rhs)
+    }
+
+    /// Deprecated: use [`Series::ne_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `ne_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.ne_scalar(rhs)
+    }
+
+    /// Deprecated: use [`Series::gt_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `gt_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.gt_scalar(rhs)
+    }
+
+    /// Deprecated: use [`Series::lt_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `lt_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.lt_scalar(rhs)
+    }
+
+    /// Deprecated: use [`Series::ge_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `ge_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.ge_scalar(rhs)
+    }
+
+    /// Deprecated: use [`Series::le_scalar`] with a `&str` directly.
+    #[deprecated(since = "0.2.0", note = "use `le_scalar` directly; `IntoRuntimeScalar` now accepts `&str`")]
+    pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
+        self.le_scalar(rhs)
     }
 
     // -- Column-vs-column comparison ops -------------------------------

@@ -56,5 +56,7 @@ mod series_reduction_tests;
 mod series_reduction_value_tests;
 #[path = "../frame/series/row_ops_tests.rs"]
 mod series_row_ops_tests;
+#[path = "../frame/series/scalar_compare_unified_tests.rs"]
+mod series_scalar_compare_unified_tests;
 #[path = "../frame/series/series_tests.rs"]
 mod series_tests;

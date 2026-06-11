@@ -100,12 +100,20 @@
 //! [`Runtime`] share one retained-provenance bundle. No cross-runtime
 //! synchronization overhead is incurred.
 //!
-//! **Mixed-provenance operations:** When inputs from different [`Runtime`]
-//! instances are combined (e.g. `merge`, `concat`), cudf-rs automatically
-//! fences the secondary stream with `cudaStreamSynchronize` before the
-//! operation proceeds on the output stream. This is a *host fence*: it
-//! blocks the calling CPU thread until the secondary stream's GPU work
-//! completes.
+//! **Mixed-provenance data operations:** When inputs from different
+//! [`Runtime`] instances are combined by data operations that can safely
+//! reassemble onto one output domain (for example `merge`, `concat`,
+//! gather/filter-style row ops, and scalar/column replacement paths),
+//! cudf-rs automatically fences the secondary stream with
+//! `cudaStreamSynchronize` before the operation proceeds on the output
+//! stream. This is a *host fence*: it blocks the calling CPU thread until
+//! the secondary stream's GPU work completes.
+//!
+//! **Mixed-provenance structural operations:** Schema-changing operations
+//! that retain incoming columns as-is, such as [`DataFrame::with_column`] and
+//! [`DataFrame::assign`], do **not** auto-fence mixed provenance. They reject
+//! cross-runtime inputs and require explicit relocation first via
+//! [`DataFrame::copy_into_runtime`] or [`Series::copy_into_runtime`].
 //!
 //! The host fence is intentionally conservative.  It guarantees correctness
 //! without requiring users to understand CUDA event semantics, but it
@@ -153,6 +161,7 @@ pub mod runtime;
 // — Types and error —
 pub use core::{
     error::{Error, ErrorKind, ErrorStatus, Result},
+    scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };
 

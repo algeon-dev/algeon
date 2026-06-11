@@ -244,7 +244,7 @@ fn build_filter_eq_mask(
         "string" => {
             let v =
                 value.as_str().ok_or_else(|| ExecutionError::Framework("filter_eq: expected string value".into()))?;
-            series.eq_scalar_str(v)?
+            series.eq_scalar(v)?
         },
         other => {
             return Err(ExecutionError::Framework(format!("filter_eq: unsupported value_dtype: {}", other)));

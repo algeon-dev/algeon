@@ -111,9 +111,9 @@ fn test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dat
     let df = wide_string_edge_df();
 
     let chained = {
-        let filtered = df.filter(&df.series("sourceId").unwrap().ne_scalar_str("").unwrap()).unwrap();
-        let filtered = filtered.filter(&filtered.series("targetId").unwrap().ne_scalar_str("").unwrap()).unwrap();
-        let filtered = filtered.filter(&filtered.series("relationId").unwrap().ne_scalar_str("").unwrap()).unwrap();
+        let filtered = df.filter(&df.series("sourceId").unwrap().ne_scalar("").unwrap()).unwrap();
+        let filtered = filtered.filter(&filtered.series("targetId").unwrap().ne_scalar("").unwrap()).unwrap();
+        let filtered = filtered.filter(&filtered.series("relationId").unwrap().ne_scalar("").unwrap()).unwrap();
         filtered
             .filter(&filtered.series("sourceId").unwrap().ne(&filtered.series("targetId").unwrap()).unwrap())
             .unwrap()

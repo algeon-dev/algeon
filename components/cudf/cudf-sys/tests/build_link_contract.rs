@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[path = "../build_support.rs"]
 mod build_support;
 
@@ -114,6 +115,30 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
         let expected = format!("cargo:rerun-if-changed={tracked}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {tracked} with `{expected}`");
     }
+}
+
+#[test]
+fn build_script_tracks_native_build_env_changes() {
+    for env_var in ["CUDF_INSTALL_DIR", "CUDF_CPP_BUILD_DIR", "CUDA_HOME", "CUDA_PATH", "CUDA_STATIC_RUNTIME"] {
+        let expected = format!("cargo:rerun-if-env-changed={env_var}");
+        assert!(BUILD_RS.contains(&expected), "expected build.rs to track {env_var} with `{expected}`");
+    }
+}
+
+#[test]
+fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
+    assert!(
+        BUILD_RS.contains("cargo:rustc-link-search=native="),
+        "expected build.rs to recognize native link search directives emitted by the CMake manifest"
+    );
+    assert!(
+        BUILD_RS.contains("cargo:rustc-link-arg=-Wl,-rpath,"),
+        "expected build.rs to replay native link search paths as runtime rpath entries"
+    );
+    assert!(
+        BUILD_RS.contains("cargo:metadata=runtime-lib-dir="),
+        "expected build.rs to surface runtime library directories as Cargo metadata"
+    );
 }
 
 #[test]

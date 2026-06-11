@@ -8,7 +8,7 @@ use crate::{
     core::{
         column::copy_view_to_owned,
         error::{Error, ErrorKind, Result},
-        scalar::Scalar,
+        scalar::{IntoRuntimeScalar, Scalar},
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::factorization::{Codebook, EncodedSeries, Factorized},
@@ -16,7 +16,7 @@ use crate::{
     ops::{
         binary::{self, BinaryOperator},
         dictionary,
-        groupby::{AggSpec, GroupByAgg},
+        groupby::GroupByAgg,
         reduction::{self, ReduceAgg, ScanAgg, ScanType},
         replace::{self, FillPolicy},
         sorting::SortOptions,
@@ -216,23 +216,6 @@ macro_rules! series_scope_binary_scalar {
     };
 }
 
-macro_rules! series_scope_binary_string_scalar {
-    ($(#[$meta:meta])* fn $method:ident($rhs:ident : &str) => $op:expr, $operation:literal;) => {
-        $(#[$meta])*
-        pub fn $method(&self, $rhs: &str) -> Result<Series> {
-            self.series.binary_string_scalar_in_context($rhs, $op, self.ctx, $operation)
-        }
-    };
-    ($( $(#[$meta:meta])* fn $method:ident($rhs:ident : &str) => $op:expr, $operation:literal; )*) => {
-        $(
-            series_scope_binary_string_scalar!(
-                $(#[$meta])*
-                fn $method($rhs : &str) => $op, $operation;
-            );
-        )*
-    };
-}
-
 macro_rules! series_scope_string_unary {
     ($(#[$meta:meta])* fn $method:ident() => $target:path, $operation:literal;) => {
         $(#[$meta])*
@@ -426,75 +409,226 @@ impl Series {
 
     fn head_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::head";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.in_context(ctx).head(n).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let take = n.min(total);
+        self.gather_range_in_context_inner(0, take, ctx, operation)
     }
 
     fn tail_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::tail";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.in_context(ctx).tail(n).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let take = n.min(total);
+        let start = total - take;
+        self.gather_range_in_context_inner(start, take, ctx, operation)
     }
 
     fn slice_in_context(&self, offset: usize, length: usize, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::slice";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.in_context(ctx).slice(offset, length).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let total = self.len();
+        let start = offset.min(total);
+        let take = length.min(total - start);
+        self.gather_range_in_context_inner(start, take, ctx, operation)
+    }
+
+    fn gather_range_in_context_inner(
+        &self,
+        start: usize,
+        len: usize,
+        ctx: &ExecutionContext<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        if len == 0 {
+            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let empty =
+                crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
+            return self.with_inherited_name(empty);
+        }
+
+        let end = start + len;
+        let start_i32: i32 = start.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "row range start exceeds i32::MAX").with_operation(operation)
+        })?;
+        let end_i32: i32 = end.try_into().map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "row range end exceeds i32::MAX").with_operation(operation)
+        })?;
+        let indices: Vec<i32> = (start_i32..end_i32).collect();
+        let map = crate::core::column::Column::from_slice_in_domain(&indices, &output_domain)?;
+        let map_view = map.view()?;
+
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let result = crate::ops::copying::gather_impl(
+            ttv.table(),
+            &map_view,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+            "dont_check",
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        let mut cols = result.into_columns()?;
+        self.with_inherited_name(cols.remove(0))
     }
 
     fn gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::gather";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.in_context(ctx).gather(indices).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let idx_cv = indices.as_column_view().map_err(|e| e.with_operation(operation))?;
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.column.execution_domain(),
+            idx_cv.execution_domain(),
+            operation,
+        )?;
+        if !ExecutionDomain::same_provenance(idx_cv.execution_domain(), &output_domain) {
+            idx_cv.execution_domain().fence_stream(operation)?;
+        }
+
+        if idx_cv.is_empty()? {
+            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let empty =
+                crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
+            return self.with_inherited_name(empty);
+        }
+
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let result = crate::ops::copying::gather_impl(
+            ttv.table(),
+            &idx_cv,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            "nullify",
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        let mut cols = result.into_columns()?;
+        self.with_inherited_name(cols.remove(0))
     }
 
     fn filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::filter";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df.in_context(ctx).filter(mask).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let mask_cv = mask.as_column_view().map_err(|e| e.with_operation(operation))?;
+
+        let mask_dtype = mask_cv.data_type()?;
+        if mask_dtype.id() != TypeId::Bool8 {
+            return Err(Error::new(
+                ErrorKind::TypeError,
+                format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
+            )
+            .with_operation(operation)
+            .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
+        }
+        let mask_len = mask_cv.len()?;
+        if mask_len != self.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("filter mask length ({}) does not match series length ({})", mask_len, self.len()),
+            )
+            .with_operation(operation)
+            .with_context("mask_length", mask_len.to_string())
+            .with_context("series_length", self.len().to_string()));
+        }
+
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            self.column.execution_domain(),
+            mask_cv.execution_domain(),
+            operation,
+        )?;
+        if !ExecutionDomain::same_provenance(mask_cv.execution_domain(), &output_domain) {
+            mask_cv.execution_domain().fence_stream(operation)?;
+        }
+
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let result = crate::ops::filter::apply_boolean_mask_impl(
+            ttv.table(),
+            &mask_cv,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        let mut cols = result.into_columns()?;
+        self.with_inherited_name(cols.remove(0))
     }
 
     fn dropna_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::dropna";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let exec_options = output_domain.explicit_exec_options_raw();
         let result =
-            df.in_context(ctx).dropna(crate::DropNaOptions::default()).map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+            stream_compaction::drop_nulls_impl(ttv.table(), &[0], 1, &output_domain, exec_options.as_ref(), operation)?;
+        let mut cols = result.into_columns()?;
+        self.with_inherited_name(cols.remove(0))
     }
 
     fn drop_duplicates_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::drop_duplicates";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
-        let result = df
-            .in_context(ctx)
-            .drop_duplicates(crate::DropDuplicatesOptions::default())
-            .map_err(|e| e.with_operation(operation))?;
-        self.restore_single_column_result(result, &column_name, operation)
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let result = stream_compaction::distinct_impl(
+            ttv.table(),
+            &[0],
+            DuplicateKeepOption::KeepAny,
+            NullEquality::Equal,
+            NanEquality::AllEqual,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
+        let mut cols = result.into_columns()?;
+        self.with_inherited_name(cols.remove(0))
     }
 
     fn value_counts_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<crate::DataFrame> {
         let operation = "series::in_context::value_counts";
-        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let value_name =
             self.name().map(str::to_string).unwrap_or_else(|| SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string());
 
-        let mut counts = df
-            .groupby([column_name.as_str()])
-            .in_context(ctx)
-            .agg(&[AggSpec::new(column_name.as_str(), GroupByAgg::Count { include_nulls: false })
-                .with_alias(SERIES_VALUE_COUNTS_COUNT_NAME)])
-            .map_err(|e| e.with_operation(operation))?;
+        let keys_view = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let values_view = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let ttv = TempTableView::from_column_views(vec![keys_view])?;
+        let aggs = [GroupByAgg::Count { include_nulls: false }];
+        let requests = [crate::ops::groupby::AggregationRequest { values: &values_view, aggregations: &aggs }];
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let gb = crate::ops::groupby::groupby_aggregate_impl(
+            ttv.table(),
+            &requests,
+            NullPolicy::Exclude,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
 
-        if value_name != column_name {
-            counts = counts.rename_column(&column_name, &value_name).map_err(|e| e.with_operation(operation))?;
-        }
+        let mut key_columns = gb.keys.into_columns()?;
+        let key_col = key_columns.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no key columns")
+                .with_operation(operation)
+        })?;
+        let mut agg_results = gb.results;
+        let mut count_cols = agg_results.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no count results")
+                .with_operation(operation)
+        })?;
+        let count_col = count_cols.pop().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned empty count result")
+                .with_operation(operation)
+        })?;
 
-        Ok(counts)
+        crate::DataFrame::from_named_pairs([
+            (value_name, Series::from_column(key_col)?),
+            (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
+        ])
+        .map_err(|e| e.with_operation(operation))
     }
 
     fn reduce_in_context(&self, agg: ReduceAgg, ctx: &ExecutionContext<'_>, operation: &'static str) -> Result<Scalar> {
@@ -656,7 +790,7 @@ impl Series {
         Series::from_column(col)
     }
 
-    fn binary_scalar_in_context<T: CudfType>(
+    fn binary_scalar_in_context<T: IntoRuntimeScalar>(
         &self,
         value: T,
         op: BinaryOperator,
@@ -665,31 +799,7 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
-        let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(
-            &cv,
-            &scalar,
-            op,
-            &output_type,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
-        )?;
-        self.with_inherited_name(col)
-    }
-
-    fn binary_string_scalar_in_context(
-        &self,
-        value: &str,
-        op: BinaryOperator,
-        ctx: &ExecutionContext<'_>,
-        operation: &'static str,
-    ) -> Result<Series> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let cv = self.column.view()?;
-        let scalar = Scalar::from_str_in_domain(value, &output_domain)?;
+        let scalar = value.into_runtime_scalar(&output_domain)?;
         let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = binary::binary_operation_vs_impl(
@@ -933,22 +1043,22 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
 
     series_scope_binary_scalar!(
         /// Element-wise equality-to-scalar using the borrowed execution override.
-        fn eq_scalar<T: CudfType>(rhs: T) => BinaryOperator::Equal, "series::in_context::eq_scalar";
+        fn eq_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::Equal, "series::in_context::eq_scalar";
 
         /// Element-wise inequality-to-scalar using the borrowed execution override.
-        fn ne_scalar<T: CudfType>(rhs: T) => BinaryOperator::NotEqual, "series::in_context::ne_scalar";
+        fn ne_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::NotEqual, "series::in_context::ne_scalar";
 
         /// Element-wise greater-than-scalar using the borrowed execution override.
-        fn gt_scalar<T: CudfType>(rhs: T) => BinaryOperator::Greater, "series::in_context::gt_scalar";
+        fn gt_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::Greater, "series::in_context::gt_scalar";
 
         /// Element-wise less-than-scalar using the borrowed execution override.
-        fn lt_scalar<T: CudfType>(rhs: T) => BinaryOperator::Less, "series::in_context::lt_scalar";
+        fn lt_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::Less, "series::in_context::lt_scalar";
 
         /// Element-wise greater-than-or-equal-to-scalar using the borrowed execution override.
-        fn ge_scalar<T: CudfType>(rhs: T) => BinaryOperator::GreaterEqual, "series::in_context::ge_scalar";
+        fn ge_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::GreaterEqual, "series::in_context::ge_scalar";
 
         /// Element-wise less-than-or-equal-to-scalar using the borrowed execution override.
-        fn le_scalar<T: CudfType>(rhs: T) => BinaryOperator::LessEqual, "series::in_context::le_scalar";
+        fn le_scalar<T: IntoRuntimeScalar>(rhs: T) => BinaryOperator::LessEqual, "series::in_context::le_scalar";
 
         /// Element-wise addition-by-scalar using the borrowed execution override.
         fn add_scalar<T: CudfType>(rhs: T) => BinaryOperator::Add, "series::in_context::add_scalar";
@@ -1006,26 +1116,6 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
         let unique = self.unique()?;
         Ok(unique.len() - unique.null_count())
     }
-
-    series_scope_binary_string_scalar!(
-        /// Equality-to-string-scalar using the borrowed execution override.
-        fn eq_scalar_str(rhs: &str) => BinaryOperator::Equal, "series::in_context::eq_scalar_str";
-
-        /// Inequality-to-string-scalar using the borrowed execution override.
-        fn ne_scalar_str(rhs: &str) => BinaryOperator::NotEqual, "series::in_context::ne_scalar_str";
-
-        /// Greater-than-string-scalar using the borrowed execution override.
-        fn gt_scalar_str(rhs: &str) => BinaryOperator::Greater, "series::in_context::gt_scalar_str";
-
-        /// Less-than-string-scalar using the borrowed execution override.
-        fn lt_scalar_str(rhs: &str) => BinaryOperator::Less, "series::in_context::lt_scalar_str";
-
-        /// Greater-than-or-equal-to-string-scalar using the borrowed execution override.
-        fn ge_scalar_str(rhs: &str) => BinaryOperator::GreaterEqual, "series::in_context::ge_scalar_str";
-
-        /// Less-than-or-equal-to-string-scalar using the borrowed execution override.
-        fn le_scalar_str(rhs: &str) => BinaryOperator::LessEqual, "series::in_context::le_scalar_str";
-    );
 }
 
 impl SeriesExecutionScopeStringNamespace<'_, '_, '_> {

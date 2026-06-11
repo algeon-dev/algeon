@@ -351,6 +351,22 @@ fn series_into_inner_shares_arc() {
     assert!(Arc::ptr_eq(&arc1, &arc2));
 }
 
+/// `Series::arc()` returns a cloned `Arc<Column>` without consuming the Series.
+#[test]
+fn series_arc_accessor_shares_arc_without_consuming() {
+    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
+
+    let cloned_arc = s.arc();
+    let consumed_arc = s.clone().into_inner();
+
+    let ptr1 = cloned_arc.view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = consumed_arc.view().unwrap().device_data_ptr().unwrap();
+    assert_eq!(ptr1, ptr2);
+    assert!(Arc::ptr_eq(&cloned_arc, &consumed_arc));
+
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
 // ===========================================================================
 // Supplementary: clone semantics
 // ===========================================================================

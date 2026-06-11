@@ -7,5 +7,6 @@
 mod agg;
 mod dataframe;
 
+pub(crate) use agg::groupby_aggregate_impl;
 pub use agg::{AggregationRequest, GroupByAgg, GroupByResult, NullPolicy, groupby_aggregate};
 pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions};

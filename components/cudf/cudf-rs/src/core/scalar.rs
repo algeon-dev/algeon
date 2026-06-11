@@ -256,3 +256,55 @@ impl Drop for Scalar {
         }
     }
 }
+
+/// Conversion from a host value into a device-resident [`Scalar`] that adopts
+/// the execution provenance of an existing GPU object.
+///
+/// This trait unifies the construction path for fixed-width primitives (via
+/// [`CudfType`]) and string slices, so high-level Series/DataFrame APIs can
+/// expose a single generic `*_scalar` method that accepts both numeric and
+/// string operands.
+///
+/// Users typically do not implement this trait themselves; the blanket impls
+/// for `T: CudfType`, `&str`, `String`, and `&String` cover the supported
+/// host-side scalar inputs. The trait is sealed via the private
+/// [`Scalar`] constructors it delegates to.
+///
+/// The `domain` argument is an opaque execution-provenance handle exposed only
+/// internally; this trait is invoked through generic bounds on safe wrappers
+/// (e.g. [`Series::eq_scalar`](crate::Series::eq_scalar)) rather than called
+/// directly by end users.
+pub trait IntoRuntimeScalar {
+    /// Build an owned device-resident [`Scalar`] bound to the same execution
+    /// provenance as `domain`.
+    #[allow(private_interfaces)]
+    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar>;
+}
+
+impl<T: CudfType> IntoRuntimeScalar for T {
+    #[allow(private_interfaces)]
+    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
+        Scalar::from_value_in_domain(self, domain)
+    }
+}
+
+impl IntoRuntimeScalar for &str {
+    #[allow(private_interfaces)]
+    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
+        Scalar::from_str_in_domain(self, domain)
+    }
+}
+
+impl IntoRuntimeScalar for &String {
+    #[allow(private_interfaces)]
+    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
+        Scalar::from_str_in_domain(self.as_str(), domain)
+    }
+}
+
+impl IntoRuntimeScalar for String {
+    #[allow(private_interfaces)]
+    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
+        Scalar::from_str_in_domain(self.as_str(), domain)
+    }
+}
