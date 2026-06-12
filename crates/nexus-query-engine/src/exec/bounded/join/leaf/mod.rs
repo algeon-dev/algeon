@@ -54,6 +54,13 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     min_retry_chunk_row_groups: usize,
 }
 
+pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
+    source: LocalParquetSource,
+    node_id: NodeId,
+    scheduled: ScheduledLocalParquetRead,
+    max_attempts: usize,
+}
+
 #[derive(Clone)]
 enum BoundedJoinLeafSourceStreamStage {
     Filter {
@@ -197,6 +204,121 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         }
         Ok(self)
     }
+}
+
+impl BoundedJoinLeafLocalParquetSourcePrefetch {
+    pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
+        self.scheduled.reservation_bytes()
+    }
+
+    pub(in crate::exec::bounded) fn finish(
+        self,
+        context: &ExecutionContext,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ResidentGpuFrame> {
+        let is_prefetch = self.scheduled.is_prefetch();
+        let mut output = self.scheduled.finish(reservations, metrics)?;
+        if is_prefetch {
+            metrics.record_source_read_prefetch_completed();
+        }
+        if let Err(error) = grow_join_source_reservation_to_observed_frame(
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            self.node_id,
+            &output.chunk,
+            metrics,
+            1,
+            self.max_attempts,
+        ) {
+            drop(output.frame);
+            reservations.release(output.reservation, metrics);
+            return Err(error);
+        }
+        let retained_device_bytes = output.reservation.bytes();
+        if let Err(error) = insert_bounded_local_parquet_source_cache(
+            context,
+            &self.source,
+            &output.chunk,
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            metrics,
+            "join_source_read_prefetch",
+            1,
+            self.max_attempts,
+            retained_device_bytes,
+        ) {
+            drop(output.frame);
+            reservations.release(output.reservation, metrics);
+            return Err(error);
+        }
+        metrics.record_source_chunk_commit(
+            output
+                .observed_row_group_count
+                .or_else(|| output.chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
+                .unwrap_or_else(|| output.chunk.row_group_count() as u64),
+        );
+        Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
+    }
+
+    pub(in crate::exec::bounded) fn abandon(self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        self.scheduled.abandon(reservations, metrics);
+    }
+}
+
+pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source_prefetch(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<BoundedJoinLeafLocalParquetSourcePrefetch>> {
+    if !context.source_scheduler_policy().enables_prefetch()
+        || stream.has_stages()
+        || !stream.reader_dynamic_filters.is_empty()
+        || stream.chunks.len() != 1
+        || !join_leaf_source_prefetch_remote_reader_admitted(&stream.source)
+    {
+        return Ok(None);
+    }
+    let chunk = stream.chunks.first().expect("single chunk checked");
+    let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+    if !reservations.can_reserve(requested_bytes) {
+        metrics.record_source_read_prefetch_skipped();
+        return Ok(None);
+    }
+    metrics.record_source_read_prefetch_started();
+    let scheduled = start_join_leaf_scheduled_source_read(
+        context,
+        &stream.source,
+        chunk,
+        stream.node_id,
+        reservations,
+        metrics,
+        requested_bytes,
+        "join_source_read_prefetch",
+        false,
+        true,
+        1,
+        stream.max_attempts,
+    )?;
+    Ok(Some(BoundedJoinLeafLocalParquetSourcePrefetch {
+        source: stream.source.clone(),
+        node_id: stream.node_id,
+        scheduled,
+        max_attempts: stream.max_attempts,
+    }))
+}
+
+fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource) -> bool {
+    !source.files.is_empty()
+        && source.files.iter().all(|file| {
+            matches!(
+                file.resolved_source.read_strategy,
+                crate::source::ParquetReadStrategy::RemoteDirect | crate::source::ParquetReadStrategy::RemoteHostBuffer
+            )
+        })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(

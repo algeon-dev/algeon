@@ -297,12 +297,20 @@ fn object_store_file_fetch_pipeline_enabled(
     source: &LocalParquetSource,
     columns: &[&str],
 ) -> bool {
-    !columns.is_empty()
-        && source.scan_limit.is_none()
-        && source.files.len() > 1
-        && max_source_reads_in_flight > 1
-        && source.files.iter().all(|file| file.resolved_source.uses_host_buffer())
-        && source.files.iter().all(|file| object_store_file_fetch_pipeline_compatible(source, file))
+    if columns.is_empty() || source.scan_limit.is_some() || max_source_reads_in_flight <= 1 {
+        return false;
+    }
+    let mut candidate_count = 0usize;
+    for file in &source.files {
+        if file_has_explicit_empty_row_group_selection(file) {
+            continue;
+        }
+        candidate_count += 1;
+        if !file.resolved_source.uses_host_buffer() || !object_store_file_fetch_pipeline_compatible(source, file) {
+            return false;
+        }
+    }
+    candidate_count > 1
 }
 
 fn source_requires_position_delete_chunk_reads(source: &LocalParquetSource) -> bool {
@@ -556,6 +564,10 @@ fn start_object_store_file_fetches(
 ) -> Result<()> {
     while pending.len() < max_in_flight && *next_file_index < source.files.len() {
         let file_index = *next_file_index;
+        if file_has_explicit_empty_row_group_selection(&source.files[file_index]) {
+            *next_file_index += 1;
+            continue;
+        }
         let fetch = if pending.is_empty() {
             Some(start_object_store_parquet_file_pipeline_fetch(context, source, &source.files[file_index])?)
         } else {
@@ -576,6 +588,13 @@ fn concatenate_local_parquet_source_frames(
     mut frames: Vec<DataFrame>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if frames.is_empty() {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, 0)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
+    }
     let frame = frames.remove(0);
     if frames.is_empty() {
         return Ok(GpuDataFrame::new(frame));
@@ -596,6 +615,10 @@ fn concatenate_local_parquet_source_frames(
     metrics.operator_time += timer.elapsed();
 
     Ok(GpuDataFrame::new(output))
+}
+
+fn file_has_explicit_empty_row_group_selection(file: &LocalParquetFile) -> bool {
+    file.row_groups.as_ref().is_some_and(Vec::is_empty)
 }
 
 fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
@@ -2143,6 +2166,48 @@ mod tests {
         let mut limited = source.clone();
         limited.scan_limit = Some(1);
         assert!(!object_store_file_fetch_pipeline_enabled(2, &limited, &["c1"]));
+    }
+
+    #[test]
+    fn object_store_file_fetch_pipeline_ignores_explicit_empty_row_group_files() {
+        let files = vec![
+            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
+            LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
+                .unwrap()
+                .with_file_size_bytes(1024)
+                .with_row_groups(Vec::new()),
+            LocalParquetFile::object_store_uri("s3://bucket/c.parquet").unwrap().with_file_size_bytes(1024),
+        ];
+        let source = test_source(files, vec!["c1".to_string()]);
+
+        assert!(object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
+
+        let mostly_empty = test_source(
+            vec![
+                LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
+                LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
+                    .unwrap()
+                    .with_file_size_bytes(1024)
+                    .with_row_groups(Vec::new()),
+            ],
+            vec!["c1".to_string()],
+        );
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &mostly_empty, &["c1"]));
+
+        let all_empty = test_source(
+            vec![
+                LocalParquetFile::object_store_uri("s3://bucket/a.parquet")
+                    .unwrap()
+                    .with_file_size_bytes(1024)
+                    .with_row_groups(Vec::new()),
+                LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
+                    .unwrap()
+                    .with_file_size_bytes(1024)
+                    .with_row_groups(Vec::new()),
+            ],
+            vec!["c1".to_string()],
+        );
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &all_empty, &["c1"]));
     }
 
     #[test]

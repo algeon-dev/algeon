@@ -242,8 +242,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
             AggregateExecutionStage::Single,
         )?;
         if decision.use_segmented {
-            let failure_decision = decision.clone();
-            return match execute_segmented_filtered_global_aggregate_with_budget(
+            return execute_segmented_filtered_global_aggregate_with_budget(
                 context,
                 node_id,
                 &node.spec,
@@ -253,22 +252,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
                 token,
                 decision,
                 metrics,
-            ) {
-                Ok(output) => Ok(output),
-                Err(error) => {
-                    record_filtered_global_aggregate_single_pass(
-                        metrics,
-                        context,
-                        node_id,
-                        &node.spec,
-                        input_schema,
-                        input_rows,
-                        0,
-                        failure_decision,
-                    );
-                    Err(error)
-                },
-            };
+            );
         }
         Some(decision)
     } else {
@@ -691,8 +675,7 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
             AggregateExecutionStage::Partial,
         )?;
         if decision.use_segmented {
-            let failure_decision = decision.clone();
-            return match execute_segmented_filtered_global_partial_aggregate_with_budget(
+            return execute_segmented_filtered_global_partial_aggregate_with_budget(
                 context,
                 node_id,
                 &node.spec,
@@ -703,22 +686,7 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
                 input_evidence,
                 decision,
                 metrics,
-            ) {
-                Ok(output) => Ok(output),
-                Err(error) => {
-                    record_filtered_global_partial_single_pass(
-                        metrics,
-                        context,
-                        node_id,
-                        &node.spec,
-                        input_schema,
-                        0,
-                        input_evidence,
-                        failure_decision,
-                    );
-                    Err(error)
-                },
-            };
+            );
         }
         let output = match execute_partial_aggregate_with_budget_single_pass(
             context,

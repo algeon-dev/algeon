@@ -129,6 +129,13 @@ impl ScheduledLocalParquetRead {
         self.budget_boundary
     }
 
+    pub(in crate::exec) fn reservation_bytes(&self) -> u64 {
+        match &self.state {
+            ScheduledLocalParquetReadState::Ready(output) => output.reservation.bytes(),
+            ScheduledLocalParquetReadState::Running { reservation, .. } => reservation.bytes(),
+        }
+    }
+
     pub(in crate::exec) fn finish(
         self,
         reservations: &mut ReservationTracker,

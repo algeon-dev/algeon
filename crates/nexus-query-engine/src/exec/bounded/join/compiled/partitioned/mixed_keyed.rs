@@ -82,23 +82,6 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
         let right_partitioned_bytes = partitioned.right.reservation.bytes();
         record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, metrics);
         let PartitionedJoinSides { left: left_partitioned, right: right_partitioned } = partitioned;
-        let forecast = match forecast_partitioned_mixed_join_stream(
-            context,
-            node_id,
-            node,
-            &left_partitioned,
-            &right_partitioned,
-            partition_count,
-            reservations,
-            metrics,
-        ) {
-            Ok(forecast) => forecast,
-            Err(error) => {
-                release_partitioned_join_side(left_partitioned, reservations, metrics);
-                release_partitioned_join_side(right_partitioned, reservations, metrics);
-                return Err(error);
-            },
-        };
         let stream = PartitionedMixedJoinStreamSource {
             context: context.clone(),
             node_id,
@@ -112,9 +95,9 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
             metrics_recorded: false,
         };
         let payload = ResidentFrameStreamPayload::from_producer(
-            forecast.max_per_frame_reservation_bytes,
-            forecast.aggregate_reservation_bytes,
-            forecast.aggregate_num_rows,
+            plan.partition_target_bytes,
+            0,
+            0,
             node.spec.output_projection.len(),
             Vec::new(),
             Box::new(stream),
@@ -391,157 +374,6 @@ fn partitioned_mixed_join_output_upper_bound_bytes(
         metrics,
     )?;
     Ok(left_bytes.saturating_add(right_bytes))
-}
-
-struct PartitionedMixedJoinStreamForecast {
-    max_per_frame_reservation_bytes: u64,
-    aggregate_reservation_bytes: u64,
-    aggregate_num_rows: u64,
-}
-
-fn forecast_partitioned_mixed_join_stream(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &JoinNode,
-    left_partitioned: &PartitionedJoinSide,
-    right_partitioned: &PartitionedJoinSide,
-    partition_count: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<PartitionedMixedJoinStreamForecast> {
-    let mut max_per_frame_reservation_bytes = 0u64;
-    let mut aggregate_reservation_bytes = 0u64;
-    let mut aggregate_num_rows = 0u64;
-    for partition in 0..partition_count {
-        let left_part = slice_partition_join_side(
-            context,
-            node_id,
-            JoinSide::Left,
-            node.spec.build_side,
-            left_partitioned,
-            partition,
-            reservations,
-            metrics,
-        )?;
-        let right_part = match slice_partition_join_side(
-            context,
-            node_id,
-            JoinSide::Right,
-            node.spec.build_side,
-            right_partitioned,
-            partition,
-            reservations,
-            metrics,
-        ) {
-            Ok(partition) => partition,
-            Err(error) => {
-                release_bounded_join_side_frame(left_part, reservations, metrics);
-                return Err(error);
-            },
-        };
-        let forecast = match forecast_partitioned_mixed_join_partition(
-            context,
-            node_id,
-            node,
-            &left_part,
-            &right_part,
-            reservations,
-            metrics,
-        ) {
-            Ok(forecast) => forecast,
-            Err(error) => {
-                release_bounded_join_side_frame(left_part, reservations, metrics);
-                release_bounded_join_side_frame(right_part, reservations, metrics);
-                return Err(error);
-            },
-        };
-        aggregate_num_rows = aggregate_num_rows.saturating_add(forecast.output_rows);
-        aggregate_reservation_bytes = aggregate_reservation_bytes.saturating_add(forecast.output_reservation_bytes);
-        max_per_frame_reservation_bytes = max_per_frame_reservation_bytes.max(forecast.output_reservation_bytes);
-        release_bounded_join_side_frame(left_part, reservations, metrics);
-        release_bounded_join_side_frame(right_part, reservations, metrics);
-    }
-    Ok(PartitionedMixedJoinStreamForecast {
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
-        aggregate_num_rows,
-    })
-}
-
-struct PartitionedMixedJoinPartitionForecast {
-    output_rows: u64,
-    output_reservation_bytes: u64,
-}
-
-fn forecast_partitioned_mixed_join_partition(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &JoinNode,
-    left: &BoundedJoinSideFrame,
-    right: &BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<PartitionedMixedJoinPartitionForecast> {
-    let residual_columns = residual_input_columns(node)?;
-    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
-    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
-    let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
-    let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
-    let size_data = match node.spec.join_type {
-        JoinType::Inner => left
-            .frame
-            .with_execution(&overrides)
-            .mixed_inner_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Left => left
-            .frame
-            .with_execution(&overrides)
-            .mixed_left_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Full => left
-            .frame
-            .with_execution(&overrides)
-            .mixed_full_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::LeftSemi => left
-            .frame
-            .with_execution(&overrides)
-            .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::LeftAnti => left
-            .frame
-            .with_execution(&overrides)
-            .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross | JoinType::LeftMark => unreachable!("validated above"),
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let output_rows = size_data.output_size() as u64;
-    let mixed_size_data_bytes = size_data.device_allocated_size_bytes(node)?;
-    let size_data_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::MixedSizeData,
-            "join_partition_mixed_size_data_forecast",
-            mixed_size_data_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    )?;
-    drop(size_data);
-    reservations.release(size_data_reservation, metrics);
-    let output_reservation_bytes = partitioned_mixed_join_output_upper_bound_bytes(
-        context,
-        node_id,
-        node,
-        left,
-        right,
-        output_rows,
-        reservations,
-        metrics,
-    )?;
-    Ok(PartitionedMixedJoinPartitionForecast { output_rows, output_reservation_bytes })
 }
 
 struct PartitionedMixedJoinStreamSource {

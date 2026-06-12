@@ -586,7 +586,17 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = bounded_join_execution_context(&runtime);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 512 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -595,9 +605,45 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_mixed_keyed_residual_join");
     assert_eq!(join_metrics.output_rows, 1);
     assert!(metrics.partial_aggregate_count > 0);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data_forecast"
+    assert!(metrics.join_strategy_decisions.iter().any(|decision| {
+        decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_mixed_keyed_residual")
+            && decision
+                .facts
+                .get("partition_count")
+                .and_then(|value| value.parse::<usize>().ok())
+                .is_some_and(|partition_count| partition_count > 1)
     }));
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data"
+    }));
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output"
+    }));
+    assert!(metrics.reservation_events.iter().all(|event| {
+        event.memory_boundary != "join_partition_mixed_size_data_forecast"
+    }));
+    let first_partial_work = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.memory_boundary == "compiled_aggregate_partial_state_work"
+        })
+        .expect("aggregate should reserve partial work while consuming the join stream");
+    let last_join_output = metrics
+        .reservation_events
+        .iter()
+        .rposition(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.memory_boundary == "join_partition_output"
+        })
+        .expect("partitioned mixed join should reserve partition outputs");
+    assert!(
+        first_partial_work < last_join_output,
+        "aggregate partial work should begin before the final join partition output is reserved"
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
