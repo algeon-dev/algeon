@@ -998,10 +998,12 @@ fn table_format_source_read_groups(
     output_schema: SchemaRef,
 ) -> Result<Vec<TableFormatSourceReadGroup>, FallbackReason> {
     if !table_format_requires_iceberg_field_id_bindings(scan_plan, requirements)? {
+        let file_schema = table_format_file_schema(scan_plan);
+        let source_schema = table_format_source_contract_schema(requirements, &output_schema, &file_schema)?;
         return Ok(vec![TableFormatSourceReadGroup {
             file_indices: (0..scan_plan.data_files.len()).collect(),
             requirements: requirements.clone(),
-            source_schema: output_schema.clone(),
+            source_schema,
             output_schema,
             field_id_bindings: vec![Vec::new(); scan_plan.data_files.len()],
         }]);
@@ -1252,7 +1254,7 @@ fn table_format_source_contract_schema(
     for index in &requirements.read_column_file_indices {
         let field = footer_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
         if seen.insert(field.name().clone()) {
-            fields.push(Field::new(field.name(), field.data_type().clone(), field.is_nullable()));
+            fields.push(table_format_file_read_contract_field(field));
         }
     }
     for field in output_schema.fields() {
@@ -1261,6 +1263,17 @@ fn table_format_source_contract_schema(
         }
     }
     Ok(Arc::new(Schema::new(fields)))
+}
+
+fn table_format_file_read_contract_field(field: &Field) -> Field {
+    Field::new(field.name(), table_format_file_read_contract_data_type(field.data_type()), field.is_nullable())
+}
+
+fn table_format_file_read_contract_data_type(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Timestamp(unit, _) => DataType::Timestamp(*unit, None),
+        _ => data_type.clone(),
+    }
 }
 
 fn table_format_source_group_key(requirements: &NativeParquetColumnRequirements) -> String {
@@ -1646,6 +1659,7 @@ mod tests {
     use arrow::{array::Int64Array, record_batch::RecordBatch};
     use nexus_query_engine::{
         CredentialMode, PlanNode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef,
+        validate_local_parquet_source,
     };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -1706,6 +1720,152 @@ mod tests {
         assert_eq!(requirements.read_columns, vec!["status"]);
         assert_eq!(requirements.read_column_file_indices, vec![0]);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_direct_timestamp_timezone_uses_timezone_free_source_contract() {
+        let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ));
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&scan_schema))
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "event_ts",
+                Some("event_ts"),
+                timestamp_type.clone(),
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, Arc::clone(&output_schema)).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(),
+            &DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
+        );
+        assert_eq!(groups[0].output_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
+    }
+
+    #[test]
+    fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
+        let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), false)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_row_count(1)
+        .with_partition_values(vec![TableFormatPartitionValue::new(
+            "event_ts",
+            timestamp_type.clone(),
+            false,
+            TableFormatPartitionTransform::Identity,
+            TableFormatScalarValue::Int64(123),
+        )])
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ));
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&scan_schema))
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "event_ts",
+                None::<String>,
+                timestamp_type.clone(),
+                false,
+                TableFormatColumnSource::IdentityPartitionValue,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+        let (native_source, _) =
+            table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None)
+                .unwrap();
+
+        assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
+        validate_local_parquet_source(&native_source).unwrap();
+    }
+
+    #[test]
+    fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
+        let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_row_count(1)
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ));
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&scan_schema))
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "event_ts",
+                None::<String>,
+                timestamp_type.clone(),
+                true,
+                TableFormatColumnSource::MissingNullableColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+        let (native_source, _) =
+            table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None)
+                .unwrap();
+
+        assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
+        validate_local_parquet_source(&native_source).unwrap();
     }
 
     #[test]
