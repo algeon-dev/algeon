@@ -933,8 +933,14 @@ fn validate_require_direct_evidence(
     let no_fallback = evidence.fallback_reason == "none";
     let has_remote_bytes = evidence.remote_bytes.is_some_and(|bytes| bytes > 0);
     let has_remote_ranges = evidence.remote_range_count.is_some_and(|ranges| ranges > 0);
+    // Footer and metadata reads are host-facing even on the explicit KvikIO
+    // datasource. `supported_not_used` is acceptable only when pruning evidence
+    // proves the reader had no row-group payload left to fetch.
+    let device_read_capable = matches!(evidence.device_read_support, "supported_used" | "supported_not_used");
     let used_device_read = evidence.device_read_support == "supported_used";
-    if direct_backend && no_fallback && has_remote_bytes && has_remote_ranges && used_device_read {
+    let payload_device_read_required = remote_payload_device_read_required(evidence);
+    let direct_device_read_proven = used_device_read || (device_read_capable && !payload_device_read_required);
+    if direct_backend && no_fallback && has_remote_bytes && has_remote_ranges && direct_device_read_proven {
         return Ok(());
     }
     Err(Error::new_with(
@@ -951,8 +957,24 @@ fn validate_require_direct_evidence(
     .with_detail("remote_bytes_positive", has_remote_bytes.to_string())
     .with_detail("remote_range_count_positive", has_remote_ranges.to_string())
     .with_detail("device_read_support", evidence.device_read_support)
+    .with_detail("device_read_capable", device_read_capable.to_string())
     .with_detail("device_read_used", used_device_read.to_string())
+    .with_detail("payload_device_read_required", payload_device_read_required.to_string())
     .with_detail("remote_backend_build_status", evidence.backend_build_status.as_str()))
+}
+
+fn remote_payload_device_read_required(evidence: &ParquetReadEvidence) -> bool {
+    let Some(pruning) = evidence.pruning else {
+        return true;
+    };
+    if pruning.input_row_groups == 0 {
+        return false;
+    }
+    let remaining_row_groups = pruning
+        .row_groups_after_bloom_filter
+        .or(pruning.row_groups_after_stats_filter)
+        .unwrap_or(pruning.input_row_groups);
+    remaining_row_groups > 0
 }
 
 fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static str) -> Result<i64> {
@@ -1596,7 +1618,7 @@ mod tests {
     }
 
     #[test]
-    fn require_direct_rejects_host_only_kvikio_remote_datasource_evidence() {
+    fn require_direct_rejects_host_only_kvikio_remote_datasource_payload_evidence() {
         let mut evidence = direct_evidence();
         evidence.device_read_support = "supported_not_used";
 
@@ -1604,7 +1626,35 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
         assert_eq!(error.detail_value("reason"), Some("require_direct_evidence_unavailable"));
+        assert_eq!(error.detail_value("device_read_capable"), Some("true"));
+        assert_eq!(error.detail_value("device_read_used"), Some("false"));
+        assert_eq!(error.detail_value("payload_device_read_required"), Some("true"));
+    }
+
+    #[test]
+    fn require_direct_accepts_pruned_metadata_only_kvikio_remote_datasource_evidence() {
+        let mut evidence = direct_evidence();
+        evidence.device_read_support = "supported_not_used";
+        evidence.pruning = Some(ParquetPruningEvidence {
+            input_row_groups: 4,
+            row_groups_after_stats_filter: Some(0),
+            row_groups_after_bloom_filter: None,
+        });
+
+        validate_require_direct_evidence(&evidence, true, "test").unwrap();
+    }
+
+    #[test]
+    fn require_direct_rejects_device_read_unsupported_kvikio_remote_datasource_evidence() {
+        let mut evidence = direct_evidence();
+        evidence.device_read_support = "unsupported";
+
+        let error = validate_require_direct_evidence(&evidence, true, "test").unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
+        assert_eq!(error.detail_value("reason"), Some("require_direct_evidence_unavailable"));
         assert_eq!(error.detail_value("backend"), Some("cudf_sys_kvikio_remote_datasource"));
+        assert_eq!(error.detail_value("device_read_capable"), Some("false"));
         assert_eq!(error.detail_value("device_read_used"), Some("false"));
     }
 
