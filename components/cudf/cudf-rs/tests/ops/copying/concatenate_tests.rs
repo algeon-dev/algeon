@@ -1,8 +1,5 @@
 //! Tests for concatenation operations.
-use cudf::testing::prelude::*;
-
-
-use cudf::{ErrorKind, core::Table, ops::concatenate};
+use cudf::{ErrorKind, core::Table, ops::concatenate, testing::prelude::*};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,

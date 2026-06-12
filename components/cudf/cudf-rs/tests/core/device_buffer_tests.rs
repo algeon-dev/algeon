@@ -1,8 +1,5 @@
 //! Integration tests for DeviceBuffer and zero-copy Column adoption.
-use cudf::testing::prelude::*;
-
-
-use cudf::{ErrorKind, Runtime, TypeId};
+use cudf::{ErrorKind, Runtime, TypeId, testing::prelude::*};
 
 // ---------------------------------------------------------------------------
 // DeviceBuffer lifecycle

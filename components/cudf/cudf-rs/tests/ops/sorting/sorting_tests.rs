@@ -1,10 +1,8 @@
 //! Tests for sorting operations.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     core::Table,
     ops::sorting::{self, NullOrder, Order},
+    testing::prelude::*,
 };
 
 use crate::common::{

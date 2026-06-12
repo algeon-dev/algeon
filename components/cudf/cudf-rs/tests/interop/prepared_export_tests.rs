@@ -4,9 +4,6 @@
 //! host vs device export profiles, metadata preservation, and recursive nested
 //! projections without repeating the same matrix for every shared/runtime and
 //! column/table permutation.
-use cudf::testing::prelude::*;
-
-
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -32,6 +29,7 @@ use cudf::{
     },
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

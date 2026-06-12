@@ -632,6 +632,62 @@ fn test_full_join_invalid_null_equality_rejected() {
 }
 
 #[test]
+fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_distinct_hash_join_create_raw(tv, 99, &mut join) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(join.is_null());
+    assert!(last_error_message().contains("invalid null_equality"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_distinct_hash_join_left_join_returns_build_indices() {
+    let build_col = make_i32_column(&[10, 20, 30]);
+    let build_tbl = make_table_from_one_column(build_col);
+    let build_tv = make_table_view(build_tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_distinct_hash_join_create(
+            build_tv,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            &mut join,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+
+    let probe_tbl = make_table_from_columns(vec![make_i32_column(&[20, 99, 10, 30])]);
+    let probe_tv = make_table_view(probe_tbl);
+    let mut out: *mut c_void = ptr::null_mut();
+
+    let status = unsafe { cudf_distinct_hash_join_left_join_raw(join, probe_tv, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(read_i32_column_data(out, 4), vec![1, i32::MIN, 0, 2]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_table_view_destroy(probe_tv);
+        cudf_sys::cudf_table_destroy(probe_tbl);
+        cudf_sys::cudf_distinct_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(build_tv);
+        cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+#[test]
 fn test_scan_invalid_scan_type_rejected() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);

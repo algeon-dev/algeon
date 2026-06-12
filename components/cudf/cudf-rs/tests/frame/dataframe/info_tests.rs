@@ -1,8 +1,7 @@
 //! Integration tests for DataFrame metadata snapshots via `info()`.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Series, TypeId, ops::dictionary};
+use cudf::{
+    DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Series, TypeId, ops::dictionary, testing::prelude::*,
+};
 use cudf_sys::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
 
 use crate::common::sample_runtime;

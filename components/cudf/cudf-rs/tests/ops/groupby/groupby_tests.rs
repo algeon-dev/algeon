@@ -1,10 +1,8 @@
 //! Tests for groupby operations.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     core::Table,
     ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy},
+    testing::prelude::*,
 };
 
 use crate::common::{

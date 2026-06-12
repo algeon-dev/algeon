@@ -1,10 +1,8 @@
 //! Tests for binary operations (numeric and string).
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     DataType, TypeId,
     ops::binary::{self, BinaryOperator},
+    testing::prelude::*,
 };
 
 use crate::common::{

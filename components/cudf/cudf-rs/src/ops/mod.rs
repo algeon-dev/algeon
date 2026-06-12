@@ -35,6 +35,7 @@ pub mod filter;
 pub mod groupby;
 pub mod hashing;
 pub mod join;
+pub mod lookup;
 pub mod reduction;
 pub mod replace;
 pub mod search;

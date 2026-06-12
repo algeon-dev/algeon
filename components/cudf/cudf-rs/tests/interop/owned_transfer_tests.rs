@@ -1,5 +1,3 @@
-use cudf::testing::prelude::*;
-
 use std::{
     ffi::c_void,
     sync::{
@@ -29,6 +27,7 @@ use cudf::{
     },
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
+    testing::prelude::*,
 };
 use rapids_interop::{DataType as InteropDataType, TypeId as InteropTypeId};
 use static_assertions::assert_impl_all;
@@ -1021,10 +1020,7 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     assert_ne!(imported_id_ptr, original_id_ptr);
     assert_ne!(imported_value_ptr, original_value_ptr);
     assert_eq!(shared.series("id").unwrap().view().unwrap().device_data_ptr().unwrap(), original_id_ptr);
-    assert_eq!(
-        shared.series("value").unwrap().view().unwrap().device_data_ptr().unwrap(),
-        original_value_ptr
-    );
+    assert_eq!(shared.series("value").unwrap().view().unwrap().device_data_ptr().unwrap(), original_value_ptr);
 }
 
 #[test]

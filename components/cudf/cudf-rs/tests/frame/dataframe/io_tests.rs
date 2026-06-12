@@ -1,8 +1,7 @@
 //! Tests for DataFrame I/O integration.
-use cudf::testing::prelude::*;
-
-
-use cudf::{CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ParquetReadOptions, core::Table};
+use cudf::{
+    CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ParquetReadOptions, core::Table, testing::prelude::*,
+};
 use tempfile::TempDir;
 
 use crate::common::{column_from_slice, sample_runtime};

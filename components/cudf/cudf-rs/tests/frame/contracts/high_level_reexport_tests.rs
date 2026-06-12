@@ -70,6 +70,21 @@ fn factorization_surface_smoke() {
 }
 
 #[test]
+fn lookup_table_is_publicly_reexported() {
+    use cudf::LookupTable;
+
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+    let table = LookupTable::new(keys, values).unwrap();
+    let input = crate::common::series("vertex", &["u2", "u9"]).unwrap();
+
+    let probed = table.probe(&input).unwrap();
+
+    assert_eq!(probed.name(), Some("label"));
+    assert_eq!(probed.to_optional_strings().unwrap(), vec![Some("bob".to_string()), None]);
+}
+
+#[test]
 fn scoped_control_plane_smoke() {
     use cudf::{AggSpec, DataFrame, ExecutionContext, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 

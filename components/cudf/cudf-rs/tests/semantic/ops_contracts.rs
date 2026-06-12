@@ -42,6 +42,8 @@ mod hashing_tests;
 mod high_level_groupby_tests;
 #[path = "../ops/join/join_tests.rs"]
 mod join_tests;
+#[path = "../ops/misc/lookup_tests.rs"]
+mod lookup_tests;
 #[path = "../ops/reduction/reduction_tests.rs"]
 mod reduction_tests;
 #[path = "../ops/misc/replace_tests.rs"]

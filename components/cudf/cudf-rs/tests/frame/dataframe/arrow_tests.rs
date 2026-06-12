@@ -1,7 +1,4 @@
 //! Tests for DataFrame ↔ Arrow RecordBatch interop.
-use cudf::testing::prelude::*;
-
-
 use std::sync::Arc;
 
 use arrow::{
@@ -9,7 +6,7 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, ErrorKind, TypeId};
+use cudf::{DataFrame, ErrorKind, TypeId, testing::prelude::*};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable};
 

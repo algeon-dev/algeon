@@ -3,10 +3,7 @@
 //! These cases protect how schema names are sourced during construction:
 //! `DataFrame::from_series` uses `Series` names, while
 //! `DataFrame::from_named_pairs` applies explicit schema names.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, ErrorKind, Runtime, Series};
+use cudf::{DataFrame, ErrorKind, Runtime, Series, testing::prelude::*};
 
 use crate::common::column_from_slice;
 

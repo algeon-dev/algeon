@@ -1,8 +1,5 @@
 //! Tests for high-level fused row-predicate filtering entry points.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, DataType, ErrorKind, TypeId, ops::expr::col};
+use cudf::{DataFrame, DataType, ErrorKind, TypeId, ops::expr::col, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, dataframe_device_ptr, dataframe_from_columns,

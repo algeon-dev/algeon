@@ -7,12 +7,9 @@
 //! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Runtime::empty_column` — retains explicit domain
 //! - `Runtime::column_from_device_ptr` — uses `_ex` FFI, retains explicit domain
-use cudf::testing::prelude::*;
-
-
 use std::{ffi::c_void, ptr};
 
-use cudf::{DataFrame, Series, TypeId};
+use cudf::{DataFrame, Series, TypeId, testing::prelude::*};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,

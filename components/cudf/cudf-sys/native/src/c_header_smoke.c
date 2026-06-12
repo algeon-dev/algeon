@@ -92,6 +92,13 @@ int cudf_rust_c_header_smoke(void)
                        cudf_out_of_bounds_policy_t,
                        cudf_table_handle*,
                        const cudf_exec_options_t*)  = &cudf_gather_ex;
+  cudf_status_t (*f22aa)(
+    cudf_table_view_handle, cudf_null_equality_t, cudf_distinct_hash_join_handle*) =
+    &cudf_distinct_hash_join_create;
+  cudf_status_t (*f22ab)(
+    cudf_distinct_hash_join_handle, cudf_table_view_handle, cudf_column_handle*) =
+    &cudf_distinct_hash_join_left_join;
+  void (*f22ac)(cudf_distinct_hash_join_handle) = &cudf_distinct_hash_join_destroy;
   cudf_status_t (*f22b)(
     cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
     &cudf_scalar_create_numeric_ex;
@@ -106,6 +113,8 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f22g)(cudf_scalar_handle, cudf_scalar_handle*) = &cudf_scalar_copy;
   cudf_status_t (*f22h)(cudf_scalar_handle, const cudf_exec_options_t*, cudf_scalar_handle*) =
     &cudf_scalar_copy_ex;
+  cudf_status_t (*f22i)(int32_t, cudf_reduce_aggregation_handle*) =
+    &cudf_reduce_aggregation_create_nunique;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
 
   cudf_status_t (*f23)(size_t, cudf_device_buffer_handle*) = &cudf_device_buffer_create;
@@ -215,6 +224,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f22f;
   (void)f22g;
   (void)f22h;
+  (void)f22i;
   (void)f23;
   (void)f24;
   (void)f25;

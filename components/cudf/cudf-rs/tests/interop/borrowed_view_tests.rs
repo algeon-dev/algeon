@@ -1,10 +1,9 @@
-use cudf::testing::prelude::*;
-
 use cudf::{
     DataFrame, JsonReadOptions, Runtime, TypeId,
     core::{Column, Table},
     interop::borrowed::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
+    testing::prelude::*,
 };
 use rapids_interop::{NullMaskKind, TypeId as InteropTypeId};
 use static_assertions::assert_impl_all;

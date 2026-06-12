@@ -1,8 +1,7 @@
 //! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, SortOptions};
+use cudf::{
+    DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, SortOptions, testing::prelude::*,
+};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, last_exec_mr_value,

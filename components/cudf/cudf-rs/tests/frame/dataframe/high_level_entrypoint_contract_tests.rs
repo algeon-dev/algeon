@@ -3,12 +3,10 @@
 //! These tests protect user-visible behavior for the high-level APIs that take
 //! `Series` or plain Rust values, while keeping one low-level smoke path
 //! through `view()` plus `cudf::ops::*`.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     DataFrame, TypeId,
     ops::{copying, filter as low_level_filter, search},
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -205,6 +203,19 @@ fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
         looked_up.series("owner").unwrap().to_optional_strings().unwrap(),
         vec![Some("bob".to_string()), None, Some("alice".to_string())]
     );
+}
+
+#[test]
+fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
+    let df = DataFrame::from_series([crate::common::series("vertex", &["u2", "u1"]).unwrap()]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice"]).unwrap();
+
+    let err = df.with_lookup("owner", "vertex", &keys, &values).unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "dataframe::with_lookup");
+    assert!(err.message().contains("same length"));
 }
 
 #[test]

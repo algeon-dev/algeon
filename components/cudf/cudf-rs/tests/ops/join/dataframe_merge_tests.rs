@@ -1,8 +1,5 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions};
+use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, testing::prelude::*};
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,

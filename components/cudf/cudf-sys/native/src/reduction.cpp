@@ -96,6 +96,23 @@ cudf_status_t cudf_reduce_aggregation_create_std(int32_t ddof, cudf_reduce_aggre
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
+                                                     cudf_reduce_aggregation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::null_policy cudf_null_policy;
+  cudf_status_t status = to_null_policy(null_policy, &cudf_null_policy);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    auto agg = cudf::make_nunique_aggregation<cudf::reduce_aggregation>(cudf_null_policy);
+    *out     = static_cast<cudf_reduce_aggregation_handle>(agg.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 void cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle)
 {
   delete static_cast<cudf::reduce_aggregation*>(handle);

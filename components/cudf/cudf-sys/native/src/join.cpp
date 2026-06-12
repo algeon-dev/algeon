@@ -6,6 +6,7 @@
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/join/distinct_hash_join.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
@@ -59,6 +60,12 @@ cudf_status_t to_null_equality(cudf_null_equality_t input, cudf::null_equality* 
     case CUDF_NULL_EQUALITY_UNEQUAL: *out = cudf::null_equality::UNEQUAL; return CUDF_SUCCESS;
     default: set_error("invalid null_equality"); return CUDF_ERROR_INVALID_OPERATION;
   }
+}
+
+std::unique_ptr<cudf::column> release_join_index_column(
+  std::unique_ptr<rmm::device_uvector<cudf::size_type>> indices)
+{
+  return std::make_unique<cudf::column>(std::move(*indices), rmm::device_buffer{}, 0);
 }
 
 }  // namespace
@@ -261,6 +268,76 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
 
     *out_left  = cudf_release_table_handle(std::move(left_result));
     *out_right = cudf_release_table_handle(std::move(right_result));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_distinct_hash_join_create(cudf_table_view_handle build,
+                                             cudf_null_equality_t null_equality,
+                                             cudf_distinct_hash_join_handle* out)
+{
+  return cudf_distinct_hash_join_create_ex(build, null_equality, out, nullptr);
+}
+
+cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
+                                                cudf_null_equality_t null_equality,
+                                                cudf_distinct_hash_join_handle* out,
+                                                cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(build, "build is null");
+  cudf::null_equality null_eq;
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* build_view = static_cast<cudf::table_view*>(build);
+    auto* join       = new cudf::distinct_hash_join(*build_view, null_eq, 0.5, exec.stream);
+    *out             = static_cast<cudf_distinct_hash_join_handle>(join);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+void cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle)
+{
+  delete static_cast<cudf::distinct_hash_join*>(handle);
+}
+
+cudf_status_t cudf_distinct_hash_join_left_join(cudf_distinct_hash_join_handle join,
+                                                cudf_table_view_handle probe,
+                                                cudf_column_handle* out)
+{
+  return cudf_distinct_hash_join_left_join_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handle join,
+                                                   cudf_table_view_handle probe,
+                                                   cudf_column_handle* out,
+                                                   cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* distinct_join = static_cast<cudf::distinct_hash_join*>(join);
+    auto* probe_view    = static_cast<cudf::table_view*>(probe);
+    auto indices        = distinct_join->left_join(*probe_view, exec.stream, exec.mr);
+    *out                = cudf_release_column_handle(release_join_index_column(std::move(indices)));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

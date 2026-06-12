@@ -1243,14 +1243,12 @@ impl Series {
     }
 
     pub fn lookup(&self, keys: &Series, values: &Series) -> Result<Series> {
-        let result = self
-            .view()
-            .map_err(|e| e.with_operation("series::lookup"))?
-            .map(
-                &keys.view().map_err(|e| e.with_operation("series::lookup"))?,
-                &values.view().map_err(|e| e.with_operation("series::lookup"))?,
-            )
-            .map_err(|e| e.with_operation("series::lookup"))?;
+        let result = crate::ops::lookup::probe(
+            &self.view().map_err(|e| e.with_operation("series::lookup"))?,
+            &keys.view().map_err(|e| e.with_operation("series::lookup"))?,
+            &values.view().map_err(|e| e.with_operation("series::lookup"))?,
+        )
+        .map_err(|e| e.with_operation("series::lookup"))?;
         let result = Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))?;
         Ok(match values.name() {
             Some(name) => result.rename(name),

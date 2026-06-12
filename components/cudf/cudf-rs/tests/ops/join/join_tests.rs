@@ -1,10 +1,8 @@
 //! Tests for join operations.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     core::Table,
     ops::join::{self, NullEquality},
+    testing::prelude::*,
 };
 
 use crate::common::{

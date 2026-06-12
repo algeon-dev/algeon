@@ -1,5 +1,3 @@
-use cudf::testing::prelude::*;
-
 use std::{
     sync::mpsc,
     thread,
@@ -20,6 +18,7 @@ use cudf::{
         transfer::{ReleaseSynchronization, TransferCompletionRule},
     },
     runtime::CudaStream,
+    testing::prelude::*,
 };
 
 use crate::common::{assert_duplicate_name_error, column_from_slice, lock_event_observation};

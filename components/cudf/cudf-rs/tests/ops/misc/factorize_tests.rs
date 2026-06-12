@@ -1,8 +1,5 @@
 //! Tests for Column::factorize
-use cudf::testing::prelude::*;
-
-
-use cudf::{Series, TypeId};
+use cudf::{Series, TypeId, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, last_exec_stream_value, last_sync_stream_value,
@@ -259,17 +256,12 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
 
     // This is the tempting but invalid pattern: slice row-aligned factorize
     // codes down to uniques.len() and reuse them as if they were a stable
-    // key->code mapping for later map()/gather() calls.
+    // key->code mapping for later lookup/gather() calls.
     let first_positions = crate::common::series("first_positions", &[0i32, 1, 2]).unwrap();
     let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
 
-    let wrong_encoded = query
-        .view()
-        .unwrap()
-        .map(&uniques.view().unwrap(), &wrong_lookup_values.view().unwrap())
-        .unwrap();
-    let wrong_encoded = Series::from_column(wrong_encoded).unwrap();
+    let wrong_encoded = query.lookup(&uniques, &wrong_lookup_values).unwrap();
     let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
 
     assert_ne!(
@@ -287,18 +279,10 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
 
     let positional = crate::common::series("codes", &[0i32, 1, 2]).unwrap();
     let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
-    let encoded = query
-        .view()
-        .unwrap()
-        .map(&uniques.view().unwrap(), &positional.view().unwrap())
-        .unwrap();
-    let encoded = Series::from_column(encoded).unwrap();
+    let encoded = query.lookup(&uniques, &positional).unwrap();
     let decoded = uniques.gather(&encoded).unwrap();
 
-    assert_eq!(
-        decoded.view().unwrap().to_strings_lossy().unwrap(),
-        query.view().unwrap().to_strings_lossy().unwrap()
-    );
+    assert_eq!(decoded.view().unwrap().to_strings_lossy().unwrap(), query.view().unwrap().to_strings_lossy().unwrap());
 }
 
 #[test]

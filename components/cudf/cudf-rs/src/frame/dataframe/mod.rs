@@ -20,6 +20,7 @@ mod row_predicate;
 mod select;
 mod sort_ops;
 
+pub use column_ops::WithColumnExpr;
 pub use concat_ops::{ColumnOrder, ConcatByNameOptions, SchemaAlignment};
 pub use context::DataFrameExecutionScope;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
@@ -29,7 +30,6 @@ pub use info::{
 pub use io::{
     CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions,
 };
-pub use column_ops::WithColumnExpr;
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use reshape::MeltOptions;
