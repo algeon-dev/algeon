@@ -37,8 +37,10 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         let strings = view
             .to_optional_strings()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let validity = view
+            .to_host_null_mask_bytes()
+            .map(|mask| mask.map(Arc::<[u8]>::from))
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
         let string_values = strings.iter().map(|value| value.as_deref().unwrap_or("").to_string()).collect::<Vec<_>>();
         let offsets_bytes = encode_host_string_offsets(operation, &string_values)?;
@@ -106,7 +108,10 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         view.to_fixed_width_host_bytes()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
     );
-    let validity = view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let validity = view
+        .to_host_null_mask_bytes()
+        .map(|mask| mask.map(Arc::<[u8]>::from))
+        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let values_binding = retained_host_binding(operation, values_id, &values_bytes)?;
     let (validity, validity_binding, validity_bytes) =
         host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
@@ -259,7 +264,10 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     next_buffer_id = child_projection.next_buffer_id;
     next_column_id = child_projection.next_column_id;
 
-    let validity = view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let validity = view
+        .to_host_null_mask_bytes()
+        .map(|mask| mask.map(Arc::<[u8]>::from))
+        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let (validity, validity_binding, validity_bytes) =
         host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
@@ -347,8 +355,10 @@ pub(super) fn prepared_host_column_projection_from_view(
         let mut next_buffer_id = next_buffer_id;
         let column_id = allocate_column_id(operation, &mut next_column_id)?;
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let validity = view
+            .to_host_null_mask_bytes()
+            .map(|mask| mask.map(Arc::<[u8]>::from))
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (validity, validity_binding, validity_bytes) =
             host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
@@ -448,8 +458,10 @@ pub(super) fn prepared_host_column_projection_from_view(
         next_buffer_id = keys_projection.next_buffer_id;
         next_column_id = keys_projection.next_column_id;
 
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let validity = view
+            .to_host_null_mask_bytes()
+            .map(|mask| mask.map(Arc::<[u8]>::from))
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (validity, validity_binding, validity_bytes) =
             host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 

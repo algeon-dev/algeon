@@ -12,7 +12,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
-        table::{Table, TableView},
+        table::Table,
     },
     io::TableReadOutput,
     runtime::Runtime,
@@ -117,14 +117,15 @@ impl JsonTableWriteOptions {
 }
 
 /// Write a table to a JSON file.
-pub fn write_json(table: &TableView<'_>, options: &JsonTableWriteOptions) -> Result<()> {
+pub fn write_json(table: &Table, options: &JsonTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
-    write_json_with_exec(table, options, exec_options.as_ref())
+    let table_view = table.view()?;
+    write_json_with_exec(&table_view, options, exec_options.as_ref())
 }
 
 pub(crate) fn write_json_with_exec(
-    table: &TableView<'_>,
+    table: &crate::core::TableView<'_>,
     options: &JsonTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {

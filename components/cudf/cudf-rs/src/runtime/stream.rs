@@ -1,7 +1,7 @@
 //! CUDA stream wrapper.
 //!
 //! This is an owned `rmm::cuda_stream` wrapper used by [`crate::Runtime`] and
-//! borrowed [`crate::ExecutionContext`] overrides.
+//! borrowed [`crate::ExecutionOverrides`] overrides.
 //! The low-level `_ex` FFI shims in `cudf-sys` accept explicit stream handles,
 //! and the high-level API can now route selected operations through retained
 //! provenance defaults or per-operation borrowed overrides.
@@ -24,7 +24,7 @@ use crate::core::error::{self, Result};
 /// handle combinations.
 ///
 /// Use this with [`crate::Runtime::builder`] to seed explicit retained
-/// provenance, or with [`crate::ExecutionContext::with_stream`] to
+/// provenance, or with [`crate::ExecutionOverrides::with_stream`] to
 /// override one operation.
 #[derive(Clone)]
 pub struct CudaStream {

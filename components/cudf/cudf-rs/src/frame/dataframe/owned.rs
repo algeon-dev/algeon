@@ -71,6 +71,50 @@ fn empty_dataframe_requires_runtime_error(operation: &'static str) -> Error {
     .with_context("remedy", "use Runtime::empty_dataframe()")
 }
 
+fn named_column_len(name: &str, column: &Arc<Column>, operation: &'static str) -> Result<usize> {
+    column
+        .view()
+        .map_err(|e| e.with_operation(operation).with_context("column_name", name.to_string()))?
+        .len()
+        .map_err(|e| e.with_operation(operation).with_context("column_name", name.to_string()))
+}
+
+fn dataframe_from_named_column_arcs<I>(named_columns: I, operation: &'static str) -> Result<DataFrame>
+where I: IntoIterator<Item = (String, Arc<Column>)> {
+    let named_columns = named_columns.into_iter().collect::<Vec<_>>();
+    if named_columns.is_empty() {
+        return Err(empty_dataframe_requires_runtime_error(operation));
+    }
+
+    let names = named_columns.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    validate_no_duplicate_names(&names, operation)?;
+
+    let mut named_columns = named_columns.into_iter();
+    let (first_name, first_column) = named_columns.next().expect("non-empty: checked above");
+    let first_rows = named_column_len(&first_name, &first_column, operation)?;
+
+    let mut columns: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
+    columns.insert(first_name.clone(), first_column);
+
+    for (name, column) in named_columns {
+        let rows = named_column_len(&name, &column, operation)?;
+        if rows != first_rows {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
+            )
+            .with_operation(operation)
+            .with_context("column_name", name)
+            .with_context("column_rows", rows.to_string())
+            .with_context("expected_rows", first_rows.to_string()));
+        }
+        columns.insert(name, column);
+    }
+
+    let domain = derive_frame_domain_from_columns(&columns, operation)?;
+    Ok(DataFrame { columns, row_count: first_rows, domain })
+}
+
 pub(crate) fn derive_frame_domain_from_columns(
     columns: &FastIndexMap<String, Arc<Column>>,
     operation: &'static str,
@@ -134,8 +178,7 @@ impl DataFrame {
     /// Crate-private constructor from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
-    /// [`DataFrame::from_series`] with named [`Series`](crate::Series) values,
-    /// or [`DataFrame::from_named_pairs`] for explicit schema override.
+    /// [`DataFrame::from_columns`] with explicit schema names.
     ///
     /// # Errors
     ///
@@ -215,148 +258,34 @@ impl DataFrame {
         Ok(Self { columns: map, row_count, domain })
     }
 
-    /// Create a `DataFrame` from an iterator of named [`Series`](crate::Series).
-    ///
-    /// Each `Series` must carry a name (constructed via
-    /// [`Runtime::series`](crate::Runtime::series), etc.).
-    /// The Series name becomes the DataFrame
-    /// column name. GPU data is shared via `Arc` — no device copy.
-    ///
-    /// For explicit schema override (external names), use
-    /// [`from_named_pairs`](Self::from_named_pairs).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Any `Series` is unnamed
-    /// - Any name is duplicated
-    /// - Columns have different row counts
-    pub fn from_series<I>(series: I) -> Result<Self>
-    where I: IntoIterator<Item = Series> {
-        let iter = series.into_iter();
-        let (lower, _) = iter.size_hint();
-        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(lower);
-
-        for (idx, s) in iter.enumerate() {
-            let name = s.name().map(String::from).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, format!("Series at position {} has no name", idx))
-                    .with_operation("dataframe::from_series")
-                    .with_context("series_index", idx.to_string())
-            })?;
-            if map.contains_key(&name) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
-                    .with_operation("dataframe::from_series")
-                    .with_context("duplicate_name", name));
-            }
-            map.insert(name, Arc::clone(s.column_arc()));
-        }
-
-        if map.is_empty() {
-            return Err(empty_dataframe_requires_runtime_error("dataframe::from_series"));
-        }
-
-        // Validate all columns have the same row count.
-        let mut iter = map.iter();
-        let (first_name, first_col) = iter.next().expect("non-empty: checked above");
-        let first_rows = first_col
-            .view()
-            .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?
-            .len()
-            .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", first_name.clone()))?;
-
-        for (name, col) in iter {
-            let rows = col
-                .view()
-                .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?
-                .len()
-                .map_err(|e| e.with_operation("dataframe::from_series").with_context("column_name", name.clone()))?;
-            if rows != first_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
-                )
-                .with_operation("dataframe::from_series")
-                .with_context("column_name", name.clone())
-                .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
-            }
-        }
-
-        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_series")?;
-        Ok(Self { columns: map, row_count: first_rows, domain })
-    }
-
     /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
     ///
-    /// The pair key becomes the column name, overriding any name carried by the
-    /// `Series` itself. GPU data is shared via `Arc` — no device copy.
+    /// `DataFrame` is the schema authority: the pair key becomes the column
+    /// name in the resulting frame, regardless of any name metadata carried by
+    /// the `Series` itself. This also means unnamed `Series` are accepted as
+    /// long as the caller supplies an explicit output name here.
     ///
-    /// For the primary path where Series carry their own names, use
-    /// [`from_series`](Self::from_series).
+    /// GPU data is shared via `Arc` — no device copy.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - Any name is duplicated
     /// - Columns have different row counts
-    pub fn from_named_pairs<I, S>(pairs: I) -> Result<Self>
+    pub fn from_columns<I, S>(pairs: I) -> Result<Self>
     where
         I: IntoIterator<Item = (S, Series)>,
         S: Into<String>,
     {
         let iter = pairs.into_iter();
         let (lower, _) = iter.size_hint();
-        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(lower);
+        let mut named_columns = Vec::with_capacity(lower);
 
         for (name, series) in iter {
-            let name = name.into();
-            if map.contains_key(&name) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
-                    .with_operation("dataframe::from_named_pairs")
-                    .with_context("duplicate_name", name));
-            }
-            map.insert(name, Arc::clone(series.column_arc()));
+            named_columns.push((name.into(), Arc::clone(series.column_arc())));
         }
 
-        if map.is_empty() {
-            return Err(empty_dataframe_requires_runtime_error("dataframe::from_named_pairs"));
-        }
-
-        // Validate all columns have the same row count.
-        let mut iter = map.iter();
-        let (first_name, first_col) = iter.next().expect("non-empty: checked above");
-        let first_rows = first_col
-            .view()
-            .map_err(|e| {
-                e.with_operation("dataframe::from_named_pairs").with_context("column_name", first_name.clone())
-            })?
-            .len()
-            .map_err(|e| {
-                e.with_operation("dataframe::from_named_pairs").with_context("column_name", first_name.clone())
-            })?;
-
-        for (name, col) in iter {
-            let rows = col
-                .view()
-                .map_err(|e| e.with_operation("dataframe::from_named_pairs").with_context("column_name", name.clone()))?
-                .len()
-                .map_err(|e| {
-                    e.with_operation("dataframe::from_named_pairs").with_context("column_name", name.clone())
-                })?;
-            if rows != first_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
-                )
-                .with_operation("dataframe::from_named_pairs")
-                .with_context("column_name", name.clone())
-                .with_context("column_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
-            }
-        }
-
-        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_named_pairs")?;
-        Ok(Self { columns: map, row_count: first_rows, domain })
+        dataframe_from_named_column_arcs(named_columns, "dataframe::from_columns")
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -471,21 +400,6 @@ impl DataFrame {
         Ok((table, names))
     }
 
-    /// Borrow this `DataFrame` as a low-level [`TableView`].
-    ///
-    /// The returned table view is zero-copy with respect to device column
-    /// data. It borrows the existing GPU columns and retains the intermediate
-    /// column-view backing internally so the returned `TableView` remains
-    /// valid for the lifetime of the `DataFrame` borrow.
-    ///
-    /// # Cost
-    ///
-    /// Zero-copy with respect to GPU column data: this reuses the existing
-    /// device memory and creates only lightweight FFI view handles.
-    pub fn view(&self) -> Result<TableView<'_>> {
-        self.build_table_view()
-    }
-
     // -- Internal helpers ----------------------------------------------------
 
     /// Build a borrowed [`TableView`] from the individual `Arc<Column>`s.
@@ -594,7 +508,7 @@ impl DataFrame {
     /// # let rt = Runtime::new().unwrap();
     /// # let keys = rt.series("key", &[1i32, 2]).unwrap();
     /// # let vals = rt.series("val", &[10i64, 20]).unwrap();
-    /// # let df = DataFrame::from_named_pairs([("key", keys), ("val", vals)]).unwrap();
+    /// # let df = DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     /// ```
@@ -609,7 +523,7 @@ impl DataFrame {
 
 /// Construct a [`DataFrame`](crate::frame::dataframe::DataFrame) from named pairs.
 ///
-/// This macro is a shorthand for [`DataFrame::from_named_pairs`]. Each value
+/// This macro is a shorthand for [`DataFrame::from_columns`]. Each value
 /// must evaluate to a [`Series`](crate::Series). The pair key becomes the
 /// DataFrame schema name, overriding any name carried by the Series.
 ///
@@ -634,7 +548,7 @@ impl DataFrame {
 #[macro_export]
 macro_rules! dataframe {
     ($($name:expr => $series:expr),+ $(,)?) => {{
-        $crate::DataFrame::from_named_pairs(vec![
+        $crate::DataFrame::from_columns(vec![
             $(($name.to_string(), $series)),+
         ])
     }};

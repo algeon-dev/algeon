@@ -7,7 +7,7 @@ use std::{
 
 use smallvec::SmallVec;
 
-use super::{TABLE_HANDLE_INLINE_CAPACITY, TableView};
+use super::{TABLE_HANDLE_INLINE_CAPACITY, view::TableView};
 use crate::{
     core::{
         column::Column,
@@ -29,7 +29,7 @@ pub struct Table {
 // SAFETY: Table owns a GPU table via an opaque C++ handle. The handle is not
 // thread-local. Send is safe because ownership transfer between threads is
 // supported by the CUDA runtime. Sync is safe because all methods that observe
-// state (view(), num_columns()) create independent FFI view handles.
+// state create independent FFI view handles internally.
 unsafe impl Send for Table {}
 unsafe impl Sync for Table {}
 
@@ -147,8 +147,18 @@ impl Table {
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
     }
 
-    /// Create an immutable view of this table.
-    pub fn view(&self) -> Result<TableView<'_>> {
+    /// Returns the number of columns.
+    pub fn num_columns(&self) -> Result<usize> {
+        self.view()?.num_columns()
+    }
+
+    /// Returns the number of rows.
+    pub fn num_rows(&self) -> Result<usize> {
+        self.view()?.num_rows()
+    }
+
+    /// Create an internal immutable view handle of this table.
+    pub(crate) fn view(&self) -> Result<TableView<'_>> {
         let mut view_handle = ptr::null_mut();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(

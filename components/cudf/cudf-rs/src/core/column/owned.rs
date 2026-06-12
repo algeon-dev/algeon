@@ -1,8 +1,8 @@
-//! GPU column types: owned `Column` and borrowed `ColumnView`.
+//! GPU column types.
 //!
 //! **Advanced/Core.** Most users should use [`Series`](crate::Series).
 
-use super::view::ColumnView;
+use super::{device_slice::DeviceSlice, view::ColumnView};
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
@@ -42,7 +42,7 @@ pub struct Column {
 // SAFETY: Column owns a GPU device buffer via an opaque C++ handle. The handle
 // is not thread-local. Send is safe because ownership transfer between threads is
 // supported by the CUDA runtime. Sync is safe because all methods that observe state
-// (view(), len(), data_type()) create independent FFI view handles.
+// create independent FFI view handles internally.
 unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
@@ -197,10 +197,79 @@ impl Column {
         self.copy_into_domain(Arc::clone(&self.domain), "column::deep_copy")
     }
 
-    /// Create an immutable view of this column.
+    /// Returns the data type of this column.
+    pub fn data_type(&self) -> Result<DataType> {
+        self.view()?.data_type()
+    }
+
+    /// Returns the number of elements.
+    pub fn len(&self) -> Result<usize> {
+        self.view()?.len()
+    }
+
+    /// Returns `true` if the column has zero elements.
+    pub fn is_empty(&self) -> Result<bool> {
+        self.view()?.is_empty()
+    }
+
+    /// Returns the number of null (invalid) elements.
+    pub fn null_count(&self) -> Result<usize> {
+        self.view()?.null_count()
+    }
+
+    /// Returns `true` if this column has a null mask allocated.
+    pub fn nullable(&self) -> Result<bool> {
+        self.view()?.nullable()
+    }
+
+    /// Returns the raw device (GPU) data pointer of this column.
     ///
-    /// The returned `ColumnView` borrows from `self` and cannot outlive it.
-    pub fn view(&self) -> Result<ColumnView<'_>> {
+    /// This is a zero-copy observation of the underlying device allocation.
+    pub fn device_data_ptr(&self) -> Result<*const c_void> {
+        self.view()?.device_data_ptr()
+    }
+
+    /// Returns a typed descriptor of the active device memory region.
+    pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice<'_>> {
+        let dt = self.data_type()?;
+        if dt.id() != T::TYPE_ID {
+            return Err(Error::new(ErrorKind::TypeError, "column type does not match requested type")
+                .with_operation("column::device_slice")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+        }
+
+        let base_ptr = self.device_data_ptr()?;
+        let len = self.len()?;
+        let elem_size = std::mem::size_of::<T>();
+
+        Ok(DeviceSlice { ptr: base_ptr as *mut c_void, len, type_id: T::TYPE_ID, elem_size, _lifetime: PhantomData })
+    }
+
+    /// Copy the column data to a host `Vec<T>`.
+    pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
+        self.view()?.to_vec::<T>()
+    }
+
+    /// Copy the column data to a host `Vec<Option<T>>`.
+    pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+        self.view()?.to_optional_vec::<T>()
+    }
+
+    /// Copy string column data to a host `Vec<String>`, mapping null elements
+    /// to empty strings.
+    pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
+        self.view()?.to_strings_lossy()
+    }
+
+    /// Copy string data to host as `Vec<Option<String>>`, distinguishing null
+    /// from empty string.
+    pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
+        self.view()?.to_optional_strings()
+    }
+
+    /// Create an internal immutable view handle of this column.
+    pub(crate) fn view(&self) -> Result<ColumnView<'_>> {
         let mut view_handle = ptr::null_mut();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
@@ -209,41 +278,6 @@ impl Column {
         )?;
         Ok(ColumnView {
             handle: NonNull::new(view_handle).expect("null handle on success"),
-            domain: Arc::clone(&self.domain),
-            _lifetime: PhantomData,
-        })
-    }
-
-    /// Create a zero-copy sliced borrowed view over this column.
-    ///
-    /// The returned view borrows `self` and preserves cuDF offset semantics:
-    /// `device_data_ptr()` still points at the base device allocation while
-    /// `offset()` records the logical start row within that allocation.
-    pub fn slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>> {
-        let base_view = self.view()?;
-        let total = base_view.len()?;
-        let start = offset.min(total);
-        let take = length.min(total - start);
-
-        let start = i32::try_from(start).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "slice offset exceeds i32::MAX")
-                .with_operation("column::slice_view")
-                .with_context("offset", offset.to_string())
-        })?;
-        let take = i32::try_from(take).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "slice length exceeds i32::MAX")
-                .with_operation("column::slice_view")
-                .with_context("length", length.to_string())
-        })?;
-
-        let mut view_handle = ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_column_view_slice(base_view.raw_handle(), start, take, &mut view_handle) },
-            "column::slice_view",
-        )?;
-
-        Ok(ColumnView {
-            handle: NonNull::new(view_handle).expect("null sliced column view handle on success"),
             domain: Arc::clone(&self.domain),
             _lifetime: PhantomData,
         })
@@ -697,7 +731,7 @@ impl Column {
     /// let rt = Runtime::new().unwrap();
     /// let buf = rt.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
     /// let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
-    /// assert_eq!(col.view().unwrap().len().unwrap(), 3);
+    /// assert_eq!(col.len().unwrap(), 3);
     /// ```
     pub(crate) fn from_device_buffer_with_runtime(
         runtime: &Runtime,

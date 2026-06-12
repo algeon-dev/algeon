@@ -1,4 +1,4 @@
-//! GPU table types: owned `Table` and borrowed `TableView`.
+//! GPU table types.
 //!
 //! **Advanced/Core.** Most users should use [`DataFrame`](crate::DataFrame).
 

@@ -1,4 +1,4 @@
-//! GPU column types: owned `Column` and borrowed `ColumnView`.
+//! GPU column types and raw device-memory helpers.
 //!
 //! **Advanced/Core.** Most users should use [`Series`](crate::Series).
 //! [`DeviceSlice`] is an even lower-level raw helper and is not the preferred

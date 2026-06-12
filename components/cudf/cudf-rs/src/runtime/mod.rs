@@ -10,6 +10,6 @@ pub mod stream;
 
 pub use device::DeviceId;
 pub use event::CudaEvent;
-pub use execution_context::ExecutionContext;
+pub use execution_context::ExecutionOverrides;
 pub use owner::{Runtime, RuntimeBuilder};
 pub use stream::CudaStream;

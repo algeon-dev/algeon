@@ -13,7 +13,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
-        table::{Table, TableView},
+        table::Table,
     },
     io::TableReadOutput,
     runtime::Runtime,
@@ -186,14 +186,15 @@ impl ParquetTableWriteOptions {
 ///
 /// Returns an error if `column_names` were set on the options and their count
 /// does not match the number of columns in the table.
-pub fn write_parquet(table: &TableView<'_>, options: &ParquetTableWriteOptions) -> Result<()> {
+pub fn write_parquet(table: &Table, options: &ParquetTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
-    write_parquet_with_exec(table, options, exec_options.as_ref())
+    let table_view = table.view()?;
+    write_parquet_with_exec(&table_view, options, exec_options.as_ref())
 }
 
 pub(crate) fn write_parquet_with_exec(
-    table: &TableView<'_>,
+    table: &crate::core::TableView<'_>,
     options: &ParquetTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {

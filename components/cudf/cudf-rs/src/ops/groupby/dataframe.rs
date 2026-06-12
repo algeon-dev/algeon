@@ -13,7 +13,7 @@ use crate::{
     },
     frame::dataframe::DataFrame,
     internal::resolve::missing_column_error,
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
@@ -130,7 +130,7 @@ pub struct GroupBy<'a> {
 #[must_use]
 pub struct GroupByExecutionScope<'a, 'ctx, 'handles> {
     groupby: GroupBy<'a>,
-    ctx: &'ctx ExecutionContext<'handles>,
+    ctx: &'ctx ExecutionOverrides<'handles>,
 }
 
 impl<'a> GroupBy<'a> {
@@ -146,9 +146,9 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Borrow a per-operation execution override for subsequent groupby calls.
-    pub fn in_context<'ctx, 'handles>(
+    pub fn with_execution<'ctx, 'handles>(
         self,
-        ctx: &'ctx ExecutionContext<'handles>,
+        ctx: &'ctx ExecutionOverrides<'handles>,
     ) -> GroupByExecutionScope<'a, 'ctx, 'handles> {
         GroupByExecutionScope { groupby: self, ctx }
     }
@@ -166,16 +166,16 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Execute the groupby with a borrowed per-operation execution override.
-    pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(
             specs,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "groupby::GroupBy::in_context::agg",
+            "groupby::GroupBy::with_execution::agg",
         )
     }
-    pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }
 

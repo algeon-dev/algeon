@@ -4,8 +4,8 @@
 use std::{any::Any, sync::Arc};
 
 use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, CompletionAuthority, CudaStreamHandle, ExportProfile, InteropError,
-    InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PartitionedPreparedTableExport,
+    BorrowedColumnView, BorrowedTableView, CompletionAuthority, ExportProfile, InteropError, InteropErrorKind,
+    LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PartitionedPreparedTableExport,
     PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
 };
 
@@ -17,10 +17,6 @@ use super::{
         prepared_device_import_table_graph,
     },
     map_cudf_error, map_interop_error,
-    runtime_lease::{
-        RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-        TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
-    },
 };
 use crate::{
     core::{column::Column, error, table::Table},
@@ -159,18 +155,6 @@ fn runtime_exec_options(runtime: &Runtime) -> cudf_sys::cudf_exec_options_t {
     runtime.execution_domain().explicit_exec_options_raw().expect("runtime always provides explicit execution options")
 }
 
-fn synchronize_runtime_completion_result(
-    result: RuntimeLeaseCompletionResult,
-    operation: &'static str,
-) -> Result<(), InteropError> {
-    match result {
-        RuntimeLeaseCompletionResult::FallbackSynchronized => Ok(()),
-        RuntimeLeaseCompletionResult::Completed(witness) => witness
-            .synchronize()
-            .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)),
-    }
-}
-
 fn synchronize_shared_completion_result(
     result: LeaseCompletionResult,
     operation: &'static str,
@@ -187,11 +171,8 @@ fn runtime_shared_stream_authorities<'a>(
     runtime: &'a Runtime,
     operation: &'static str,
 ) -> Result<(ReadStartAuthority<'a>, CompletionAuthority<'a>), InteropError> {
-    let stream_raw = runtime
-        .stream()
-        .interop_raw_handle()
-        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let stream = CudaStreamHandle::from_raw_on_device(stream_raw, runtime.device().ordinal_raw())?;
+    let stream =
+        super::cuda_stream_handle(runtime.stream()).map_err(|error| error.with_context("operation", operation))?;
     Ok((ReadStartAuthority::ConsumerStream { stream }, CompletionAuthority::SameDeviceStream { stream }))
 }
 
@@ -488,10 +469,8 @@ pub(super) fn import_column_from_prepared_export(
                 producer_device,
                 runtime,
             )?;
-            let lease = export.try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
-                RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
-            )?;
+            let (read_start, completion) = runtime_shared_stream_authorities(runtime, operation)?;
+            let lease = export.try_activate_read_lease(read_start, completion)?;
             let mut handle = std::ptr::null_mut();
 
             error::check_status_in(
@@ -513,8 +492,8 @@ pub(super) fn import_column_from_prepared_export(
             let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
             let completion = lease
                 .complete()
-                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            synchronize_runtime_completion_result(completion, operation)?;
+                .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
         ExportProfile::PreparedHostExport => {
@@ -585,10 +564,8 @@ pub(super) fn import_table_from_prepared_export(
                 producer_device,
                 runtime,
             )?;
-            let lease = export.try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
-                RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
-            )?;
+            let (read_start, completion) = runtime_shared_stream_authorities(runtime, operation)?;
+            let lease = export.try_activate_read_lease(read_start, completion)?;
             let mut handle = std::ptr::null_mut();
 
             error::check_status_in(
@@ -610,8 +587,8 @@ pub(super) fn import_table_from_prepared_export(
             let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
             let completion = lease
                 .complete()
-                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            synchronize_runtime_completion_result(completion, operation)?;
+                .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
         ExportProfile::PreparedHostExport => {

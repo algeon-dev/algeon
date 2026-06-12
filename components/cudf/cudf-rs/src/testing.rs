@@ -9,21 +9,26 @@
 
 use crate::{
     AggSpec, MergeOptions, SortOptions,
-    core::{Column, ColumnView, DeviceMemoryResource, Result, Scalar, Table, TableView},
+    core::{
+        Column, DeviceMemoryResource, Result, Scalar, Table, column::ColumnView as CoreColumnView,
+        table::TableView as CoreTableView,
+    },
     frame::DataFrame,
     io::arrow,
     ops::groupby::GroupBy,
-    runtime::{CudaEvent, CudaStream, ExecutionContext, Runtime},
+    runtime::{CudaEvent, CudaStream, ExecutionOverrides, Runtime},
 };
 
 /// Trait imports for the testing support surface.
 pub mod prelude {
     pub use super::{
-        AllocationCountTestingExt, DataFrameInContextTestingExt, ExecutionDomainMemoryResourceTestingExt,
-        ExecutionDomainRebindTestingExt, ExecutionDomainTestingExt, GroupByTestingExt, InteropRawHandleTestingExt,
-        RawHandleTestingExt, RuntimeTestingExt,
+        AllocationCountTestingExt, BorrowedColumnSliceTestingExt, BorrowedViewTestingExt, DataFrameInContextTestingExt,
+        ExecutionDomainMemoryResourceTestingExt, ExecutionDomainRebindTestingExt, ExecutionDomainTestingExt,
+        GroupByTestingExt, InteropRawHandleTestingExt, RawHandleTestingExt, RuntimeTestingExt,
     };
 }
+
+pub use crate::core::{column::ColumnView, table::TableView};
 
 /// Testing-only access to retained execution-domain metadata.
 pub trait ExecutionDomainTestingExt {
@@ -62,16 +67,29 @@ pub trait RuntimeTestingExt {
     fn testing_execution_domain_id(&self) -> u64;
 }
 
+/// Testing-only borrowed view access for integration tests and contract checks.
+pub trait BorrowedViewTestingExt {
+    type BorrowedView<'a>
+    where Self: 'a;
+
+    fn testing_view(&self) -> Result<Self::BorrowedView<'_>>;
+}
+
+/// Testing-only sliced borrowed view access that preserves offset semantics.
+pub trait BorrowedColumnSliceTestingExt {
+    fn testing_slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>>;
+}
+
 /// Testing-only access to DataFrame operations with borrowed execution
 /// overrides.
 pub trait DataFrameInContextTestingExt {
-    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
-    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
     fn testing_sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
@@ -80,13 +98,13 @@ pub trait DataFrameInContextTestingExt {
         &self,
         right: &DataFrame,
         options: MergeOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrame>;
 }
 
 /// Testing-only access to groupby execution-context hooks.
 pub trait GroupByTestingExt {
-    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
 }
 
 macro_rules! impl_execution_domain_testing {
@@ -178,12 +196,78 @@ impl RuntimeTestingExt for Runtime {
     }
 }
 
+impl BorrowedViewTestingExt for Column {
+    type BorrowedView<'a> = CoreColumnView<'a>;
+
+    fn testing_view(&self) -> Result<Self::BorrowedView<'_>> {
+        Column::view(self)
+    }
+}
+
+impl BorrowedViewTestingExt for crate::Series {
+    type BorrowedView<'a> = CoreColumnView<'a>;
+
+    fn testing_view(&self) -> Result<Self::BorrowedView<'_>> {
+        crate::Series::view(self)
+    }
+}
+
+impl BorrowedViewTestingExt for Table {
+    type BorrowedView<'a> = CoreTableView<'a>;
+
+    fn testing_view(&self) -> Result<Self::BorrowedView<'_>> {
+        Table::view(self)
+    }
+}
+
+impl BorrowedViewTestingExt for DataFrame {
+    type BorrowedView<'a> = CoreTableView<'a>;
+
+    fn testing_view(&self) -> Result<Self::BorrowedView<'_>> {
+        self.build_table_view()
+    }
+}
+
+impl BorrowedColumnSliceTestingExt for Column {
+    fn testing_slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>> {
+        let view = Column::view(self)?;
+        let start = i32::try_from(offset).map_err(|_| {
+            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice offset exceeds i32::MAX")
+                .with_operation("testing::column::slice_view")
+                .with_context("offset", offset.to_string())
+        })?;
+        let end_usize = offset.checked_add(length).ok_or_else(|| {
+            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice end overflowed usize")
+                .with_operation("testing::column::slice_view")
+                .with_context("offset", offset.to_string())
+                .with_context("length", length.to_string())
+        })?;
+        let len = i32::try_from(length).map_err(|_| {
+            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice length exceeds i32::MAX")
+                .with_operation("testing::column::slice_view")
+                .with_context("length", length.to_string())
+        })?;
+        let _ = i32::try_from(end_usize).map_err(|_| {
+            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice end exceeds i32::MAX")
+                .with_operation("testing::column::slice_view")
+                .with_context("end", end_usize.to_string())
+        })?;
+
+        let mut handle = std::ptr::null_mut();
+        crate::core::error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_slice(view.raw_handle(), start, len, &mut handle) },
+            "testing::column::slice_view",
+        )?;
+        Ok(unsafe { ColumnView::from_raw_with_domain(handle, std::sync::Arc::clone(view.execution_domain())) })
+    }
+}
+
 impl DataFrameInContextTestingExt for DataFrame {
-    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.__debug_gather_in_context(indices, ctx)
     }
 
-    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.__debug_filter_in_context(mask, ctx)
     }
 
@@ -191,7 +275,7 @@ impl DataFrameInContextTestingExt for DataFrame {
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
@@ -204,14 +288,14 @@ impl DataFrameInContextTestingExt for DataFrame {
         &self,
         right: &DataFrame,
         options: MergeOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrame> {
         self.__debug_merge_in_context(right, options, ctx)
     }
 }
 
 impl GroupByTestingExt for GroupBy<'_> {
-    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.__debug_agg_in_context(specs, ctx)
     }
 }

@@ -3,19 +3,20 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Runtime, core::Table, ops::filter};
+//! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let col = rt.column_from_slice(&[10i32, 20, 30, 40]).unwrap();
-//! let table = Table::from_columns(vec![col]).unwrap();
-//! let mask = rt.column_from_slice(&[true, false, true, false]).unwrap();
-//!
-//! let result = filter::apply_boolean_mask(
-//!     &table.view().unwrap(),
-//!     &mask.view().unwrap(),
-//! )
+//! let df = cudf::dataframe! {
+//!     "value" => rt.series("value", &[10i32, 20, 30, 40]).unwrap(),
+//! }
 //! .unwrap();
-//! // result contains rows 0 and 2: [10, 30]
+//! let mask = rt.series("mask", &[true, false, true, false]).unwrap();
+//!
+//! let result = df.filter(&mask).unwrap();
+//! assert_eq!(
+//!     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
+//!     vec![10, 30]
+//! );
 //! ```
 
 use std::ptr;

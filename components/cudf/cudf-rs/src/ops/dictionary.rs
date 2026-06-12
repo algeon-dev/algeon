@@ -13,22 +13,16 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Runtime, TypeId, ops::dictionary};
+//! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let col =
-//!     rt.column_from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
-//! let view = col.view().unwrap();
-//!
-//! let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
-//! let dict_view = dict.view().unwrap();
-//!
-//! // Access keys and indices without copying to host.
-//! let keys = dictionary::keys(&dict_view).unwrap();
-//! let indices = dictionary::indices(&dict_view).unwrap();
+//! let series =
+//!     rt.series("value", &[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
+//! let factorized = series.factorize().unwrap();
 //!
 //! // For a reusable lookup mapping, pair keys with explicit positional codes
-//! // instead of reusing the row-aligned `indices`.
+//! // instead of reusing the row-aligned codes.
+//! assert_eq!(factorized.row_codes().name(), Some("value_codes"));
 //! ```
 
 use std::ptr;
@@ -289,27 +283,10 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 /// columns for use as graph vertex IDs — it guarantees the same string
 /// always maps to the same integer across all columns.
 ///
-/// # Example
-///
-/// ```no_run
-/// use cudf::{Runtime, TypeId, ops::dictionary};
-///
-/// let rt = Runtime::new().unwrap();
-/// let src = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let dst = rt.column_from_slice(&[20i32, 30, 40]).unwrap();
-///
-/// let src_dict =
-///     dictionary::encode(&src.view().unwrap(), TypeId::Int32).unwrap();
-/// let dst_dict =
-///     dictionary::encode(&dst.view().unwrap(), TypeId::Int32).unwrap();
-///
-/// let matched = dictionary::match_dictionaries(&[
-///     &src_dict.view().unwrap(),
-///     &dst_dict.view().unwrap(),
-/// ])
-/// .unwrap();
-/// // matched[0] and matched[1] now share keys [10, 20, 30, 40].
-/// ```
+/// No high-level `Series` wrapper exists yet for shared dictionary-key
+/// alignment across multiple independently encoded columns. Most users should
+/// stay on the higher-level factorization surface unless they explicitly need
+/// shared low-level dictionary keys across multiple columns.
 pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column>> {
     let n = dict_columns.len();
     if n == 0 {

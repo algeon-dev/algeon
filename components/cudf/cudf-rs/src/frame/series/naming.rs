@@ -11,13 +11,12 @@ impl Series {
 
     /// Returns a new `Series` with the given name, sharing the same GPU data.
     ///
-    /// **Name authority note:** When a Series is inserted into a DataFrame
-    /// via [`DataFrame::from_series`](crate::DataFrame::from_series), the
-    /// Series name becomes the column name. For explicit schema override, use
-    /// [`DataFrame::from_named_pairs`](crate::DataFrame::from_named_pairs),
+    /// **Name authority note:** `Series` names are metadata, not DataFrame
+    /// schema. When a Series is inserted into a DataFrame via
+    /// [`DataFrame::from_columns`](crate::DataFrame::from_columns),
     /// [`DataFrame::with_column`](crate::DataFrame::with_column), or
-    /// [`DataFrame::assign`](crate::DataFrame::assign), where the *parameter
-    /// name* controls the column name.
+    /// [`DataFrame::assign`](crate::DataFrame::assign), the explicit
+    /// DataFrame-side name controls the resulting column name.
     ///
     /// # Cost
     /// Metadata-only: zero GPU cost, only an `Arc::clone`.

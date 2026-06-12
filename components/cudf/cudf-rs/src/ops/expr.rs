@@ -29,11 +29,9 @@
 //! };
 //!
 //! let rt = Runtime::new().unwrap();
-//! let df = DataFrame::from_series([
-//!     rt.series("x", &[1i32, 2, 3]).unwrap(),
-//!     rt.series("y", &[10i32, 20, 30]).unwrap(),
-//! ])
-//! .unwrap();
+//! let x = rt.series("x", &[1i32, 2, 3]).unwrap();
+//! let y = rt.series("y", &[10i32, 20, 30]).unwrap();
+//! let df = DataFrame::from_columns([("x", x), ("y", y)]).unwrap();
 //!
 //! let df2 = df
 //!     .with_columns([
@@ -448,7 +446,7 @@ impl Expr {
                 let series = input.eval(df)?;
                 let dt = series.dtype()?;
                 let cv = series.view()?;
-                let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg)?;
+                let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg, "expr::reduce")?;
                 let scalar = reduction::reduce(&cv, agg, &out_type)?;
                 let col = Column::from_scalar(&scalar, df.num_rows())?;
                 Series::from_column(col)

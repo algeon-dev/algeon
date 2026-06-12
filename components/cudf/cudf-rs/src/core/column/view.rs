@@ -11,7 +11,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         types::{CudfType, DataType, TypeId},
     },
-    ops::{dictionary, search},
+    ops::search,
     runtime::execution_domain::ExecutionDomain,
 };
 
@@ -326,7 +326,7 @@ impl<'a> ColumnView<'a> {
         }
 
         let vals = self.to_vec::<T>()?;
-        match self.validity()? {
+        match self.to_host_validity()? {
             None => Ok(vals.into_iter().map(Some).collect()),
             Some(mask) => Ok(vals.into_iter().zip(mask).map(|(v, valid)| if valid { Some(v) } else { None }).collect()),
         }
@@ -369,7 +369,7 @@ impl<'a> ColumnView<'a> {
 
     fn to_optional_vec_bool<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         let raw = self.to_raw_bytes()?;
-        let bool_values: Vec<Option<bool>> = match self.validity()? {
+        let bool_values: Vec<Option<bool>> = match self.to_host_validity()? {
             None => raw.into_iter().map(|b| Some(b != 0)).collect(),
             Some(mask) => raw.into_iter().zip(mask).map(|(b, valid)| if valid { Some(b != 0) } else { None }).collect(),
         };
@@ -432,14 +432,7 @@ impl<'a> ColumnView<'a> {
         Ok(buf)
     }
 
-    /// Copy the null mask to a host `Vec<bool>`.
-    ///
-    /// Returns `None` if the column has no null mask (all elements valid).
-    ///
-    /// # Synchronization
-    /// This materializes null-mask bits into host memory and may synchronize
-    /// the bound execution domain before returning.
-    pub fn validity(&self) -> Result<Option<Vec<bool>>> {
+    fn to_host_null_mask_bytes_with_operation(&self, operation: &'static str) -> Result<Option<Vec<u8>>> {
         if !self.nullable()? {
             return Ok(None);
         }
@@ -451,7 +444,7 @@ impl<'a> ColumnView<'a> {
         let alloc_bytes = mask_bytes.div_ceil(64) * 64;
         let mut mask = vec![0u8; alloc_bytes];
 
-        self.synchronize_host_visibility("column_view::validity")?;
+        self.synchronize_host_visibility(operation)?;
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
@@ -465,12 +458,42 @@ impl<'a> ColumnView<'a> {
                     &exec_options,
                 )
             },
-            "column_view::validity",
+            operation,
         )?;
 
-        // Unpack bitmask to bool vec.
-        let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();
+        mask.truncate(mask_bytes);
+        Ok(Some(mask))
+    }
 
+    /// Copy the packed null mask for the active logical range to host bytes.
+    ///
+    /// Returns `None` if the column has no null mask (all elements valid).
+    ///
+    /// The returned bytes are packed least-significant-bit first and trimmed to
+    /// the active range (`len().div_ceil(8)` bytes), not cuDF's internal padded
+    /// allocation size.
+    ///
+    /// # Synchronization
+    /// This materializes null-mask bytes into host memory and may synchronize
+    /// the bound execution domain before returning.
+    pub fn to_host_null_mask_bytes(&self) -> Result<Option<Vec<u8>>> {
+        self.to_host_null_mask_bytes_with_operation("column_view::to_host_null_mask_bytes")
+    }
+
+    /// Copy the null mask to a host `Vec<bool>`.
+    ///
+    /// Returns `None` if the column has no null mask (all elements valid).
+    ///
+    /// # Synchronization
+    /// This materializes null-mask bits into host memory and may synchronize
+    /// the bound execution domain before returning.
+    pub fn to_host_validity(&self) -> Result<Option<Vec<bool>>> {
+        let Some(mask) = self.to_host_null_mask_bytes_with_operation("column_view::to_host_validity")? else {
+            return Ok(None);
+        };
+
+        let size = self.len()?;
+        let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();
         Ok(Some(validity))
     }
 
@@ -488,7 +511,7 @@ impl<'a> ColumnView<'a> {
     /// may synchronize the bound execution domain before returning.
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
         let strings = self.to_strings_host_raw("column_view::to_strings_lossy")?;
-        match self.validity()? {
+        match self.to_host_validity()? {
             None => Ok(strings),
             Some(valid) => Ok(strings
                 .into_iter()
@@ -518,26 +541,31 @@ impl<'a> ColumnView<'a> {
             return Ok(Vec::new());
         }
 
-        // Allocate offsets buffer: n+1 elements
         let offsets_count = size + 1;
-        let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
         let mut offsets = vec![0i32; offsets_count];
+        let offsets_buf_size = std::mem::size_of_val(offsets.as_slice());
+        let (_, chars_size) = self.string_chars_ptr_and_size()?;
+        let expected_total_chars_bytes = i32::try_from(chars_size).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "string chars span exceeds i32::MAX")
+                .with_operation(operation)
+                .with_context("chars_size", chars_size.to_string())
+        })?;
+        let mut chars = vec![0u8; chars_size];
         let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let chars_buf = if chars.is_empty() { ptr::null_mut() } else { chars.as_mut_ptr() as *mut c_char };
+        let mut total_chars_bytes = 0;
 
-        // First call to get total_chars_bytes: pass a generous chars buffer initially.
-        // We do a two-phase approach: first get offsets + total size, then get chars.
-        let mut total_chars_bytes: i32 = 0;
-
-        // Phase 1: get offsets and total char bytes (with null chars_buf if 0 chars)
-        // SAFETY: offsets buffer has n+1 capacity. self.handle is valid STRING column.
+        // SAFETY: offsets has space for n+1 entries, chars is sized from the
+        // explicit active chars-span query for this logical STRING view, and
+        // self.handle is a valid STRING column view.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_strings_to_host_ex(
                     self.handle.as_ptr(),
                     offsets.as_mut_ptr(),
                     offsets_buf_size,
-                    ptr::null_mut(), // chars_buf not needed yet for size query
-                    0,               // chars_buf_size = 0
+                    chars_buf,
+                    chars.len(),
                     &mut total_chars_bytes,
                     &exec_options,
                 )
@@ -545,26 +573,14 @@ impl<'a> ColumnView<'a> {
             operation,
         )?;
 
-        // Phase 2: now allocate chars buffer and re-call
-        let mut chars = vec![0u8; total_chars_bytes as usize];
-        if total_chars_bytes > 0 {
-            // Need to re-fetch since the first call already wrote offsets but
-            // may not have written chars. Re-call to get everything.
-            // SAFETY: chars buffer is sized to total_chars_bytes from Phase 1.
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_strings_to_host_ex(
-                        self.handle.as_ptr(),
-                        offsets.as_mut_ptr(),
-                        offsets_buf_size,
-                        chars.as_mut_ptr() as *mut c_char,
-                        total_chars_bytes as usize,
-                        &mut total_chars_bytes,
-                        &exec_options,
-                    )
-                },
-                operation,
-            )?;
+        if total_chars_bytes != expected_total_chars_bytes {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "string chars size changed during host materialization",
+            )
+            .with_operation(operation)
+            .with_context("expected_total_chars_bytes", expected_total_chars_bytes.to_string())
+            .with_context("actual_total_chars_bytes", total_chars_bytes.to_string()));
         }
 
         // Parse strings from offsets + chars
@@ -608,7 +624,7 @@ impl<'a> ColumnView<'a> {
     /// Returns `TypeError` if the column type is not `STRING`.
     pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
         let strings = self.to_strings_host_raw("column_view::to_optional_strings")?;
-        match self.validity()? {
+        match self.to_host_validity()? {
             None => Ok(strings.into_iter().map(Some).collect()),
             Some(valid) => Ok(strings.into_iter().zip(valid).map(|(s, v)| if v { Some(s) } else { None }).collect()),
         }
@@ -640,8 +656,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// let rt = Runtime::new().unwrap();
     /// let col = rt.column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    /// let view = col.view().unwrap();
-    /// let slice = view.device_slice::<i32>().unwrap();
+    /// let slice = col.device_slice::<i32>().unwrap();
     ///
     /// assert_eq!(slice.len(), 4);
     ///
@@ -678,58 +693,6 @@ impl<'a> ColumnView<'a> {
     }
 }
 impl ColumnView<'_> {
-    /// Encode column values as integer codes with corresponding unique values.
-    ///
-    /// Returns `(codes, uniques)` where:
-    /// - `codes`: Int32 column where `codes[i]` is the index of row `i`'s value
-    ///   in the `uniques` column
-    /// - `uniques`: Column of unique values from this column
-    ///
-    /// Contract:
-    /// - for every input row `i`, `uniques[codes[i]] == input[i]`
-    /// - `codes` are defined only for the rows of this factorized input
-    /// - callers must not assume the returned `codes` column itself is a
-    ///   reusable lookup table for some separately deduplicated key set
-    ///
-    /// Common pitfall:
-    /// if you need a reusable key/value mapping for later lookup or
-    /// `gather()` calls, build it from `uniques` plus an explicit positional
-    /// code column `0..uniques.len()`. Reusing this method's returned `codes`
-    /// as generic lookup values can corrupt round-trip mappings.
-    ///
-    /// Null positions in the input produce null entries in `codes`.
-    pub fn factorize_parts(&self) -> Result<(Column, Column)> {
-        let output_domain = Arc::clone(&self.domain);
-        let input_type_id = match self.data_type() {
-            Ok(dt) => dt.id(),
-            Err(e) => return Err(e.with_operation("column_view::factorize_parts")),
-        };
-        let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
-
-        let dict = dictionary::encode(self, TypeId::Int32).map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
-        })?;
-        let dict_view = dict.view().map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
-        })?;
-
-        let indices_view = dictionary::indices(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
-        })?;
-        let keys_view = dictionary::keys(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
-        })?;
-
-        let codes = copy_view_to_owned(&indices_view).map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str.clone())
-        })?;
-        let uniques = copy_view_to_owned(&keys_view).map_err(|e| {
-            e.with_operation("column_view::factorize_parts").with_context("input_type_id", input_type_id_str)
-        })?;
-
-        Ok((codes.with_execution_domain(Arc::clone(&output_domain)), uniques.with_execution_domain(output_domain)))
-    }
-
     /// Return a boolean mask indicating which elements appear in `values`.
     ///
     /// Element `i` of the result is `true` when `self[i]` is found anywhere

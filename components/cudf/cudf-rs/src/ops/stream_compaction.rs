@@ -201,16 +201,15 @@ pub(crate) fn distinct_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, core::Table, ops::stream_compaction};
+/// use cudf::{DropNaOptions, Runtime};
 ///
 /// let rt = Runtime::new().unwrap();
-/// let c0 = rt
-///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
-///     .unwrap();
-/// let table = Table::from_columns(vec![c0]).unwrap();
-/// let result =
-///     stream_compaction::drop_nulls(&table.view().unwrap(), &[0], 1).unwrap();
-/// // Rows with null in column 0 are removed.
+/// let df = cudf::dataframe! {
+///     "value" => rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap(),
+/// }
+/// .unwrap();
+/// let result = df.dropna(DropNaOptions::new()).unwrap();
+/// assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 /// ```
 pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
@@ -225,26 +224,15 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) ->
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     Runtime,
-///     core::Table,
-///     ops::stream_compaction::{
-///         self, DuplicateKeepOption, NanEquality, NullEquality,
-///     },
-/// };
+/// use cudf::{DropDuplicatesOptions, Runtime};
 ///
 /// let rt = Runtime::new().unwrap();
-/// let col = rt.column_from_slice(&[1i32, 2, 1, 3]).unwrap();
-/// let table = Table::from_columns(vec![col]).unwrap();
-/// let result = stream_compaction::distinct(
-///     &table.view().unwrap(),
-///     &[0],
-///     DuplicateKeepOption::KeepAny,
-///     NullEquality::Equal,
-///     NanEquality::AllEqual,
-/// )
+/// let df = cudf::dataframe! {
+///     "value" => rt.series("value", &[1i32, 2, 1, 3]).unwrap(),
+/// }
 /// .unwrap();
-/// // result has 3 rows: {1, 2, 3} in unspecified order.
+/// let result = df.drop_duplicates(DropDuplicatesOptions::new()).unwrap();
+/// assert_eq!(result.num_rows(), 3);
 /// ```
 pub fn distinct(
     input: &TableView<'_>,

@@ -15,7 +15,7 @@ use crate::{
         sorting::{self, SortOptions},
         stream_compaction::DuplicateKeepOption,
     },
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
@@ -41,7 +41,7 @@ impl DataFrame {
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -53,14 +53,14 @@ impl DataFrame {
             options,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::in_context::sort_values",
+            "dataframe::with_execution::sort_values",
         )
     }
     pub(crate) fn __debug_sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = S>,

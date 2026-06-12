@@ -1,9 +1,10 @@
 //! `Series` string namespace for GPU string operations.
 
-use super::owned::Series;
+use super::{context::default_execution_context, owned::Series};
 use crate::{
-    core::{error::Result, scalar::Scalar},
+    core::error::Result,
     ops::strings::{self, StripSide},
+    runtime::ExecutionOverrides,
 };
 
 impl Series {
@@ -27,9 +28,12 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new STRING column.
     pub fn lower(&self) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let col = strings::to_lower(&cv)?;
-        self.0.with_inherited_name(col)
+        self.0.string_unary_with_context(strings::to_lower_impl, &default_execution_context(), "series::str::lower")
+    }
+
+    /// Convert each string element to lowercase using the explicit execution-context override.
+    pub fn lower_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_unary_with_context(strings::to_lower_impl, ctx, "series::str::lower_in")
     }
 
     /// Convert each string element to uppercase. Inherits the source Series' name.
@@ -39,9 +43,12 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new STRING column.
     pub fn upper(&self) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let col = strings::to_upper(&cv)?;
-        self.0.with_inherited_name(col)
+        self.0.string_unary_with_context(strings::to_upper_impl, &default_execution_context(), "series::str::upper")
+    }
+
+    /// Convert each string element to uppercase using the explicit execution-context override.
+    pub fn upper_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_unary_with_context(strings::to_upper_impl, ctx, "series::str::upper_in")
     }
 
     // -- Find / contains / starts_with / ends_with -------------------------
@@ -56,10 +63,17 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn contains(&self, pat: &str) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
-        let col = strings::str_contains(&cv, &scalar)?;
-        self.0.with_inherited_name(col)
+        self.0.string_scalar_in_context(
+            pat,
+            &default_execution_context(),
+            "series::str::contains",
+            strings::str_contains_impl,
+        )
+    }
+
+    /// Element-wise literal substring containment test using the explicit execution-context override.
+    pub fn contains_in(&self, pat: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_scalar_in_context(pat, ctx, "series::str::contains_in", strings::str_contains_impl)
     }
 
     /// Element-wise starts-with test.
@@ -71,10 +85,17 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn starts_with(&self, pat: &str) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
-        let col = strings::starts_with(&cv, &scalar)?;
-        self.0.with_inherited_name(col)
+        self.0.string_scalar_in_context(
+            pat,
+            &default_execution_context(),
+            "series::str::starts_with",
+            strings::starts_with_impl,
+        )
+    }
+
+    /// Element-wise starts-with test using the explicit execution-context override.
+    pub fn starts_with_in(&self, pat: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_scalar_in_context(pat, ctx, "series::str::starts_with_in", strings::starts_with_impl)
     }
 
     /// Element-wise ends-with test.
@@ -86,10 +107,17 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn ends_with(&self, pat: &str) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let scalar = Scalar::from_str_in_domain(pat, self.0.column.execution_domain())?;
-        let col = strings::ends_with(&cv, &scalar)?;
-        self.0.with_inherited_name(col)
+        self.0.string_scalar_in_context(
+            pat,
+            &default_execution_context(),
+            "series::str::ends_with",
+            strings::ends_with_impl,
+        )
+    }
+
+    /// Element-wise ends-with test using the explicit execution-context override.
+    pub fn ends_with_in(&self, pat: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_scalar_in_context(pat, ctx, "series::str::ends_with_in", strings::ends_with_impl)
     }
 
     // -- Strip / trim -------------------------------------------------------
@@ -106,11 +134,21 @@ impl SeriesStringNamespace<'_> {
         self.strip_chars(StripSide::Both, "")
     }
 
+    /// Strip whitespace from both sides of each string using the explicit execution-context override.
+    pub fn strip_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.strip_chars_in(StripSide::Both, "", ctx)
+    }
+
     /// Strip whitespace from the left (beginning) of each string.
     ///
     /// Equivalent to cuDF Python's `Series.str.lstrip()`.
     pub fn lstrip(&self) -> Result<Series> {
         self.strip_chars(StripSide::Left, "")
+    }
+
+    /// Strip whitespace from the left of each string using the explicit execution-context override.
+    pub fn lstrip_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.strip_chars_in(StripSide::Left, "", ctx)
     }
 
     /// Strip whitespace from the right (end) of each string.
@@ -120,15 +158,22 @@ impl SeriesStringNamespace<'_> {
         self.strip_chars(StripSide::Right, "")
     }
 
+    /// Strip whitespace from the right of each string using the explicit execution-context override.
+    pub fn rstrip_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.strip_chars_in(StripSide::Right, "", ctx)
+    }
+
     /// Strip specific characters from the given side(s) of each string.
     ///
     /// `to_strip` is the set of characters to remove. An empty string
     /// means strip whitespace.
     pub fn strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let scalar = Scalar::from_str_in_domain(to_strip, self.0.column.execution_domain())?;
-        let col = strings::strip(&cv, side, &scalar)?;
-        self.0.with_inherited_name(col)
+        self.0.strip_in_context(side, to_strip, &default_execution_context(), "series::str::strip_chars")
+    }
+
+    /// Strip specific characters using the explicit execution-context override.
+    pub fn strip_chars_in(&self, side: StripSide, to_strip: &str, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.strip_in_context(side, to_strip, ctx, "series::str::strip_chars_in")
     }
 
     // -- Attributes ---------------------------------------------------------
@@ -143,9 +188,16 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new INT32 column.
     pub fn len(&self) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let col = strings::count_characters(&cv)?;
-        self.0.with_inherited_name(col)
+        self.0.string_unary_with_context(
+            strings::count_characters_impl,
+            &default_execution_context(),
+            "series::str::len",
+        )
+    }
+
+    /// Character count per string using the explicit execution-context override.
+    pub fn len_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_unary_with_context(strings::count_characters_impl, ctx, "series::str::len_in")
     }
 
     /// Byte count per string.
@@ -155,8 +207,15 @@ impl SeriesStringNamespace<'_> {
     /// # Cost
     /// GPU-allocating: produces a new INT32 column.
     pub fn byte_count(&self) -> Result<Series> {
-        let cv = self.0.column.view()?;
-        let col = strings::count_bytes(&cv)?;
-        self.0.with_inherited_name(col)
+        self.0.string_unary_with_context(
+            strings::count_bytes_impl,
+            &default_execution_context(),
+            "series::str::byte_count",
+        )
+    }
+
+    /// Byte count per string using the explicit execution-context override.
+    pub fn byte_count_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        self.0.string_unary_with_context(strings::count_bytes_impl, ctx, "series::str::byte_count_in")
     }
 }

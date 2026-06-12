@@ -9,8 +9,7 @@
 //! # Module Shape
 //!
 //! - [`csv`], [`json`], and [`parquet`] expose file-format readers and writers
-//!   over low-level [`Table`] and
-//!   [`TableView`](crate::core::table::TableView) values.
+//!   over low-level owned [`Table`] values.
 //! - [`arrow`] exposes Arrow conversion helpers for [`crate::DataFrame`].
 //!   That path is host-copy interop, not zero-copy external GPU interop.
 //!
@@ -22,8 +21,8 @@
 //! `column_names` so callers can decide whether to rebuild a named
 //! [`crate::DataFrame`] or keep working at the low-level table boundary.
 //!
-//! Writers borrow [`TableView`](crate::core::table::TableView) inputs and do
-//! not rename or otherwise mutate the source table. Any output names supplied
+//! Writers borrow owned [`Table`] inputs and do not rename or otherwise mutate
+//! the source table. Any output names supplied
 //! through write options only affect the serialized file format.
 //!
 //! # Runtime Placement

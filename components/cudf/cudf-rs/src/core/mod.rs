@@ -8,9 +8,11 @@ pub mod scalar;
 pub mod table;
 pub mod types;
 
-pub use column::{Column, ColumnView, DeviceBuffer, DeviceSlice};
+pub(crate) use column::ColumnView;
+pub use column::{Column, DeviceBuffer, DeviceSlice};
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use memory::DeviceMemoryResource;
 pub use scalar::Scalar;
-pub use table::{Table, TableView};
+pub use table::Table;
+pub(crate) use table::TableView;
 pub use types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId};

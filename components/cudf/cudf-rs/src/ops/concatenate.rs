@@ -3,18 +3,14 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Runtime, ops::concatenate};
+//! use cudf::{Runtime, Series};
 //!
 //! let rt = Runtime::new().unwrap();
-//! let a = rt.column_from_slice(&[1i32, 2]).unwrap();
-//! let b = rt.column_from_slice(&[3i32, 4, 5]).unwrap();
+//! let a = rt.series("value", &[1i32, 2]).unwrap();
+//! let b = rt.series("value", &[3i32, 4, 5]).unwrap();
 //!
-//! let combined = concatenate::concatenate_columns(&[
-//!     &a.view().unwrap(),
-//!     &b.view().unwrap(),
-//! ])
-//! .unwrap();
-//! // combined: [1, 2, 3, 4, 5]
+//! let combined = Series::concat(&[&a, &b]).unwrap();
+//! assert_eq!(combined.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 //! ```
 
 use std::ptr;

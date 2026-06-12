@@ -9,58 +9,58 @@ use crate::{
     frame::series::Series,
     internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
     ops::{self, copying, filter},
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 impl DataFrame {
     /// Gather rows using a borrowed per-operation execution override.
-    pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.view()?;
         self.gather_by_column_view_impl(
             &cv,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::in_context::gather",
+            "dataframe::with_execution::gather",
         )
     }
-    pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.gather_in_context(indices, ctx)
     }
 
     /// Filter rows using a borrowed per-operation execution override.
-    pub(crate) fn filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask_impl(
             &mask_view,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::in_context::filter",
+            "dataframe::with_execution::filter",
         )
     }
-    pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
     }
 
-    pub(crate) fn head_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn head_in_context(&self, n: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
-        self.gather_range_in_context(0, take, ctx, "dataframe::in_context::head")
+        self.gather_range_in_context(0, take, ctx, "dataframe::with_execution::head")
     }
 
-    pub(crate) fn tail_in_context(&self, n: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn tail_in_context(&self, n: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
         let start = total - take;
-        self.gather_range_in_context(start, take, ctx, "dataframe::in_context::tail")
+        self.gather_range_in_context(start, take, ctx, "dataframe::with_execution::tail")
     }
 
-    pub(crate) fn slice_in_context(&self, offset: usize, length: usize, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn slice_in_context(&self, offset: usize, length: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let total = self.num_rows();
         let start = offset.min(total);
         let take = length.min(total - start);
-        self.gather_range_in_context(start, take, ctx, "dataframe::in_context::slice")
+        self.gather_range_in_context(start, take, ctx, "dataframe::with_execution::slice")
     }
 
     /// Return the first `n` rows.
@@ -230,7 +230,7 @@ impl DataFrame {
         &self,
         start: usize,
         len: usize,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;

@@ -103,7 +103,7 @@ pub(super) fn transfer_from_owned_column(
 pub(super) fn transfer_from_owned_column_with_runtime_release(
     column: Column,
     operation: &'static str,
-) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
     transfer_from_owned_column_with_runtime_release_synchronization(
         column,
         ReleaseSynchronization::Asynchronous,
@@ -115,7 +115,7 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
     column: Column,
     synchronization: ReleaseSynchronization,
     operation: &'static str,
-) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = {
         let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -310,7 +310,7 @@ impl Column {
     /// claims the underlying ownership and the releaser becomes invalid.
     pub fn try_into_owned_transfer_with_release(
         self,
-    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+    ) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
         transfer_from_owned_column_with_runtime_release(self, "interop::Column::try_into_owned_transfer_with_release")
     }
 
@@ -328,7 +328,7 @@ impl Column {
     pub fn try_into_owned_transfer_with_release_synchronization(
         self,
         synchronization: ReleaseSynchronization,
-    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+    ) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
         transfer_from_owned_column_with_runtime_release_synchronization(
             self,
             synchronization,

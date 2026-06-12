@@ -11,34 +11,34 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodebookOrder {
+pub enum DictionaryKeyOrder {
     Sorted,
     FirstSeen,
 }
 
-#[derive(Debug, Clone)]
-pub struct CodebookOptions {
-    order: CodebookOrder,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DictionaryEncodingOptions {
+    key_order: DictionaryKeyOrder,
 }
 
-impl Default for CodebookOptions {
+impl Default for DictionaryEncodingOptions {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CodebookOptions {
+impl DictionaryEncodingOptions {
     pub fn new() -> Self {
-        Self { order: CodebookOrder::Sorted }
+        Self { key_order: DictionaryKeyOrder::Sorted }
     }
 
-    pub fn order(mut self, order: CodebookOrder) -> Self {
-        self.order = order;
+    pub fn key_order(mut self, key_order: DictionaryKeyOrder) -> Self {
+        self.key_order = key_order;
         self
     }
 
-    pub(crate) fn order_mode(&self) -> CodebookOrder {
-        self.order
+    pub(crate) fn key_order_mode(&self) -> DictionaryKeyOrder {
+        self.key_order
     }
 }
 
