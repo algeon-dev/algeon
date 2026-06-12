@@ -624,6 +624,54 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     assert_eq!(sort.spec.expressions[1].expr.to_string(), "c_count");
     assert!(sort.spec.expressions[1].descending);
 
+    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
+    assert_eq!(
+        aggregate_join_pushdown.applied_count, 1,
+        "q13 should pre-aggregate orders counts before the left join: {aggregate_join_pushdown:?}"
+    );
+    let optimized_left_joins = native_join_ids(&optimized.plan, NativeJoinType::Left);
+    assert_eq!(optimized_left_joins.len(), 1, "optimized q13 should still contain one semantic left join");
+    let (_join_id, optimized_join) = optimized_left_joins[0];
+    let preaggregate_node =
+        optimized.plan.node(optimized_join.inputs[1]).expect("optimized q13 right join input should exist");
+    let PlanNode::Aggregate(preaggregate) = &preaggregate_node.kind else {
+        panic!("optimized q13 should pre-aggregate the orders side before the left join:\n{}", optimized.plan);
+    };
+    assert_eq!(
+        preaggregate.spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec!["o_custkey AS o_custkey".to_string()]
+    );
+    assert_eq!(preaggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(preaggregate.spec.aggr_exprs[0].function, AggregateFunction::Count);
+    assert_eq!(preaggregate.spec.aggr_exprs[0].expr.to_string(), "o_custkey");
+    assert_eq!(optimized.diagnostics.count_non_null_column_pruning.applied_count, 1);
+    let optimized_orders_source = native_local_parquet_sources(&optimized.plan)
+        .into_iter()
+        .find(|source| {
+            source.read_columns.iter().any(|column| column == "o_custkey")
+                && source.read_columns.iter().any(|column| column == "o_comment")
+        })
+        .expect("optimized q13 should retain the filtered orders source");
+    assert!(
+        !optimized_orders_source.read_columns.iter().any(|column| column == "o_orderkey"),
+        "footer-proven COUNT(o_orderkey) should not force reading o_orderkey after COUNT(1) rewrite"
+    );
+    assert!(
+        optimized.plan.nodes().iter().any(|node| match &node.kind {
+            PlanNode::Projection(projection) => projection.outputs.iter().any(|output| {
+                matches!(
+                    &output.expr,
+                    Expr::Alias { expr, alias }
+                        if alias.starts_with("__cudf_preagg_sum_") && matches!(expr.as_ref(), Expr::Case { .. })
+                )
+            }),
+            _ => false,
+        }),
+        "optimized q13 should coalesce unmatched left-join counts to zero before the final aggregate:\n{}",
+        optimized.plan
+    );
+
     fs::remove_dir_all(dir).unwrap();
 }
 
