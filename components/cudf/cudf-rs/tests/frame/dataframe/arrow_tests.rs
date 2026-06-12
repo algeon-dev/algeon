@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use arrow::{
     array::*,
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -15,6 +16,36 @@ use crate::common::{
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
     let runtime = crate::common::sample_runtime();
     DataFrame::from_record_batch(&runtime, batch)
+}
+
+fn assert_string_list_value(array: &ListArray, index: usize, expected: &[Option<&str>]) {
+    let values = array.value(index);
+    let strings = values.as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(strings.len(), expected.len());
+    for (row, expected) in expected.iter().enumerate() {
+        match expected {
+            Some(value) => {
+                assert!(strings.is_valid(row));
+                assert_eq!(strings.value(row), *value);
+            },
+            None => assert!(strings.is_null(row)),
+        }
+    }
+}
+
+fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected: &[Option<&str>]) {
+    let values = array.value(index);
+    let strings = values.as_any().downcast_ref::<LargeStringArray>().unwrap();
+    assert_eq!(strings.len(), expected.len());
+    for (row, expected) in expected.iter().enumerate() {
+        match expected {
+            Some(value) => {
+                assert!(strings.is_valid(row));
+                assert_eq!(strings.value(row), *value);
+            },
+            None => assert!(strings.is_null(row)),
+        }
+    }
 }
 
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
@@ -128,6 +159,15 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
     );
     assert_eq!(TypeId::try_from(&ArrowDataType::Duration(TimeUnit::Nanosecond)).unwrap(), TypeId::DurationNanoseconds);
     assert_eq!(TypeId::try_from(&ArrowDataType::Decimal128(18, 2)).unwrap(), TypeId::Decimal128);
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Utf8, true)))).unwrap(),
+        TypeId::List
+    );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::LargeList(Arc::new(Field::new("item", ArrowDataType::LargeUtf8, true))))
+            .unwrap(),
+        TypeId::List
+    );
 }
 
 #[test]
@@ -182,8 +222,18 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     );
     assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::LargeUtf8).unwrap(), DataType::new(TypeId::String));
     assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::Utf8View).unwrap(), DataType::new(TypeId::String));
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Utf8, true))))
+            .unwrap(),
+        DataType::new(TypeId::List)
+    );
+    assert!(cudf_dtype_can_export_to_arrow_type(
+        DataType::new(TypeId::List),
+        &ArrowDataType::LargeList(Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true)))
+    ));
     assert!(is_supported_arrow_type(&ArrowDataType::Boolean));
     assert!(is_supported_arrow_type(&ArrowDataType::Utf8View));
+    assert!(is_supported_arrow_type(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Utf8View, true)))));
     assert!(is_supported_arrow_numeric_type(&ArrowDataType::Float64));
     assert!(!is_supported_arrow_numeric_type(&ArrowDataType::Boolean));
     assert!(cudf_dtype_can_export_to_arrow_type(
@@ -329,15 +379,12 @@ fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
 }
 
 #[test]
-fn test_arrow_host_schema_validation_rejects_timezone_and_nested_types_before_copy() {
+fn test_arrow_host_schema_validation_accepts_timezone_and_rejects_nested_types_before_copy() {
     use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, validate_arrow_schema};
 
-    let tz_err = cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())))
-        .expect_err("timezone-aware Arrow timestamps are not supported");
-    assert_eq!(tz_err.kind(), ErrorKind::Unsupported);
-    assert_eq!(tz_err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(tz_err.operation(), "arrow_host::cudf_dtype_from_arrow_type");
-    assert_eq!(error_context_value(&tz_err, "reason").as_deref(), Some("timezone_not_supported"));
+    let tz_dtype = cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())))
+        .expect("timezone-aware Arrow timestamps should import as physical cuDF timestamps");
+    assert_eq!(tz_dtype, DataType::new(TypeId::TimestampMicroseconds));
 
     let nested_schema = Schema::new(vec![Field::new(
         "items",
@@ -674,6 +721,103 @@ fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
     assert!(!amount.is_valid(1));
     assert!(amount.is_valid(2));
     assert_eq!(amount.values().as_ref(), &[12345000i128, 0, -678000]);
+}
+
+#[test]
+fn test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "event_ts",
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        true,
+    )]));
+    let values = TimestampMicrosecondArray::from(vec![Some(1_700_000_000_000_000), None, Some(1_700_000_000_000_123)])
+        .with_timezone("UTC");
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    assert_eq!(frame.series("event_ts").unwrap().dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+
+    assert_eq!(materialized.schema(), schema);
+    let event_ts = materialized.column(0).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+    assert_eq!(event_ts.values().as_ref(), &[1_700_000_000_000_000, 0, 1_700_000_000_000_123]);
+    assert!(event_ts.is_valid(0));
+    assert!(!event_ts.is_valid(1));
+    assert!(event_ts.is_valid(2));
+}
+
+#[test]
+fn test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Utf8, true));
+    let values = Arc::new(StringArray::from(vec![Some("alpha"), Some("beta"), None, Some("delta")]));
+    let lists = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 2, 4])),
+        values,
+        Some(NullBuffer::from(vec![true, true, false, true])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::List(item), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    assert_eq!(frame.series("items").unwrap().dtype().unwrap(), DataType::new(TypeId::List));
+    let materialized = frame.to_record_batch().unwrap();
+
+    let items = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+    assert_eq!(items.len(), 4);
+    assert!(items.is_valid(0));
+    assert!(items.is_valid(1));
+    assert!(items.is_null(2));
+    assert!(items.is_valid(3));
+    assert_string_list_value(items, 0, &[Some("alpha"), Some("beta")]);
+    assert_string_list_value(items, 1, &[]);
+    assert_string_list_value(items, 3, &[None, Some("delta")]);
+}
+
+#[test]
+fn test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export() {
+    let element = Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true));
+    let values = Arc::new(LargeStringArray::from(vec![Some("north"), None, Some("south")]));
+    let lists = LargeListArray::new(
+        Arc::clone(&element),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 1, 3])),
+        values,
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::LargeList(element), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+
+    assert_eq!(materialized.schema(), schema);
+    let items = materialized.column(0).as_any().downcast_ref::<LargeListArray>().unwrap();
+    assert_large_string_list_value(items, 0, &[Some("north")]);
+    assert_large_string_list_value(items, 1, &[None, Some("south")]);
+}
+
+#[test]
+fn test_sliced_list_utf8_import_normalizes_offsets() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Utf8, false));
+    let values = Arc::new(StringArray::from(vec!["skip", "kept", "also_kept"]));
+    let lists =
+        ListArray::new(Arc::clone(&item), OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 3, 3])), values, None);
+    let sliced = lists.slice(1, 2);
+    let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::List(item), false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(sliced)]).unwrap();
+
+    let materialized = import_record_batch(&batch).unwrap().to_record_batch().unwrap();
+
+    let items = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+    assert_eq!(items.value_offsets(), &[0, 2, 2]);
+    assert_string_list_value(items, 0, &[Some("kept"), Some("also_kept")]);
+    assert_string_list_value(items, 1, &[]);
 }
 
 #[test]
