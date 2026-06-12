@@ -123,9 +123,7 @@ impl CudaStream {
         )?;
         Ok(out)
     }
-
-    #[doc(hidden)]
-    pub fn __debug_raw_handle_value(&self) -> usize {
+    pub(crate) fn __debug_raw_handle_value(&self) -> usize {
         self.debug_handle_value().expect("failed to read CUDA stream debug handle value")
     }
 }

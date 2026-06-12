@@ -379,8 +379,8 @@ impl Expr {
             Expr::BinaryOp { lhs, op, rhs } => {
                 let left = lhs.eval(df)?;
                 let right = rhs.eval(df)?;
-                let lv = left.as_column_view()?;
-                let rv = right.as_column_view()?;
+                let lv = left.view()?;
+                let rv = right.view()?;
                 let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), *op)?;
                 let col = binary::binary_operation_vv(&lv, &rv, *op, &out_type)?;
                 Series::from_column(col)
@@ -388,7 +388,7 @@ impl Expr {
 
             Expr::UnaryOp { op, input } => {
                 let series = input.eval(df)?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let col = unary::unary_operation(&cv, *op)?;
                 Series::from_column(col)
             },
@@ -416,7 +416,7 @@ impl Expr {
             Expr::FillNaScalar { input, value } => {
                 let series = input.eval(df)?;
                 let scalar = value.to_scalar_in_domain(df.execution_domain())?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let col = replace::replace_nulls(&cv, &scalar)?;
                 Series::from_column(col)
             },
@@ -424,22 +424,22 @@ impl Expr {
             Expr::FillNaExpr { input, fill } => {
                 let series = input.eval(df)?;
                 let fill_series = fill.eval(df)?;
-                let cv = series.as_column_view()?;
-                let fill_cv = fill_series.as_column_view()?;
+                let cv = series.view()?;
+                let fill_cv = fill_series.view()?;
                 let col = replace::replace_nulls_column(&cv, &fill_cv)?;
                 Series::from_column(col)
             },
 
             Expr::FillNullPolicy { input, policy } => {
                 let series = input.eval(df)?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let col = replace::replace_nulls_policy(&cv, *policy)?;
                 Series::from_column(col)
             },
 
             Expr::Scan { input, agg } => {
                 let series = input.eval(df)?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let col = reduction::scan(&cv, *agg, ScanType::Inclusive, NullPolicy::Exclude)?;
                 Series::from_column(col)
             },
@@ -447,7 +447,7 @@ impl Expr {
             Expr::Reduce { input, agg } => {
                 let series = input.eval(df)?;
                 let dt = series.dtype()?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg)?;
                 let scalar = reduction::reduce(&cv, agg, &out_type)?;
                 let col = Column::from_scalar(&scalar, df.num_rows())?;
@@ -456,7 +456,7 @@ impl Expr {
 
             Expr::StringOp { input, op } => {
                 let series = input.eval(df)?;
-                let cv = series.as_column_view()?;
+                let cv = series.view()?;
                 let col = match op {
                     StringOperator::Lower => strings::to_lower(&cv)?,
                     StringOperator::Upper => strings::to_upper(&cv)?,
@@ -494,9 +494,9 @@ impl Expr {
                 let cond_series = condition.eval(df)?;
                 let true_series = true_val.eval(df)?;
                 let false_series = false_val.eval(df)?;
-                let cond_cv = cond_series.as_column_view()?;
-                let true_cv = true_series.as_column_view()?;
-                let false_cv = false_series.as_column_view()?;
+                let cond_cv = cond_series.view()?;
+                let true_cv = true_series.view()?;
+                let false_cv = false_series.view()?;
                 let col = copying::copy_if_else(&true_cv, &false_cv, &cond_cv)?;
                 Series::from_column(col)
             },

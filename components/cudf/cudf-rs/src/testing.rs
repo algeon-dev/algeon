@@ -1,0 +1,238 @@
+//! Explicit unstable testing support.
+//!
+//! This module exists so contract and integration tests can keep validating
+//! low-level execution, synchronization, and allocation behavior without
+//! forcing those hooks onto the primary public API surface.
+//!
+//! Items in this module are intentionally **not** part of the stable,
+//! user-facing API contract. They may change or disappear at any time.
+
+use crate::{
+    core::{Column, ColumnView, DeviceMemoryResource, Result, Scalar, Table, TableView},
+    frame::DataFrame,
+    io::arrow,
+    ops::groupby::GroupBy,
+    runtime::{CudaEvent, CudaStream, ExecutionContext, Runtime},
+    AggSpec, MergeOptions, SortOptions,
+};
+
+/// Trait imports for the testing support surface.
+pub mod prelude {
+    pub use super::{
+        AllocationCountTestingExt, DataFrameInContextTestingExt, ExecutionDomainMemoryResourceTestingExt,
+        ExecutionDomainRebindTestingExt, ExecutionDomainTestingExt, GroupByTestingExt, InteropRawHandleTestingExt,
+        RawHandleTestingExt, RuntimeTestingExt,
+    };
+}
+
+/// Testing-only access to retained execution-domain metadata.
+pub trait ExecutionDomainTestingExt {
+    fn testing_execution_domain_kind(&self) -> &'static str;
+    fn testing_execution_domain_id(&self) -> u64;
+    fn testing_execution_domain_stream_value(&self) -> usize;
+}
+
+/// Testing-only access to the retained memory-resource handle value.
+pub trait ExecutionDomainMemoryResourceTestingExt {
+    fn testing_execution_domain_mr_value(&self) -> usize;
+}
+
+/// Testing-only explicit execution-domain rebinding.
+pub trait ExecutionDomainRebindTestingExt: Sized {
+    fn testing_rebind_execution_domain_explicit(self, identity: u64) -> Result<Self>;
+}
+
+/// Testing-only access to raw handle values.
+pub trait RawHandleTestingExt {
+    fn testing_raw_handle_value(&self) -> usize;
+}
+
+/// Testing-only access to interop raw handle values.
+pub trait InteropRawHandleTestingExt {
+    fn testing_interop_raw_handle_value(&self) -> usize;
+}
+
+/// Testing-only access to allocation counters on stats memory resources.
+pub trait AllocationCountTestingExt {
+    fn testing_allocation_count(&self) -> Result<i64>;
+}
+
+/// Testing-only access to runtime provenance identity.
+pub trait RuntimeTestingExt {
+    fn testing_execution_domain_id(&self) -> u64;
+}
+
+/// Testing-only access to DataFrame operations with borrowed execution
+/// overrides.
+pub trait DataFrameInContextTestingExt {
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
+    fn testing_sort_values_in_context<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>;
+    fn testing_merge_in_context(
+        &self,
+        right: &DataFrame,
+        options: MergeOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<DataFrame>;
+}
+
+/// Testing-only access to groupby execution-context hooks.
+pub trait GroupByTestingExt {
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame>;
+}
+
+macro_rules! impl_execution_domain_testing {
+    ($ty:ty) => {
+        impl ExecutionDomainTestingExt for $ty {
+            fn testing_execution_domain_kind(&self) -> &'static str {
+                self.__debug_execution_domain_kind()
+            }
+
+            fn testing_execution_domain_id(&self) -> u64 {
+                self.__debug_execution_domain_id()
+            }
+
+            fn testing_execution_domain_stream_value(&self) -> usize {
+                self.__debug_execution_domain_stream_value()
+            }
+        }
+    };
+}
+
+macro_rules! impl_execution_domain_mr_testing {
+    ($ty:ty) => {
+        impl ExecutionDomainMemoryResourceTestingExt for $ty {
+            fn testing_execution_domain_mr_value(&self) -> usize {
+                self.__debug_execution_domain_mr_value()
+            }
+        }
+    };
+}
+
+impl_execution_domain_testing!(Column);
+impl_execution_domain_testing!(ColumnView<'_>);
+impl_execution_domain_testing!(Table);
+impl_execution_domain_testing!(TableView<'_>);
+impl_execution_domain_testing!(Scalar);
+impl_execution_domain_testing!(DataFrame);
+
+impl_execution_domain_mr_testing!(Column);
+impl_execution_domain_mr_testing!(ColumnView<'_>);
+impl_execution_domain_mr_testing!(Table);
+impl_execution_domain_mr_testing!(TableView<'_>);
+impl_execution_domain_mr_testing!(DataFrame);
+
+impl ExecutionDomainRebindTestingExt for Column {
+    fn testing_rebind_execution_domain_explicit(self, identity: u64) -> Result<Self> {
+        self.__debug_rebind_execution_domain_explicit(identity)
+    }
+}
+
+impl ExecutionDomainRebindTestingExt for Scalar {
+    fn testing_rebind_execution_domain_explicit(self, identity: u64) -> Result<Self> {
+        self.__debug_rebind_execution_domain_explicit(identity)
+    }
+}
+
+impl RawHandleTestingExt for DeviceMemoryResource {
+    fn testing_raw_handle_value(&self) -> usize {
+        self.__debug_raw_handle_value()
+    }
+}
+
+impl RawHandleTestingExt for CudaStream {
+    fn testing_raw_handle_value(&self) -> usize {
+        self.__debug_raw_handle_value()
+    }
+}
+
+impl RawHandleTestingExt for CudaEvent {
+    fn testing_raw_handle_value(&self) -> usize {
+        self.__debug_raw_handle_value()
+    }
+}
+
+impl InteropRawHandleTestingExt for CudaEvent {
+    fn testing_interop_raw_handle_value(&self) -> usize {
+        self.__debug_interop_raw_handle_value()
+    }
+}
+
+impl AllocationCountTestingExt for DeviceMemoryResource {
+    fn testing_allocation_count(&self) -> Result<i64> {
+        self.__test_allocation_count()
+    }
+}
+
+impl RuntimeTestingExt for Runtime {
+    fn testing_execution_domain_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
+    }
+}
+
+impl DataFrameInContextTestingExt for DataFrame {
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+        self.__debug_gather_in_context(indices, ctx)
+    }
+
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+        self.__debug_filter_in_context(mask, ctx)
+    }
+
+    fn testing_sort_values_in_context<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.__debug_sort_values_in_context(by, options, ctx)
+    }
+
+    fn testing_merge_in_context(
+        &self,
+        right: &DataFrame,
+        options: MergeOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<DataFrame> {
+        self.__debug_merge_in_context(right, options, ctx)
+    }
+}
+
+impl GroupByTestingExt for GroupBy<'_> {
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+        self.__debug_agg_in_context(specs, ctx)
+    }
+}
+
+/// Build a stats memory resource for allocation-accounting tests.
+pub fn stats_memory_resource() -> Result<DeviceMemoryResource> {
+    DeviceMemoryResource::__test_stats()
+}
+
+/// Pack host validity bits into cuDF's allocation-sized null-mask layout.
+pub fn validity_to_host_null_mask_bytes(validity: &[bool]) -> Vec<u8> {
+    crate::core::types::validity_to_ffi_bitmask(validity)
+}
+
+/// Trigger the numeric Arrow error mapping path used by integration tests.
+pub fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
+    arrow::__debug_trigger_numeric_to_arrow_error_for_test()
+}
+
+/// Trigger the record-batch Arrow error mapping path used by integration
+/// tests.
+pub fn trigger_record_batch_error_for_test() -> Result<()> {
+    arrow::__debug_trigger_record_batch_error_for_test()
+}

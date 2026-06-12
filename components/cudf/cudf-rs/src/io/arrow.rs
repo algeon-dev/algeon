@@ -271,18 +271,14 @@ where T: ArrowPrimitiveMapping {
         },
     }
 }
-
-#[doc(hidden)]
-pub fn __debug_trigger_numeric_to_arrow_error_for_test() -> Result<()> {
+pub(crate) fn __debug_trigger_numeric_to_arrow_error_for_test() -> Result<()> {
     let buffer = arrow::buffer::ScalarBuffer::from(vec![1i32]);
     let null_buffer = arrow::buffer::NullBuffer::from(vec![true, false]);
     PrimitiveArray::<arrow::datatypes::Int32Type>::try_new(buffer, Some(null_buffer))
         .map(|_| ())
         .map_err(map_numeric_to_arrow_error)
 }
-
-#[doc(hidden)]
-pub fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
+pub(crate) fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
     let columns = vec![
         ("left".to_string(), Arc::new(Int32Array::from(vec![1, 2])) as Arc<dyn Array>, false),
         ("right".to_string(), Arc::new(Int32Array::from(vec![10])) as Arc<dyn Array>, false),

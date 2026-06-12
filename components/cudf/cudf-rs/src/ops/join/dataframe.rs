@@ -5,7 +5,7 @@ use crate::{
         column::Column,
         error::{Error, ErrorKind, Result},
     },
-    frame::dataframe::{DataFrame, DataFrameJoinResult, derive_frame_domain_from_columns},
+    frame::dataframe::{DataFrame, DataFrameJoinSides, derive_frame_domain_from_columns},
     internal::{
         hash::{FastHashSet, FastIndexMap, fast_index_map_with_capacity},
         resolve::{
@@ -40,7 +40,7 @@ impl DataFrame {
         right: &DataFrame,
         options: join::MergeOptions,
         ctx: &ExecutionContext<'_>,
-    ) -> Result<DataFrameJoinResult> {
+    ) -> Result<DataFrameJoinSides> {
         let operation: &'static str = "dataframe::in_context::merge_split";
         let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
@@ -69,9 +69,7 @@ impl DataFrame {
             operation,
         )
     }
-
-    #[doc(hidden)]
-    pub fn __debug_merge_in_context(
+    pub(crate) fn __debug_merge_in_context(
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
@@ -168,14 +166,14 @@ impl DataFrame {
 
     /// Merge (join) two DataFrames, returning split left/right results.
     ///
-    /// Like [`merge`](Self::merge) but returns a [`DataFrameJoinResult`] with
+    /// Like [`merge`](Self::merge) but returns a [`DataFrameJoinSides`] with
     /// separate left and right `DataFrame`s instead of merging columns into one.
     /// Each side contains `[key_columns..., payload_columns...]`.
     ///
     /// # Errors
     ///
     /// Same error conditions as [`merge`](Self::merge).
-    pub fn merge_split(&self, right: &DataFrame, options: join::MergeOptions) -> Result<DataFrameJoinResult> {
+    pub fn merge_split(&self, right: &DataFrame, options: join::MergeOptions) -> Result<DataFrameJoinSides> {
         let operation: &'static str = "dataframe::merge_split";
 
         let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
@@ -216,7 +214,7 @@ impl DataFrame {
         exec_options: Option<&cudf_sys::cudf_exec_options_t>,
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
-    ) -> Result<DataFrameJoinResult> {
+    ) -> Result<DataFrameJoinSides> {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
@@ -298,7 +296,7 @@ impl DataFrame {
         let right_schema_names =
             build_join_schema_names(right.columns_map(), &right_key_indices, &right_payload_indices);
 
-        Ok(DataFrameJoinResult {
+        Ok(DataFrameJoinSides {
             left: DataFrame::from_table(result.left, left_schema_names)?,
             right: DataFrame::from_table(result.right, right_schema_names)?,
         })
@@ -398,7 +396,7 @@ fn resolve_merge_keys(
 ///   - Both key columns are preserved (left key name, right key name).
 ///   - Conflicting payload names get suffixes.
 fn merge_join_result_with_suffixes(
-    split: DataFrameJoinResult,
+    split: DataFrameJoinSides,
     left_on: &[&str],
     shared_keys: bool,
     coalesce_keys: bool,
@@ -406,7 +404,7 @@ fn merge_join_result_with_suffixes(
     suffix_right: &str,
     operation: &'static str,
 ) -> Result<DataFrame> {
-    let DataFrameJoinResult { left, right } = split;
+    let DataFrameJoinSides { left, right } = split;
     let key_count = left_on.len();
     let row_count = left.num_rows().max(right.num_rows());
 

@@ -235,7 +235,7 @@ impl DataFrame {
 
         let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
-        let fill_cv = fill_series.as_column_view()?;
+        let fill_cv = fill_series.view()?;
         ExecutionDomain::require_same_device_for_mixed_inputs(&output_domain, fill_cv.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(fill_cv.execution_domain(), &output_domain) {
             fill_cv.execution_domain().fence_stream(operation)?;

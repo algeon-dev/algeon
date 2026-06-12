@@ -63,24 +63,16 @@ impl<'a> ColumnView<'a> {
             _lifetime: PhantomData,
         })
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+    pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_id(&self) -> u64 {
+    pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
     }
 
@@ -634,7 +626,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// This is an advanced raw-pointer helper for code that already knows how
     /// to consume a device pointer + length pair. For external cross-crate
-    /// interop, prefer [`crate::interop::TryBorrowColumnView`], which preserves
+    /// interop, prefer [`crate::interop::borrowed::TryBorrowColumnView`], which preserves
     /// null-mask and execution-binding semantics in addition to the data
     /// pointer.
     ///

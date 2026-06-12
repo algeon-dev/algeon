@@ -9,14 +9,14 @@
 //! The root keeps only the high-frequency expression DSL surface
 //! ([`Expr`], [`col`], [`lit`], and [`when`]) plus the standard arithmetic
 //! trait implementations for borrowed
-//! [`Column`](crate::core::column::Column) values.
+//! [`Column`] values.
 //!
 //! # Ownership and Evaluation
 //!
 //! Most low-level functions in this module family take borrowed
 //! [`ColumnView`](crate::core::column::ColumnView) or
 //! [`TableView`](crate::core::table::TableView) inputs and return newly owned
-//! [`Column`](crate::core::column::Column) or
+//! [`Column`] or
 //! [`Table`](crate::core::table::Table) outputs. This is the advanced API
 //! boundary where callers opt into explicit low-level data layout and
 //! operation selection.

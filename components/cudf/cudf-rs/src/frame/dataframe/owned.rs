@@ -50,12 +50,12 @@ pub struct DataFrame {
     pub(super) domain: Arc<ExecutionDomain>,
 }
 
-/// Result of a split DataFrame join operation.
+/// Split output of a DataFrame join operation.
 ///
 /// This is the compatibility form containing the raw join sides. Each side
 /// has columns `[key_columns..., payload_columns...]`.
 #[derive(Debug, Clone)]
-pub struct DataFrameJoinResult {
+pub struct DataFrameJoinSides {
     /// Left-side result: key columns + left payload columns.
     pub left: DataFrame,
     /// Right-side result: key columns + right payload columns.
@@ -390,7 +390,7 @@ impl DataFrame {
     /// Returns the logical number of rows.
     ///
     /// This is cached DataFrame metadata. Schema-only operations such as
-    /// [`select`](Self::select) and [`drop`](Self::drop) preserve it even if
+    /// [`select`](Self::select) and [`without_columns`](Self::without_columns) preserve it even if
     /// the resulting DataFrame has zero columns. Bare constructors with no
     /// columns, however, create a `0 x 0` DataFrame because they have no
     /// external row index to preserve.
@@ -520,24 +520,16 @@ impl DataFrame {
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+    pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_id(&self) -> u64 {
+    pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
     }
 
@@ -591,7 +583,7 @@ impl DataFrame {
     }
     /// Start a groupby operation.
     ///
-    /// Returns a [`GroupBy`] on which you call [`.agg()`][groupby::GroupBy::agg]
+    /// Returns a [`GroupBy`](crate::GroupBy) on which you call [`.agg()`][groupby::GroupBy::agg]
     /// with [`AggSpec`][groupby::AggSpec] items, or use shortcut methods like
     /// `.sum()`, `.mean()`, `.count()`.
     ///

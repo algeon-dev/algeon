@@ -53,8 +53,8 @@ pub struct AggregationRequest<'a> {
 
 pub use crate::core::types::NullPolicy;
 
-/// Result of a groupby aggregation.
-pub struct GroupByResult {
+/// Output payload of a low-level groupby aggregation.
+pub struct GroupByAggregationOutput {
     /// The unique key groups.
     pub keys: Table,
     /// Aggregation results, one `Vec<Column>` per request. Each inner vec
@@ -69,7 +69,7 @@ pub(crate) fn groupby_aggregate_impl(
     output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
-) -> Result<GroupByResult> {
+) -> Result<GroupByAggregationOutput> {
     let num_requests = i32::try_from(requests.len()).map_err(|_| {
         Error::new(ErrorKind::InvalidOperation, "number of aggregation requests exceeds i32::MAX")
             .with_operation(operation)
@@ -202,7 +202,7 @@ pub(crate) fn groupby_aggregate_impl(
 
     unsafe { cudf_sys::cudf_free_column_array(out_values) };
 
-    Ok(GroupByResult { keys: keys_table, results })
+    Ok(GroupByAggregationOutput { keys: keys_table, results })
 }
 
 fn compatible_groupby_domain(
@@ -305,7 +305,7 @@ pub fn groupby_aggregate(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
-) -> Result<GroupByResult> {
+) -> Result<GroupByAggregationOutput> {
     let output_domain = compatible_groupby_domain(keys, requests)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     groupby_aggregate_impl(

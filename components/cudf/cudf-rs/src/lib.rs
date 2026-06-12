@@ -156,6 +156,7 @@ pub(crate) mod internal;
 pub mod io;
 pub mod ops;
 pub mod runtime;
+pub mod testing;
 
 // — Primary entry points —
 // — Types and error —
@@ -168,7 +169,7 @@ pub use core::{
 pub use frame::{
     dataframe::{
         ColumnMemoryAccounting, ColumnOrder, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
-        DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount,
+        DataFrameColumnInfo, DataFrameInfo, DataFrameJoinSides, DataFrameMemoryAccounting, DataTypeCount,
         DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
         ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
     },
@@ -185,11 +186,4 @@ pub use ops::{
     stream_compaction::DuplicateKeepOption,
     strings::StripSide,
 };
-#[doc(hidden)]
-pub use runtime::__DebugExecutionContext;
 pub use runtime::{DeviceId, ExecutionContext, Runtime, RuntimeBuilder};
-
-#[doc(hidden)]
-pub fn __debug_validity_to_host_null_mask_bytes(validity: &[bool]) -> Vec<u8> {
-    crate::core::types::validity_to_ffi_bitmask(validity)
-}

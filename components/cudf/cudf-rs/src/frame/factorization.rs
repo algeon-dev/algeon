@@ -165,7 +165,7 @@ impl Codebook {
     }
 
     pub fn encode(&self, values: &Series) -> Result<EncodedSeries> {
-        let encoded = values.as_column_view()?.map(&self.keys.as_column_view()?, &self.codes.as_column_view()?)?;
+        let encoded = values.view()?.map(&self.keys.view()?, &self.codes.view()?)?;
         let encoded = Series::from_column(encoded)?;
         let encoded = match values.name() {
             Some(name) => encoded.rename(format!("{name}_codes")),

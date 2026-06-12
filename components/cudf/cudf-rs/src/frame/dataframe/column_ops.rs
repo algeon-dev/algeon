@@ -12,27 +12,39 @@ use crate::{
     ops::{self, unary},
 };
 
-/// Trait for values that can be normalized into a `with_columns()` item.
+/// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
 ///
-/// This supports either a bare [`Expr`](crate::ops::Expr) or an explicit
-/// `(name, expr)` pair.
-#[doc(hidden)]
-pub trait IntoWithColumnExpr {
-    /// Convert into a normalized `with_columns()` item.
-    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr);
+/// This models the two supported ways to provide computed columns:
+///
+/// - a bare expression, which must resolve its own output name
+/// - an explicit `(name, expr)` pair, where the provided name wins
+pub enum WithColumnExpr {
+    /// Use the expression's own output-name rules.
+    Expr(ops::expr::Expr),
+    /// Force the output name explicitly.
+    Named { name: String, expr: ops::expr::Expr },
 }
 
-impl IntoWithColumnExpr for ops::expr::Expr {
-    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr) {
-        (None, self)
+impl WithColumnExpr {
+    fn into_parts(self) -> (Option<String>, ops::expr::Expr) {
+        match self {
+            Self::Expr(expr) => (None, expr),
+            Self::Named { name, expr } => (Some(name), expr),
+        }
     }
 }
 
-impl<S> IntoWithColumnExpr for (S, ops::expr::Expr)
+impl From<ops::expr::Expr> for WithColumnExpr {
+    fn from(expr: ops::expr::Expr) -> Self {
+        Self::Expr(expr)
+    }
+}
+
+impl<S> From<(S, ops::expr::Expr)> for WithColumnExpr
 where S: Into<String>
 {
-    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr) {
-        (Some(self.0.into()), self.1)
+    fn from((name, expr): (S, ops::expr::Expr)) -> Self {
+        Self::Named { name: name.into(), expr }
     }
 }
 
@@ -102,7 +114,7 @@ impl DataFrame {
     /// reject duplicates with an error.
     ///
     /// If `self` has zero columns but a non-zero logical row count (for
-    /// example after [`drop`](Self::drop) or [`select`](Self::select) removes
+    /// example after [`without_columns`](Self::without_columns) or [`select`](Self::select) removes
     /// every column), inserted Series must still match that row count. Only a
     /// truly empty `0 x 0` DataFrame lets the first inserted Series establish
     /// the row count.
@@ -181,10 +193,10 @@ impl DataFrame {
     pub fn with_columns<I, T>(&self, exprs: I) -> Result<Self>
     where
         I: IntoIterator<Item = T>,
-        T: IntoWithColumnExpr,
+        T: Into<WithColumnExpr>,
     {
         let exprs: Vec<(Option<String>, ops::expr::Expr)> =
-            exprs.into_iter().map(IntoWithColumnExpr::into_with_column_expr).collect();
+            exprs.into_iter().map(|expr| expr.into().into_parts()).collect();
 
         let names: Vec<String> = exprs
             .iter()

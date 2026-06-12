@@ -158,9 +158,7 @@ impl DeviceMemoryResource {
         )?;
         Ok(out)
     }
-
-    #[doc(hidden)]
-    pub fn __debug_raw_handle_value(&self) -> usize {
+    pub(crate) fn __debug_raw_handle_value(&self) -> usize {
         let mut out = std::ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
@@ -169,9 +167,7 @@ impl DeviceMemoryResource {
         .expect("failed to read raw device memory resource pointer");
         out as usize
     }
-
-    #[doc(hidden)]
-    pub fn __test_stats() -> Result<Self> {
+    pub(crate) fn __test_stats() -> Result<Self> {
         let device = DeviceId::current()?;
         let mut handle = ptr::null_mut();
         error::check_status_in(
@@ -185,9 +181,7 @@ impl DeviceMemoryResource {
             }),
         })
     }
-
-    #[doc(hidden)]
-    pub fn __test_allocation_count(&self) -> Result<i64> {
+    pub(crate) fn __test_allocation_count(&self) -> Result<i64> {
         let mut out = 0_i64;
         error::check_status_in(
             unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.handle.raw.as_ptr(), &mut out) },
