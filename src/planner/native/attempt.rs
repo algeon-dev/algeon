@@ -18,6 +18,7 @@ use datafusion::{
         limit::{GlobalLimitExec, LocalLimitExec},
         projection::ProjectionExec,
         repartition::RepartitionExec,
+        scalar_subquery::ScalarSubqueryExec,
         sorts::sort::SortExec,
         union::UnionExec,
         windows::{BoundedWindowAggExec, WindowAggExec},
@@ -60,6 +61,12 @@ pub(super) struct NativeOptimizationAttempt {
 enum HostArrowChildReplacementMode {
     Normal,
     OuterJoinBoundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostArrowChildReplacementScope {
+    AnyNativeChild,
+    TableFormatOnly,
 }
 
 pub(super) fn apply_native_fallback_policy(
@@ -206,6 +213,7 @@ fn optimize_final_native_plan_with_composition(
             native_optimizer_options,
             native_plan_preference_options,
             mode,
+            HostArrowChildReplacementScope::AnyNativeChild,
             &mut report,
             &mut native_optimizer,
             &mut source_diagnostics,
@@ -248,7 +256,14 @@ fn optimize_final_native_plan_with_composition(
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let mut adaptive_pipeline = NativeAdaptivePipelineDiagnostics::default();
-    if first_native_rejection(&report).is_some_and(|(_, reason)| reason == FallbackReason::UnsupportedExpression) {
+    let first_rejection = first_native_rejection(&report).map(|(_, reason)| reason);
+    let table_format_only_child_rewrite = subtree_contains_table_format_scan(plan.as_ref())
+        && first_rejection.is_some_and(|reason| {
+            reason == FallbackReason::UnsupportedExpression
+                || (reason == FallbackReason::UnsupportedOperator
+                    && plan.downcast_ref::<ScalarSubqueryExec>().is_some())
+        });
+    if first_rejection == Some(FallbackReason::UnsupportedExpression) && !table_format_only_child_rewrite {
         return Ok(NativeOptimizationAttempt {
             plan,
             report,
@@ -265,6 +280,11 @@ fn optimize_final_native_plan_with_composition(
         native_optimizer_options,
         native_plan_preference_options,
         HostArrowChildReplacementMode::Normal,
+        if table_format_only_child_rewrite {
+            HostArrowChildReplacementScope::TableFormatOnly
+        } else {
+            HostArrowChildReplacementScope::AnyNativeChild
+        },
         &mut report,
         &mut native_optimizer,
         &mut source_diagnostics,
@@ -283,7 +303,7 @@ fn optimize_final_native_plan_with_composition(
         });
     };
 
-    let rewritten_plan = if allow_fragment_composition {
+    let rewritten_plan = if allow_fragment_composition && !table_format_only_child_rewrite {
         compose_host_remainder_over_native_fragments_if_possible(
             rewritten_plan,
             native_execution_config,
@@ -686,13 +706,17 @@ fn optimize_native_children_for_host_arrow_boundary(
     native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
     mode: HostArrowChildReplacementMode,
+    scope: HostArrowChildReplacementScope,
     report: &mut PlanningReport,
     native_optimizer: &mut nexus_query_engine::NativeOptimizerDiagnostics,
     source_diagnostics: &mut Vec<nexus_query_engine::SourceDiagnostics>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
     adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
-    if !host_arrow_boundary_allows_child_replacement(plan.as_ref()) {
+    if scope == HostArrowChildReplacementScope::TableFormatOnly && !subtree_contains_table_format_scan(plan.as_ref()) {
+        return Ok(None);
+    }
+    if !host_arrow_boundary_allows_child_replacement(plan.as_ref(), scope) {
         return Ok(None);
     }
     if precision_sensitive_aggregate_requires_whole_subtree_rejection(plan.as_ref())
@@ -712,6 +736,35 @@ fn optimize_native_children_for_host_arrow_boundary(
     let mut child_source_diagnostics = Vec::new();
     let mut new_children = Vec::with_capacity(children.len());
     for child in children {
+        if scope == HostArrowChildReplacementScope::TableFormatOnly
+            && !subtree_contains_table_format_scan(child.as_ref())
+        {
+            new_children.push(Arc::clone(child));
+            continue;
+        }
+        if scope == HostArrowChildReplacementScope::TableFormatOnly
+            && subtree_contains_non_table_format_data_source(child.as_ref())
+        {
+            if let Some(rewritten_child) = optimize_native_children_for_host_arrow_boundary(
+                Arc::clone(child),
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_preference_options,
+                mode,
+                scope,
+                report,
+                native_optimizer,
+                source_diagnostics,
+                strict_bounded_contract,
+                adaptive_pipeline,
+            )? {
+                rewritten = true;
+                new_children.push(rewritten_child);
+            } else {
+                new_children.push(Arc::clone(child));
+            }
+            continue;
+        }
         if window_boundary_should_preserve_sort_child(plan.as_ref(), child.as_ref()) {
             if let Some(rewritten_child) = optimize_native_children_for_host_arrow_boundary(
                 Arc::clone(child),
@@ -719,6 +772,7 @@ fn optimize_native_children_for_host_arrow_boundary(
                 native_optimizer_options,
                 native_plan_preference_options,
                 mode,
+                scope,
                 report,
                 native_optimizer,
                 source_diagnostics,
@@ -745,6 +799,7 @@ fn optimize_native_children_for_host_arrow_boundary(
                 native_optimizer_options,
                 native_plan_preference_options,
                 HostArrowChildReplacementMode::OuterJoinBoundary,
+                scope,
                 report,
                 native_optimizer,
                 source_diagnostics,
@@ -800,7 +855,10 @@ fn append_planning_report(report: &mut PlanningReport, extra: &PlanningReport) {
     *report = PlanningReport::from_outcomes(report.outcomes().iter().cloned().chain(extra.outcomes().iter().cloned()));
 }
 
-fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> bool {
+fn host_arrow_boundary_allows_child_replacement(
+    plan: &dyn ExecutionPlan,
+    scope: HostArrowChildReplacementScope,
+) -> bool {
     plan.downcast_ref::<FilterExec>().is_some()
         || plan.downcast_ref::<ProjectionExec>().is_some()
         || plan.downcast_ref::<SortExec>().is_some()
@@ -812,6 +870,8 @@ fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> boo
         || plan.downcast_ref::<HashJoinExec>().is_some()
         || plan.downcast_ref::<CrossJoinExec>().is_some()
         || plan.downcast_ref::<NestedLoopJoinExec>().is_some()
+        || (scope == HostArrowChildReplacementScope::TableFormatOnly
+            && plan.downcast_ref::<ScalarSubqueryExec>().is_some())
         || plan.downcast_ref::<UnionExec>().is_some()
         || plan.downcast_ref::<WindowAggExec>().is_some()
         || plan.downcast_ref::<BoundedWindowAggExec>().is_some()
@@ -830,6 +890,14 @@ fn join_boundary_should_keep_datafusion_child(parent: &dyn ExecutionPlan, child:
 fn subtree_contains_table_format_scan(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<CudfTableFormatScanExec>().is_some()
         || plan.children().into_iter().any(|child| subtree_contains_table_format_scan(child.as_ref()))
+}
+
+fn subtree_contains_non_table_format_data_source(plan: &dyn ExecutionPlan) -> bool {
+    if plan.downcast_ref::<CudfTableFormatScanExec>().is_some() {
+        return false;
+    }
+    plan.downcast_ref::<DataSourceExec>().is_some()
+        || plan.children().into_iter().any(|child| subtree_contains_non_table_format_data_source(child.as_ref()))
 }
 
 fn window_boundary_should_preserve_sort_child(parent: &dyn ExecutionPlan, child: &dyn ExecutionPlan) -> bool {

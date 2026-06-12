@@ -6,14 +6,20 @@ use std::{
 
 use datafusion_nexus::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, ParityFloatTolerance};
 use datafusion_nexus_bench::{
-    CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_PROFILE_ENV,
-    CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, TPCDS_NATIVE_PROFILE_CONSERVATIVE, TPCDS_NATIVE_PROFILE_CUSTOM,
-    TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT, TPCDS_QUERIES, TPCDS_QUERY_COUNT,
+    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
+    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
+    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
+    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
+    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
+    TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT, TPCDS_QUERIES, TPCDS_QUERY_COUNT,
     TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
     TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TPCDS_TABLES, describe_tpcds_dataset,
-    tiny_tpcds_dataset_metadata, tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
-    tpcds_native_optimizer_config, tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+    tiny_tpcds_dataset_metadata, tpcds_native_analytics_optimizer_config_with_profile_settings,
+    tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
+    tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
     tpcds_parity_report_rows_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
     write_tiny_tpcds_parquet_dataset,
 };
@@ -77,24 +83,61 @@ fn tpcds_native_report_session_config_avoids_datafusion_statistics_estimates() {
 }
 
 #[test]
-fn tpcds_native_optimizer_config_disables_cpu_preference_for_gpu_only_sql_surface() {
-    let config = tpcds_native_optimizer_config();
+fn tpcds_native_optimizer_configs_disable_cpu_preference_for_gpu_only_sql_surface() {
+    let profile = tpcds_native_profile_settings_with_env(|_| None);
+    let ordinary_config = tpcds_native_optimizer_config_with_profile_settings(&profile);
+    let analytics_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&profile);
+    let env_overridden_hybrid_preference = tpcds_native_cpu_preference_options_from([
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "on"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "999"),
+    ]);
 
+    assert!(env_overridden_hybrid_preference.enabled);
+    assert_eq!(env_overridden_hybrid_preference.max_small_selective_residual_join_row_groups, 999);
     assert!(
-        !config.native_plan_preference_options().enabled,
+        !ordinary_config.native_plan_preference_options().enabled,
         "TPC-DS native surfaces must not emit cpu_preferred_not_run while SQL may contain GPU-only cugraph_* calls"
+    );
+    assert!(
+        !analytics_config.native_plan_preference_options().enabled,
+        "TPC-DS native analytics/GPU benchmark surfaces must keep all supported plans on native GPU"
     );
 }
 
 #[test]
 fn tpcds_hybrid_benchmark_optimizer_config_enables_cpu_preference() {
     let profile = tpcds_native_profile_settings_with_env(|_| None);
-    let config = tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(&profile);
+    let config = tpcds_native_analytics_optimizer_config_with_profile_settings(&profile)
+        .with_native_plan_preference_options(tpcds_native_cpu_preference_options_from([]));
 
     assert!(
         config.native_plan_preference_options().enabled,
         "hybrid_cpu_preferred must classify small/selective native plans instead of skipping every query"
     );
+    assert_eq!(
+        config.native_plan_preference_options().max_small_selective_residual_join_row_groups,
+        TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS,
+        "TPC-DS hybrid classification should admit low-byte residual joins spread over a modest number of row groups"
+    );
+}
+
+#[test]
+fn tpcds_hybrid_cpu_preference_options_apply_env_overrides() {
+    let options = tpcds_native_cpu_preference_options_from([
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "off"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, "17"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, "123456"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "24"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, "654321"),
+        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, "42"),
+    ]);
+
+    assert!(!options.enabled);
+    assert_eq!(options.max_small_selective_row_groups, 17);
+    assert_eq!(options.max_small_selective_source_bytes, 123456);
+    assert_eq!(options.max_small_selective_residual_join_row_groups, 24);
+    assert_eq!(options.max_small_selective_residual_join_source_bytes, 654321);
+    assert_eq!(options.max_topk_fetch, 42);
 }
 
 #[test]
@@ -271,4 +314,11 @@ fn tpcds_native_profile_settings_from(
 ) -> datafusion_nexus_bench::TpcdsNativeProfileSettings {
     let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
     tpcds_native_profile_settings_with_env(|name| env.get(name).cloned())
+}
+
+fn tpcds_native_cpu_preference_options_from(
+    pairs: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> nexus_query_engine::NativePlanPreferenceOptions {
+    let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    tpcds_native_cpu_preference_options_with_env(|name| env.get(name).cloned())
 }

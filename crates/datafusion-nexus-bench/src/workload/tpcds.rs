@@ -74,30 +74,36 @@ pub const CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
 /// [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
 /// same accepted values.
 pub const CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
-/// Temporarily ignored. Native planning must not prefer CPU for conservative
-/// small/selective shapes while SQL may include GPU-only `cugraph_*` table
-/// functions.
+/// Enables or disables CPU preference for TPC-DS hybrid analytics planning.
+///
+/// Native all-GPU report/parity surfaces intentionally keep CPU preference
+/// disabled while SQL may include GPU-only `cugraph_*` table functions.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE";
-/// Reserved row-group threshold for small/selective CPU preference. Ignored by
-/// the current optimizer config while the CPU-preference surface is dormant.
+/// Row-group threshold for small/selective CPU preference on the TPC-DS hybrid
+/// analytics surface.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
-/// Dormant source-read byte threshold for small/selective CPU preference.
-/// Ignored by the current optimizer config while the CPU-preference surface is
-/// dormant.
+/// Source-read byte threshold for small/selective CPU preference on the TPC-DS
+/// hybrid analytics surface.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
-/// Reserved row-group threshold for residual-join CPU preference. Ignored by
-/// the current optimizer config while the CPU-preference surface is dormant.
+/// Row-group threshold for residual-join CPU preference on the TPC-DS hybrid
+/// analytics surface.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
-/// Dormant source-read byte threshold for residual-join CPU preference. Ignored
-/// by the current optimizer config while the CPU-preference surface is dormant.
+/// Source-read byte threshold for residual-join CPU preference on the TPC-DS
+/// hybrid analytics surface.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
-/// Reserved top-k fetch threshold for small/selective CPU preference. Ignored
-/// by the current optimizer config while the CPU-preference surface is dormant.
+/// Top-k fetch threshold for small/selective CPU preference on the TPC-DS
+/// hybrid analytics surface.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
+/// Hybrid analytics residual-join row-group threshold.
+///
+/// This stays intentionally close to the engine default while admitting
+/// low-byte residual joins whose pruning evidence is spread across a modest
+/// number of Parquet row groups.
+pub const TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize = 32;
 
 /// Conservative bounded profile: current production-safe defaults.
 pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
@@ -318,7 +324,48 @@ pub fn tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_s
     profile: &TpcdsNativeProfileSettings,
 ) -> CudfOptimizerConfig {
     tpcds_native_analytics_optimizer_config_with_profile_settings(profile)
-        .with_native_plan_preference_options(nexus_query_engine::NativePlanPreferenceOptions::default())
+        .with_native_plan_preference_options(tpcds_native_cpu_preference_options_from_env())
+}
+
+/// Resolves TPC-DS hybrid analytics CPU-preference options from env.
+pub fn tpcds_native_cpu_preference_options_from_env() -> nexus_query_engine::NativePlanPreferenceOptions {
+    tpcds_native_cpu_preference_options_with_env(|name| std::env::var(name).ok())
+}
+
+/// Resolves TPC-DS hybrid analytics CPU-preference options using an injected
+/// env reader for tests and benchmark harnesses.
+pub fn tpcds_native_cpu_preference_options_with_env(
+    mut get: impl FnMut(&'static str) -> Option<String>,
+) -> nexus_query_engine::NativePlanPreferenceOptions {
+    let mut options = nexus_query_engine::NativePlanPreferenceOptions {
+        max_small_selective_residual_join_row_groups: TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS,
+        ..nexus_query_engine::NativePlanPreferenceOptions::default()
+    };
+
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV) {
+        options.enabled = parse_env_bool(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, value);
+    }
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
+        options.max_small_selective_row_groups =
+            parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
+    }
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
+        options.max_small_selective_source_bytes =
+            parse_env_u64(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
+    }
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
+        options.max_small_selective_residual_join_row_groups =
+            parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
+    }
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
+        options.max_small_selective_residual_join_source_bytes =
+            parse_env_u64(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
+    }
+    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV) {
+        options.max_topk_fetch = parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, value);
+    }
+
+    options
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
@@ -498,6 +545,14 @@ fn parse_env_usize(name: &'static str, value: String) -> usize {
     value
         .parse::<usize>()
         .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+}
+
+fn parse_env_bool(name: &'static str, value: String) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => true,
+        "0" | "false" | "no" | "off" | "disabled" => false,
+        other => panic!("unsupported {name}={other}; expected true/false, yes/no, on/off, enabled/disabled, or 1/0"),
+    }
 }
 
 fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::SourceChunkPlanningMode {
