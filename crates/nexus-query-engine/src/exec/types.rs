@@ -1128,6 +1128,11 @@ fn push_position_delete_files(
         push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
         push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
         push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
+        push_optional_string(
+            output,
+            format!("{label}.referenced_data_file"),
+            delete_file.referenced_data_file.as_deref(),
+        );
         push_optional_u64(output, format!("{label}.position_lower_bound"), delete_file.position_lower_bound);
         push_optional_u64(output, format!("{label}.position_upper_bound"), delete_file.position_upper_bound);
     }
@@ -1162,6 +1167,14 @@ fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSou
                 delete_file.stable_id.as_str(),
                 delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
             );
+            if let Some(referenced_data_file) = delete_file.referenced_data_file.as_deref() {
+                replace_token_value(
+                    output,
+                    format!("{label}.referenced_data_file"),
+                    referenced_data_file,
+                    redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
+                );
+            }
             redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
         }
     }
@@ -1196,9 +1209,21 @@ fn redact_source_chunk_cache_fingerprint(output: &mut String, source: &LocalParq
                 delete_file.stable_id.as_str(),
                 delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
             );
+            if let Some(referenced_data_file) = delete_file.referenced_data_file.as_deref() {
+                replace_token_value(
+                    output,
+                    format!("{label}.referenced_data_file"),
+                    referenced_data_file,
+                    redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
+                );
+            }
             redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
         }
     }
+}
+
+fn redacted_position_delete_referenced_data_file(path: &str) -> String {
+    format!("stable_id_fnv64:{:016x}", stable_fnv1a64(path.as_bytes()))
 }
 
 fn redact_resolved_source_contract(

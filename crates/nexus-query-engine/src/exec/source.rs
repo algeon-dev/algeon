@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, VecDeque},
     fs,
     time::Duration,
@@ -896,15 +897,26 @@ fn apply_position_deletes_to_data_file(
         if delete_file.row_count == Some(0) {
             continue;
         }
+        if !position_delete_file_matches_referenced_data_file(delete_file, data_file_path) {
+            continue;
+        }
         if row_position_range.is_some_and(|range| !position_delete_file_overlaps_row_range(delete_file, range)) {
             continue;
         }
-        let delete_frame =
-            read_position_delete_file(context, source_node_id, delete_file, file_index, delete_index, metrics)?;
+        let delete_frame = read_position_delete_file(
+            context,
+            source_node_id,
+            delete_file,
+            data_file_path,
+            row_position_range,
+            file_index,
+            delete_index,
+            metrics,
+        )?;
         if delete_frame.num_rows() == 0 {
             continue;
         }
-        let predicates = position_delete_filter_predicates(data_file_path, row_position_range)?;
+        let predicates = position_delete_filter_predicates(delete_file, data_file_path, row_position_range)?;
         let matching_deletes = delete_frame
             .with_execution(&execution_overrides(context))
             .filter_all(predicates)
@@ -993,10 +1005,14 @@ fn position_delete_row_position_expr(
 }
 
 fn position_delete_filter_predicates(
+    delete_file: &crate::source::ParquetPositionDeleteFile,
     data_file_path: &str,
     row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
 ) -> Result<Vec<cudf::Expr>> {
-    let mut predicates = vec![col(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN).eq(lit(data_file_path))];
+    let file_path_values = position_delete_file_path_filter_values(delete_file, data_file_path);
+    let file_path_predicate =
+        col(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN).is_in_list(file_path_values.into_iter().map(lit).collect());
+    let mut predicates = vec![file_path_predicate];
     if let Some(range) = row_position_range {
         let start = position_delete_i64_bound(range.start, "start")?;
         let end = position_delete_i64_bound(range.end, "end")?;
@@ -1004,6 +1020,45 @@ fn position_delete_filter_predicates(
         predicates.push(col(ICEBERG_POSITION_DELETE_POS_COLUMN).lt(lit(end)));
     }
     Ok(predicates)
+}
+
+fn position_delete_reader_predicate(
+    delete_file: &crate::source::ParquetPositionDeleteFile,
+    data_file_path: &str,
+    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+) -> Result<Expr> {
+    let file_path_values = position_delete_file_path_filter_values(delete_file, data_file_path)
+        .into_iter()
+        .map(|value| Expr::literal(LiteralValue::Utf8(value)))
+        .collect();
+    let mut predicate = Expr::in_list(Expr::column(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN), file_path_values);
+    if let Some(range) = row_position_range {
+        let start = position_delete_i64_bound(range.start, "start")?;
+        let end = position_delete_i64_bound(range.end, "end")?;
+        predicate = Expr::binary_with_output_type(
+            predicate,
+            BinaryOp::And,
+            Expr::binary_with_output_type(
+                Expr::column(ICEBERG_POSITION_DELETE_POS_COLUMN),
+                BinaryOp::GtEq,
+                Expr::literal(LiteralValue::Int64(start)),
+                ArrowDataType::Boolean,
+            ),
+            ArrowDataType::Boolean,
+        );
+        predicate = Expr::binary_with_output_type(
+            predicate,
+            BinaryOp::And,
+            Expr::binary_with_output_type(
+                Expr::column(ICEBERG_POSITION_DELETE_POS_COLUMN),
+                BinaryOp::Lt,
+                Expr::literal(LiteralValue::Int64(end)),
+                ArrowDataType::Boolean,
+            ),
+            ArrowDataType::Boolean,
+        );
+    }
+    Ok(predicate)
 }
 
 fn position_delete_i64_bound(value: u64, bound: &'static str) -> Result<i64> {
@@ -1018,6 +1073,67 @@ fn position_delete_i64_bound(value: u64, bound: &'static str) -> Result<i64> {
         .with_fact("value", value)
         .with_fact("max", i64::MAX)
     })
+}
+
+fn position_delete_file_matches_referenced_data_file(
+    delete_file: &crate::source::ParquetPositionDeleteFile,
+    data_file_path: &str,
+) -> bool {
+    delete_file
+        .referenced_data_file
+        .as_deref()
+        .is_none_or(|referenced| position_delete_data_file_paths_match(referenced, data_file_path))
+}
+
+fn position_delete_file_path_filter_values(
+    delete_file: &crate::source::ParquetPositionDeleteFile,
+    data_file_path: &str,
+) -> Vec<String> {
+    let mut values = Vec::with_capacity(8);
+    push_position_delete_file_path_variants(&mut values, data_file_path);
+    if let Some(referenced) = delete_file
+        .referenced_data_file
+        .as_deref()
+        .filter(|referenced| position_delete_data_file_paths_match(referenced, data_file_path))
+    {
+        push_position_delete_file_path_variants(&mut values, referenced);
+    }
+    values
+}
+
+fn push_position_delete_file_path_variants(values: &mut Vec<String>, location: &str) {
+    push_unique_position_delete_file_path_value(values, location);
+    let normalized = normalized_local_file_location_text(location);
+    let normalized = normalized.as_ref();
+    push_unique_position_delete_file_path_value(values, normalized);
+    if normalized.starts_with('/') {
+        push_unique_position_delete_file_path_value(values, format!("file:{normalized}").as_str());
+        push_unique_position_delete_file_path_value(values, format!("file://{normalized}").as_str());
+        push_unique_position_delete_file_path_value(values, format!("file://localhost{normalized}").as_str());
+    }
+}
+
+fn push_unique_position_delete_file_path_value(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn position_delete_data_file_paths_match(left: &str, right: &str) -> bool {
+    left == right || normalized_local_file_location_text(left) == normalized_local_file_location_text(right)
+}
+
+fn normalized_local_file_location_text(location: &str) -> Cow<'_, str> {
+    if let Some(path) = location.strip_prefix("file://localhost/") {
+        return Cow::Owned(format!("/{path}"));
+    }
+    if let Some(path) = location.strip_prefix("file://") {
+        return Cow::Borrowed(path);
+    }
+    if let Some(path) = location.strip_prefix("file:") {
+        return Cow::Borrowed(path);
+    }
+    Cow::Borrowed(location)
 }
 
 fn position_delete_file_overlaps_row_range(
@@ -1040,6 +1156,8 @@ fn read_position_delete_file(
     context: &ExecutionContext,
     source_node_id: NodeId,
     delete_file: &crate::source::ParquetPositionDeleteFile,
+    data_file_path: &str,
+    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
     data_file_index: usize,
     delete_index: usize,
     metrics: &mut QueryMetrics,
@@ -1053,7 +1171,8 @@ fn read_position_delete_file(
         vec![file.clone()],
         schema,
         vec![ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN.to_string(), ICEBERG_POSITION_DELETE_POS_COLUMN.to_string()],
-    );
+    )
+    .with_reader_predicate(position_delete_reader_predicate(delete_file, data_file_path, row_position_range)?);
     let columns = [ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ICEBERG_POSITION_DELETE_POS_COLUMN];
     let frame = if file.resolved_source.uses_host_buffer() {
         read_object_store_parquet_file(context, &source, source_node_id, &file, data_file_index, delete_index, metrics)?
@@ -2072,6 +2191,38 @@ mod tests {
         let source = test_source(files, vec!["c1".to_string()]);
 
         assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
+    }
+
+    #[test]
+    fn position_delete_referenced_data_file_matches_local_file_uri_variants() {
+        let delete_file = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-1",
+            ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
+        )
+        .unwrap()
+        .with_referenced_data_file("file:///tmp/data.parquet");
+
+        assert!(position_delete_file_matches_referenced_data_file(&delete_file, "/tmp/data.parquet"));
+
+        let localhost_delete_file = delete_file.with_referenced_data_file("file://localhost/tmp/data.parquet");
+        assert!(position_delete_file_matches_referenced_data_file(&localhost_delete_file, "/tmp/data.parquet"));
+        assert!(!position_delete_file_matches_referenced_data_file(&localhost_delete_file, "/tmp/other.parquet"));
+    }
+
+    #[test]
+    fn position_delete_file_path_filter_values_include_local_file_uri_variants_without_referenced_file() {
+        let delete_file = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-1",
+            ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
+        )
+        .unwrap();
+
+        let values = position_delete_file_path_filter_values(&delete_file, "/tmp/data.parquet");
+
+        assert!(values.contains(&"/tmp/data.parquet".to_string()));
+        assert!(values.contains(&"file:/tmp/data.parquet".to_string()));
+        assert!(values.contains(&"file:///tmp/data.parquet".to_string()));
+        assert!(values.contains(&"file://localhost/tmp/data.parquet".to_string()));
     }
 
     #[test]

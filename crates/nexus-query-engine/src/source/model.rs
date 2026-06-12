@@ -796,7 +796,7 @@ impl ParquetFieldIdReadBinding {
 /// The delete file is read as a normal native Parquet source and filtered by
 /// Iceberg's `file_path` column before anti-joining data rows by file-global
 /// `pos`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ParquetPositionDeleteFile {
     /// Stable delete-file id for diagnostics.
     pub id: String,
@@ -812,12 +812,34 @@ pub struct ParquetPositionDeleteFile {
     pub file_size_bytes: Option<u64>,
     /// Known delete row count, when available.
     pub row_count: Option<u64>,
+    /// Referenced data-file path from Iceberg position-delete metadata, when present.
+    pub referenced_data_file: Option<String>,
     /// Inclusive lower bound for the Iceberg `pos` column, when manifest
     /// metrics prove it.
     pub position_lower_bound: Option<u64>,
     /// Inclusive upper bound for the Iceberg `pos` column, when manifest
     /// metrics prove it.
     pub position_upper_bound: Option<u64>,
+}
+
+impl fmt::Debug for ParquetPositionDeleteFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParquetPositionDeleteFile")
+            .field("id", &self.id)
+            .field("location", &self.location)
+            .field("path", &redacted_debug_value("path", self.path.display().to_string().as_str()))
+            .field("resolved_source", &self.resolved_source)
+            .field("stable_id", &self.location.diagnostic_stable_id(self.stable_id.as_str()))
+            .field("file_size_bytes", &self.file_size_bytes)
+            .field("row_count", &self.row_count)
+            .field(
+                "referenced_data_file",
+                &redacted_debug_option("referenced_data_file", self.referenced_data_file.as_deref()),
+            )
+            .field("position_lower_bound", &self.position_lower_bound)
+            .field("position_upper_bound", &self.position_upper_bound)
+            .finish()
+    }
 }
 
 impl ParquetPositionDeleteFile {
@@ -837,6 +859,7 @@ impl ParquetPositionDeleteFile {
             stable_id,
             file_size_bytes: None,
             row_count: None,
+            referenced_data_file: None,
             position_lower_bound: None,
             position_upper_bound: None,
         })
@@ -851,6 +874,12 @@ impl ParquetPositionDeleteFile {
     /// Sets known delete row count.
     pub fn with_row_count(mut self, row_count: u64) -> Self {
         self.row_count = Some(row_count);
+        self
+    }
+
+    /// Sets the referenced data-file path for manifest-proven position-delete pruning.
+    pub fn with_referenced_data_file(mut self, referenced_data_file: impl Into<String>) -> Self {
+        self.referenced_data_file = Some(referenced_data_file.into());
         self
     }
 
@@ -2241,6 +2270,28 @@ mod tests {
                 "location debug output leaked {sensitive}: {rendered_location}"
             );
         }
+    }
+
+    #[test]
+    fn position_delete_debug_redacts_referenced_data_file() {
+        let referenced = "s3://secret-bucket/private/data.parquet?X-Amz-Signature=abc";
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-1",
+            ResolvedParquetSource::remote_direct(
+                "s3://delete-bucket/private/delete.parquet?X-Amz-Signature=def",
+                CredentialMode::SharedProcessEnv,
+            ),
+        )
+        .unwrap()
+        .with_referenced_data_file(referenced);
+        let file = LocalParquetFile::new("/tmp/data.parquet").with_position_delete_files(vec![delete_file]);
+
+        let rendered = format!("{file:?}");
+        for sensitive in ["secret-bucket", "private/data", "X-Amz-Signature", "delete-bucket"] {
+            assert!(!rendered.contains(sensitive), "debug output leaked {sensitive}: {rendered}");
+        }
+        assert!(rendered.contains("referenced_data_file"));
+        assert!(rendered.contains("referenced_data_file:fnv64:"));
     }
 
     #[test]

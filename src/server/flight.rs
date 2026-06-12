@@ -50,6 +50,7 @@ use super::{
     config::ServerSessionProfile,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
     error::{ServerError, datafusion_error_to_status_for_operation},
+    table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
 use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode};
 
@@ -380,6 +381,9 @@ impl DatafusionCudfFlightSqlService {
             }
         };
         verify_flight_info_plan(&logical_plan, ticket_kind)?;
+        if let Some(error) = fast_fail_unsupported_table_format_operator_plan(&logical_plan) {
+            return Err(status_with_query_id(adapter_error_status(error), &query_id));
+        }
         let schema = logical_plan.schema().as_arrow().clone();
 
         // Both ticket variants carry the per-execution `query_id` bytes. For
@@ -554,6 +558,11 @@ impl DatafusionCudfFlightSqlService {
                 return Err(status);
             },
         };
+        if let Some(error) = fast_fail_unsupported_table_format_operator_plan(df.logical_plan()) {
+            let status = status_with_query_id(adapter_error_status(error), &query_id);
+            lifecycle.finish_status("planning", &status);
+            return Err(status);
+        }
         let schema = df.schema().as_arrow().clone();
         // `execute_stream()` runs physical planning. Log the retained native
         // report after that point; leaf-guard facts only surface on failure.
@@ -2109,6 +2118,9 @@ mod get_tables_prefilter_tests {
 
 #[cfg(all(test, feature = "iceberg"))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use datafusion::datasource::MemTable;
     use futures::future::BoxFuture;
 
     use super::*;
@@ -2152,6 +2164,194 @@ mod tests {
                 Ok(plan)
             })
         }
+    }
+
+    #[derive(Debug)]
+    struct CountingPlanner {
+        plan: TableFormatScanPlan,
+        requests: AtomicUsize,
+    }
+
+    impl CountingPlanner {
+        fn new(plan: TableFormatScanPlan) -> Self {
+            Self { plan, requests: AtomicUsize::new(0) }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.load(Ordering::SeqCst)
+        }
+    }
+
+    impl TableFormatPlanner for CountingPlanner {
+        fn plan_scan<'a>(
+            &'a self,
+            _request: TableFormatScanRequest,
+        ) -> BoxFuture<'a, crate::Result<TableFormatScanPlan>> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            let plan = self.plan.clone();
+            Box::pin(async move { Ok(plan) })
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_table_format_distinct_list_fast_fails_before_scan_planning() {
+        let schema = list_string_schema();
+        let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
+        assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
+            Arc::clone(&schema),
+            planner,
+            "SELECT DISTINCT \"pCodes\" FROM iceberg_t",
+            "distinct",
+            "pCodes",
+            "List(",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_table_format_group_by_list_fast_fails_before_scan_planning() {
+        let schema = list_string_schema();
+        let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
+        assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
+            Arc::clone(&schema),
+            planner,
+            "SELECT \"pCodes\", COUNT(*) AS n FROM iceberg_t GROUP BY \"pCodes\"",
+            "group_by",
+            "pCodes",
+            "List(",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_table_format_count_distinct_list_fast_fails_before_scan_planning() {
+        let schema = list_string_schema();
+        let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
+        assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
+            Arc::clone(&schema),
+            planner,
+            "SELECT COUNT(DISTINCT \"pCodes\") AS n FROM iceberg_t",
+            "aggregate_distinct",
+            "pCodes",
+            "List(",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_table_format_distinct_map_fast_fails_before_scan_planning() {
+        let schema = map_schema();
+        let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&schema))));
+        assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
+            Arc::clone(&schema),
+            planner,
+            "SELECT DISTINCT \"countDetail\" FROM iceberg_t",
+            "distinct",
+            "countDetail",
+            "Map(",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_non_iceberg_operator_column_in_mixed_plan_does_not_fast_fail() {
+        let iceberg_schema = iceberg_test_schema();
+        let planner = Arc::new(CountingPlanner::new(native_admissible_scan_plan(Arc::clone(&iceberg_schema))));
+        let provider = Arc::new(
+            CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
+                .with_catalog_type("local"),
+        );
+        let ctx = SessionContext::new();
+        ctx.register_table("iceberg_t", provider).expect("test registers iceberg table");
+
+        let memory_schema = Arc::new(Schema::new(vec![Field::new("memCodes", list_string_type(), true)]));
+        let memory_table = Arc::new(MemTable::try_new(Arc::clone(&memory_schema), vec![vec![]]).unwrap());
+        ctx.register_table("mem_t", memory_table).expect("test registers memory table");
+
+        let df = ctx
+            .sql("SELECT DISTINCT m.\"memCodes\" FROM mem_t AS m CROSS JOIN iceberg_t AS i")
+            .await
+            .expect("logical plan builds");
+
+        assert!(fast_fail_unsupported_table_format_operator_plan(df.logical_plan()).is_none());
+        assert_eq!(planner.request_count(), 0, "logical fast-fail proof must not trigger Iceberg scan planning");
+    }
+
+    #[tokio::test]
+    async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
+        let iceberg_schema = map_schema();
+        let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
+        let provider = Arc::new(
+            CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
+                .with_catalog_type("local"),
+        );
+        let ctx = Arc::new(SessionContext::new());
+        ctx.register_table("iceberg_t", provider).expect("test registers iceberg table");
+
+        let memory_schema = Arc::new(Schema::new(vec![Field::new("mem_id", DataType::Int64, false)]));
+        let memory_table = Arc::new(MemTable::try_new(Arc::clone(&memory_schema), vec![vec![]]).unwrap());
+        ctx.register_table("mem_t", memory_table).expect("test registers memory table");
+
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            1,
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        );
+
+        let status = issue_statement_ticket(
+            &service,
+            "SELECT DISTINCT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m",
+        )
+        .await
+        .expect_err("unsupported Iceberg operator column should fast-fail through mixed joins");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_status_metadata(&status, "native_candidate_rejected", "planning", "permanent");
+        assert!(status.message().contains("operator=distinct"), "status={status:?}");
+        assert!(status.message().contains("column=countDetail"), "status={status:?}");
+        assert!(status.message().contains("type=Map("), "status={status:?}");
+        assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
+        assert!(service.tickets.is_empty(), "fast-failed statements should not issue execution tickets");
+    }
+
+    async fn assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
+        schema: Arc<Schema>,
+        planner: Arc<CountingPlanner>,
+        sql: &str,
+        operator: &str,
+        column: &str,
+        type_prefix: &str,
+    ) {
+        let provider = Arc::new(
+            CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone())
+                .with_catalog_type("local"),
+        );
+        let ctx = Arc::new(SessionContext::new());
+        ctx.register_table("iceberg_t", provider).expect("test registers table once");
+
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            1,
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        );
+
+        let status = issue_statement_ticket(&service, sql)
+            .await
+            .expect_err("unsupported table-format operator should fail before table scan planning");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_status_metadata(&status, "native_candidate_rejected", "planning", "permanent");
+        assert!(status.message().contains(&format!("operator={operator}")), "status={status:?}");
+        assert!(status.message().contains(&format!("column={column}")), "status={status:?}");
+        assert!(status.message().contains(&format!("type={type_prefix}")), "status={status:?}");
+        assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
+        assert!(service.tickets.is_empty(), "fast-failed statements should not issue execution tickets");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2247,6 +2447,72 @@ mod tests {
                 Some("id"),
                 DataType::Int64,
                 false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
+            ))
+    }
+
+    fn list_string_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("pCodes", list_string_type(), true)]))
+    }
+
+    fn list_string_type() -> DataType {
+        DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)))
+    }
+
+    fn list_string_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+        let data_type = list_string_type();
+        single_column_scan_plan(schema, "pCodes", data_type)
+    }
+
+    fn map_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("countDetail", map_type(), true)]))
+    }
+
+    fn map_type() -> DataType {
+        DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(arrow::datatypes::Fields::from(vec![
+                    Arc::new(Field::new("key", DataType::Utf8, false)),
+                    Arc::new(Field::new("value", DataType::Int32, true)),
+                ])),
+                false,
+            )),
+            false,
+        )
+    }
+
+    fn map_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+        single_column_scan_plan(schema, "countDetail", map_type())
+    }
+
+    fn single_column_scan_plan(
+        schema: Arc<Schema>,
+        column_name: &'static str,
+        data_type: DataType,
+    ) -> TableFormatScanPlan {
+        TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_snapshot_id("12345")
+            .with_catalog_type("local")
+            .with_logical_schema(Arc::clone(&schema))
+            .with_native_source_schema(schema)
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "data-0001",
+                    "/tmp/iceberg/data-0001.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::local_file_system(),
+                )
+                .with_size_bytes(4096)
+                .with_row_count(11),
+            )
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(1),
+                column_name,
+                Some(column_name),
+                data_type,
+                true,
                 TableFormatColumnSource::DirectTopLevelFileColumn,
                 TableFormatColumnRole::Projected,
             ))

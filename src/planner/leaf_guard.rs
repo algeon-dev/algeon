@@ -271,6 +271,12 @@ fn leftover_leaf_error(
     for (key, value) in diagnostics.facts() {
         error = error.with_fact(key, value);
     }
+    if let Some(column) = leaf.scan_plan().first_unsupported_column() {
+        error = error
+            .with_fact("unsupported_column", column.logical_name)
+            .with_fact("unsupported_column_type", column.data_type_debug())
+            .with_fact("unsupported_column_role", column.role_code());
+    }
     if let Some(context) = blocking_context {
         error = error.with_fact("leaf_guard_context_source", context.source());
         error = error.with_fact("native_rule_blocking_context", context.code());
@@ -313,8 +319,9 @@ mod tests {
         planner::CudfOptimizerConfig,
         report::GpuCandidate,
         table_format::{
-            TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability,
-            TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+            TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
+            TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
+            TableFormatUnsupportedFeatureCode,
         },
     };
 
@@ -514,6 +521,15 @@ mod tests {
                 "/tmp/iceberg/data-0001.parquet",
                 TableFormatDataFileFormat::Parquet,
                 TableFormatReadCapability::local_file_system(),
+            ))
+            .with_projected_column(TableFormatColumnMapping::new(
+                None,
+                "event_time",
+                Some("event_time"),
+                DataType::Binary,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                TableFormatColumnRole::Projected,
             ));
         let scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(scan_plan, schema));
 
@@ -525,6 +541,9 @@ mod tests {
         assert_eq!(adapter.fact_value("leaf_guard_first_rejection"), Some(FallbackReason::UnsupportedType.code()));
         assert_eq!(adapter.fact_value("leaf_guard_context_source"), Some("scan_plan"));
         assert_eq!(adapter.fact_value("native_rule_blocking_context"), Some(FallbackReason::UnsupportedType.code()));
+        assert_eq!(adapter.fact_value("unsupported_column"), Some("event_time"));
+        assert_eq!(adapter.fact_value("unsupported_column_type"), Some("Binary"));
+        assert_eq!(adapter.fact_value("unsupported_column_role"), Some("projected"));
     }
 
     fn table_format_scan_with_data_file() -> CudfTableFormatScanExec {

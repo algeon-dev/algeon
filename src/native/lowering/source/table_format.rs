@@ -1431,6 +1431,9 @@ fn table_format_position_delete_files(
             if let Some(row_count) = delete_file.row_count {
                 native_delete = native_delete.with_row_count(row_count);
             }
+            if let Some(referenced_data_file) = delete_file.referenced_data_file.as_ref() {
+                native_delete = native_delete.with_referenced_data_file(referenced_data_file.clone());
+            }
             native_delete =
                 native_delete.with_position_bounds(delete_file.position_lower_bound, delete_file.position_upper_bound);
             Ok(native_delete)
@@ -2104,6 +2107,7 @@ mod tests {
         )
         .with_read_capability(TableFormatReadCapability::local_file_system())
         .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio(delete_path.display().to_string()))
+        .with_referenced_data_file(data_path.display().to_string())
         .with_position_bounds(Some(0), Some(10));
         let mut scan_plan =
             single_projected_file_scan_plan(&data_path, Arc::clone(&scan_schema), 2).with_scan_limit(Some(1));
@@ -2128,6 +2132,10 @@ mod tests {
             .expect("lowered plan should contain one local parquet source");
 
         assert_eq!(source.scan_limit, Some(1));
+        assert_eq!(
+            source.files[0].position_delete_files[0].referenced_data_file.as_deref(),
+            Some(data_path.display().to_string().as_str())
+        );
         assert_eq!(source.files[0].position_delete_files[0].position_lower_bound, Some(0));
         assert_eq!(source.files[0].position_delete_files[0].position_upper_bound, Some(10));
         assert!(matches!(plan.root_node().kind, PlanNode::Limit(_)));
