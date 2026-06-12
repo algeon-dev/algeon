@@ -7,7 +7,7 @@ mod dataframe_sort_values_allocation_tests;
 #[path = "../ops/misc/lookup_allocation_tests.rs"]
 mod lookup_allocation_tests;
 
-use cudf::interop::prepared::ProducerReadiness;
+use rapids_interop::ProducerReadiness;
 
 use crate::{allocation::allocation_count_delta, common::column_from_slice};
 

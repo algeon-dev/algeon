@@ -11,8 +11,8 @@ use crate::core::types::TypeId;
 ///
 /// This is a low-level raw-pointer helper, not the preferred cross-crate GPU
 /// interop contract. For external borrowed interop, prefer
-/// [`crate::interop::borrowed::BorrowedColumnView`] and
-/// [`crate::interop::borrowed::TryBorrowColumnView`], which also carry null-mask
+/// [`rapids_interop::BorrowedColumnView`] and
+/// [`rapids_interop::TryBorrowColumnView`], which also carry null-mask
 /// semantics, base-pointer-plus-offset behavior, and execution provenance.
 ///
 /// Create a `DeviceSlice` from a [`Column`](crate::core::Column) via

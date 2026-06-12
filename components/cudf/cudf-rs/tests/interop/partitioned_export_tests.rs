@@ -7,17 +7,13 @@ use std::{
 use cudf::{
     DeviceId, Runtime,
     core::{Column, Table},
-    interop::{
-        PartitionedDataFrameExport,
-        borrowed::Placement,
-        prepared::{
-            CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, ProducerReadiness,
-            ReadStartAuthority,
-        },
-        transfer::{ReleaseSynchronization, TransferCompletionAuthority, TransferCompletionRule},
-    },
+    interop::{PartitionedDataFrameExport, runtime_release::TransferCompletionAuthority},
     runtime::CudaStream,
     testing::prelude::*,
+};
+use rapids_interop::{
+    CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, Placement, ProducerReadiness,
+    ReadStartAuthority, ReleaseSynchronization, TransferCompletionRule,
 };
 
 use crate::common::{assert_duplicate_name_error, column_from_slice, lock_event_observation};

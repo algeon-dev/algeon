@@ -3,15 +3,12 @@ use std::collections::HashMap;
 use cudf::{
     DataFrame, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
-    interop::{
-        borrowed::{BufferBinding, ColumnLayout, PhysicalValidity, SchemaNullability, SemanticColumn, SemanticTable},
-        prepared::{
-            ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, PreparedColumnExport, ProducerReadiness,
-        },
-        transfer::OwnedTableTransfer,
-    },
     ops::dictionary,
     testing::prelude::*,
+};
+use rapids_interop::{
+    BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, OwnedTableTransfer,
+    PhysicalValidity, PreparedColumnExport, ProducerReadiness, SchemaNullability, SemanticColumn, SemanticTable,
 };
 use tempfile::TempDir;
 
@@ -904,7 +901,7 @@ mod error_mapping_contracts {
     fn prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable() {
         use std::{any::Any, sync::Arc};
 
-        use cudf::interop::prepared::{
+        use rapids_interop::{
             ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
             IncompleteDropBehavior, InteropError, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
         };

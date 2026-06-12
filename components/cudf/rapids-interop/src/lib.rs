@@ -15,6 +15,10 @@
 //!   [`PartitionedPreparedTableExport`] and
 //!   [`PartitionedOwnedTableTransfer`]
 //!
+//! Import shared contract nouns from this crate. Consumer-specific crates such
+//! as `cudf-rs` provide adapter methods, runtime integration, and ABI glue on
+//! top of this contract rather than re-owning the shared vocabulary.
+//!
 //! # Contract Summary
 //!
 //! - Borrowed compatibility and prepared export both describe existing buffers;

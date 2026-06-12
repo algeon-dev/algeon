@@ -12,23 +12,18 @@ use std::{
 use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
-    interop::{
-        borrowed::{
-            BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle,
-            PhysicalValidity, Placement, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-        },
-        prepared::{ExportDiagnostics, ExportProfile, InteropErrorKind, ProducerReadiness},
-        transfer::{
-            OwnedColumnTransfer, OwnedColumnTransferReleaser, OwnedTableTransfer, OwnedTableTransferReleaser,
-            ReleaseContract, ReleaseSynchronization, TransferCompletionAuthority, TransferCompletionRule,
-            TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
-        },
-    },
+    interop::runtime_release::{OwnedColumnTransferReleaser, OwnedTableTransferReleaser, TransferCompletionAuthority},
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
 };
-use rapids_interop::{DataType as InteropDataType, TypeId as InteropTypeId};
+use rapids_interop::{
+    BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle,
+    DataType as InteropDataType, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedColumnTransfer,
+    OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness, ReleaseContract, ReleaseSynchronization,
+    SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule,
+    TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer, TypeId as InteropTypeId,
+};
 use static_assertions::assert_impl_all;
 use tempfile::TempDir;
 

@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use cudf::{
     JsonReadOptions, Runtime, Series,
     core::{DataType, TypeId},
-    interop::{
-        borrowed::{BufferBinding, ColumnLayout, InteropTypeId, PhysicalValidity, SchemaNullability, SemanticColumn},
-        prepared::ExportProfile,
-    },
+};
+use rapids_interop::{
+    BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, SchemaNullability, SemanticColumn,
+    TypeId as InteropTypeId,
 };
 use tempfile::TempDir;
 
