@@ -9,10 +9,14 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{filter_inputs::filtered_aggregate_input_type, *};
 
+// Single-pass materialization keeps the original frame and aggregate state live, so require headroom.
 const SINGLE_PASS_BUDGET_FRACTION_DENOMINATOR: u64 = 2;
+// Segment scratch target that amortizes cuDF calls while staying below the per-query budget clamp.
 const SEGMENT_TARGET_TEMPORARY_BYTES: u64 = 512 * 1024 * 1024;
 const TEST_SEGMENT_TARGET_TEMPORARY_BYTES_FACT: &str = "__nexus_filtered_global_segment_target_bytes";
+// Degenerate width estimates must still let segmented execution make forward progress.
 const MIN_SEGMENT_ROWS: u64 = 1;
+// Retained predicate masks need alignment and temporary headroom beyond bitmap storage.
 const FILTER_PREDICATE_BYTES_PER_ROW: u64 = 2;
 
 // Admission decision plus segmentation plan for filtered global aggregates.

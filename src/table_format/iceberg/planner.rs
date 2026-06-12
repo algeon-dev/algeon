@@ -60,7 +60,9 @@ use crate::{
 const PLAN_SCAN_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan";
 const PLAN_SCAN_TIMEOUT_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan_timeout";
 const TASK_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceberg.convert_file_scan_tasks";
+// Manifest planning is remote-IO bound; this keeps large snapshots moving without unbounded fanout.
 const REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY: usize = 128;
+// Footer probes fetch larger Parquet tails, so they use a tighter transient-buffer gate.
 const REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY: usize = 32;
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 

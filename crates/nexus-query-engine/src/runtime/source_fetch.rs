@@ -11,17 +11,17 @@ use super::{
 };
 use crate::error::{QueryError, QueryErrorCode, Result};
 
-/// Fallback host-buffer budget used when physical RAM cannot be detected.
+/// Conservative fallback for hosts where physical-memory detection is unavailable.
 pub const DEFAULT_HOST_FETCH_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
-/// Maximum default host-buffer budget derived from physical RAM.
+/// Auto-sizing cap so source buffers do not crowd other host-side query state.
 pub const DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
-/// Default service-wide concurrent object-store SourceFetch operation cap.
+/// Hides object-store latency without making fetch fanout effectively unbounded.
 pub const DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS: usize = 64;
-/// Default service-wide concurrent background lakehouse cache-fill operation cap.
+/// Background cache fills leave most IO slots for foreground source reads.
 pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = 4;
-/// Default service-wide concurrent GDS DMA operation cap.
+/// Direct-device reads use a separate DMA gate from host-buffer fetches.
 pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
-/// Default per-chunk size threshold for selecting future GDS direct-device reads.
+/// Smaller chunks stay on host-buffer IO to avoid direct-device setup overhead.
 pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Service-level source IO substrate preference.

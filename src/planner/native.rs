@@ -81,9 +81,12 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_adaptive_pipeline: Mutex<NativeAdaptivePipelineDiagnostics>,
 }
 
+// Distinct rule identities let the count-only probe run before the final rewrite pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeOptimizerStage {
+    // Dedicated pass for plans where output-requirement peeling exposes a native count.
     CountOnlyProbe,
+    // Full native lowering, fallback handling, and fragment composition.
     Final,
 }
 

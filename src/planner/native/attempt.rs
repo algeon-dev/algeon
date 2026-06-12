@@ -57,15 +57,20 @@ pub(super) struct NativeOptimizationAttempt {
     pub(super) rewritten: bool,
 }
 
+// Controls whether child rewrites may split a DataFusion-owned join boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostArrowChildReplacementMode {
+    // Keep simple DataFusion join leaf/filter children with their host join.
     Normal,
+    // Allow native fragments inside an outer-join subtree after its root stays on DataFusion.
     OuterJoinBoundary,
 }
 
+// Limits fallback child extraction when only table-format scan work should move native.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostArrowChildReplacementScope {
     AnyNativeChild,
+    // Avoid rewriting unrelated children below an expression/operator rejection.
     TableFormatOnly,
 }
 
