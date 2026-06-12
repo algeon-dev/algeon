@@ -1,4 +1,6 @@
 //! Tests for join operations.
+use cudf::testing::prelude::*;
+
 
 use cudf::{
     core::Table,
@@ -211,7 +213,7 @@ fn test_inner_join_multi_column_keys() {
 
 #[test]
 fn test_join_domain_module_exports_documented_surface() {
-    use cudf::ops::join::{JoinResult, JoinType, MergeOptions, NullEquality, full_join, inner_join, left_join};
+    use cudf::ops::join::{JoinSides, JoinType, MergeOptions, NullEquality, full_join, inner_join, left_join};
 
     let left_keys = column_from_slice(&[1i32, 2, 3]).unwrap();
     let right_keys = column_from_slice(&[2i32, 3, 4]).unwrap();
@@ -221,7 +223,7 @@ fn test_join_domain_module_exports_documented_surface() {
     let left_payload = empty_payload();
     let right_payload = empty_payload();
 
-    let inner: JoinResult = inner_join(
+    let inner: JoinSides = inner_join(
         &left_keys.view().unwrap(),
         &right_keys.view().unwrap(),
         &left_payload.view().unwrap(),
@@ -261,8 +263,8 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_payload = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 950)]).unwrap();
     let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 951)]).unwrap();
     let right_payload = Table::from_columns(vec![explicit_i32_column(&[200, 300, 400], 951)]).unwrap();
-    let expected_stream = left_keys.__debug_execution_domain_stream_value();
-    let expected_mr = left_keys.__debug_execution_domain_mr_value();
+    let expected_stream = left_keys.testing_execution_domain_stream_value();
+    let expected_mr = left_keys.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = join::inner_join(
@@ -274,10 +276,10 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     )
     .unwrap();
 
-    assert_eq!(result.left.__debug_execution_domain_id(), left_keys.__debug_execution_domain_id());
-    assert_eq!(result.right.__debug_execution_domain_id(), left_keys.__debug_execution_domain_id());
-    assert_eq!(result.left.__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(result.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.left.testing_execution_domain_id(), left_keys.testing_execution_domain_id());
+    assert_eq!(result.right.testing_execution_domain_id(), left_keys.testing_execution_domain_id());
+    assert_eq!(result.left.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.right.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 

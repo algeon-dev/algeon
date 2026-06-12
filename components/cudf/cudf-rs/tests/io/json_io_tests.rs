@@ -1,6 +1,8 @@
 //! Tests for JSON / JSON Lines (NDJSON) I/O.
 //!
 //! All tests require a GPU.
+use cudf::testing::prelude::*;
+
 
 use cudf::{
     ErrorKind,
@@ -38,8 +40,8 @@ fn test_json_lines_roundtrip_i32() {
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
-    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(result.table.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(result.table.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 
     let col0 = read_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i64>().unwrap(), vec![1, 2, 3]); // JSON integers default to i64

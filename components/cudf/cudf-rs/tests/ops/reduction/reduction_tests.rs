@@ -108,7 +108,7 @@ fn test_minmax() {
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2);
     let series = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
-    let view = series.as_column_view().unwrap();
+    let view = series.view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Min, &dt).unwrap();
 

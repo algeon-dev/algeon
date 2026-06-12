@@ -1,3 +1,5 @@
+use cudf::testing::prelude::*;
+
 use std::collections::HashMap;
 
 use cudf::{
@@ -48,13 +50,13 @@ fn reset_exec_observation<T>(f: impl FnOnce() -> T) -> T {
 
 fn assert_exec_observation_matches_runtime(runtime: &Runtime) {
     assert_eq!(common::last_exec_device(), runtime.device().ordinal() as i32);
-    assert_eq!(common::last_exec_stream_value(), runtime.stream().__debug_raw_handle_value());
-    assert_eq!(common::last_exec_mr_value(), runtime.memory_resource().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_stream_value(), runtime.stream().testing_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), runtime.memory_resource().testing_raw_handle_value());
 }
 
 fn assert_column_bound_to_runtime(imported: &Column, runtime: &Runtime) {
-    assert_eq!(imported.__debug_execution_domain_stream_value(), runtime.stream().__debug_raw_handle_value());
-    assert_eq!(imported.__debug_execution_domain_mr_value(), runtime.memory_resource().__debug_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_stream_value(), runtime.stream().testing_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_mr_value(), runtime.memory_resource().testing_raw_handle_value());
 }
 
 fn assert_column_imported_into_runtime(imported: &Column, runtime: &Runtime) {
@@ -63,8 +65,8 @@ fn assert_column_imported_into_runtime(imported: &Column, runtime: &Runtime) {
 }
 
 fn assert_table_bound_to_runtime(imported: &Table, runtime: &Runtime) {
-    assert_eq!(imported.__debug_execution_domain_stream_value(), runtime.stream().__debug_raw_handle_value());
-    assert_eq!(imported.__debug_execution_domain_mr_value(), runtime.memory_resource().__debug_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_stream_value(), runtime.stream().testing_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_mr_value(), runtime.memory_resource().testing_raw_handle_value());
 }
 
 fn assert_table_imported_into_runtime(imported: &Table, runtime: &Runtime) {
@@ -312,7 +314,7 @@ fn dictionary_backed_nested_frame(filename: &str, rows: &str) -> DataFrame {
     let nested = frame.series("nested").unwrap();
     let point = frame.series("point").unwrap();
     let id = frame.series("id").unwrap();
-    let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
+    let encoded = dictionary::encode(&category.view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(encoded).unwrap().rename("category");
     DataFrame::from_series([category, nested, point, id]).unwrap()
 }

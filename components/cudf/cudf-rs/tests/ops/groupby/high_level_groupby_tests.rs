@@ -626,7 +626,7 @@ fn groupby_new_agg_alias() {
 fn groupby_domain_module_exports_documented_surface() {
     use cudf::{
         core::Table,
-        ops::groupby::{AggregationRequest, GroupByAgg, GroupByResult, NullPolicy, groupby_aggregate},
+        ops::groupby::{AggregationRequest, GroupByAgg, GroupByAggregationOutput, NullPolicy, groupby_aggregate},
     };
 
     let keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 1, 2]).unwrap()]).unwrap();
@@ -635,7 +635,7 @@ fn groupby_domain_module_exports_documented_surface() {
     let aggs = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &value_view, aggregations: &aggs }];
 
-    let result: GroupByResult = groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
+    let result: GroupByAggregationOutput = groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
 
     assert_eq!(result.keys.view().unwrap().num_rows().unwrap(), 2);
     assert_eq!(result.results.len(), 1);

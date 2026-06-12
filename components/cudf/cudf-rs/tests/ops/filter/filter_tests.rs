@@ -1,4 +1,6 @@
 //! Tests for filter operations.
+use cudf::testing::prelude::*;
+
 
 use cudf::{core::Table, ops::filter};
 
@@ -79,14 +81,14 @@ fn test_boolean_mask_multi_column() {
 fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 920)]).unwrap();
     let mask = explicit_bool_column(&[true, false, true], 921);
-    let expected_stream = table.__debug_execution_domain_stream_value();
-    let expected_mr = table.__debug_execution_domain_mr_value();
+    let expected_stream = table.testing_execution_domain_stream_value();
+    let expected_mr = table.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let filtered = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap()).unwrap();
 
-    assert_eq!(filtered.__debug_execution_domain_id(), table.__debug_execution_domain_id());
-    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(filtered.testing_execution_domain_id(), table.testing_execution_domain_id());
+    assert_eq!(filtered.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 

@@ -1,4 +1,6 @@
 //! Tests for DataFrame ↔ Arrow RecordBatch interop.
+use cudf::testing::prelude::*;
+
 
 use std::sync::Arc;
 
@@ -57,7 +59,7 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
 
 #[test]
 fn test_arrow_numeric_wrapper_preserves_source_chain() {
-    let err = cudf::io::arrow::__debug_trigger_numeric_to_arrow_error_for_test()
+    let err = cudf::testing::trigger_numeric_to_arrow_error_for_test()
         .expect_err("expected numeric Arrow wrapper to surface a mapped error");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -69,7 +71,7 @@ fn test_arrow_numeric_wrapper_preserves_source_chain() {
 
 #[test]
 fn test_to_record_batch_wrapper_preserves_source_chain() {
-    let err = cudf::io::arrow::__debug_trigger_record_batch_error_for_test()
+    let err = cudf::testing::trigger_record_batch_error_for_test()
         .expect_err("expected RecordBatch wrapper to surface a mapped error");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -156,7 +158,7 @@ fn test_round_trip_nullable_i32() {
     // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("a").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -183,7 +185,7 @@ fn test_round_trip_nullable_f64() {
 
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("v").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -237,7 +239,7 @@ fn test_round_trip_nullable_bool8() {
 
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("flag").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 }
 
@@ -319,9 +321,9 @@ fn test_from_record_batch_creates_dataframe() {
 #[test]
 fn test_from_record_batch_binds_caller_runtime_provenance() {
     let runtime = crate::common::sample_runtime();
-    let expected_id = runtime.__debug_execution_domain_id();
-    let expected_stream = runtime.stream().__debug_raw_handle_value();
-    let expected_mr = runtime.memory_resource().__debug_raw_handle_value();
+    let expected_id = runtime.testing_execution_domain_id();
+    let expected_stream = runtime.stream().testing_raw_handle_value();
+    let expected_mr = runtime.memory_resource().testing_raw_handle_value();
 
     let schema =
         Schema::new(vec![Field::new("x", ArrowDataType::Int32, false), Field::new("y", ArrowDataType::Float64, false)]);
@@ -332,10 +334,10 @@ fn test_from_record_batch_binds_caller_runtime_provenance() {
     .unwrap();
 
     let df = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    assert_eq!(df.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(df.__debug_execution_domain_id(), expected_id);
-    assert_eq!(df.__debug_execution_domain_stream_value(), expected_stream);
-    assert_eq!(df.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(df.testing_execution_domain_kind(), "explicit");
+    assert_eq!(df.testing_execution_domain_id(), expected_id);
+    assert_eq!(df.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
 }
 
 #[test]
@@ -346,7 +348,7 @@ fn test_from_record_batch_with_nulls() {
 
     let df = import_record_batch(&batch).unwrap();
     let cv = df.series("a").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -431,7 +433,7 @@ fn test_round_trip_nullable_string() {
     // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("tag").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_strings to access values alongside nulls.
@@ -497,7 +499,7 @@ fn test_from_record_batch_nullable_string_array() {
 
     let df = import_record_batch(&batch).unwrap();
     let cv = df.series("s").unwrap();
-    let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_strings to access values alongside nulls.

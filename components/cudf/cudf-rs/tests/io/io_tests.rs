@@ -1,4 +1,6 @@
 //! Tests for Parquet and CSV I/O.
+use cudf::testing::prelude::*;
+
 
 use std::process::Command;
 
@@ -60,8 +62,8 @@ fn test_parquet_roundtrip() {
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
-    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(result.table.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(result.table.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 
     let col0 = read_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -175,8 +177,8 @@ fn test_csv_roundtrip() {
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
-    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(result.table.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(result.table.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 #[test]

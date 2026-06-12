@@ -1,4 +1,6 @@
 //! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, SortOptions};
 
@@ -129,15 +131,15 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
     ])
     .unwrap();
     let values = values_rt.series("values", &[20i32, 30]).unwrap();
-    let expected_exec_stream = df.__debug_execution_domain_stream_value();
-    let expected_exec_mr = df.__debug_execution_domain_mr_value();
-    let expected_presync_stream = values.as_column().__debug_execution_domain_stream_value();
+    let expected_exec_stream = df.testing_execution_domain_stream_value();
+    let expected_exec_mr = df.testing_execution_domain_mr_value();
+    let expected_presync_stream = values.as_column().testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let filtered = df.filter_isin("id", &values).unwrap();
 
-    assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
-    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(filtered.testing_execution_domain_id(), df.testing_execution_domain_id());
+    assert_eq!(filtered.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);

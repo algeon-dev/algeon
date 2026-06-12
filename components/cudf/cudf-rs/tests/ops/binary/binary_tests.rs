@@ -1,4 +1,6 @@
 //! Tests for binary operations (numeric and string).
+use cudf::testing::prelude::*;
+
 
 use cudf::{
     DataType, TypeId,
@@ -93,8 +95,8 @@ fn test_logical_and() {
 fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
     let lhs = explicit_i32_column(&[1, 2, 3], 900);
     let rhs = explicit_i32_column(&[10, 20, 30], 901);
-    let expected_stream = lhs.__debug_execution_domain_stream_value();
-    let expected_mr = lhs.__debug_execution_domain_mr_value();
+    let expected_stream = lhs.testing_execution_domain_stream_value();
+    let expected_mr = lhs.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = binary::binary_operation_vv(
@@ -105,8 +107,8 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
     )
     .unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -118,17 +120,17 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
 #[test]
 fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     let lhs = explicit_i32_column(&[2, 3, 4], 902);
-    let rhs = scalar(10i32).unwrap().__debug_rebind_execution_domain_explicit(903).unwrap();
-    let expected_stream = lhs.__debug_execution_domain_stream_value();
-    let expected_mr = lhs.__debug_execution_domain_mr_value();
+    let rhs = scalar(10i32).unwrap().testing_rebind_execution_domain_explicit(903).unwrap();
+    let expected_stream = lhs.testing_execution_domain_stream_value();
+    let expected_mr = lhs.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result =
         binary::binary_operation_vs(&lhs.view().unwrap(), &rhs, BinaryOperator::Mul, &DataType::new(TypeId::Int32))
             .unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -139,19 +141,19 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
 
 #[test]
 fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
-    let lhs = scalar(100i32).unwrap().__debug_rebind_execution_domain_explicit(904).unwrap();
+    let lhs = scalar(100i32).unwrap().testing_rebind_execution_domain_explicit(904).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 905);
     // After the L11 fix, binary_operation_sv uses the column's (rhs) domain
     // as primary, consistent with binary_operation_vs.
-    let expected_stream = rhs.__debug_execution_domain_stream_value();
+    let expected_stream = rhs.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let result =
         binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
             .unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), rhs.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), last_exec_mr_value());
+    assert_eq!(result.testing_execution_domain_id(), rhs.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), last_exec_mr_value());
     assert_eq!(last_exec_stream_value(), expected_stream);
 
     reset_sync_observation();

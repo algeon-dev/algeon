@@ -1,4 +1,6 @@
 //! Tests for Table and TableView.
+use cudf::testing::prelude::*;
+
 
 use cudf::{
     Runtime, TypeId,
@@ -70,8 +72,8 @@ fn test_empty_table() {
     let view = table.view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 0);
     assert_eq!(view.num_rows().unwrap(), 0);
-    assert_eq!(table.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(table.testing_execution_domain_kind(), "explicit");
+    assert_eq!(table.testing_execution_domain_id(), rt.testing_execution_domain_id());
 }
 
 #[test]

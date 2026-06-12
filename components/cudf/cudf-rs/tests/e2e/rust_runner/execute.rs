@@ -285,7 +285,7 @@ pub fn normalize_dataframe(df: &DataFrame) -> Result<NormalizedDataFrame, Execut
 
 /// Materialize a column's values to a Vec of JSON values, respecting nulls.
 fn materialize_column_values(series: &cudf::Series, type_id: TypeId) -> Result<Vec<serde_json::Value>, ExecutionError> {
-    let cv = series.as_column_view()?;
+    let cv = series.view()?;
     let validity = cv.validity()?;
 
     match type_id {

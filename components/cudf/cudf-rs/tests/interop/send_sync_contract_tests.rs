@@ -1,3 +1,5 @@
+use cudf::testing::prelude::*;
+
 use std::thread;
 
 use cudf::{
@@ -61,8 +63,8 @@ fn owned_column_transfer_round_trips_across_thread_boundary() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
     let expected_ptr = column.view().unwrap().device_data_ptr().unwrap() as usize;
-    let expected_stream = column.__debug_execution_domain_stream_value();
-    let expected_mr = column.__debug_execution_domain_mr_value();
+    let expected_stream = column.testing_execution_domain_stream_value();
+    let expected_mr = column.testing_execution_domain_mr_value();
 
     let transfer = column.try_into_owned_transfer().unwrap();
     let (values, ptr, stream, mr) = thread::spawn(move || {
@@ -70,8 +72,8 @@ fn owned_column_transfer_round_trips_across_thread_boundary() {
         let view = imported.view().unwrap();
         let values = view.to_vec::<i32>().unwrap();
         let ptr = view.device_data_ptr().unwrap() as usize;
-        let stream = imported.__debug_execution_domain_stream_value();
-        let mr = imported.__debug_execution_domain_mr_value();
+        let stream = imported.testing_execution_domain_stream_value();
+        let mr = imported.testing_execution_domain_mr_value();
         (values, ptr, stream, mr)
     })
     .join()

@@ -1,3 +1,5 @@
+use cudf::testing::prelude::*;
+
 use cudf::{
     DataFrame, JsonReadOptions, Runtime, TypeId,
     core::{Column, Table},
@@ -27,8 +29,8 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = column.view().unwrap();
-    let expected_stream = column.__debug_execution_domain_stream_value();
-    let expected_mr = column.__debug_execution_domain_mr_value();
+    let expected_stream = column.testing_execution_domain_stream_value();
+    let expected_mr = column.testing_execution_domain_mr_value();
 
     let borrowed = view.try_borrow_column_view().unwrap();
 
@@ -84,8 +86,8 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     let b = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![a, b]).unwrap();
     let view = table.view().unwrap();
-    let expected_stream = table.__debug_execution_domain_stream_value();
-    let expected_mr = table.__debug_execution_domain_mr_value();
+    let expected_stream = table.testing_execution_domain_stream_value();
+    let expected_mr = table.testing_execution_domain_mr_value();
 
     let borrowed = view.try_borrow_table_view().unwrap();
 
@@ -148,12 +150,12 @@ fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
         let view = column.view().unwrap();
         let borrowed = view.try_borrow_column_view().unwrap();
 
-        assert_eq!(column.__debug_execution_domain_kind(), "explicit");
+        assert_eq!(column.testing_execution_domain_kind(), "explicit");
         assert_eq!(borrowed.execution().device(), runtime.device().ordinal() as i32);
-        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().__debug_raw_handle_value());
+        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().testing_raw_handle_value());
         assert_eq!(
             borrowed.execution().memory_resource().as_raw() as usize,
-            runtime.memory_resource().__debug_raw_handle_value()
+            runtime.memory_resource().testing_raw_handle_value()
         );
     });
 }
@@ -166,12 +168,12 @@ fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
         let frame = DataFrame::from_series([ids, vals]).unwrap();
         let borrowed = frame.try_borrow_table_view().unwrap();
 
-        assert_eq!(frame.__debug_execution_domain_kind(), "explicit");
+        assert_eq!(frame.testing_execution_domain_kind(), "explicit");
         assert_eq!(borrowed.execution().device(), runtime.device().ordinal() as i32);
-        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().__debug_raw_handle_value());
+        assert_eq!(borrowed.execution().cuda_stream().as_raw() as usize, runtime.stream().testing_raw_handle_value());
         assert_eq!(
             borrowed.execution().memory_resource().as_raw() as usize,
-            runtime.memory_resource().__debug_raw_handle_value()
+            runtime.memory_resource().testing_raw_handle_value()
         );
     });
 }

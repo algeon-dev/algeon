@@ -1,4 +1,6 @@
 //! Tests for sorting operations.
+use cudf::testing::prelude::*;
+
 
 use cudf::{
     core::Table,
@@ -147,14 +149,14 @@ fn test_is_sorted() {
 fn test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
     let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 960)]).unwrap();
     let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 961)]).unwrap();
-    let expected_stream = values.__debug_execution_domain_stream_value();
-    let expected_mr = values.__debug_execution_domain_mr_value();
+    let expected_stream = values.testing_execution_domain_stream_value();
+    let expected_mr = values.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let sorted = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
 
-    assert_eq!(sorted.__debug_execution_domain_id(), values.__debug_execution_domain_id());
-    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(sorted.testing_execution_domain_id(), values.testing_execution_domain_id());
+    assert_eq!(sorted.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -167,14 +169,14 @@ fn test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
 fn test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
     let values = Table::from_columns(vec![explicit_i32_column(&[40, 10, 20, 30], 962)]).unwrap();
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 0, 1, 1], 963)]).unwrap();
-    let expected_stream = values.__debug_execution_domain_stream_value();
-    let expected_mr = values.__debug_execution_domain_mr_value();
+    let expected_stream = values.testing_execution_domain_stream_value();
+    let expected_mr = values.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let sorted = sorting::stable_sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
 
-    assert_eq!(sorted.__debug_execution_domain_id(), values.__debug_execution_domain_id());
-    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(sorted.testing_execution_domain_id(), values.testing_execution_domain_id());
+    assert_eq!(sorted.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 

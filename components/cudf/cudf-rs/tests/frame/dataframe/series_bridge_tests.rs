@@ -167,8 +167,8 @@ fn test_series_shares_arc_with_dataframe() {
 
     // The returned Series should share the same underlying GPU data
     // (Arc pointer equality).
-    let df_col_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
-    let series_ptr = s.as_column_view().unwrap().device_data_ptr().unwrap();
+    let df_col_ptr = df.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
+    let series_ptr = s.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(df_col_ptr, series_ptr);
 }
 
@@ -189,7 +189,7 @@ fn test_series_nonexistent_column_returns_error() {
 #[test]
 fn test_round_trip_from_columns_to_series() {
     let original = crate::common::series::<f64>("orig", &[1.0, 2.0, 3.0]).unwrap();
-    let original_ptr = original.as_column_view().unwrap().device_data_ptr().unwrap();
+    let original_ptr = original.view().unwrap().device_data_ptr().unwrap();
 
     let df = DataFrame::from_named_pairs([("val", original)]).unwrap();
     let retrieved = df.series("val").unwrap();
@@ -199,7 +199,7 @@ fn test_round_trip_from_columns_to_series() {
     assert_eq!(retrieved.dtype().unwrap().id(), TypeId::Float64);
 
     // The retrieved Series should share the same GPU allocation.
-    let retrieved_ptr = retrieved.as_column_view().unwrap().device_data_ptr().unwrap();
+    let retrieved_ptr = retrieved.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(original_ptr, retrieved_ptr);
 }
 
@@ -207,8 +207,8 @@ fn test_round_trip_from_columns_to_series() {
 fn test_round_trip_from_named_pairs_to_series() {
     let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
     let b = crate::common::series::<i64>("b", &[100, 200]).unwrap();
-    let a_ptr = a.as_column_view().unwrap().device_data_ptr().unwrap();
-    let b_ptr = b.as_column_view().unwrap().device_data_ptr().unwrap();
+    let a_ptr = a.view().unwrap().device_data_ptr().unwrap();
+    let b_ptr = b.view().unwrap().device_data_ptr().unwrap();
 
     let df = DataFrame::from_named_pairs(vec![("alpha", a), ("beta", b)]).unwrap();
 
@@ -220,8 +220,8 @@ fn test_round_trip_from_named_pairs_to_series() {
     assert_eq!(sb.name(), Some("beta"));
 
     // GPU data is shared (zero-copy).
-    assert_eq!(sa.as_column_view().unwrap().device_data_ptr().unwrap(), a_ptr);
-    assert_eq!(sb.as_column_view().unwrap().device_data_ptr().unwrap(), b_ptr);
+    assert_eq!(sa.view().unwrap().device_data_ptr().unwrap(), a_ptr);
+    assert_eq!(sb.view().unwrap().device_data_ptr().unwrap(), b_ptr);
 }
 
 // ---------------------------------------------------------------------------

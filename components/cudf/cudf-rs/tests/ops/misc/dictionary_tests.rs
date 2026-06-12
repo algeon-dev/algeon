@@ -1,4 +1,6 @@
 //! Tests for dictionary encode/decode.
+use cudf::testing::prelude::*;
+
 
 use cudf::{ErrorKind, TypeId, ops::dictionary};
 
@@ -298,18 +300,18 @@ fn test_match_dictionaries_no_overlap() {
 fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_input_before_authoritative_exec() {
     let dict = dictionary::encode(&column_from_slice(&[3i32, 1, 3, 2]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
-        .__debug_rebind_execution_domain_explicit(601)
+        .testing_rebind_execution_domain_explicit(601)
         .unwrap();
-    let keys = column_from_slice(&[2i32, 3, 4]).unwrap().__debug_rebind_execution_domain_explicit(602).unwrap();
-    let expected_exec_stream = dict.__debug_execution_domain_stream_value();
-    let expected_exec_mr = dict.__debug_execution_domain_mr_value();
-    let expected_presync_stream = keys.__debug_execution_domain_stream_value();
+    let keys = column_from_slice(&[2i32, 3, 4]).unwrap().testing_rebind_execution_domain_explicit(602).unwrap();
+    let expected_exec_stream = dict.testing_execution_domain_stream_value();
+    let expected_exec_mr = dict.testing_execution_domain_mr_value();
+    let expected_presync_stream = keys.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let updated = dictionary::set_keys(&dict.view().unwrap(), &keys.view().unwrap()).unwrap();
 
-    assert_eq!(updated.__debug_execution_domain_id(), dict.__debug_execution_domain_id());
-    assert_eq!(updated.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(updated.testing_execution_domain_id(), dict.testing_execution_domain_id());
+    assert_eq!(updated.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
@@ -325,22 +327,22 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_inpu
 fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_inputs_before_first_input_exec() {
     let first = dictionary::encode(&column_from_slice(&[10i32, 20, 30]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
-        .__debug_rebind_execution_domain_explicit(603)
+        .testing_rebind_execution_domain_explicit(603)
         .unwrap();
     let second = dictionary::encode(&column_from_slice(&[20i32, 30, 40]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
-        .__debug_rebind_execution_domain_explicit(604)
+        .testing_rebind_execution_domain_explicit(604)
         .unwrap();
-    let expected_exec_stream = first.__debug_execution_domain_stream_value();
-    let expected_exec_mr = first.__debug_execution_domain_mr_value();
-    let expected_presync_stream = second.__debug_execution_domain_stream_value();
+    let expected_exec_stream = first.testing_execution_domain_stream_value();
+    let expected_exec_mr = first.testing_execution_domain_mr_value();
+    let expected_presync_stream = second.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let matched = dictionary::match_dictionaries(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
 
     assert_eq!(matched.len(), 2);
-    assert!(matched.iter().all(|column| column.__debug_execution_domain_id() == first.__debug_execution_domain_id()));
-    assert!(matched.iter().all(|column| column.__debug_execution_domain_mr_value() == expected_exec_mr));
+    assert!(matched.iter().all(|column| column.testing_execution_domain_id() == first.testing_execution_domain_id()));
+    assert!(matched.iter().all(|column| column.testing_execution_domain_mr_value() == expected_exec_mr));
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);

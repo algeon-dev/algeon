@@ -1,3 +1,5 @@
+use cudf::testing::prelude::*;
+
 use std::{
     ffi::c_void,
     ptr,
@@ -160,12 +162,12 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
 
 #[allow(dead_code)]
 pub fn dataframe_device_ptr(df: &DataFrame, name: &str) -> *const c_void {
-    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
+    df.series(name).unwrap().view().unwrap().device_data_ptr().unwrap()
 }
 
 #[allow(dead_code)]
 pub fn series_device_ptr(series: &Series) -> *const c_void {
-    series.as_column_view().unwrap().device_data_ptr().unwrap()
+    series.view().unwrap().device_data_ptr().unwrap()
 }
 
 #[allow(dead_code)]
@@ -293,7 +295,7 @@ pub fn last_row_predicate_mask_api_calls() -> i32 {
 
 #[allow(dead_code)]
 pub fn explicit_i32_column(data: &[i32], identity: u64) -> Column {
-    column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
+    column_from_slice(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap()
 }
 
 #[allow(dead_code)]
@@ -303,7 +305,7 @@ pub fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> Series {
 
 #[allow(dead_code)]
 pub fn explicit_bool_column(data: &[bool], identity: u64) -> Column {
-    column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
+    column_from_slice(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap()
 }
 
 #[allow(dead_code)]

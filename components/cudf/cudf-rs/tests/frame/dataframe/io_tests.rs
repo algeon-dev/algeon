@@ -1,4 +1,6 @@
 //! Tests for DataFrame I/O integration.
+use cudf::testing::prelude::*;
+
 
 use cudf::{CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ParquetReadOptions, core::Table};
 use tempfile::TempDir;
@@ -26,8 +28,8 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
-    assert_eq!(df.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(df.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(df.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(df.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 
     let col = df.series("id").unwrap();
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -127,8 +129,8 @@ fn test_read_csv_returns_dataframe_with_schema() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
-    assert_eq!(df.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(df.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(df.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(df.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
     // CSV read produces nullable columns; use to_optional_vec.
     assert_eq!(df.series("id").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
     assert_eq!(df.series("value").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);

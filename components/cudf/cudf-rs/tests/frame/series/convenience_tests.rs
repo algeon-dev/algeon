@@ -5,6 +5,8 @@
 //! `log`.
 //!
 //! All tests require a GPU.
+use cudf::testing::prelude::*;
+
 
 use cudf::{CodebookOptions, CodebookOrder, ErrorKind, Series, SortOptions, TypeId};
 
@@ -257,15 +259,15 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     let values_rt = sample_runtime();
     let s = source_rt.series("x", &[1i32, 2, 3, 4, 5]).unwrap();
     let values = values_rt.series("vals", &[2i32, 4]).unwrap();
-    let expected_exec_stream = s.as_column().__debug_execution_domain_stream_value();
-    let expected_exec_mr = s.as_column().__debug_execution_domain_mr_value();
-    let expected_sync_stream = values.as_column().__debug_execution_domain_stream_value();
+    let expected_exec_stream = s.as_column().testing_execution_domain_stream_value();
+    let expected_exec_mr = s.as_column().testing_execution_domain_mr_value();
+    let expected_sync_stream = values.as_column().testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let mask = s.isin(&values).unwrap();
 
-    assert_eq!(mask.as_column().__debug_execution_domain_id(), s.as_column().__debug_execution_domain_id());
-    assert_eq!(mask.as_column().__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(mask.as_column().testing_execution_domain_id(), s.as_column().testing_execution_domain_id());
+    assert_eq!(mask.as_column().testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
@@ -661,7 +663,7 @@ fn test_sort_values_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     // Default: ascending, nulls last
     let sorted = s.sort_values(SortOptions::new()).unwrap();
-    let view = sorted.as_column_view().unwrap();
+    let view = sorted.view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     // The valid values should sort ascending, with the null row moved to the end.
@@ -676,7 +678,7 @@ fn test_sort_values_with_nulls() {
 fn test_sort_values_nulls_first() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_nulls_first(vec![true])).unwrap();
-    let view = sorted.as_column_view().unwrap();
+    let view = sorted.view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     assert_eq!(sorted.null_count(), 1);

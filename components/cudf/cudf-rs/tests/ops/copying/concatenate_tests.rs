@@ -1,4 +1,6 @@
 //! Tests for concatenation operations.
+use cudf::testing::prelude::*;
+
 
 use cudf::{ErrorKind, core::Table, ops::concatenate};
 
@@ -89,14 +91,14 @@ fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenanc
     let second_rt = sample_runtime();
     let first = first_rt.column_from_slice(&[1i32, 2, 3]).unwrap();
     let second = second_rt.column_from_slice(&[4i32, 5]).unwrap();
-    let expected_stream = first.__debug_execution_domain_stream_value();
-    let expected_mr = first.__debug_execution_domain_mr_value();
+    let expected_stream = first.testing_execution_domain_stream_value();
+    let expected_mr = first.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = concatenate::concatenate_columns(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), first.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), first.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -119,14 +121,14 @@ fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance
         second_rt.column_from_slice(&[30i32, 40]).unwrap(),
     ])
     .unwrap();
-    let expected_stream = first.__debug_execution_domain_stream_value();
-    let expected_mr = first.__debug_execution_domain_mr_value();
+    let expected_stream = first.testing_execution_domain_stream_value();
+    let expected_mr = first.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = concatenate::concatenate_tables(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), first.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), first.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 

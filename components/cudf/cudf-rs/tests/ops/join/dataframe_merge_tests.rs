@@ -1,4 +1,6 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions};
 
@@ -132,15 +134,15 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
         right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
-    let expected_exec_stream = left.__debug_execution_domain_stream_value();
-    let expected_exec_mr = left.__debug_execution_domain_mr_value();
-    let expected_sync_stream = right.__debug_execution_domain_stream_value();
+    let expected_exec_stream = left.testing_execution_domain_stream_value();
+    let expected_exec_mr = left.testing_execution_domain_mr_value();
+    let expected_sync_stream = right.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
@@ -296,25 +298,25 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
         right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
-    let expected_exec_stream = left.__debug_execution_domain_stream_value();
-    let expected_exec_mr = left.__debug_execution_domain_mr_value();
-    let expected_presync_stream = right.__debug_execution_domain_stream_value();
+    let expected_exec_stream = left.testing_execution_domain_stream_value();
+    let expected_exec_mr = left.testing_execution_domain_mr_value();
+    let expected_presync_stream = right.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
-    assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
-        result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(),
+        result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),
         expected_exec_stream
     );
     assert_eq!(
-        result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(),
+        result.series("value").unwrap().as_column().testing_execution_domain_stream_value(),
         expected_exec_stream
     );
 
@@ -361,26 +363,26 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     ])
     .unwrap();
     let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
-    let expected_exec_stream = target_rt.stream().__debug_raw_handle_value();
-    let expected_exec_mr = target_rt.memory_resource().__debug_raw_handle_value();
-    let expected_presync_stream = right.__debug_execution_domain_stream_value();
+    let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
+    let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
+    let expected_presync_stream = right.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let result = left.in_context(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
-    assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
-        result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(),
+        result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),
         expected_exec_stream
     );
     assert_eq!(
-        result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(),
+        result.series("value").unwrap().as_column().testing_execution_domain_stream_value(),
         expected_exec_stream
     );
 

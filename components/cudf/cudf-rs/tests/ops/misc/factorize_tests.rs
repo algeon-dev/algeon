@@ -1,4 +1,6 @@
 //! Tests for Column::factorize
+use cudf::testing::prelude::*;
+
 
 use cudf::{Series, TypeId};
 
@@ -231,8 +233,8 @@ fn test_dataframe_factorize_by_name() {
     let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
     let factorized = df.factorize("values").unwrap();
-    let codes_view = factorized.row_codes().as_column_view().unwrap();
-    let keys_view = factorized.codebook().keys().as_column_view().unwrap();
+    let codes_view = factorized.row_codes().view().unwrap();
+    let keys_view = factorized.codebook().keys().view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 5);
     assert_eq!(keys_view.len().unwrap(), 3);
@@ -263,16 +265,16 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     assert_eq!(wrong_lookup_values.len(), uniques.len());
 
     let wrong_encoded = query
-        .as_column_view()
+        .view()
         .unwrap()
-        .map(&uniques.as_column_view().unwrap(), &wrong_lookup_values.as_column_view().unwrap())
+        .map(&uniques.view().unwrap(), &wrong_lookup_values.view().unwrap())
         .unwrap();
     let wrong_encoded = Series::from_column(wrong_encoded).unwrap();
     let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
 
     assert_ne!(
-        wrong_decoded.as_column_view().unwrap().to_strings_lossy().unwrap(),
-        query.as_column_view().unwrap().to_strings_lossy().unwrap()
+        wrong_decoded.view().unwrap().to_strings_lossy().unwrap(),
+        query.view().unwrap().to_strings_lossy().unwrap()
     );
 }
 
@@ -286,31 +288,31 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let positional = crate::common::series("codes", &[0i32, 1, 2]).unwrap();
     let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
     let encoded = query
-        .as_column_view()
+        .view()
         .unwrap()
-        .map(&uniques.as_column_view().unwrap(), &positional.as_column_view().unwrap())
+        .map(&uniques.view().unwrap(), &positional.view().unwrap())
         .unwrap();
     let encoded = Series::from_column(encoded).unwrap();
     let decoded = uniques.gather(&encoded).unwrap();
 
     assert_eq!(
-        decoded.as_column_view().unwrap().to_strings_lossy().unwrap(),
-        query.as_column_view().unwrap().to_strings_lossy().unwrap()
+        decoded.view().unwrap().to_strings_lossy().unwrap(),
+        query.view().unwrap().to_strings_lossy().unwrap()
     );
 }
 
 #[test]
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
-    let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().__debug_rebind_execution_domain_explicit(605).unwrap();
-    let expected_stream = input.__debug_execution_domain_stream_value();
+    let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().testing_rebind_execution_domain_explicit(605).unwrap();
+    let expected_stream = input.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let (codes, uniques) = input.view().unwrap().factorize_parts().unwrap();
 
-    assert_eq!(codes.__debug_execution_domain_id(), input.__debug_execution_domain_id());
-    assert_eq!(uniques.__debug_execution_domain_id(), input.__debug_execution_domain_id());
-    assert_eq!(codes.__debug_execution_domain_stream_value(), expected_stream);
-    assert_eq!(uniques.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(codes.testing_execution_domain_id(), input.testing_execution_domain_id());
+    assert_eq!(uniques.testing_execution_domain_id(), input.testing_execution_domain_id());
+    assert_eq!(codes.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(uniques.testing_execution_domain_stream_value(), expected_stream);
     assert_eq!(last_exec_stream_value(), expected_stream);
 
     reset_sync_observation();

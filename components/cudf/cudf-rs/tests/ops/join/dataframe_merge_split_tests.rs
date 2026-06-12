@@ -1,6 +1,8 @@
 //! Tests for `DataFrame::merge_split`.
+use cudf::testing::prelude::*;
 
-use cudf::{DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality};
+
+use cudf::{DataFrame, DataFrameJoinSides, ExecutionContext, MergeOptions, NullEquality};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -45,7 +47,7 @@ fn test_inner_merge_split_on_shared_key() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_inner();
-    let DataFrameJoinResult { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 2);
     assert_eq!(right_result.num_rows(), 2);
@@ -69,7 +71,7 @@ fn test_left_merge_split_preserves_all_left_rows() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_left();
-    let DataFrameJoinResult { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 3);
     assert_eq!(right_result.num_rows(), 3);
@@ -93,7 +95,7 @@ fn test_full_merge_split_preserves_all_rows() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_full();
-    let DataFrameJoinResult { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 4);
     assert_eq!(right_result.num_rows(), 4);
@@ -117,7 +119,7 @@ fn test_merge_split_asymmetric_keys_preserve_each_side_schema() {
     let right = right_df_asym();
 
     let opts = MergeOptions::new().left_on(["left_id"]).right_on(["right_id"]).how_inner();
-    let DataFrameJoinResult { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 2);
     assert_eq!(right_result.num_rows(), 2);
@@ -193,18 +195,18 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
     ])
     .unwrap();
     let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
-    let expected_stream = target_rt.stream().__debug_raw_handle_value();
-    let expected_mr = target_rt.memory_resource().__debug_raw_handle_value();
+    let expected_stream = target_rt.stream().testing_raw_handle_value();
+    let expected_mr = target_rt.memory_resource().testing_raw_handle_value();
 
     reset_exec_observation();
     let split = left.in_context(&ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
-    assert_eq!(split.left.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(split.right.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(split.left.__debug_execution_domain_stream_value(), expected_stream);
-    assert_eq!(split.right.__debug_execution_domain_stream_value(), expected_stream);
-    assert_eq!(split.left.__debug_execution_domain_mr_value(), expected_mr);
-    assert_eq!(split.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(split.left.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(split.right.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(split.left.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(split.right.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(split.left.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(split.right.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -234,17 +236,17 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
         right_rt.series("value", &[200i32, 300, 400]).unwrap(),
     ])
     .unwrap();
-    let expected_exec_stream = left.__debug_execution_domain_stream_value();
-    let expected_exec_mr = left.__debug_execution_domain_mr_value();
-    let expected_sync_stream = right.__debug_execution_domain_stream_value();
+    let expected_exec_stream = left.testing_execution_domain_stream_value();
+    let expected_exec_mr = left.testing_execution_domain_mr_value();
+    let expected_sync_stream = right.testing_execution_domain_stream_value();
 
     reset_exec_observation();
     let split = left.merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
-    assert_eq!(split.left.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(split.right.__debug_execution_domain_id(), left.__debug_execution_domain_id());
-    assert_eq!(split.left.__debug_execution_domain_mr_value(), expected_exec_mr);
-    assert_eq!(split.right.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(split.left.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(split.right.testing_execution_domain_id(), left.testing_execution_domain_id());
+    assert_eq!(split.left.testing_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(split.right.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
