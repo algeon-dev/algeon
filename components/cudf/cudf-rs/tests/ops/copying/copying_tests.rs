@@ -10,14 +10,14 @@ use crate::common::{
 fn test_gather_basic() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     // Gather rows 4, 2, 0.
     let map = column_from_slice(&[4i32, 2, 0]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![50, 30, 10]);
 }
@@ -27,13 +27,13 @@ fn test_gather_multi_column() {
     let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     let map = column_from_slice(&[3i32, 1]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_columns().unwrap(), 2);
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![4, 2]);
@@ -45,13 +45,13 @@ fn test_gather_identity() {
     // Gather in order → identical copy.
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     let map = column_from_slice(&[0i32, 1, 2]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
@@ -60,13 +60,13 @@ fn test_gather_with_duplicates() {
     // Gather the same row multiple times.
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     let map = column_from_slice(&[1i32, 1, 1, 0]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 20, 20, 10]);
 }
 
@@ -74,13 +74,13 @@ fn test_gather_with_duplicates() {
 fn test_gather_empty_map() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     let map = column_from_slice(&[] as &[i32]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 0);
 }
 
@@ -88,18 +88,18 @@ fn test_gather_empty_map() {
 fn test_gather_out_of_bounds_nullify() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     // Index 5 is out of bounds — should become null.
     let map = column_from_slice(&[0i32, 5, 2]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     let result = copying::gather(&tv, &map_view).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 3);
     let cv = rv.column(0).unwrap();
     // Row 1 should be null.
-    let validity = cv.validity().unwrap().expect("should have null mask");
+    let validity = cv.to_host_validity().unwrap().expect("should have null mask");
     assert!(validity[0]);
     assert!(!validity[1]); // out-of-bounds → null
     assert!(validity[2]);
@@ -109,14 +109,14 @@ fn test_gather_out_of_bounds_nullify() {
 fn test_gather_unchecked_basic() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let tv = table.view().unwrap();
+    let tv = table.testing_view().unwrap();
 
     let map = column_from_slice(&[2i32, 0]).unwrap();
-    let map_view = map.view().unwrap();
+    let map_view = map.testing_view().unwrap();
 
     // SAFETY: indices 2 and 0 are valid for a 3-row table.
     let result = unsafe { copying::gather_unchecked(&tv, &map_view) }.unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
 }
@@ -129,7 +129,7 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let expected_mr = table.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap()).unwrap();
+    let result = copying::gather(&table.testing_view().unwrap(), &gather_map.testing_view().unwrap()).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), table.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -137,7 +137,7 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
@@ -147,8 +147,13 @@ fn test_copy_if_else_basic() {
     let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
     let mask = column_from_slice(&[true, false, true]).unwrap();
 
-    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
+    let result = copying::copy_if_else(
+        &lhs.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
+        &mask.testing_view().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
 }
 
 #[test]
@@ -157,8 +162,13 @@ fn test_copy_if_else_treats_null_mask_as_false() {
     let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
     let mask = column_from_slice_nullable(&[true, false, false], &[true, false, true]).unwrap();
 
-    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 3]);
+    let result = copying::copy_if_else(
+        &lhs.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
+        &mask.testing_view().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 3]);
 }
 
 #[test]
@@ -170,7 +180,12 @@ fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
     let expected_mr = lhs.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
+    let result = copying::copy_if_else(
+        &lhs.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
+        &mask.testing_view().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -178,6 +193,6 @@ fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }

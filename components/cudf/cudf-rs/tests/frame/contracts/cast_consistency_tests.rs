@@ -34,7 +34,11 @@ fn expr_cast_accepts_datatype() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2);
     let expr = col("x").cast(dt).alias("x");
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = expr.eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap(), dt);
 }
@@ -44,7 +48,11 @@ fn expr_cast_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
     let expr = col("x").cast(TypeId::Float64).alias("xf");
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([s]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = expr.eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
@@ -58,7 +66,11 @@ fn expr_cast_accepts_typeid() {
 fn cast_symmetry() {
     let dt = DataType::new(TypeId::Float64);
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([s.clone()]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s.clone()]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let via_series = s.astype(dt).unwrap();
     let via_df = df.cast_column("x", dt).unwrap();

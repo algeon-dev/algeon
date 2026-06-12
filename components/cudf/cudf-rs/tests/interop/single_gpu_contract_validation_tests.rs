@@ -29,7 +29,11 @@ use crate::common;
 fn sample_edge_list(runtime: &Runtime) -> DataFrame {
     let src = runtime.series("src", &[1i32, 2, 1, 3, 2]).unwrap();
     let dst = runtime.series("dst", &[2i32, 3, 3, 1, 1]).unwrap();
-    DataFrame::from_series([src, dst]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([src, dst]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a BufferBinding<'a>> {
@@ -107,8 +111,8 @@ impl MockSingleGpuGraphInput {
 fn single_gpu_prepared_export_supports_graph_construction_shaped_consumption() {
     let producer_runtime = Runtime::builder().build().unwrap();
     let edges = sample_edge_list(&producer_runtime);
-    let src_ptr = edges.series("src").unwrap().as_column().view().unwrap().device_data_ptr().unwrap();
-    let dst_ptr = edges.series("dst").unwrap().as_column().view().unwrap().device_data_ptr().unwrap();
+    let src_ptr = edges.series("src").unwrap().as_column().testing_view().unwrap().device_data_ptr().unwrap();
+    let dst_ptr = edges.series("dst").unwrap().as_column().testing_view().unwrap().device_data_ptr().unwrap();
     let export = edges.try_prepare_device_table_export().unwrap();
 
     let graph_input = MockSingleGpuGraphInput::from_prepared_export(&export);

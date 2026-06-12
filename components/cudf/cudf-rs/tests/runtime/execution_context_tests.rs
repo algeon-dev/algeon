@@ -6,7 +6,7 @@
 //!
 //! # Test categories
 //!
-//! 1. **Type properties** — `ExecutionContext` is Copy, default has null handles.
+//! 1. **Type properties** — `ExecutionOverrides` is Copy, default has null handles.
 //! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
 //! 3. **High-level execution-context contract** — hidden safe-layer hooks
@@ -322,12 +322,12 @@ fn pool_mr() -> DeviceMemoryResource {
     DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, None).expect("failed to create pool MR")
 }
 
-fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::ExecutionContext<'a> {
-    cudf::ExecutionContext::new().with_stream(stream)
+fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::ExecutionOverrides<'a> {
+    cudf::ExecutionOverrides::new().with_stream(stream)
 }
 
-fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::ExecutionContext<'a> {
-    cudf::ExecutionContext::new().with_memory_resource(mr)
+fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::ExecutionOverrides<'a> {
+    cudf::ExecutionOverrides::new().with_memory_resource(mr)
 }
 
 fn assert_observed_stream(explicit_stream: usize) {
@@ -359,7 +359,7 @@ fn assert_dataframe_mr_override(df: &cudf::DataFrame, expected_domain: u64, expe
 }
 
 fn assert_dataframe_i32_values(df: &cudf::DataFrame, column: &str, expected: &[i32]) {
-    let values: Vec<i32> = df.series(column).unwrap().view().unwrap().to_vec().unwrap();
+    let values: Vec<i32> = df.series(column).unwrap().testing_view().unwrap().to_vec().unwrap();
     assert_eq!(values.as_slice(), expected);
 }
 
@@ -381,10 +381,10 @@ fn assert_exec_options_copy_validation_error(
 }
 
 // ===========================================================================
-// Category 1: ExecutionContext type properties (cudf-sys layer)
+// Category 1: cudf_sys::ExecutionContext type properties (FFI layer)
 // ===========================================================================
 
-/// Default ExecutionContext has null stream and null mr.
+/// Default cudf_sys::ExecutionContext has null stream and null mr.
 #[test]
 fn execution_context_default_has_null_handles() {
     let ctx = cudf_sys::ExecutionContext::default();
@@ -394,7 +394,7 @@ fn execution_context_default_has_null_handles() {
     assert_eq!(raw.flags, 0, "default flags should be zero");
 }
 
-/// ExecutionContext stores a non-null stream handle.
+/// cudf_sys::ExecutionContext stores a non-null stream handle.
 #[test]
 fn execution_context_with_stream_stores_handle() {
     let stream = CudaStream::new().expect("failed to create stream");
@@ -405,7 +405,7 @@ fn execution_context_with_stream_stores_handle() {
     assert_eq!(raw.stream, borrowed.as_raw(), "stream handle mismatch");
 }
 
-/// ExecutionContext stores a non-null memory-resource handle.
+/// cudf_sys::ExecutionContext stores a non-null memory-resource handle.
 #[test]
 fn execution_context_with_mr_stores_handle() {
     let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
@@ -416,7 +416,7 @@ fn execution_context_with_mr_stores_handle() {
     assert_eq!(raw.mr, borrowed.as_raw(), "mr handle mismatch");
 }
 
-/// ExecutionContext is Copy — copying produces an identical struct.
+/// cudf_sys::ExecutionContext is Copy — copying produces an identical struct.
 #[test]
 fn execution_context_is_copy() {
     let stream = CudaStream::new().expect("failed to create stream");
@@ -433,7 +433,7 @@ fn execution_context_is_copy() {
 ///
 /// It is therefore still documented here as `!Send + !Sync` because
 /// `cudf_exec_options_t` contains raw pointers. The public safe-layer
-/// `cudf::ExecutionContext` has its own `Send + Sync` contract coverage in the
+/// `cudf::ExecutionOverrides` has its own `Send + Sync` contract coverage in the
 /// `runtime_v1_public_api_tests` suite.
 #[test]
 fn execution_context_send_sync_status_documented() {
@@ -735,7 +735,7 @@ fn column_copy_ex_null_options_uses_default_stream() {
     destroy_column(col);
 }
 
-/// When `_ex` ops are called with default ExecutionContext (null handles),
+/// When `_ex` ops are called with default cudf_sys::ExecutionContext (null handles),
 /// the observation hook records the default stream and default mr.
 #[test]
 fn column_copy_ex_default_context_uses_defaults() {
@@ -838,7 +838,13 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 501)]).unwrap();
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([explicit_i32_series("id", &[3, 1, 2], 501)]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -858,7 +864,11 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 #[test]
 fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([ids]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -873,7 +883,13 @@ fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
-    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 502)]).unwrap();
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([explicit_i32_series("id", &[3, 1, 2], 502)]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
 
     let mr = pool_mr();
     let explicit_mr = mr.testing_raw_handle_value();
@@ -889,15 +905,27 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
 
 #[test]
 fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
-    let left = cudf::DataFrame::from_series([
-        explicit_i32_series("id", &[1, 2, 3], 503),
-        explicit_i64_series("val", &[10, 20, 30], 503),
-    ])
+    let left = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            explicit_i32_series("id", &[1, 2, 3], 503),
+            explicit_i64_series("val", &[10, 20, 30], 503),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = cudf::DataFrame::from_series([
-        explicit_i32_series("id", &[2, 3, 4], 503),
-        explicit_i64_series("score", &[200, 300, 400], 503),
-    ])
+    let right = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            explicit_i32_series("id", &[2, 3, 4], 503),
+            explicit_i64_series("score", &[200, 300, 400], 503),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -914,10 +942,16 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
 
 #[test]
 fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
-    let df = cudf::DataFrame::from_series([
-        explicit_i32_series("key", &[1, 1, 2, 2], 504),
-        explicit_i64_series("val", &[10, 20, 30, 40], 504),
-    ])
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            explicit_i32_series("key", &[1, 1, 2, 2], 504),
+            explicit_i64_series("val", &[10, 20, 30, 40], 504),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -935,7 +969,13 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
 #[test]
 fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 505)]).unwrap();
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([explicit_i32_series("id", &[3, 1, 2], 505)]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let indices = explicit_i32_series("gather", &[2, 0], 505);
 
     let stream = CudaStream::new().unwrap();
@@ -956,7 +996,11 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([ids]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let indices = crate::common::series::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -972,7 +1016,13 @@ fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
 
 #[test]
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 506)]).unwrap();
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([explicit_i32_series("id", &[3, 1, 2], 506)]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let mask = explicit_bool_series("mask", &[true, false, true], 506);
 
     let stream = CudaStream::new().unwrap();
@@ -993,7 +1043,11 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([ids]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -1030,30 +1084,44 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
 
 /// Existing `DataFrame::sort_values` (no context) should produce correct
 /// results. This is the default-path baseline for
-/// `DataFrame::in_context(&ctx).sort_values(...)`.
+/// `DataFrame::with_execution(&ctx).sort_values(...)`.
 #[test]
 fn sort_values_default_produces_correct_results() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([ids]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
     let col = sorted.series("id").unwrap();
-    let host: Vec<i32> = col.view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = col.testing_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![1, 2, 3], "sort_values result should be correct");
 }
 
 /// Existing `DataFrame::merge` (no context) should produce correct results.
-/// This is the default-path baseline for `DataFrame::in_context(&ctx).merge(...)`.
+/// This is the default-path baseline for `DataFrame::with_execution(&ctx).merge(...)`.
 #[test]
 fn merge_default_produces_correct_results() {
     let left_ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let left_vals = crate::common::series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
-    let left = cudf::DataFrame::from_series([left_ids, left_vals]).unwrap();
+    let left =
+        cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([left_ids, left_vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
 
     let right_ids = crate::common::series::<i32>("id", &[2, 3, 4]).unwrap();
     let right_scores = crate::common::series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
-    let right = cudf::DataFrame::from_series([right_ids, right_scores]).unwrap();
+    let right =
+        cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([right_ids, right_scores]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
 
     let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
 
@@ -1061,12 +1129,16 @@ fn merge_default_produces_correct_results() {
 }
 
 /// Existing `GroupBy::agg` (no context) should produce correct results.
-/// This is the default-path baseline for `GroupBy::in_context(&ctx).agg(...)`.
+/// This is the default-path baseline for `GroupBy::with_execution(&ctx).agg(...)`.
 #[test]
 fn groupby_agg_default_produces_correct_results() {
     let keys = crate::common::series::<i32>("key", &[1, 1, 2, 2]).unwrap();
     let vals = crate::common::series::<i64>("val", &[10, 20, 30, 40]).unwrap();
-    let df = cudf::DataFrame::from_series([keys, vals]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([keys, vals]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
 
@@ -1139,7 +1211,7 @@ fn column_copy_ex_stream_and_mr_combined() {
 // Category 6: cudf-rs layer CudaStream / DeviceMemoryResource type contracts
 //
 // These verify that the cudf-rs wrappers (CudaStream, DeviceMemoryResource)
-// have the properties needed for ExecutionContext construction.
+// have the properties needed for ExecutionOverrides construction.
 // ===========================================================================
 
 /// CudaStream can be created and synchronized.

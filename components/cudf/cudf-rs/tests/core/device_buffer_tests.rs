@@ -64,7 +64,7 @@ fn adopt_i32_roundtrip() {
     let data: &[i32] = &[10, 20, 30];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
     let col = crate::common::column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -75,7 +75,7 @@ fn adopt_f64_roundtrip() {
     let data: &[f64] = &[1.5, 2.5, 3.5];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
     let col = crate::common::column_from_device_buffer(buf, 3, TypeId::Float64).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
     assert_eq!(view.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
@@ -86,7 +86,7 @@ fn adopt_proves_zero_copy() {
     let buf = rt.device_buffer_from_host_data(data).unwrap();
     let original_ptr = buf.data_ptr().unwrap();
     let col = crate::common::column_from_device_buffer(buf, 2, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
 }
 
@@ -95,7 +95,7 @@ fn adopt_zero_elements() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
     let col = crate::common::column_from_device_buffer(buf, 0, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
     assert!(view.is_empty().unwrap());
 }
@@ -116,7 +116,7 @@ fn runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy() {
     let original_ptr = buf.data_ptr().unwrap();
 
     let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
@@ -163,14 +163,14 @@ fn adopt_nullable_with_nulls() {
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
     let col = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 2, 4, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
     assert!(view.nullable().unwrap());
     assert_eq!(view.null_count().unwrap(), 2);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
 
-    let validity = view.validity().unwrap().unwrap();
+    let validity = view.to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
 }
 
@@ -187,7 +187,7 @@ fn adopt_nullable_all_valid() {
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
     let col = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 0, 3, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
     assert_eq!(view.null_count().unwrap(), 0);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -203,11 +203,11 @@ fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
     let col = rt.column_from_device_buffer_nullable(data_buf, mask_buf, 2, 4, TypeId::Int32).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
     assert_eq!(view.null_count().unwrap(), 2);
-    assert_eq!(view.validity().unwrap().unwrap(), vec![true, false, true, false]);
+    assert_eq!(view.to_host_validity().unwrap().unwrap(), vec![true, false, true, false]);
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
     assert_eq!(col.testing_execution_domain_kind(), "explicit");
     assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());

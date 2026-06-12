@@ -102,14 +102,14 @@ fn cuda_event_can_record_wait_and_synchronize() {
 // exactly what we want to guard against.
 // ===========================================================================
 
-assert_not_impl_any!(cudf::core::ColumnView<'static>: Send, Sync);
-assert_not_impl_any!(cudf::core::TableView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::testing::ColumnView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::testing::TableView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and kept here as the authoritative example):
 //
 //   let col = column_from_slice(&[1i32]).unwrap();
-//   let view = col.view().unwrap();
+//   let view = col.testing_view().unwrap();
 //   tokio::task::spawn_blocking(move || {
 //       view.len()  // ERROR: ColumnView is !Send
 //   });

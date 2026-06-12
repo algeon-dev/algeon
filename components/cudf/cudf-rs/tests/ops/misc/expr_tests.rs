@@ -20,11 +20,19 @@ use cudf::{
 fn xy_df() -> DataFrame {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    DataFrame::from_series([x, y]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 fn df_with_series(series: Series) -> DataFrame {
-    DataFrame::from_series([series]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 fn i32_df(name: &str, data: &[i32]) -> DataFrame {
@@ -190,7 +198,11 @@ fn neg_expr() {
 fn bitand_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
@@ -208,7 +220,11 @@ fn bitand_bool_scalar_lhs_without_lit() {
 fn bitor_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = (col("a") | col("b")).alias("or").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
@@ -275,7 +291,11 @@ fn gt_scalar_without_lit_produces_bool() {
 fn eq_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_series([x, y]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -290,7 +310,11 @@ fn lt_lit_with_alias() {
 fn ne_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_series([x, y]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -538,7 +562,11 @@ fn fillna_scalar_preserves_output_name() {
 fn fillna_with_column_path() {
     let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
     let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([v, backup]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([v, backup]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = col("v").fillna_with(col("backup")).alias("filled").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
     assert_eq!(result.null_count(), 0);
@@ -674,6 +702,15 @@ fn agg_product() {
 }
 
 #[test]
+fn agg_sum_string_reports_expr_reduce_operation_on_type_error() {
+    let df = str_df("s", &["a", "b"]);
+    let err = col("s").agg().sum().alias("total").eval(&df).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.operation(), "expr::reduce");
+}
+
+#[test]
 fn reduce_requires_explicit_output_name() {
     assert_output_name(col("x").agg().sum(), None);
 }
@@ -800,7 +837,11 @@ fn when_then_otherwise_column_branches() {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
     let flag = crate::common::series::<bool>("f", &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([x, y, flag]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y, flag]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
 }
@@ -811,7 +852,11 @@ fn when_then_otherwise_with_nulls_in_condition() {
     let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([cond, x, y]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([cond, x, y]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
     // row 0: cond valid & true  → x[0]=10
     // row 1: cond null          → y[1]=2

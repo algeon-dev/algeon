@@ -13,18 +13,14 @@ use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
     interop::{
         borrowed::{
-            BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle, InteropTypeId,
-            PhysicalValidity, Placement, SchemaNullability, SemanticColumn,
+            BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, InteropTypeId, PhysicalValidity,
+            Placement, SchemaNullability, SemanticColumn,
         },
+        cuda_explicit_completion_required_lease_backend,
         prepared::{
             ActiveLeaseBackend, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessKind,
             ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend, LeaseCompletionResult,
             LeaseExportContext, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
-        },
-        runtime::{
-            RuntimeCompletionAuthority, RuntimeCompletionWitness, RuntimeLeaseCompletionResult,
-            RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
-            cuda_explicit_completion_required_lease_backend,
         },
     },
     ops::dictionary,
@@ -83,34 +79,16 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     out
 }
 
-fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'static> {
-    CompletionAuthority::SameDeviceStream {
-        stream: CudaStreamHandle::from_raw_on_device(
-            stream.testing_raw_handle_value() as *mut std::ffi::c_void,
-            stream.device().ordinal() as i32,
-        )
-        .unwrap(),
-    }
+fn shared_same_device_completion<'a>(stream: &'a CudaStream) -> CompletionAuthority<'a> {
+    CompletionAuthority::SameDeviceStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
 }
 
-fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'static> {
-    ReadStartAuthority::ConsumerStream {
-        stream: CudaStreamHandle::from_raw_on_device(
-            stream.testing_raw_handle_value() as *mut std::ffi::c_void,
-            stream.device().ordinal() as i32,
-        )
-        .unwrap(),
-    }
+fn shared_stream_read_start<'a>(stream: &'a CudaStream) -> ReadStartAuthority<'a> {
+    ReadStartAuthority::ConsumerStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
 }
 
-fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'static> {
-    CompletionAuthority::CrossDeviceEvent {
-        event: CudaEventHandle::from_raw_on_device(
-            event.testing_interop_raw_handle_value() as *mut std::ffi::c_void,
-            event.device().ordinal() as i32,
-        )
-        .unwrap(),
-    }
+fn shared_cross_device_completion<'a>(event: &'a CudaEvent) -> CompletionAuthority<'a> {
+    CompletionAuthority::CrossDeviceEvent { event: cudf::interop::cuda_event_handle(event).unwrap() }
 }
 
 fn binding<'a>(bindings: &'a [BufferBinding<'a>], id: BufferId) -> &'a BufferBinding<'a> {
@@ -195,21 +173,6 @@ fn expect_shared_witness(result: LeaseCompletionResult, expected_kind: Completio
     }
 }
 
-fn expect_runtime_witness(
-    result: RuntimeLeaseCompletionResult,
-    expected_kind: CompletionWitnessKind,
-) -> RuntimeCompletionWitness {
-    match result {
-        RuntimeLeaseCompletionResult::Completed(witness) => {
-            assert_eq!(witness.kind(), expected_kind);
-            witness
-        },
-        RuntimeLeaseCompletionResult::FallbackSynchronized => {
-            panic!("expected producer-owned runtime completion witness")
-        },
-    }
-}
-
 fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join(filename);
@@ -226,18 +189,25 @@ fn read_list_dataframe(rows: &str) -> DataFrame {
 fn recursive_supported_frame() -> DataFrame {
     let frame = read_json_dataframe(
         "recursive_supported.jsonl",
-        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"meta\":{\"x\":1,\"name\":\"one\"},\"coords\":[[1,2],[3]]},\"id\":10}\n\
-         {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"meta\":{\"x\":2,\"name\":\"two\"},\"coords\":[[],[4,5]]},\"id\":20}\n\
-         {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"meta\":{\"x\":3,\"name\":\"three\"},\"coords\":[[6]]},\"id\":30}\n",
+        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"meta\":{\"x\":1,\"name\":\"one\"},\"coords\":[[1,2],[3]]},\"id\":10}
+\
+         {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"meta\":{\"x\":2,\"name\":\"two\"},\"coords\":[[],[4,5]]},\"id\":20}
+\
+         {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"meta\":{\"x\":3,\"name\":\"three\"},\"coords\":[[6]]},\"id\":30}
+",
     );
 
     let category = frame.series("category").unwrap();
     let nested = frame.series("nested").unwrap();
     let point = frame.series("point").unwrap();
     let id = frame.series("id").unwrap();
-    let encoded = dictionary::encode(&category.view().unwrap(), TypeId::Int32).unwrap();
+    let encoded = dictionary::encode(&category.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
-    DataFrame::from_series([category, nested, point, id]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([category, nested, point, id]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 mod lease_contracts {
@@ -308,7 +278,11 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let export = frame.try_prepare_device_table_export().unwrap();
 
         let consumer_stream = CudaStream::new().unwrap();
@@ -506,17 +480,16 @@ mod lease_contracts {
         let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         let lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
         assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
 
         reset_event_observation();
         let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
-        let witness = expect_runtime_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        assert_eq!(witness.device(), producer_runtime.device());
+        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
         assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1);
         witness.synchronize().unwrap();
         assert!(witness.is_ready().unwrap());
@@ -569,13 +542,13 @@ mod lease_contracts {
             .unwrap();
 
         let lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
 
-        assert!(matches!(lease.complete().unwrap(), RuntimeLeaseCompletionResult::FallbackSynchronized));
+        assert!(matches!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized));
         assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -585,7 +558,11 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -601,9 +578,9 @@ mod lease_contracts {
         let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         let lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
         assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
@@ -614,17 +591,17 @@ mod lease_contracts {
         assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record);
 
         let reacquired = cloned
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
-        let witness = expect_runtime_witness(reacquired.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+        let witness = expect_shared_witness(reacquired.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
         witness.synchronize().unwrap();
     }
 
     #[test]
-    fn shared_and_runtime_leases_can_overlap_and_reacquire_one_export_root() {
+    fn shared_leases_can_overlap_and_reacquire_one_export_root() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
         let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
@@ -640,26 +617,29 @@ mod lease_contracts {
         let shared_lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
-        let runtime_lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        let device_stream_lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
 
         assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 
-        let reacquired_runtime_lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        let reacquired_device_stream_lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
 
-        let witness = expect_runtime_witness(runtime_lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
         let witness =
-            expect_runtime_witness(reacquired_runtime_lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+            expect_shared_witness(device_stream_lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+        witness.synchronize().unwrap();
+        let witness = expect_shared_witness(
+            reacquired_device_stream_lease.complete().unwrap(),
+            CompletionWitnessKind::ConsumerStream,
+        );
         witness.synchronize().unwrap();
     }
 
@@ -676,7 +656,11 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -713,7 +697,7 @@ mod lease_contracts {
     }
 
     #[test]
-    fn runtime_cross_device_event_lease_orders_stream_then_waits_completion_event() {
+    fn shared_cross_device_event_explicit_backend_orders_stream_then_waits_completion_event() {
         let _observation_lock = lock_event_observation();
         if !should_run_multi_gpu_test() {
             return;
@@ -725,7 +709,11 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let export = frame
             .try_prepare_device_table_export()
             .unwrap()
@@ -747,17 +735,16 @@ mod lease_contracts {
         let baseline_completion_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
 
         let lease = export
-            .try_activate_runtime_read_lease(
-                RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_cross_device_completion(&consumer_event),
             )
             .unwrap();
 
         assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_activation_wait);
         assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait);
 
-        let witness = expect_runtime_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerEvent);
-        assert_eq!(witness.device(), device0);
+        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerEvent);
         assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
         witness.synchronize().unwrap();
     }
@@ -770,7 +757,7 @@ mod device_export_contracts {
     fn helper_built_exports_use_explicit_runtime_binding_and_mixed_device_exports_are_rejected() {
         crate::common::with_test_runtime(|runtime| {
             let column = column_from_slice(&[1i32, 2, 3]).unwrap();
-            let view = column.view().unwrap();
+            let view = column.testing_view().unwrap();
             let column_export = view.try_prepare_device_column_export().unwrap();
             assert_eq!(column_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
             assert_device_stream_readiness(
@@ -781,7 +768,11 @@ mod device_export_contracts {
 
             let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
             let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
-            let frame = DataFrame::from_series([ids, vals]).unwrap();
+            let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+                let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+                (name, series)
+            }))
+            .unwrap();
             let frame_export = frame.try_prepare_device_table_export().unwrap();
             assert_eq!(frame_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
             assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
@@ -814,7 +805,7 @@ mod device_export_contracts {
     fn device_fixed_width_exports_preserve_metadata_validity_and_slice_offset() {
         let runtime = Runtime::builder().build().unwrap();
         let nullable = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[true, false, true]).unwrap();
-        let nullable_view = nullable.view().unwrap();
+        let nullable_view = nullable.testing_view().unwrap();
         let expected_stream = nullable.testing_execution_domain_stream_value();
         let nullable_export = nullable_view.try_prepare_device_column_export().unwrap();
 
@@ -842,8 +833,8 @@ mod device_export_contracts {
         assert_device_stream_readiness(nullable_export.readiness(), expected_stream, runtime.device());
 
         let base = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
-        let base_view = base.view().unwrap();
-        let sliced = base.slice_view(1, 2).unwrap();
+        let base_view = base.testing_view().unwrap();
+        let sliced = base.testing_slice_view(1, 2).unwrap();
         let sliced_export = sliced.try_prepare_device_column_export().unwrap();
         assert_eq!(sliced_export.column().len(), 2);
         assert_eq!(sliced_export.column().offset(), 1);
@@ -860,11 +851,15 @@ mod device_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let expected_stream = frame.testing_execution_domain_stream_value();
 
         let frame_export = frame.try_prepare_device_table_export().unwrap();
-        let table_view = frame.view().unwrap();
+        let table_view = frame.testing_view().unwrap();
         let table_export = table_view.try_prepare_device_table_export().unwrap();
 
         assert_eq!(frame_export.table().num_rows(), 3);
@@ -881,7 +876,7 @@ mod device_export_contracts {
     fn device_string_exports_preserve_binary_like_metadata_and_active_slice_span() {
         let runtime = Runtime::builder().build().unwrap();
         let strings = runtime.column_from_strs(&["alice", "bob"]).unwrap();
-        let strings_view = strings.view().unwrap();
+        let strings_view = strings.testing_view().unwrap();
         let offsets_view = strings_view.child(0).unwrap();
         let expected_stream = strings.testing_execution_domain_stream_value();
         let export = strings_view.try_prepare_device_column_export().unwrap();
@@ -891,21 +886,21 @@ mod device_export_contracts {
         assert_eq!(export.column().offset(), 0);
 
         let (offsets, data) = match export.column().layout() {
-            ColumnLayout::BinaryLike { offsets, data } => (*offsets, *data),
+            ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like layout, got {layout:?}"),
         };
-        let offsets_binding = binding(export.bindings(), offsets);
+        let offsets_binding = binding(export.bindings(), *offsets);
         assert_eq!(offsets_binding.bytes().base_ptr(), offsets_view.device_data_ptr().unwrap());
         assert_device_binding_on(offsets_binding, runtime.device());
-        let data_binding = binding(export.bindings(), data);
+        let data_binding = binding(export.bindings(), *data);
         assert_device_binding_on(data_binding, runtime.device());
         assert!(data_binding.bytes().byte_len() >= "alicebob".len());
         assert_device_stream_readiness(export.readiness(), expected_stream, runtime.device());
 
         let base = runtime.column_from_strs(&["zero", "one", "two", "three"]).unwrap();
-        let base_view = base.view().unwrap();
+        let base_view = base.testing_view().unwrap();
         let base_export = base_view.try_prepare_device_column_export().unwrap();
-        let sliced = base.slice_view(1, 2).unwrap();
+        let sliced = base.testing_slice_view(1, 2).unwrap();
         let sliced_offsets_view = sliced.child(0).unwrap();
         let sliced_export = sliced.try_prepare_device_column_export().unwrap();
 
@@ -913,7 +908,7 @@ mod device_export_contracts {
         assert_eq!(sliced_export.column().offset(), 1);
 
         let (offsets, data) = match sliced_export.column().layout() {
-            ColumnLayout::BinaryLike { offsets, data } => (*offsets, *data),
+            ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like layout, got {layout:?}"),
         };
         let (_, base_data) = match base_export.column().layout() {
@@ -922,10 +917,10 @@ mod device_export_contracts {
         };
         let base_data_binding = binding(base_export.bindings(), *base_data);
 
-        let offsets_binding = binding(sliced_export.bindings(), offsets);
+        let offsets_binding = binding(sliced_export.bindings(), *offsets);
         assert_eq!(offsets_binding.bytes().base_ptr(), sliced_offsets_view.device_data_ptr().unwrap());
         assert_eq!(offsets_binding.bytes().byte_len(), 4 * std::mem::size_of::<i32>());
-        let data_binding = binding(sliced_export.bindings(), data);
+        let data_binding = binding(sliced_export.bindings(), *data);
         assert_eq!(data_binding.bytes().base_ptr(), base_data_binding.bytes().base_ptr());
         assert_eq!(data_binding.bytes().byte_len(), "onetwo".len());
     }
@@ -943,24 +938,24 @@ mod device_export_contracts {
         assert!(matches!(export.columns()[3].layout(), ColumnLayout::FixedWidth { .. }));
 
         let dictionary_keys = match export.columns()[0].layout() {
-            ColumnLayout::Dictionary { keys, .. } => *keys,
+            ColumnLayout::Dictionary { keys, .. } => keys,
             layout => panic!("expected dictionary layout, got {layout:?}"),
         };
-        let dictionary_keys_column = semantic_column(export.semantic_columns(), dictionary_keys);
+        let dictionary_keys_column = semantic_column(export.semantic_columns(), *dictionary_keys);
         assert_eq!(dictionary_keys_column.data_type().id(), InteropTypeId::String);
         assert!(matches!(dictionary_keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 
         let nested_child = match export.columns()[1].layout() {
-            ColumnLayout::List { child, .. } => *child,
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected list layout, got {layout:?}"),
         };
-        let nested_list = semantic_column(export.semantic_columns(), nested_child);
+        let nested_list = semantic_column(export.semantic_columns(), *nested_child);
         let nested_leaf = match nested_list.layout() {
-            ColumnLayout::List { child, .. } => *child,
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
         assert_eq!(nested_list.data_type().id(), InteropTypeId::List);
-        assert_eq!(semantic_column(export.semantic_columns(), nested_leaf).data_type().id(), InteropTypeId::Int64);
+        assert_eq!(semantic_column(export.semantic_columns(), *nested_leaf).data_type().id(), InteropTypeId::Int64);
 
         let struct_children = match export.columns()[2].layout() {
             ColumnLayout::Struct { children } => children.clone(),
@@ -1000,14 +995,14 @@ mod device_export_contracts {
             })
             .unwrap();
         let struct_nested = match struct_list.layout() {
-            ColumnLayout::List { child, .. } => *child,
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
-        let struct_leaf = match semantic_column(export.semantic_columns(), struct_nested).layout() {
-            ColumnLayout::List { child, .. } => *child,
+        let struct_leaf = match semantic_column(export.semantic_columns(), *struct_nested).layout() {
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
-        assert_eq!(semantic_column(export.semantic_columns(), struct_leaf).data_type().id(), InteropTypeId::Int64);
+        assert_eq!(semantic_column(export.semantic_columns(), *struct_leaf).data_type().id(), InteropTypeId::Int64);
 
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
@@ -1024,17 +1019,17 @@ mod host_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
 
         let base = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
-        let sliced = base.slice_view(1, 2).unwrap();
+        let sliced = base.testing_slice_view(1, 2).unwrap();
         let sliced_export = sliced.try_prepare_host_column_export().unwrap();
         assert_host_column_basics(&sliced_export, InteropTypeId::Int32, 2, 0);
         let values = match sliced_export.column().layout() {
-            ColumnLayout::FixedWidth { values } => *values,
+            ColumnLayout::FixedWidth { values } => values,
             layout => panic!("expected fixed-width layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(sliced_export.bindings(), values, expected_i32_bytes(&[22, 33]));
+        assert_host_binding_bytes(sliced_export.bindings(), *values, expected_i32_bytes(&[22, 33]));
 
         let nullable = runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
-        let nullable_export = nullable.view().unwrap().try_prepare_host_column_export().unwrap();
+        let nullable_export = nullable.testing_view().unwrap().try_prepare_host_column_export().unwrap();
         assert_host_column_basics(&nullable_export, InteropTypeId::Int32, 4, 0);
         let mask = match nullable_export.column().validity() {
             PhysicalValidity::ValidityMask { mask, null_count } => {
@@ -1043,7 +1038,8 @@ mod host_export_contracts {
             },
             PhysicalValidity::NoValidityBuffer => panic!("expected validity mask"),
         };
-        assert_host_binding_bytes(nullable_export.bindings(), mask, vec![0b0000_0101]);
+        let expected_mask = nullable.testing_view().unwrap().to_host_null_mask_bytes().unwrap().unwrap();
+        assert_host_binding_bytes(nullable_export.bindings(), mask, expected_mask);
     }
 
     #[test]
@@ -1051,7 +1047,11 @@ mod host_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
 
         let export = frame.try_prepare_host_table_export().unwrap();
         assert_host_table_basics(&export, &["id", "value"], 3);
@@ -1075,25 +1075,25 @@ mod host_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
 
         let strings = runtime.column_from_strs(&["alice", "bob"]).unwrap();
-        let export = strings.view().unwrap().try_prepare_host_column_export().unwrap();
+        let export = strings.testing_view().unwrap().try_prepare_host_column_export().unwrap();
         assert_host_column_basics(&export, InteropTypeId::String, 2, 0);
         let (offsets, data) = match export.column().layout() {
-            ColumnLayout::BinaryLike { offsets, data } => (*offsets, *data),
+            ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), offsets, expected_i32_bytes(&[0, 5, 8]));
-        assert_host_binding_bytes(export.bindings(), data, b"alicebob".to_vec());
+        assert_host_binding_bytes(export.bindings(), *offsets, expected_i32_bytes(&[0, 5, 8]));
+        assert_host_binding_bytes(export.bindings(), *data, b"alicebob".to_vec());
 
         let base = runtime.column_from_strs(&["zero", "one", "two", "three"]).unwrap();
-        let sliced = base.slice_view(1, 2).unwrap();
+        let sliced = base.testing_slice_view(1, 2).unwrap();
         let sliced_export = sliced.try_prepare_host_column_export().unwrap();
         assert_host_column_basics(&sliced_export, InteropTypeId::String, 2, 0);
         let (offsets, data) = match sliced_export.column().layout() {
-            ColumnLayout::BinaryLike { offsets, data } => (*offsets, *data),
+            ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(sliced_export.bindings(), offsets, expected_i32_bytes(&[0, 3, 6]));
-        assert_host_binding_bytes(sliced_export.bindings(), data, b"onetwo".to_vec());
+        assert_host_binding_bytes(sliced_export.bindings(), *offsets, expected_i32_bytes(&[0, 3, 6]));
+        assert_host_binding_bytes(sliced_export.bindings(), *data, b"onetwo".to_vec());
 
         let nullable = runtime
             .nullable_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
@@ -1106,33 +1106,40 @@ mod host_export_contracts {
             },
             PhysicalValidity::NoValidityBuffer => panic!("expected validity mask"),
         };
-        assert_host_binding_bytes(nullable_export.bindings(), mask, vec![0b0000_0101]);
+        let expected_mask = nullable.as_column().testing_view().unwrap().to_host_null_mask_bytes().unwrap().unwrap();
+        assert_host_binding_bytes(nullable_export.bindings(), mask, expected_mask);
     }
 
     #[test]
     fn host_list_slice_export_rebases_offsets_and_child_range() {
-        let frame = read_list_dataframe("{\"lists\":[1,2]}\n{\"lists\":[3]}\n{\"lists\":[]}\n{\"lists\":[4,5,6]}\n");
+        let frame = read_list_dataframe(
+            "{\"lists\":[1,2]}
+{\"lists\":[3]}
+{\"lists\":[]}
+{\"lists\":[4,5,6]}
+",
+        );
         let series = frame.series("lists").unwrap();
-        let sliced = series.as_column().slice_view(1, 2).unwrap();
+        let sliced = series.as_column().testing_slice_view(1, 2).unwrap();
 
         let export = sliced.try_prepare_host_column_export().unwrap();
         assert_host_column_basics(&export, InteropTypeId::List, 2, 0);
 
         let (offsets, child) = match export.column().layout() {
-            ColumnLayout::List { offsets, child } => (*offsets, *child),
+            ColumnLayout::List { offsets, child } => (offsets, child),
             layout => panic!("expected list layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), offsets, expected_i32_bytes(&[0, 1, 1]));
+        assert_host_binding_bytes(export.bindings(), *offsets, expected_i32_bytes(&[0, 1, 1]));
 
-        let child_column = semantic_column(export.semantic_columns(), child);
+        let child_column = semantic_column(export.semantic_columns(), *child);
         assert_eq!(child_column.data_type().id(), InteropTypeId::Int64);
         assert_eq!(child_column.len(), 1);
         assert_eq!(child_column.offset(), 0);
         let values = match child_column.layout() {
-            ColumnLayout::FixedWidth { values } => *values,
+            ColumnLayout::FixedWidth { values } => values,
             layout => panic!("expected fixed-width child layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), values, expected_i64_bytes(&[3]));
+        assert_host_binding_bytes(export.bindings(), *values, expected_i64_bytes(&[3]));
 
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
@@ -1147,40 +1154,40 @@ mod host_export_contracts {
         assert_host_table_basics(&export, &["category", "nested", "point", "id"], 3);
 
         let dictionary_keys = match export.columns()[0].layout() {
-            ColumnLayout::Dictionary { keys, .. } => *keys,
+            ColumnLayout::Dictionary { keys, .. } => keys,
             layout => panic!("expected dictionary layout, got {layout:?}"),
         };
-        let dictionary_keys_column = semantic_column(export.semantic_columns(), dictionary_keys);
+        let dictionary_keys_column = semantic_column(export.semantic_columns(), *dictionary_keys);
         assert_eq!(dictionary_keys_column.data_type().id(), InteropTypeId::String);
         let (key_offsets, key_data) = match dictionary_keys_column.layout() {
-            ColumnLayout::BinaryLike { offsets, data } => (*offsets, *data),
+            ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like dictionary keys, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), key_offsets, expected_i32_bytes(&[0, 5, 9]));
-        assert_host_binding_bytes(export.bindings(), key_data, b"alphabeta".to_vec());
+        assert_host_binding_bytes(export.bindings(), *key_offsets, expected_i32_bytes(&[0, 5, 9]));
+        assert_host_binding_bytes(export.bindings(), *key_data, b"alphabeta".to_vec());
 
         let nested_child = match export.columns()[1].layout() {
-            ColumnLayout::List { child, .. } => *child,
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected list layout, got {layout:?}"),
         };
-        let nested_list = semantic_column(export.semantic_columns(), nested_child);
+        let nested_list = semantic_column(export.semantic_columns(), *nested_child);
         let (nested_offsets, nested_leaf) = match nested_list.layout() {
-            ColumnLayout::List { offsets, child } => (*offsets, *child),
+            ColumnLayout::List { offsets, child } => (offsets, child),
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
         let root_offsets = match export.columns()[1].layout() {
-            ColumnLayout::List { offsets, .. } => *offsets,
+            ColumnLayout::List { offsets, .. } => offsets,
             layout => panic!("expected list layout, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), root_offsets, expected_i32_bytes(&[0, 2, 4, 5]));
-        assert_host_binding_bytes(export.bindings(), nested_offsets, expected_i32_bytes(&[0, 2, 3, 3, 5, 6]));
-        let nested_leaf_column = semantic_column(export.semantic_columns(), nested_leaf);
+        assert_host_binding_bytes(export.bindings(), *root_offsets, expected_i32_bytes(&[0, 2, 4, 5]));
+        assert_host_binding_bytes(export.bindings(), *nested_offsets, expected_i32_bytes(&[0, 2, 3, 3, 5, 6]));
+        let nested_leaf_column = semantic_column(export.semantic_columns(), *nested_leaf);
         assert_eq!(nested_leaf_column.data_type().id(), InteropTypeId::Int64);
         let leaf_values = match nested_leaf_column.layout() {
-            ColumnLayout::FixedWidth { values } => *values,
+            ColumnLayout::FixedWidth { values } => values,
             layout => panic!("expected fixed-width nested leaf, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), leaf_values, expected_i64_bytes(&[1, 2, 3, 4, 5, 6]));
+        assert_host_binding_bytes(export.bindings(), *leaf_values, expected_i64_bytes(&[1, 2, 3, 4, 5, 6]));
 
         let struct_children = match export.columns()[2].layout() {
             ColumnLayout::Struct { children } => children.clone(),
@@ -1220,14 +1227,14 @@ mod host_export_contracts {
             })
             .unwrap();
         let struct_nested = match struct_list.layout() {
-            ColumnLayout::List { child, .. } => *child,
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
-        let struct_leaf = match semantic_column(export.semantic_columns(), struct_nested).layout() {
-            ColumnLayout::List { child, .. } => *child,
+        let struct_leaf = match semantic_column(export.semantic_columns(), *struct_nested).layout() {
+            ColumnLayout::List { child, .. } => child,
             layout => panic!("expected nested list layout, got {layout:?}"),
         };
-        assert_eq!(semantic_column(export.semantic_columns(), struct_leaf).data_type().id(), InteropTypeId::Int64);
+        assert_eq!(semantic_column(export.semantic_columns(), *struct_leaf).data_type().id(), InteropTypeId::Int64);
 
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)

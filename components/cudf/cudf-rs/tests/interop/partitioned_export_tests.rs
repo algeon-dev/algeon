@@ -14,8 +14,7 @@ use cudf::{
             CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, ProducerReadiness,
             ReadStartAuthority,
         },
-        runtime::RuntimeCompletionAuthority,
-        transfer::{ReleaseSynchronization, TransferCompletionRule},
+        transfer::{ReleaseSynchronization, TransferCompletionAuthority, TransferCompletionRule},
     },
     runtime::CudaStream,
     testing::prelude::*,
@@ -197,24 +196,24 @@ fn partitioned_prepared_table_export_imports_one_local_table_per_partition_runti
 
     let first = &partitions[0];
     assert_eq!(first.top_level_column_indices(), &[0, 2]);
-    assert_eq!(first.table().view().unwrap().num_columns().unwrap(), 2);
+    assert_eq!(first.table().testing_view().unwrap().num_columns().unwrap(), 2);
     assert_eq!(first.table().testing_execution_domain_id(), left_runtime.testing_execution_domain_id());
     assert_eq!(first.table().testing_execution_domain_stream_value(), left_runtime.stream().testing_raw_handle_value());
 
-    let first_view = first.table().view().unwrap();
+    let first_view = first.table().testing_view().unwrap();
     assert_eq!(first_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(first_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 
     let second = &partitions[1];
     assert_eq!(second.top_level_column_indices(), &[1]);
-    assert_eq!(second.table().view().unwrap().num_columns().unwrap(), 1);
+    assert_eq!(second.table().testing_view().unwrap().num_columns().unwrap(), 1);
     assert_eq!(second.table().testing_execution_domain_id(), right_runtime.testing_execution_domain_id());
     assert_eq!(
         second.table().testing_execution_domain_stream_value(),
         right_runtime.stream().testing_raw_handle_value()
     );
 
-    let second_view = second.table().view().unwrap();
+    let second_view = second.table().testing_view().unwrap();
     assert_eq!(second_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -408,11 +407,11 @@ fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_wi
     let (tx, rx) = mpsc::channel();
     let second_tx = tx.clone();
     let first_release_thread = thread::spawn(move || {
-        let result = first_partition.release(RuntimeCompletionAuthority::same_device_stream(&first_consumer_stream));
+        let result = first_partition.release(TransferCompletionAuthority::same_device_stream(&first_consumer_stream));
         tx.send(result).unwrap();
     });
     let second_release_thread = thread::spawn(move || {
-        let result = second_partition.release(RuntimeCompletionAuthority::same_device_stream(&second_consumer_stream));
+        let result = second_partition.release(TransferCompletionAuthority::same_device_stream(&second_consumer_stream));
         second_tx.send(result).unwrap();
     });
 
@@ -442,7 +441,7 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
     let right_runtime = Runtime::builder().build().unwrap();
     let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let right = right_runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
-    let left_expected_ptr = left.view().unwrap().device_data_ptr().unwrap();
+    let left_expected_ptr = left.testing_view().unwrap().device_data_ptr().unwrap();
 
     let (transfer, releaser) = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left, right])
         .unwrap()
@@ -461,17 +460,17 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
 
     let imported_left =
         Table::try_import_from_owned_device_table_transfer_into_runtime(left_transfer, &left_runtime).unwrap();
-    let imported_left_view = imported_left.view().unwrap();
+    let imported_left_view = imported_left.testing_view().unwrap();
     assert_eq!(imported_left_view.num_columns().unwrap(), 1);
     assert_eq!(imported_left_view.column(0).unwrap().device_data_ptr().unwrap(), left_expected_ptr);
 
     let consumer_stream = CudaStream::new().unwrap();
     let left_release_err =
-        left_releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap_err();
+        left_releaser.release(TransferCompletionAuthority::same_device_stream(&consumer_stream)).unwrap_err();
     assert_eq!(left_release_err.kind(), InteropErrorKind::ProfileUnsupported);
 
     let _sync_block = EventSynchronizeBlockGuard::new();
-    right_releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+    right_releaser.release(TransferCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
     let right_import_err =
         match Table::try_import_from_owned_device_table_transfer_into_runtime(right_transfer, &right_runtime) {
             Ok(_) => panic!("expected partition import to fail after release was accepted"),

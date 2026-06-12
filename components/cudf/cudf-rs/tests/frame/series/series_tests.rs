@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Series, TypeId};
+use cudf::{Series, TypeId, testing::prelude::*};
 
 use crate::common::column_from_slice;
 
@@ -104,8 +104,8 @@ fn test_rename_shares_arc() {
     let renamed = s.rename("b");
 
     // Both should point to the same GPU data (Arc sharing).
-    let ptr_orig = s.view().unwrap().device_data_ptr().unwrap();
-    let ptr_renamed = renamed.view().unwrap().device_data_ptr().unwrap();
+    let ptr_orig = s.testing_view().unwrap().device_data_ptr().unwrap();
+    let ptr_renamed = renamed.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_renamed);
 }
 
@@ -118,8 +118,8 @@ fn test_clone_shares_gpu_data() {
     let s = crate::common::series::<f64>("vals", &[10.0, 20.0]).unwrap();
     let cloned = s.clone();
 
-    let ptr_s = s.view().unwrap().device_data_ptr().unwrap();
-    let ptr_cloned = cloned.view().unwrap().device_data_ptr().unwrap();
+    let ptr_s = s.testing_view().unwrap().device_data_ptr().unwrap();
+    let ptr_cloned = cloned.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_s, ptr_cloned);
 
     // Both are independently usable.
@@ -141,19 +141,19 @@ fn test_from_column_round_trip() {
     assert_eq!(s.len(), 3);
 
     // Access the underlying column.
-    let view = s.as_column().view().unwrap();
+    let view = s.as_column().testing_view().unwrap();
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![5, 10, 15]);
 }
 
 #[test]
 fn test_from_column_shares_data() {
     let col = column_from_slice(&[1i64, 2]).unwrap();
-    let ptr_orig = col.view().unwrap().device_data_ptr().unwrap();
+    let ptr_orig = col.testing_view().unwrap().device_data_ptr().unwrap();
 
     let s = Series::from_column(col).unwrap();
 
     // The Series should share the same device pointer.
-    let ptr_series = s.view().unwrap().device_data_ptr().unwrap();
+    let ptr_series = s.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_series);
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int64);
@@ -167,7 +167,7 @@ fn test_from_column_shares_data() {
 #[test]
 fn test_view_matches_column_data() {
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
-    let view = s.view().unwrap();
+    let view = s.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![100, 200, 300]);

@@ -8,6 +8,7 @@ use std::{
 use cudf::{
     TypeId,
     core::{Column, Table},
+    testing::prelude::*,
 };
 
 use crate::common::column_from_slice;
@@ -46,13 +47,13 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
         handles.push(tokio::task::spawn_blocking(move || -> cudf::Result<()> {
             for _ in 0..iterations {
                 // Shared read access from multiple threads.
-                let view = shared.view()?;
+                let view = shared.testing_view()?;
                 assert_eq!(view.len()?, 4096);
                 assert_eq!(view.data_type()?.id(), TypeId::Int32);
 
                 // Per-thread deep copy and host transfer.
                 let copied = shared.deep_copy()?;
-                let host = copied.view()?.to_vec::<i32>()?;
+                let host = copied.testing_view()?.to_vec::<i32>()?;
                 assert_eq!(host.first().copied(), Some(0));
                 assert_eq!(host.last().copied(), Some(4095));
             }

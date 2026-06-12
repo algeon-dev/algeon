@@ -22,7 +22,11 @@ use crate::common::{
 fn sample_df() -> DataFrame {
     let ids = crate::common::series::<i32>("id", &[10, 20, 30, 40, 50]).unwrap();
     let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    DataFrame::from_series([ids, scores]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 // ===========================================================================
@@ -47,10 +51,16 @@ fn test_gather_with_series() {
 fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let df_rt = sample_runtime();
     let indices_rt = sample_runtime();
-    let df = DataFrame::from_series([
-        df_rt.series("id", &[10i32, 20, 30]).unwrap(),
-        df_rt.series("score", &[1.0f64, 2.0, 3.0]).unwrap(),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            df_rt.series("id", &[10i32, 20, 30]).unwrap(),
+            df_rt.series("score", &[1.0f64, 2.0, 3.0]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let indices = indices_rt.series("idx", &[2i32, 0]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
@@ -93,7 +103,13 @@ fn test_filter_isin_with_series() {
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df = DataFrame::from_series([df_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([df_rt.series("id", &[10i32, 20, 30]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let values = values_rt.series("vals", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
@@ -141,7 +157,11 @@ fn test_fillna_with_plain_value() {
     let ids =
         crate::common::nullable_series::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_series([ids, scores]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
@@ -155,7 +175,11 @@ fn test_fillna_with_scalar_still_works() {
     let ids =
         crate::common::nullable_series::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_series([ids, scores]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let fill = scalar(42i32).unwrap();
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
@@ -168,7 +192,11 @@ fn test_fillna_with_scalar_still_works() {
 #[test]
 fn test_fillna_rejects_missing_column() {
     let ids = crate::common::series::<i32>("id", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([ids]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
@@ -190,11 +218,25 @@ fn test_factorize_returns_typed_result() {
 
 #[test]
 fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
-    let df = DataFrame::from_series([crate::common::series("vertex", &["u2", "u9", "u1"]).unwrap()]).unwrap();
-    let lookup_df = DataFrame::from_series([
-        crate::common::series("id", &["u1", "u2"]).unwrap(),
-        crate::common::series("label", &["alice", "bob"]).unwrap(),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([crate::common::series("vertex", &["u2", "u9", "u1"]).unwrap()]).map(
+            |series| {
+                let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+                (name, series)
+            },
+        ),
+    )
+    .unwrap();
+    let lookup_df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            crate::common::series("id", &["u1", "u2"]).unwrap(),
+            crate::common::series("label", &["alice", "bob"]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     let looked_up = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap();
@@ -207,7 +249,13 @@ fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
 
 #[test]
 fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
-    let df = DataFrame::from_series([crate::common::series("vertex", &["u2", "u1"]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([crate::common::series("vertex", &["u2", "u1"]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
     let values = crate::common::series("label", &["alice"]).unwrap();
 
@@ -220,7 +268,15 @@ fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
 
 #[test]
 fn test_with_encoded_and_decoded_column_workflows() {
-    let df = DataFrame::from_series([crate::common::series("kind", &["b", "a", "c", "a"]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([crate::common::series("kind", &["b", "a", "c", "a"]).unwrap()]).map(
+            |series| {
+                let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+                (name, series)
+            },
+        ),
+    )
+    .unwrap();
     let codebook = df.codebook("kind").unwrap();
 
     let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
@@ -238,8 +294,8 @@ fn test_with_encoded_and_decoded_column_workflows() {
 fn test_advanced_gather_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = column_from_slice(&[0i32, 2, 4]).unwrap();
-    let table_view = df.view().unwrap();
-    let result = copying::gather(&table_view, &indices.view().unwrap()).unwrap();
+    let table_view = df.testing_view().unwrap();
+    let result = copying::gather(&table_view, &indices.testing_view().unwrap()).unwrap();
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -261,12 +317,12 @@ fn test_advanced_gather_still_works_via_view_and_ops() {
 fn test_advanced_filter_isin_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = column_from_slice(&[10i32, 30, 50]).unwrap();
-    let values_view = values.view().unwrap();
+    let values_view = values.testing_view().unwrap();
     let ids = df.series("id").unwrap();
-    let ids_view = ids.view().unwrap();
+    let ids_view = ids.testing_view().unwrap();
     let mask = search::contains(&values_view, &ids_view).unwrap();
-    let mask_view = mask.view().unwrap();
-    let table_view = df.view().unwrap();
+    let mask_view = mask.testing_view().unwrap();
+    let table_view = df.testing_view().unwrap();
     let result = low_level_filter::apply_boolean_mask(&table_view, &mask_view).unwrap();
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 

@@ -127,7 +127,16 @@ fn test_str_endswith_preserves_nulls() {
 
 #[test]
 fn test_str_strip_whitespace() {
-    let s = crate::common::series("s", &["  hello  ", "\tworld\n", "  foo"]).unwrap();
+    let s = crate::common::series(
+        "s",
+        &[
+            "  hello  ",
+            "\tworld
+",
+            "  foo",
+        ],
+    )
+    .unwrap();
     let result = s.str().strip().unwrap();
     let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello", "world", "foo"]);

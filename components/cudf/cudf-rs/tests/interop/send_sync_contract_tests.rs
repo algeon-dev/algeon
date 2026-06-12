@@ -5,14 +5,13 @@ use cudf::{
     core::{Column, column::DeviceSlice},
     interop::{
         borrowed::{BorrowedColumnView, BorrowedTableView},
-        prepared::{CompletionWitnessKind, PreparedColumnExport, PreparedTableExport, ProducerReadiness},
-        runtime::{
-            RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-            TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+        prepared::{
+            CompletionAuthority, CompletionWitnessKind, LeaseCompletionResult, PreparedColumnExport,
+            PreparedTableExport, ProducerReadiness, ReadStartAuthority,
         },
         transfer::{
-            OwnedColumnTransfer, OwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser,
-            RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
+            OwnedColumnTransfer, OwnedColumnTransferReleaser, OwnedTableTransfer, OwnedTableTransferReleaser,
+            PartitionedOwnedTableTransferReleaser,
         },
     },
     runtime::{CudaEvent, CudaStream},
@@ -28,9 +27,9 @@ assert_impl_all!(DeviceSlice<'static>: Send, Sync);
 assert_impl_all!(ProducerReadiness<'static>: Send, Sync);
 assert_impl_all!(OwnedColumnTransfer: Send, Sync);
 assert_impl_all!(OwnedTableTransfer: Send, Sync);
-assert_impl_all!(RuntimeOwnedColumnTransferReleaser: Send, Sync);
-assert_impl_all!(RuntimeOwnedTableTransferReleaser: Send, Sync);
-assert_impl_all!(PartitionedRuntimeOwnedTableTransferReleaser: Send, Sync);
+assert_impl_all!(OwnedColumnTransferReleaser: Send, Sync);
+assert_impl_all!(OwnedTableTransferReleaser: Send, Sync);
+assert_impl_all!(PartitionedOwnedTableTransferReleaser: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
 
@@ -61,14 +60,14 @@ fn available_test_devices() -> Vec<DeviceId> {
 fn owned_column_transfer_round_trips_across_thread_boundary() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
-    let expected_ptr = column.view().unwrap().device_data_ptr().unwrap() as usize;
+    let expected_ptr = column.testing_view().unwrap().device_data_ptr().unwrap() as usize;
     let expected_stream = column.testing_execution_domain_stream_value();
     let expected_mr = column.testing_execution_domain_mr_value();
 
     let transfer = column.try_into_owned_transfer().unwrap();
     let (values, ptr, stream, mr) = thread::spawn(move || {
         let imported = Column::try_import_from_owned_device_column_transfer_into_runtime(transfer, &runtime).unwrap();
-        let view = imported.view().unwrap();
+        let view = imported.testing_view().unwrap();
         let values = view.to_vec::<i32>().unwrap();
         let ptr = view.device_data_ptr().unwrap() as usize;
         let stream = imported.testing_execution_domain_stream_value();
@@ -99,20 +98,23 @@ fn prepared_column_export_can_activate_and_complete_on_worker_thread() {
         scope
             .spawn(move || {
                 let lease = export
-                    .try_activate_runtime_read_lease(
-                        RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                        RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+                    .try_activate_read_lease(
+                        ReadStartAuthority::ConsumerStream {
+                            stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
+                        },
+                        CompletionAuthority::SameDeviceStream {
+                            stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
+                        },
                     )
                     .unwrap();
 
                 match lease.complete().unwrap() {
-                    RuntimeLeaseCompletionResult::Completed(witness) => {
+                    LeaseCompletionResult::Completed(witness) => {
                         assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);
-                        assert_eq!(witness.device(), producer_runtime.device());
                         witness.synchronize().unwrap();
                         assert!(witness.is_ready().unwrap());
                     },
-                    RuntimeLeaseCompletionResult::FallbackSynchronized => {
+                    LeaseCompletionResult::FallbackSynchronized => {
                         panic!("expected producer-owned completion witness for same-device stream completion")
                     },
                 }
@@ -142,7 +144,11 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
         let producer_runtime = Runtime::builder().with_device(producer_device).build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3, round as i32]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30, 40]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let producer_ready = CudaEvent::new().unwrap();
         producer_ready.record(producer_runtime.stream()).unwrap();
         let export = frame.try_prepare_device_table_export_with_event(&producer_ready).unwrap();
@@ -162,20 +168,23 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
                     consumer_event.record(&consumer_stream).unwrap();
 
                     let lease = export
-                        .try_activate_runtime_read_lease(
-                            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-                            RuntimeCompletionAuthority::cross_device_event(&consumer_event),
+                        .try_activate_read_lease(
+                            ReadStartAuthority::ConsumerStream {
+                                stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
+                            },
+                            CompletionAuthority::CrossDeviceEvent {
+                                event: cudf::interop::cuda_event_handle(&consumer_event).unwrap(),
+                            },
                         )
                         .unwrap();
 
                     match lease.complete().unwrap() {
-                        RuntimeLeaseCompletionResult::Completed(witness) => {
+                        LeaseCompletionResult::Completed(witness) => {
                             assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerEvent);
-                            assert_eq!(witness.device(), producer_device);
                             witness.synchronize().unwrap();
                             assert!(witness.is_ready().unwrap());
                         },
-                        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+                        LeaseCompletionResult::FallbackSynchronized => {
                             panic!("expected producer-owned completion witness for cross-device event completion")
                         },
                     }

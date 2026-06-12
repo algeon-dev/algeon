@@ -1,7 +1,7 @@
 use cudf::{
     AggSpec, DataFrame, GroupByAgg,
-    core::TableView,
     ops::groupby::{AggregationRequest, NullPolicy, groupby_aggregate},
+    testing::{TableView, prelude::*},
 };
 
 use crate::{allocation::allocation_count_delta, common::column_from_slice};
@@ -36,13 +36,13 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
     let low_level_allocations = allocation_count_delta(|| {
         let key_series = df.series("key").unwrap();
-        let key_cv = key_series.view().unwrap();
+        let key_cv = key_series.testing_view().unwrap();
         let key_table = TableView::from_column_views(&[&key_cv]).unwrap();
 
         let a_series = df.series("a").unwrap();
         let b_series = df.series("b").unwrap();
-        let a_cv = a_series.view().unwrap();
-        let b_cv = b_series.view().unwrap();
+        let a_cv = a_series.testing_view().unwrap();
+        let b_cv = b_series.testing_view().unwrap();
         let a_aggs = [GroupByAgg::Sum, GroupByAgg::Min];
         let b_aggs = [GroupByAgg::Sum];
         let requests = [
@@ -55,7 +55,7 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
         assert_eq!(result.results[0].len(), 2);
         assert_eq!(result.results[1].len(), 1);
         {
-            let key_view = result.keys.view().unwrap().column(0).unwrap();
+            let key_view = result.keys.testing_view().unwrap().column(0).unwrap();
             let _ = key_view.to_vec::<i32>().unwrap();
         }
         result

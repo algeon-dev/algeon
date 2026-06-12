@@ -43,6 +43,15 @@ fn test_sum_with_nulls() {
     assert_eq!(total.value::<i64>().unwrap(), 40);
 }
 
+#[test]
+fn test_sum_string_reports_series_operation_on_type_error() {
+    let s = crate::common::series("x", &["a", "b"]).unwrap();
+    let err = s.sum().unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert_eq!(err.operation(), "series::sum");
+}
+
 // ===========================================================================
 // min / max
 // ===========================================================================

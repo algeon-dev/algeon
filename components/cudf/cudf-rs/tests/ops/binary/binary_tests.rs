@@ -14,11 +14,11 @@ use crate::common::{
 fn test_add_column_column() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![11, 22, 33]);
 }
@@ -27,10 +27,10 @@ fn test_add_column_column() {
 fn test_mul_column_scalar() {
     let col = column_from_slice(&[2i32, 3, 4]).unwrap();
     let scalar = scalar(10i32).unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Mul, &DataType::new(TypeId::Int32)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![20, 30, 40]);
 }
@@ -39,11 +39,11 @@ fn test_mul_column_scalar() {
 fn test_div_scalar_column() {
     let scalar = scalar(100.0f64).unwrap();
     let col = column_from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_sv(&scalar, &cv, BinaryOperator::Div, &DataType::new(TypeId::Float64)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<f64>().unwrap();
     assert_eq!(values, vec![50.0, 25.0, 20.0]);
 }
@@ -52,11 +52,11 @@ fn test_div_scalar_column() {
 fn test_comparison() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 1]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false]);
 }
@@ -65,8 +65,8 @@ fn test_comparison() {
 fn test_binary_operation_error_contains_operation_context() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20]).unwrap(); // mismatched length
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let err = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
         .expect_err("expected error");
@@ -79,12 +79,12 @@ fn test_binary_operation_error_contains_operation_context() {
 fn test_logical_and() {
     let a = column_from_slice(&[true, true, false, false]).unwrap();
     let b = column_from_slice(&[true, false, true, false]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vv(&av, &bv, BinaryOperator::LogicalAnd, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false, false]);
 }
@@ -98,8 +98,8 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
 
     reset_exec_observation();
     let result = binary::binary_operation_vv(
-        &lhs.view().unwrap(),
-        &rhs.view().unwrap(),
+        &lhs.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
         BinaryOperator::Add,
         &DataType::new(TypeId::Int32),
     )
@@ -111,7 +111,7 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
@@ -123,9 +123,13 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     let expected_mr = lhs.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result =
-        binary::binary_operation_vs(&lhs.view().unwrap(), &rhs, BinaryOperator::Mul, &DataType::new(TypeId::Int32))
-            .unwrap();
+    let result = binary::binary_operation_vs(
+        &lhs.testing_view().unwrap(),
+        &rhs,
+        BinaryOperator::Mul,
+        &DataType::new(TypeId::Int32),
+    )
+    .unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -133,7 +137,7 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
@@ -146,16 +150,20 @@ fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
     let expected_stream = rhs.testing_execution_domain_stream_value();
 
     reset_exec_observation();
-    let result =
-        binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
-            .unwrap();
+    let result = binary::binary_operation_sv(
+        &lhs,
+        &rhs.testing_view().unwrap(),
+        BinaryOperator::Div,
+        &DataType::new(TypeId::Int32),
+    )
+    .unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), rhs.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), last_exec_mr_value());
     assert_eq!(last_exec_stream_value(), expected_stream);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
@@ -167,11 +175,11 @@ fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
 fn test_string_equal_vv() {
     let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
@@ -179,12 +187,12 @@ fn test_string_equal_vv() {
 fn test_string_not_equal_vv() {
     let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vv(&av, &bv, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
 
@@ -192,11 +200,11 @@ fn test_string_not_equal_vv() {
 fn test_string_less_vv() {
     let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
@@ -205,11 +213,11 @@ fn test_string_less_vv() {
 fn test_string_greater_vv() {
     let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -218,12 +226,12 @@ fn test_string_greater_vv() {
 fn test_string_less_equal_vv() {
     let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vv(&av, &bv, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
@@ -232,12 +240,12 @@ fn test_string_less_equal_vv() {
 fn test_string_greater_equal_vv() {
     let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vv(&av, &bv, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
@@ -250,11 +258,11 @@ fn test_string_greater_equal_vv() {
 fn test_string_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
     let scalar = crate::common::string_scalar("active").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -262,11 +270,11 @@ fn test_string_equal_vs() {
 fn test_string_not_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
     let scalar = crate::common::string_scalar("active").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
@@ -274,11 +282,11 @@ fn test_string_not_equal_vs() {
 fn test_string_less_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
@@ -287,11 +295,11 @@ fn test_string_less_vs() {
 fn test_string_greater_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -300,11 +308,11 @@ fn test_string_greater_vs() {
 fn test_string_less_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
@@ -313,11 +321,11 @@ fn test_string_less_equal_vs() {
 fn test_string_greater_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result =
         binary::binary_operation_vs(&cv, &scalar, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
@@ -330,11 +338,11 @@ fn test_string_greater_equal_vs() {
 fn test_string_equal_empty() {
     let a = column_from_strs(&["", "hello", ""]).unwrap();
     let b = column_from_strs(&["", "", "hello"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -342,11 +350,11 @@ fn test_string_equal_empty() {
 fn test_string_equal_case_sensitive() {
     let a = column_from_strs(&["Foo", "BAR", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "baz"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     // Case-sensitive: "Foo" != "foo", "BAR" != "bar", "baz" == "baz"
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
@@ -359,8 +367,8 @@ fn test_string_equal_case_sensitive() {
 fn test_string_add_vv_error() {
     let a = column_from_strs(&["foo", "bar"]).unwrap();
     let b = column_from_strs(&["baz", "qux"]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::String));
     assert!(result.is_err());
@@ -370,7 +378,7 @@ fn test_string_add_vv_error() {
 fn test_string_sub_vs_error() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
     let scalar = crate::common::string_scalar("baz").unwrap();
-    let cv = col.view().unwrap();
+    let cv = col.testing_view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));
     assert!(result.is_err());

@@ -274,9 +274,9 @@ fn assert_host_table_exports_equivalent(source: &Table, imported: &Table) {
 }
 
 fn assert_nullable_i32_materialized(column: &Column, expected: Vec<Option<i32>>) {
-    let view = column.view().unwrap();
+    let view = column.testing_view().unwrap();
     let values = view.to_vec::<i32>().unwrap();
-    let validity = view.validity().unwrap().unwrap();
+    let validity = view.to_host_validity().unwrap().unwrap();
     let materialized =
         values.into_iter().zip(validity).map(|(value, is_valid)| is_valid.then_some(value)).collect::<Vec<_>>();
     assert_eq!(materialized, expected);
@@ -290,7 +290,7 @@ fn two_numeric_columns_table(runtime: &Runtime) -> Table {
 }
 
 fn assert_two_numeric_columns_table(table: &Table) {
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     assert_eq!(view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(view.column(1).unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
 }
@@ -298,7 +298,11 @@ fn assert_two_numeric_columns_table(table: &Table) {
 fn named_numeric_frame(runtime: &Runtime) -> DataFrame {
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    DataFrame::from_series([ids, values]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, values]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 fn assert_named_numeric_dataframe(imported: &DataFrame, left_name: &str, right_name: &str) {
@@ -313,9 +317,13 @@ fn dictionary_backed_nested_frame(filename: &str, rows: &str) -> DataFrame {
     let nested = frame.series("nested").unwrap();
     let point = frame.series("point").unwrap();
     let id = frame.series("id").unwrap();
-    let encoded = dictionary::encode(&category.view().unwrap(), TypeId::Int32).unwrap();
+    let encoded = dictionary::encode(&category.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(encoded).unwrap().rename("category");
-    DataFrame::from_series([category, nested, point, id]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([category, nested, point, id]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec<String>) -> OwnedTableTransfer {
@@ -346,7 +354,7 @@ mod column_import_contracts {
     fn borrowed_column_view_import_copies_data_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -354,7 +362,7 @@ mod column_import_contracts {
             Column::try_import_from_borrowed_column_view_into_runtime(&borrowed, &destination_runtime).unwrap()
         });
 
-        assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+        assert_eq!(imported.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
         assert_column_imported_into_runtime(&imported, &destination_runtime);
     }
 
@@ -362,7 +370,7 @@ mod column_import_contracts {
     fn series_import_from_borrowed_column_view_returns_unnamed_series() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -387,7 +395,7 @@ mod column_import_contracts {
             Column::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap()
         });
 
-        assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+        assert_eq!(imported.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
         assert_column_imported_into_runtime(&imported, &destination_runtime);
     }
 
@@ -413,7 +421,7 @@ mod column_import_contracts {
         let source_runtime = Runtime::builder().build().unwrap();
         let source =
             source_runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, true]).unwrap();
-        let sliced = source.slice_view(1, 2).unwrap();
+        let sliced = source.testing_slice_view(1, 2).unwrap();
         let export = sliced.try_prepare_host_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -430,7 +438,7 @@ mod column_import_contracts {
     fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
-        let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
+        let expected_ptr = column.testing_view().unwrap().device_data_ptr().unwrap();
         let destination_runtime = common::sample_runtime();
 
         let transfer = column.try_into_owned_transfer().unwrap();
@@ -439,7 +447,7 @@ mod column_import_contracts {
 
         assert_eq!(imported.name(), None);
         assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
-        assert_eq!(imported.as_column().view().unwrap().device_data_ptr().unwrap(), expected_ptr);
+        assert_eq!(imported.as_column().testing_view().unwrap().device_data_ptr().unwrap(), expected_ptr);
         assert_column_bound_to_runtime(imported.as_column(), &destination_runtime);
     }
 
@@ -448,7 +456,7 @@ mod column_import_contracts {
         let source_runtime = Runtime::builder().build().unwrap();
         let source =
             source_runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, true]).unwrap();
-        let sliced = source.slice_view(1, 2).unwrap();
+        let sliced = source.testing_slice_view(1, 2).unwrap();
         let borrowed = sliced.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -464,7 +472,7 @@ mod column_import_contracts {
         let source = source_runtime
             .column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true])
             .unwrap();
-        let sliced = source.slice_view(1, 2).unwrap();
+        let sliced = source.testing_slice_view(1, 2).unwrap();
         let borrowed = sliced.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -481,8 +489,8 @@ mod column_import_contracts {
     fn borrowed_dictionary_column_import_round_trips_string_keys() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
-        let dictionary = dictionary::encode(&source.view().unwrap(), TypeId::Int32).unwrap();
-        let dictionary_view = dictionary.view().unwrap();
+        let dictionary = dictionary::encode(&source.testing_view().unwrap(), TypeId::Int32).unwrap();
+        let dictionary_view = dictionary.testing_view().unwrap();
         let borrowed = dictionary_view.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -498,13 +506,16 @@ mod column_import_contracts {
     fn borrowed_list_column_import_round_trips_recursive_nested_children() {
         let frame = read_json_dataframe(
             "borrowed_import_lists.jsonl",
-            "{\"nested\":[[1,2],[3]]}\n\
-             {\"nested\":[[],[4,5]]}\n\
-             {\"nested\":[[6]]}\n",
+            "{\"nested\":[[1,2],[3]]}
+\
+             {\"nested\":[[],[4,5]]}
+\
+             {\"nested\":[[6]]}
+",
         );
         let nested = frame.series("nested").unwrap();
         let source = nested.as_column();
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_column_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -522,7 +533,7 @@ mod column_import_contracts {
         let source = source_runtime
             .column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true])
             .unwrap();
-        let sliced = source.slice_view(1, 2).unwrap();
+        let sliced = source.testing_slice_view(1, 2).unwrap();
         let export = sliced.try_prepare_device_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
         let _event_lock = common::lock_event_observation();
@@ -542,7 +553,7 @@ mod column_import_contracts {
         let source = source_runtime
             .column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true])
             .unwrap();
-        let sliced = source.slice_view(1, 2).unwrap();
+        let sliced = source.testing_slice_view(1, 2).unwrap();
         let export = sliced.try_prepare_host_column_export().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -563,7 +574,7 @@ mod table_import_contracts {
     fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = two_numeric_columns_table(&source_runtime);
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_table_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -579,9 +590,9 @@ mod table_import_contracts {
     fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
         let source_runtime = Runtime::builder().build().unwrap();
         let strings = source_runtime.column_from_strs(&["beta", "alpha", "beta"]).unwrap();
-        let dictionary = dictionary::encode(&strings.view().unwrap(), TypeId::Int32).unwrap();
+        let dictionary = dictionary::encode(&strings.testing_view().unwrap(), TypeId::Int32).unwrap();
         let source = Table::from_columns(vec![strings, dictionary]).unwrap();
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_table_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -597,12 +608,15 @@ mod table_import_contracts {
     fn borrowed_table_view_import_supports_recursive_list_and_struct_columns() {
         let source = read_json_dataframe(
             "borrowed_import_nested_table.jsonl",
-            "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
-             {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
-             {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+            "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
+\
+             {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
+\
+             {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
+",
         );
         let (source, _names) = source.try_into_table().unwrap();
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_table_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -618,9 +632,12 @@ mod table_import_contracts {
     fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
         let frame = dictionary_backed_nested_frame(
             "prepared_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
+\
+             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
+\
+             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
+",
         );
         let (source, _names) = frame.try_into_table().unwrap();
         let export = source.try_prepare_device_table_export().unwrap();
@@ -639,9 +656,12 @@ mod table_import_contracts {
     fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
         let frame = dictionary_backed_nested_frame(
             "prepared_host_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
+\
+             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
+\
+             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
+",
         );
         let (source, _names) = frame.try_into_table().unwrap();
         let export = source.try_prepare_host_table_export().unwrap();
@@ -659,19 +679,28 @@ mod table_import_contracts {
     fn prepared_and_owned_table_import_paths_preserve_same_nested_table_semantics() {
         let frame = read_json_dataframe(
             "prepared_and_owned_import_nested.jsonl",
-            "{\"name\":\"alice\",\"lists\":[1,2],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"category\":\"beta\"}\n\
-            {\"name\":\"bob\",\"lists\":[3],\"point\":{\"coords\":[],\"label\":\"two\"},\"category\":\"alpha\"}\n\
-             {\"name\":\"cara\",\"lists\":[],\"point\":{\"coords\":[3],\"label\":\"three\"},\"category\":\"beta\"}\n",
+            "{\"name\":\"alice\",\"lists\":[1,2],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"category\":\"beta\"}
+\
+            {\"name\":\"bob\",\"lists\":[3],\"point\":{\"coords\":[],\"label\":\"two\"},\"category\":\"alpha\"}
+\
+             {\"name\":\"cara\",\"lists\":[],\"point\":{\"coords\":[3],\"label\":\"three\"},\"category\":\"beta\"}
+",
         );
         let name = frame.series("name").unwrap();
         let lists = frame.series("lists").unwrap();
         let point = frame.series("point").unwrap();
         let category_source = frame.series("category").unwrap().as_column().deep_copy().unwrap();
         let category =
-            Series::from_column(dictionary::encode(&category_source.view().unwrap(), TypeId::Int32).unwrap())
+            Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
                 .unwrap()
                 .rename("category");
-        let frame = DataFrame::from_series([name, lists, point, category]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([name, lists, point, category]).map(
+            |series| {
+                let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+                (name, series)
+            },
+        ))
+        .unwrap();
         let destination_runtime = common::sample_runtime();
 
         let prepared_source = frame.clone();
@@ -709,7 +738,7 @@ mod dataframe_import_contracts {
     fn dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = two_numeric_columns_table(&source_runtime);
-        let source_view = source.view().unwrap();
+        let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_table_view().unwrap();
         let destination_runtime = common::sample_runtime();
 
@@ -729,9 +758,12 @@ mod dataframe_import_contracts {
     fn dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts() {
         let frame = read_json_dataframe(
             "prepared_dataframe_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
+\
+             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
+\
+             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
+",
         );
 
         let export_frame = frame.clone();

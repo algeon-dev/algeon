@@ -392,7 +392,11 @@ fn scalar_copy_dataframe_round_trip() {
     let scalar = ts.min().unwrap();
 
     let series = rt.series_from_scalar("ts_col", &scalar, 3).unwrap();
-    let df = cudf::DataFrame::from_series([series]).unwrap();
+    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     let retrieved = df.series("ts_col").unwrap();
 
     let expected = crate::common::series::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
@@ -411,15 +415,27 @@ fn scalar_copy_dataframe_round_trip() {
 #[test]
 fn copy_into_domain_list_scalar() {
     let rt = sample_runtime();
-    let list_series =
-        read_json_series(&rt, "scalar_copy_list.jsonl", "{\"nested\":[1,2]}\n{\"nested\":[3]}\n", "nested");
+    let list_series = read_json_series(
+        &rt,
+        "scalar_copy_list.jsonl",
+        "{\"nested\":[1,2]}
+{\"nested\":[3]}
+",
+        "nested",
+    );
 
     // libcudf min() on list columns returns the lexicographically smallest element.
     let scalar = list_series.min().unwrap();
     let result = rt.series_from_scalar("out", &scalar, 2).unwrap();
-    let expected =
-        read_json_series(&rt, "scalar_copy_list_expected.jsonl", "{\"nested\":[1,2]}\n{\"nested\":[1,2]}\n", "nested")
-            .rename("out");
+    let expected = read_json_series(
+        &rt,
+        "scalar_copy_list_expected.jsonl",
+        "{\"nested\":[1,2]}
+{\"nested\":[1,2]}
+",
+        "nested",
+    )
+    .rename("out");
 
     assert_series_host_export_equivalent(&expected, &result);
 }
@@ -430,7 +446,9 @@ fn copy_into_domain_struct_scalar() {
     let struct_series = read_json_series(
         &rt,
         "scalar_copy_struct.jsonl",
-        "{\"point\":{\"id\":1,\"label\":\"one\"}}\n{\"point\":{\"id\":2,\"label\":\"two\"}}\n",
+        "{\"point\":{\"id\":1,\"label\":\"one\"}}
+{\"point\":{\"id\":2,\"label\":\"two\"}}
+",
         "point",
     );
 
@@ -440,7 +458,9 @@ fn copy_into_domain_struct_scalar() {
     let expected = read_json_series(
         &rt,
         "scalar_copy_struct_expected.jsonl",
-        "{\"point\":{\"id\":1,\"label\":\"one\"}}\n{\"point\":{\"id\":1,\"label\":\"one\"}}\n",
+        "{\"point\":{\"id\":1,\"label\":\"one\"}}
+{\"point\":{\"id\":1,\"label\":\"one\"}}
+",
         "point",
     )
     .rename("out");

@@ -3,6 +3,7 @@
 use cudf::{
     DataType, TypeId,
     ops::reduction::{self, NullPolicy, ReduceAgg, ScanAgg, ScanType},
+    testing::prelude::*,
 };
 
 use crate::common::column_from_slice;
@@ -10,7 +11,7 @@ use crate::common::column_from_slice;
 #[test]
 fn test_reduce_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Sum, &DataType::new(TypeId::Int64)).unwrap();
     assert!(result.is_valid().unwrap());
@@ -20,7 +21,7 @@ fn test_reduce_sum() {
 #[test]
 fn test_reduce_min() {
     let col = column_from_slice(&[5i32, 1, 3]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Min, &DataType::new(TypeId::Int32)).unwrap();
     assert!(result.is_valid().unwrap());
@@ -30,7 +31,7 @@ fn test_reduce_min() {
 #[test]
 fn test_reduce_max() {
     let col = column_from_slice(&[5i32, 1, 3]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Max, &DataType::new(TypeId::Int32)).unwrap();
     assert!(result.is_valid().unwrap());
@@ -40,7 +41,7 @@ fn test_reduce_max() {
 #[test]
 fn test_reduce_mean() {
     let col = column_from_slice(&[2.0f64, 4.0, 6.0]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Mean, &DataType::new(TypeId::Float64)).unwrap();
     assert!(result.is_valid().unwrap());
@@ -50,7 +51,7 @@ fn test_reduce_mean() {
 #[test]
 fn test_reduce_product() {
     let col = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Product, &DataType::new(TypeId::Int64)).unwrap();
     assert!(result.is_valid().unwrap());
@@ -60,10 +61,10 @@ fn test_reduce_product() {
 #[test]
 fn test_scan_inclusive_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::scan(&view, ScanAgg::Sum, ScanType::Inclusive, NullPolicy::Exclude).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![1, 3, 6, 10]);
 }
@@ -71,10 +72,10 @@ fn test_scan_inclusive_sum() {
 #[test]
 fn test_scan_exclusive_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let result = reduction::scan(&view, ScanAgg::Sum, ScanType::Exclusive, NullPolicy::Exclude).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![0, 1, 3, 6]);
 }
@@ -82,7 +83,7 @@ fn test_scan_exclusive_sum() {
 #[test]
 fn test_reduce_ddof_above_i32_max_contains_context() {
     let col = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let err = reduction::reduce(&view, &ReduceAgg::Variance { ddof: u32::MAX }, &DataType::new(TypeId::Float64))
         .expect_err("expected error");
@@ -95,7 +96,7 @@ fn test_reduce_ddof_above_i32_max_contains_context() {
 #[test]
 fn test_minmax() {
     let col = column_from_slice(&[5i32, 1, 3, 7, 2]).unwrap();
-    let view = col.view().unwrap();
+    let view = col.testing_view().unwrap();
 
     let (min_scalar, max_scalar) = reduction::minmax(&view).unwrap();
     assert!(min_scalar.is_valid().unwrap());
@@ -108,7 +109,7 @@ fn test_minmax() {
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2);
     let series = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
-    let view = series.view().unwrap();
+    let view = series.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Min, &dt).unwrap();
 

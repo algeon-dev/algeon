@@ -1,7 +1,7 @@
 //! Tests for the `DataFrame::groupby` high-level API: `GroupBy`, `GroupByAgg`, `AggSpec`,
 //! `GroupByOptions`.
 
-use cudf::{AggSpec, DataFrame, ErrorKind, GroupByAgg};
+use cudf::{AggSpec, DataFrame, ErrorKind, GroupByAgg, testing::prelude::*};
 
 use crate::common::{assert_missing_column_error, column_from_slice};
 
@@ -268,18 +268,24 @@ fn groupby_shortcut_handle_is_reusable() {
 
 #[test]
 fn scoped_groupby_handle_is_reusable() {
-    use cudf::{ExecutionContext, Runtime, runtime::CudaStream};
+    use cudf::{ExecutionOverrides, Runtime, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_series([
-        rt.series("key", &[1i32, 2, 1, 2]).unwrap(),
-        rt.series("value", &[10i64, 20, 30, 40]).unwrap(),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            rt.series("key", &[1i32, 2, 1, 2]).unwrap(),
+            rt.series("value", &[10i64, 20, 30, 40]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let ctx = ExecutionContext::new().with_stream(&stream);
-    let groupby = df.groupby(["key"]).in_context(&ctx);
+    let ctx = ExecutionOverrides::new().with_stream(&stream);
+    let groupby = df.groupby(["key"]).with_execution(&ctx);
     let summed = groupby.sum(["value"]).unwrap();
     let averaged = groupby.mean(["value"]).unwrap();
 
@@ -631,14 +637,14 @@ fn groupby_domain_module_exports_documented_surface() {
 
     let keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 1, 2]).unwrap()]).unwrap();
     let values = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let value_view = values.view().unwrap();
+    let value_view = values.testing_view().unwrap();
     let aggs = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &value_view, aggregations: &aggs }];
 
     let result: GroupByAggregationOutput =
-        groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
+        groupby_aggregate(&keys.testing_view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
 
-    assert_eq!(result.keys.view().unwrap().num_rows().unwrap(), 2);
+    assert_eq!(result.keys.testing_view().unwrap().num_rows().unwrap(), 2);
     assert_eq!(result.results.len(), 1);
     assert_eq!(result.results[0].len(), 1);
 }

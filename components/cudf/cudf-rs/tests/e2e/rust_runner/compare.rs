@@ -25,7 +25,9 @@ pub struct Mismatch {
 impl Mismatch {
     pub fn display(&self) -> String {
         format!(
-            "[e2e][{}] dataset={} operation={} path={}\nexpected: {}\nactual:   {}",
+            "[e2e][{}] dataset={} operation={} path={}
+expected: {}
+actual:   {}",
             self.case_id, self.dataset_id, self.operation_kind, self.path, self.expected, self.actual
         )
     }

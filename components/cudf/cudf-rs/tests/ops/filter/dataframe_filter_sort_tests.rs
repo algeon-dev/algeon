@@ -124,10 +124,16 @@ fn test_filter_isin_empty_values() {
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_input_before_dataframe_exec() {
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df = DataFrame::from_series([
-        df_rt.series("id", &[10i32, 20, 30]).unwrap(),
-        df_rt.series("score", &[100i32, 200, 300]).unwrap(),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            df_rt.series("id", &[10i32, 20, 30]).unwrap(),
+            df_rt.series("score", &[100i32, 200, 300]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let values = values_rt.series("values", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();

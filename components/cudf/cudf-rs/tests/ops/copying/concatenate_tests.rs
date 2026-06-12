@@ -11,11 +11,11 @@ fn test_concatenate_columns() {
     let rt = sample_runtime();
     let a = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = rt.column_from_slice(&[4i32, 5]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = concatenate::concatenate_columns(&[&av, &bv]).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.len().unwrap(), 5);
     let values = rv.to_vec::<i32>().unwrap();
     assert_eq!(values, vec![1, 2, 3, 4, 5]);
@@ -40,11 +40,11 @@ fn test_concatenate_tables() {
     let c1b = rt.column_from_slice(&[30.0f64, 40.0]).unwrap();
     let t2 = Table::from_columns(vec![c0b, c1b]).unwrap();
 
-    let v1 = t1.view().unwrap();
-    let v2 = t2.view().unwrap();
+    let v1 = t1.testing_view().unwrap();
+    let v2 = t2.testing_view().unwrap();
 
     let result = concatenate::concatenate_tables(&[&v1, &v2]).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_columns().unwrap(), 2);
     assert_eq!(rv.num_rows().unwrap(), 4);
 
@@ -67,15 +67,15 @@ fn test_concatenate_nullable_columns() {
     let rt = sample_runtime();
     let a = rt.column_from_slice_nullable(&[1i32, 2], &[true, false]).unwrap();
     let b = rt.column_from_slice_nullable(&[3i32, 4], &[false, true]).unwrap();
-    let av = a.view().unwrap();
-    let bv = b.view().unwrap();
+    let av = a.testing_view().unwrap();
+    let bv = b.testing_view().unwrap();
 
     let result = concatenate::concatenate_columns(&[&av, &bv]).unwrap();
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.len().unwrap(), 4);
 
     let values = rv.to_vec::<i32>().unwrap();
-    let validity = rv.validity().unwrap().unwrap();
+    let validity = rv.to_host_validity().unwrap().unwrap();
     // Values at valid positions should match.
     assert_eq!(values[0], 1);
     assert_eq!(values[3], 4);
@@ -92,7 +92,8 @@ fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenanc
     let expected_mr = first.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = concatenate::concatenate_columns(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+    let result =
+        concatenate::concatenate_columns(&[&first.testing_view().unwrap(), &second.testing_view().unwrap()]).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), first.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -100,7 +101,7 @@ fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenanc
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
@@ -122,7 +123,8 @@ fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance
     let expected_mr = first.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = concatenate::concatenate_tables(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+    let result =
+        concatenate::concatenate_tables(&[&first.testing_view().unwrap(), &second.testing_view().unwrap()]).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), first.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -130,7 +132,7 @@ fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    let view = result.view().unwrap();
+    let view = result.testing_view().unwrap();
     assert_eq!(view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
     assert_eq!(last_sync_stream_value(), expected_stream);

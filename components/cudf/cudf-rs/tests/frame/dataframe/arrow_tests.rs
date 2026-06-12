@@ -155,7 +155,7 @@ fn test_round_trip_nullable_i32() {
     // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("a").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -182,7 +182,7 @@ fn test_round_trip_nullable_f64() {
 
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("v").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -236,7 +236,7 @@ fn test_round_trip_nullable_bool8() {
 
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("flag").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 }
 
@@ -245,7 +245,11 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap().rename("flag");
-    let df = DataFrame::from_series([flag]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([flag]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -345,7 +349,7 @@ fn test_from_record_batch_with_nulls() {
 
     let df = import_record_batch(&batch).unwrap();
     let cv = df.series("a").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_vec to access values alongside nulls.
@@ -353,6 +357,34 @@ fn test_from_record_batch_with_nulls() {
     assert_eq!(vals[0], Some(1));
     assert_eq!(vals[1], None);
     assert_eq!(vals[2], Some(3));
+}
+
+#[test]
+fn test_from_record_batch_primitive_slice_import_uses_logical_values() {
+    let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, false)]);
+    let base: Arc<dyn Array> = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
+    let sliced = base.slice(1, 2);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![sliced]).unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    let vals: Vec<i32> = df.series("a").unwrap().to_vec_strict::<i32>().unwrap();
+    assert_eq!(vals, vec![20, 30]);
+}
+
+#[test]
+fn test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls() {
+    let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, true)]);
+    let base: Arc<dyn Array> = Arc::new(Int32Array::from(vec![Some(10), None, Some(30), Some(40)]));
+    let sliced = base.slice(1, 2);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![sliced]).unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    let series = df.series("a").unwrap();
+    let validity = series.testing_view().unwrap().to_host_validity().unwrap().unwrap();
+    assert_eq!(validity, vec![false, true]);
+
+    let vals = series.to_optional_vec::<i32>().unwrap();
+    assert_eq!(vals, vec![None, Some(30)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +462,7 @@ fn test_round_trip_nullable_string() {
     // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("tag").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_strings to access values alongside nulls.
@@ -496,7 +528,7 @@ fn test_from_record_batch_nullable_string_array() {
 
     let df = import_record_batch(&batch).unwrap();
     let cv = df.series("s").unwrap();
-    let validity = cv.view().unwrap().validity().unwrap().unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 
     // Nullable column: use to_optional_strings to access values alongside nulls.

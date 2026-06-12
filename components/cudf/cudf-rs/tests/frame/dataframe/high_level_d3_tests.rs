@@ -27,7 +27,11 @@ fn sample_df_with_nulls() -> DataFrame {
     .unwrap();
     let tags =
         crate::common::nullable_series("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
-    DataFrame::from_series([ids, scores, tags]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores, tags]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 /// Build a 5-row DataFrame with duplicate values:
@@ -36,7 +40,11 @@ fn sample_df_with_nulls() -> DataFrame {
 fn sample_df_with_dupes() -> DataFrame {
     let a = crate::common::series::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
-    DataFrame::from_series([a, b]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 // ===========================================================================
@@ -152,7 +160,11 @@ fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
     let a = crate::common::nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
     let b = crate::common::nullable_series::<i32>("b", &[0, 0], &[false, false]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
     assert_eq!(result.num_rows(), 0);
@@ -194,7 +206,11 @@ fn test_drop_duplicates_subset() {
 fn test_drop_duplicates_keep_first() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -217,7 +233,11 @@ fn test_drop_duplicates_keep_first() {
 fn test_drop_duplicates_keep_last() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -239,7 +259,11 @@ fn test_drop_duplicates_keep_last() {
 fn test_drop_duplicates_keep_none() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
     let result = df.drop_duplicates(opts).unwrap();
