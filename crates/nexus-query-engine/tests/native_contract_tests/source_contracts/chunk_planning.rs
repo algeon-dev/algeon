@@ -632,6 +632,42 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
 }
 
 #[test]
+fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
+    let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-nested-stats");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("nested.parquet");
+    let schema = write_nested_key_parquet(&path);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_row_group_rows(vec![1, 1])],
+        schema,
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route =
+        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        nexus_query_engine::DynamicFilterId::new(0),
+        nexus_query_engine::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
+    );
+
+    let rewritten =
+        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
+
+    assert_eq!(plan.row_group_count(), 1);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![1]);
+    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
+    assert_eq!(stats.selected_row_groups, 1);
+    assert_eq!(stats.total_row_groups, 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predicate() {
     let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-position-delete");
     let path = dir.join("input.parquet");
@@ -961,6 +997,27 @@ fn write_row_grouped_parquet(path: &Path, row_count: usize, rows_per_group: usiz
     let values = (0..row_count).map(|value| value as i32).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values))]).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn write_nested_key_parquet(path: &Path) -> Arc<Schema> {
+    let payload_a = Arc::new(Field::new("a", DataType::Int32, false));
+    let payload_b = Arc::new(Field::new("b", DataType::Int32, false));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("payload", DataType::Struct(Fields::from(vec![payload_a.clone(), payload_b.clone()])), false),
+        Field::new("key", DataType::Int32, false),
+    ]));
+    let payload_a_values = Arc::new(Int32Array::from(vec![0, 0])) as ArrayRef;
+    let payload_b_values = Arc::new(Int32Array::from(vec![5, 100])) as ArrayRef;
+    let payload =
+        Arc::new(StructArray::from(vec![(payload_a, payload_a_values), (payload_b, payload_b_values)])) as ArrayRef;
+    let key = Arc::new(Int32Array::from(vec![100, 5])) as ArrayRef;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![payload, key]).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
     writer.write(&batch).unwrap();

@@ -317,8 +317,7 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
     let group_key = SourceGroupKey { file_keys };
     let stable_file_ids =
         source.files.iter().map(|file| file.location.diagnostic_stable_id(file.stable_id.as_str())).collect();
-    let selected_source_bytes =
-        source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes());
+    let selected_source_bytes = conservative_selected_source_bytes(source);
     Some(SourceVariant {
         source_node_id,
         source: source.clone(),
@@ -332,10 +331,26 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
     })
 }
 
+fn conservative_selected_source_bytes(source: &LocalParquetSource) -> Option<u64> {
+    if let Some(bytes) =
+        source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes())
+    {
+        return Some(bytes);
+    }
+    source.files.iter().try_fold(0_u64, |total, file| {
+        if file.row_groups.is_some() {
+            return None;
+        }
+        total.checked_add(file.file_size_bytes?)
+    })
+}
+
 fn source_contract_supported(source: &LocalParquetSource) -> bool {
     source.scan_limit.is_none()
+        && source_output_schema_override_supported(source)
         && !source.is_zero_column_count_source()
         && !source.is_count_star_probe_source()
+        && !source.has_position_delete_files()
         && source.partition_columns.is_empty()
         && source.missing_columns.is_empty()
         && source
@@ -344,6 +359,22 @@ fn source_contract_supported(source: &LocalParquetSource) -> bool {
             .chain(source.pure_filter_column_source_refs.iter())
             .all(|source_ref| matches!(source_ref, SourceColumnRef::File(_)))
         && source.files.iter().all(file_contract_supported)
+}
+
+fn source_output_schema_override_supported(source: &LocalParquetSource) -> bool {
+    match source.output_schema_override.as_ref() {
+        Some(output_schema) => schemas_have_same_visible_fields(&source.schema, output_schema),
+        None => true,
+    }
+}
+
+fn schemas_have_same_visible_fields(left: &Schema, right: &Schema) -> bool {
+    left.fields().len() == right.fields().len()
+        && left
+            .fields()
+            .iter()
+            .zip(right.fields())
+            .all(|(left, right)| left.name() == right.name() && left.data_type() == right.data_type())
 }
 
 fn source_group_has_conflicting_file_columns(variants: &[SourceVariant]) -> bool {

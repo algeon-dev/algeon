@@ -192,6 +192,208 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
 }
 
 #[test]
+fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("p_partkey", DataType::Int32, false),
+        Field::new("p_brand", DataType::Utf8, false),
+        Field::new("p_type", DataType::Utf8View, false),
+        Field::new("p_size", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
+            Arc::new(arrow::array::StringArray::from(vec![
+                "Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44",
+            ])) as ArrayRef,
+            Arc::new(arrow::array::StringViewArray::from(vec![
+                "SMALL BRUSHED",
+                "SMALL BRUSHED",
+                "MEDIUM POLISHED COPPER",
+                "LARGE ANODIZED",
+                "MEDIUM POLISHED STEEL",
+            ])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![49, 49, 49, 3, 14])) as ArrayRef,
+        ],
+    )
+    .expect("test batch should be valid");
+
+    let filter = nexus_query_engine::dimension_key_filter_from_batch(&batch, "p_partkey", &q16_part_predicate())
+        .expect("Q16-like string predicate should be evaluable")
+        .expect("qualifying part keys should build a filter");
+
+    assert_eq!(filter.bounds(), nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 40 });
+    assert_eq!(filter.run_count(), 2);
+    assert!(filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 10 }));
+    assert!(filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 40, max: 40 }));
+    assert!(!filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 20, max: 30 }));
+}
+
+#[test]
+fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
+    let dir = unique_contract_temp_dir("dimension-q16-part-string-filter");
+    let fact_path = dir.join("partsupp.parquet");
+    let part_path = dir.join("part.parquet");
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("ps_supplycost", DataType::Int32, false),
+    ]));
+    let part_schema = Arc::new(Schema::new(vec![
+        Field::new("p_partkey", DataType::Int32, false),
+        Field::new("p_brand", DataType::Utf8, false),
+        Field::new("p_type", DataType::Utf8, false),
+        Field::new("p_size", DataType::Int32, false),
+    ]));
+    write_i32_record_batch_parquet(
+        &fact_path,
+        Arc::clone(&fact_schema),
+        vec![Int32Array::from(vec![10, 20, 30, 40, 50]), Int32Array::from(vec![1, 1, 1, 1, 1])],
+        1,
+    );
+    write_q16_part_dimension_parquet(&part_path, Arc::clone(&part_schema), 1);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&fact_schema),
+        vec!["ps_partkey".to_string(), "ps_supplycost".to_string()],
+    )));
+    let part = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&part_path)],
+            Arc::clone(&part_schema),
+            vec!["p_partkey".to_string(), "p_brand".to_string(), "p_type".to_string(), "p_size".to_string()],
+        )
+        .with_reader_predicate(q16_part_predicate()),
+    ));
+    let join_schema = Arc::new(Schema::new(vec![Field::new("ps_partkey", DataType::Int32, false)]));
+    let joined = builder.add_join(
+        fact,
+        part,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                ColumnRef::input(1, "p_partkey", "p_partkey"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+            "ps_partkey",
+        )]),
+        Arc::clone(&join_schema),
+    );
+    let plan = builder.finish_gpu_resident(joined);
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let applied = result
+        .diagnostics
+        .dimension_derived_row_group_pruning
+        .candidates
+        .iter()
+        .find(|candidate| candidate.applied)
+        .expect("Q16-like part predicate should prune partsupp row groups");
+    assert_eq!(applied.dimension_key_column.as_deref(), Some("p_partkey"));
+    assert_eq!(applied.target_key_column.as_deref(), Some("ps_partkey"));
+    assert_eq!(applied.derived_min_key, Some(10));
+    assert_eq!(applied.derived_max_key, Some(40));
+    assert_eq!(applied.selected_row_groups_before, Some(5));
+    assert_eq!(applied.selected_row_groups_after, Some(2));
+
+    let PlanNode::Source(source) = &result.plan.node(fact).expect("fact source node should remain").kind else {
+        panic!("fact node should remain a source");
+    };
+    let SourceNode::LocalParquet(source) = source.as_ref() else {
+        panic!("fact node should remain local parquet");
+    };
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0, 3][..]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
+fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
+    let dir = unique_contract_temp_dir("dimension-limit-target");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let fact_schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));
+    let dim_schema = Arc::new(Schema::new(vec![Field::new("dim_key", DataType::Int32, false)]));
+    write_i32_record_batch_parquet(&fact_path, Arc::clone(&fact_schema), vec![Int32Array::from(vec![1, 2, 3])], 1);
+    write_i32_record_batch_parquet(&dim_path, Arc::clone(&dim_schema), vec![Int32Array::from(vec![2])], 1);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&fact_schema),
+        vec!["fact_key".to_string()],
+    )));
+    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(1), Arc::clone(&fact_schema));
+    let dim = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&dim_path)],
+            Arc::clone(&dim_schema),
+            vec!["dim_key".to_string()],
+        )
+        .with_reader_predicate(Expr::binary(
+            Expr::column("dim_key"),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int32(2)),
+        )),
+    ));
+    let joined = builder.add_join(
+        limited_fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "fact_key", "fact_key"),
+            "fact_key",
+        )]),
+        Arc::clone(&fact_schema),
+    );
+    let plan = builder.finish_gpu_resident(joined);
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
+    assert!(result.diagnostics.dimension_derived_row_group_pruning.candidates.iter().any(|candidate| {
+        candidate.target_source_node_id.is_none()
+            && candidate.rejected_reason
+                == Some(DimensionDerivedRowGroupPruningRejectedReason::TargetKeyLineageUnavailable)
+    }));
+    let fact_source = result
+        .plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) if source.read_columns.iter().any(|column| column == "fact_key") => {
+                    Some(source)
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("fact source should remain present");
+    assert_eq!(fact_source.files[0].row_groups, None);
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
 fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
     let dir = unique_contract_temp_dir("dimension-group-filter-discovery");
     let plan = aggregate_group_filter_dimension_pruning_plan(&dir);
@@ -627,9 +829,52 @@ fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine
     builder.finish_gpu_resident(filtered)
 }
 
+fn q16_part_predicate() -> Expr {
+    let brand_ok = Expr::binary(
+        Expr::column("p_brand"),
+        BinaryOp::NotEq,
+        Expr::literal(LiteralValue::Utf8("Brand#45".to_string())),
+    );
+    let type_ok = Expr::not_like_escape(Expr::column("p_type"), "MEDIUM POLISHED%", "\\");
+    let size_ok = Expr::in_list(
+        Expr::column("p_size"),
+        [49, 14, 23, 45, 19, 3, 36, 9]
+            .into_iter()
+            .map(|size| Expr::literal(LiteralValue::Int32(size)))
+            .collect(),
+    );
+    Expr::binary(Expr::binary(brand_ok, BinaryOp::And, type_ok), BinaryOp::And, size_ok)
+}
+
 fn write_i32_record_batch_parquet(path: &Path, schema: Arc<Schema>, columns: Vec<Int32Array>, row_group_rows: usize) {
     let arrays = columns.into_iter().map(|column| Arc::new(column) as Arc<dyn arrow::array::Array>).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).expect("test batch should be valid");
+    write_record_batch_parquet(path, schema, &batch, row_group_rows);
+}
+
+fn write_q16_part_dimension_parquet(path: &Path, schema: Arc<Schema>, row_group_rows: usize) {
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
+            Arc::new(arrow::array::StringArray::from(vec![
+                "Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44",
+            ])) as ArrayRef,
+            Arc::new(arrow::array::StringArray::from(vec![
+                "SMALL BRUSHED",
+                "SMALL BRUSHED",
+                "MEDIUM POLISHED COPPER",
+                "LARGE ANODIZED",
+                "MEDIUM POLISHED STEEL",
+            ])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![49, 49, 49, 3, 14])) as ArrayRef,
+        ],
+    )
+    .expect("test batch should be valid");
+    write_record_batch_parquet(path, schema, &batch, row_group_rows);
+}
+
+fn write_record_batch_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch, row_group_rows: usize) {
     let file = File::create(path).expect("test parquet file should be creatable");
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be creatable");

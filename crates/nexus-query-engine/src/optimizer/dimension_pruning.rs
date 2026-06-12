@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, fs::File};
 
 use arrow::{
     array::{
-        Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array, UInt32Array, UInt64Array,
+        Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
+        StringArray, StringViewArray, UInt32Array, UInt64Array,
     },
     datatypes::DataType,
     record_batch::RecordBatch,
@@ -154,6 +155,7 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
 
     let original_plan = plan.clone();
     let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan);
+    let dynamic_filter_routes = plan.dynamic_filter_routes().to_vec();
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut diagnostics = DimensionDerivedRowGroupPruningDiagnostics::default();
@@ -293,7 +295,8 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
     DimensionDerivedRowGroupPruningResult {
-        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink()),
+        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
+            .with_dynamic_filter_routes(dynamic_filter_routes),
         change,
         diagnostics,
     }
@@ -303,6 +306,7 @@ fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan,
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut changed = false;
+    let dynamic_filter_routes = plan.dynamic_filter_routes().to_vec();
 
     for node in plan.nodes() {
         let PlanNode::Filter(filter) = &node.kind else {
@@ -325,7 +329,7 @@ fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan,
         return (plan, false);
     }
     let root = plan.root_id();
-    (rewrite::finish_rewritten_plan(nodes, root, plan.sink()), true)
+    (rewrite::finish_rewritten_plan(nodes, root, plan.sink()).with_dynamic_filter_routes(dynamic_filter_routes), true)
 }
 
 /// Returns a copy of `plan` with eligible post-aggregate group-key filters
@@ -730,9 +734,7 @@ fn lineages_for_column(
         PlanNode::Sort(sort) => {
             lineages_for_column(plan, parent_counts, sort.input, column_name).into_iter().map(mark_shared).collect()
         },
-        PlanNode::Limit(limit) => {
-            lineages_for_column(plan, parent_counts, limit.input, column_name).into_iter().map(mark_shared).collect()
-        },
+        PlanNode::Limit(_) => Vec::new(),
         PlanNode::Join(join) => join
             .spec
             .output_projection
@@ -1115,6 +1117,7 @@ enum Scalar {
     Int64(i64),
     UInt64(u64),
     Float64(f64),
+    String(String),
     Null,
 }
 
@@ -1156,8 +1159,15 @@ fn eval_scalar(expr: &Expr, batch: &RecordBatch, row: usize) -> Option<Scalar> {
             }
             Some(Scalar::Boolean(if *negated { !matched } else { matched }))
         },
+        Expr::Like { expr, pattern, escape, negated } => match eval_scalar(expr, batch, row)? {
+            Scalar::String(value) => {
+                let matched = like_matches(&value, pattern, escape.as_deref())?;
+                Some(Scalar::Boolean(if *negated { !matched } else { matched }))
+            },
+            Scalar::Null => Some(Scalar::Null),
+            _ => None,
+        },
         Expr::TryCast { .. }
-        | Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
@@ -1190,6 +1200,13 @@ fn array_scalar(array: &dyn Array, row: usize) -> Option<Scalar> {
             Some(Scalar::Float64(f64::from(array.as_any().downcast_ref::<Float32Array>()?.value(row))))
         },
         DataType::Float64 => Some(Scalar::Float64(array.as_any().downcast_ref::<Float64Array>()?.value(row))),
+        DataType::Utf8 => Some(Scalar::String(array.as_any().downcast_ref::<StringArray>()?.value(row).to_string())),
+        DataType::LargeUtf8 => {
+            Some(Scalar::String(array.as_any().downcast_ref::<LargeStringArray>()?.value(row).to_string()))
+        },
+        DataType::Utf8View => {
+            Some(Scalar::String(array.as_any().downcast_ref::<StringViewArray>()?.value(row).to_string()))
+        },
         _ => None,
     }
 }
@@ -1221,10 +1238,9 @@ fn literal_scalar(value: &LiteralValue) -> Option<Scalar> {
         LiteralValue::UInt64(value) => Some(Scalar::UInt64(*value)),
         LiteralValue::Float32(value) => Some(Scalar::Float64(f64::from(*value))),
         LiteralValue::Float64(value) => Some(Scalar::Float64(*value)),
+        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => Some(Scalar::String(value.clone())),
         LiteralValue::Null(_) => Some(Scalar::Null),
-        LiteralValue::Utf8(_)
-        | LiteralValue::LargeUtf8(_)
-        | LiteralValue::Decimal128 { .. }
+        LiteralValue::Decimal128 { .. }
         | LiteralValue::Timestamp { .. }
         | LiteralValue::Duration { .. }
         | LiteralValue::IntervalMonthDayNano { .. } => None,
@@ -1241,6 +1257,10 @@ fn cast_scalar(value: Scalar, target_type: &DataType) -> Option<Scalar> {
         DataType::Float32 | DataType::Float64 => scalar_to_f64(value).map(Scalar::Float64),
         DataType::Boolean => match value {
             Scalar::Boolean(value) => Some(Scalar::Boolean(value)),
+            _ => None,
+        },
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => match value {
+            Scalar::String(value) => Some(Scalar::String(value)),
             _ => None,
         },
         _ => None,
@@ -1298,6 +1318,9 @@ fn scalar_eq(left: &Scalar, right: &Scalar) -> Option<bool> {
     if matches!((left, right), (Scalar::Null, _) | (_, Scalar::Null)) {
         return Some(false);
     }
+    if let (Scalar::String(left), Scalar::String(right)) = (left, right) {
+        return Some(left == right);
+    }
     Some(scalar_cmp(left, right)? == 0)
 }
 
@@ -1319,7 +1342,7 @@ fn scalar_to_i64(value: Scalar) -> Option<i64> {
         Scalar::Int64(value) => Some(value),
         Scalar::UInt64(value) => i64::try_from(value).ok(),
         Scalar::Float64(value) if value.fract() == 0.0 => Some(value as i64),
-        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::Null => None,
+        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::String(_) | Scalar::Null => None,
     }
 }
 
@@ -1328,7 +1351,7 @@ fn scalar_to_u64(value: Scalar) -> Option<u64> {
         Scalar::Int64(value) => u64::try_from(value).ok(),
         Scalar::UInt64(value) => Some(value),
         Scalar::Float64(value) if value.fract() == 0.0 && value >= 0.0 => Some(value as u64),
-        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::Null => None,
+        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::String(_) | Scalar::Null => None,
     }
 }
 
@@ -1337,8 +1360,87 @@ fn scalar_to_f64(value: Scalar) -> Option<f64> {
         Scalar::Int64(value) => Some(value as f64),
         Scalar::UInt64(value) => Some(value as f64),
         Scalar::Float64(value) => Some(value),
-        Scalar::Boolean(_) | Scalar::Null => None,
+        Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LikeToken {
+    Literal(char),
+    AnyOne,
+    AnyMany,
+}
+
+fn like_matches(value: &str, pattern: &str, escape: Option<&str>) -> Option<bool> {
+    let escape = match escape {
+        Some(escape) => {
+            let mut chars = escape.chars();
+            let escape = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            Some(escape)
+        },
+        None => None,
+    };
+    let tokens = like_tokens(pattern, escape)?;
+    let value = value.chars().collect::<Vec<_>>();
+    let mut current = vec![false; value.len() + 1];
+    current[0] = true;
+
+    for token in tokens {
+        let mut next = vec![false; value.len() + 1];
+        match token {
+            LikeToken::Literal(expected) => {
+                for index in 0..value.len() {
+                    if current[index] && value[index] == expected {
+                        next[index + 1] = true;
+                    }
+                }
+            },
+            LikeToken::AnyOne => {
+                for index in 0..value.len() {
+                    if current[index] {
+                        next[index + 1] = true;
+                    }
+                }
+            },
+            LikeToken::AnyMany => {
+                let mut reachable = false;
+                for index in 0..=value.len() {
+                    reachable |= current[index];
+                    if reachable {
+                        next[index] = true;
+                    }
+                }
+            },
+        }
+        current = next;
+    }
+
+    Some(current[value.len()])
+}
+
+fn like_tokens(pattern: &str, escape: Option<char>) -> Option<Vec<LikeToken>> {
+    let mut tokens = Vec::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if Some(ch) == escape {
+            let escaped = chars.next()?;
+            if !matches!(escaped, '%' | '_') && Some(escaped) != escape {
+                return None;
+            }
+            tokens.push(LikeToken::Literal(escaped));
+            continue;
+        }
+        match ch {
+            '%' if !matches!(tokens.last(), Some(LikeToken::AnyMany)) => tokens.push(LikeToken::AnyMany),
+            '%' => {},
+            '_' => tokens.push(LikeToken::AnyOne),
+            _ => tokens.push(LikeToken::Literal(ch)),
+        }
+    }
+    Some(tokens)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1546,8 +1648,10 @@ pub fn apply_dimension_derived_pruning_with_stats(
     let mut nodes = plan.nodes().to_vec();
     let root = plan.root_id();
     let sink = plan.sink().clone();
+    let dynamic_filter_routes = plan.dynamic_filter_routes().to_vec();
     let unchanged = |nodes: Vec<QueryNode>| DimensionDerivedApplyResult {
-        plan: rewrite::finish_rewritten_plan(nodes, root, &sink),
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink)
+            .with_dynamic_filter_routes(dynamic_filter_routes.clone()),
         applied: false,
         before: 0,
         after: 0,
@@ -1590,7 +1694,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
     }
     source.refresh_diagnostics();
     DimensionDerivedApplyResult {
-        plan: rewrite::finish_rewritten_plan(nodes, root, &sink),
+        plan: rewrite::finish_rewritten_plan(nodes, root, &sink).with_dynamic_filter_routes(dynamic_filter_routes),
         applied: true,
         before,
         after,
@@ -1614,12 +1718,29 @@ fn ranges_overlap(left: KeyRange, right: KeyRange) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::{
+        array::Int64Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     use super::*;
-    use crate::plan::QueryPlanBuilder;
+    use crate::{
+        dynamic_filter::{
+            DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
+            DynamicFilterProducer, DynamicFilterRoute,
+        },
+        expr::AggregateSpec,
+        plan::{JoinKey, JoinOutputColumn, JoinSpec, QueryPlanBuilder},
+    };
 
     #[test]
     fn apply_local_parquet_row_group_selections_narrows_existing_selection() {
@@ -1698,6 +1819,130 @@ mod tests {
         assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
     }
 
+    #[test]
+    fn apply_dimension_derived_pruning_preserves_dynamic_filter_routes_when_applied() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(None);
+        let route = test_dynamic_filter_route(source_node_id);
+        let plan = plan.with_dynamic_filter_routes(vec![route.clone()]);
+
+        let result = apply_dimension_derived_pruning_with_stats(
+            plan,
+            source_node_id,
+            &[vec![
+                Some(KeyRange { min: 0, max: 2 }),
+                Some(KeyRange { min: 5, max: 5 }),
+                Some(KeyRange { min: 10, max: 12 }),
+            ]],
+            &DimensionKeyFilter::from_bounds(KeyRange { min: 5, max: 5 }),
+        );
+
+        assert!(result.applied);
+        assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![1]));
+    }
+
+    #[test]
+    fn apply_dimension_derived_pruning_preserves_dynamic_filter_routes_when_unchanged() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+        let route = test_dynamic_filter_route(source_node_id);
+        let plan = plan.with_dynamic_filter_routes(vec![route.clone()]);
+
+        let result = apply_dimension_derived_pruning_with_stats(
+            plan,
+            source_node_id,
+            &[vec![Some(KeyRange { min: 0, max: 2 })]],
+            &DimensionKeyFilter::from_bounds(KeyRange { min: 5, max: 5 }),
+        );
+
+        assert!(!result.applied);
+        assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+        let file = LocalParquetFile::new("/tmp/test.parquet");
+        let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["x".to_string()]);
+        let mut builder = QueryPlanBuilder::new();
+        let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+        let aggregate = builder.add_aggregate(
+            source_node_id,
+            AggregateSpec::new(vec![Expr::column("x")], Vec::new()),
+            Arc::clone(&schema),
+        );
+        let filter = builder.add_filter(
+            aggregate,
+            Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5))),
+            Arc::clone(&schema),
+        );
+        let route = test_dynamic_filter_route(source_node_id);
+        let plan = builder.finish_with_host_sink(filter).with_dynamic_filter_routes(vec![route.clone()]);
+
+        let result = seed_dimension_derived_reader_predicates(plan);
+
+        assert_eq!(result.dynamic_filter_routes(), &[route]);
+        let source = local_parquet_source(&result, source_node_id).unwrap();
+        assert!(source.reader_predicate.as_ref().is_some_and(|predicate| {
+            *predicate == Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))
+        }));
+    }
+
+    #[test]
+    fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_pruning_applies() {
+        let dir = unique_test_dir("dimension-pruning-routes");
+        fs::create_dir_all(&dir).expect("temporary dimension pruning directory should be created");
+        let fact_path = dir.join("fact.parquet");
+        let dim_path = dir.join("dim.parquet");
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        write_i64_parquet(&fact_path, Arc::clone(&schema), &[0, 1, 5, 6, 10, 11], 2);
+        write_i64_parquet(&dim_path, Arc::clone(&schema), &[5], 1);
+
+        let mut builder = QueryPlanBuilder::new();
+        let dim = builder.add_source(SourceNode::LocalParquet(
+            LocalParquetSource::from_files(
+                vec![LocalParquetFile::new(&dim_path)],
+                Arc::clone(&schema),
+                vec!["x".to_string()],
+            )
+            .with_reader_predicate(Expr::binary(
+                Expr::column("x"),
+                BinaryOp::Eq,
+                Expr::literal(LiteralValue::Int64(5)),
+            )),
+        ));
+        let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&fact_path)],
+            Arc::clone(&schema),
+            vec!["x".to_string()],
+        )));
+        let join = builder.add_join(
+            dim,
+            fact,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "x", "x"), "x")]),
+            Arc::clone(&schema),
+        );
+        let route = test_dynamic_filter_route(fact);
+        let plan = builder.finish_with_host_sink(join).with_dynamic_filter_routes(vec![route.clone()]);
+
+        let result =
+            optimize_dimension_derived_row_group_pruning(plan, &DimensionDerivedRowGroupPruningOptions::default());
+
+        assert_eq!(result.change, super::super::NativeOptimizerChange::Changed);
+        assert_eq!(result.diagnostics.applied_count, 1);
+        assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
+        let source = local_parquet_source(&result.plan, fact).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![1]));
+
+        fs::remove_dir_all(dir).expect("temporary dimension pruning directory should be removable");
+    }
+
     fn test_plan_with_source_row_groups(row_groups: Option<Vec<usize>>) -> (QueryPlan, NodeId) {
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
         let mut file = LocalParquetFile::new("/tmp/test.parquet");
@@ -1706,5 +1951,32 @@ mod tests {
         let mut builder = QueryPlanBuilder::new();
         let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
         (builder.finish_with_host_sink(source_node_id), source_node_id)
+    }
+
+    fn test_dynamic_filter_route(source_node_id: NodeId) -> DynamicFilterRoute {
+        DynamicFilterRoute::new(
+            DynamicFilterId::new(0),
+            DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id: source_node_id },
+            DynamicFilterConsumer::LocalParquetSource { source_node_id },
+            vec!["x".to_string()],
+            vec!["x".to_string()],
+            vec![DynamicFilterKind::Range],
+            DynamicFilterConsumerLowering::ReaderPredicate,
+        )
+    }
+
+    fn write_i64_parquet(path: &Path, schema: Arc<Schema>, values: &[i64], row_group_rows: usize) {
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values.to_vec()))])
+            .expect("test record batch should be valid");
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
+        let file = fs::File::create(path).expect("test parquet file should be creatable");
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be valid");
+        writer.write(&batch).expect("test parquet batch should be writable");
+        writer.close().expect("test parquet writer should close");
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be valid").as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

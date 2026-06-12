@@ -1,6 +1,6 @@
 //! Object-store footer pruning for native plans produced from table formats.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion::{
@@ -10,6 +10,7 @@ use datafusion::{
     parquet::{
         arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask, async_reader::ParquetObjectReader},
         file::{metadata::ParquetMetaData, statistics::Statistics},
+        schema::types::SchemaDescriptor,
     },
     physical_plan::ExecutionPlan,
 };
@@ -23,7 +24,7 @@ use nexus_query_engine::{
 
 use crate::NativeCudfExec;
 
-const MAX_DIMENSION_ROWS: usize = 1_000_000;
+const MAX_DIMENSION_ROWS: usize = 25_000_000;
 const MAX_TARGET_FILES_ACROSS_REQUESTS: usize = 4_000;
 
 type BoxFutureResult<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
@@ -233,7 +234,9 @@ async fn static_reader_predicate_row_group_selections(
             let Some(row_group) = metadata.row_groups().get(row_group_index) else {
                 return Err("static_reader_predicate_row_group_out_of_range");
             };
-            if static_row_group_may_satisfy_expr(row_group, predicate).unwrap_or(true) {
+            if static_row_group_may_satisfy_expr(row_group, metadata.file_metadata().schema_descr(), predicate)
+                .unwrap_or(true)
+            {
                 row_groups.push(row_group_index);
             }
         }
@@ -473,18 +476,19 @@ fn decimal_scale_factor(scale_delta: i8) -> Option<i128> {
 
 fn static_row_group_may_satisfy_expr(
     row_group: &parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
     expr: &StaticRowGroupPruningExpr,
 ) -> Option<bool> {
     match expr {
-        StaticRowGroupPruningExpr::Atom(atom) => static_row_group_may_satisfy_atom(row_group, atom),
+        StaticRowGroupPruningExpr::Atom(atom) => static_row_group_may_satisfy_atom(row_group, schema, atom),
         StaticRowGroupPruningExpr::And(left, right) => {
-            let left = static_row_group_may_satisfy_expr(row_group, left);
-            let right = static_row_group_may_satisfy_expr(row_group, right);
+            let left = static_row_group_may_satisfy_expr(row_group, schema, left);
+            let right = static_row_group_may_satisfy_expr(row_group, schema, right);
             Some(!matches!(left, Some(false)) && !matches!(right, Some(false)))
         },
         StaticRowGroupPruningExpr::Or(left, right) => {
-            let left = static_row_group_may_satisfy_expr(row_group, left);
-            let right = static_row_group_may_satisfy_expr(row_group, right);
+            let left = static_row_group_may_satisfy_expr(row_group, schema, left);
+            let right = static_row_group_may_satisfy_expr(row_group, schema, right);
             Some(!matches!((left, right), (Some(false), Some(false))))
         },
     }
@@ -492,23 +496,24 @@ fn static_row_group_may_satisfy_expr(
 
 fn static_row_group_may_satisfy_atom(
     row_group: &parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
     atom: &StaticRowGroupPruningAtom,
 ) -> Option<bool> {
     match atom {
         StaticRowGroupPruningAtom::Comparison { column_index, op, literal } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             static_row_group_may_satisfy_comparison(statistics, *op, literal)
         },
         StaticRowGroupPruningAtom::InList { column_index, literals } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             static_row_group_may_satisfy_in_list(statistics, literals)
         },
         StaticRowGroupPruningAtom::IsNull { column_index } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             Some(statistics.null_count_opt()? > 0)
         },
         StaticRowGroupPruningAtom::IsNotNull { column_index } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             let row_count = u64::try_from(row_group.num_rows()).ok()?;
             Some(statistics.null_count_opt()? < row_count)
         },
@@ -725,6 +730,8 @@ async fn derive_dimension_key_filter(
 ) -> std::result::Result<Option<DimensionKeyFilter>, String> {
     // Fold object-store dimension batches through the same accumulator the
     // in-engine local pass uses, so both derive identical set-aware filters.
+    let projection_indices = reader_projection_indices(source, key_column, predicate)
+        .ok_or_else(|| "unsupported_dimension_projection".to_string())?;
     let mut accumulator = DimensionKeyAccumulator::default();
     let mut total_rows = 0usize;
     for file in &source.files {
@@ -735,7 +742,7 @@ async fn derive_dimension_key_filter(
         let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| error.to_string())?;
         let row_group_count = builder.metadata().num_row_groups();
         let row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), row_group_count);
-        let projection = ProjectionMask::all();
+        let projection = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
         let mut stream = builder
             .with_projection(projection)
             .with_row_groups(row_groups)
@@ -757,6 +764,81 @@ async fn derive_dimension_key_filter(
     Ok(accumulator.finish())
 }
 
+fn reader_projection_indices(
+    source: &LocalParquetSource,
+    key_column: &str,
+    predicate: &Expr,
+) -> Option<BTreeSet<usize>> {
+    let mut columns = BTreeSet::new();
+    let SourceColumnRef::File(key_index) = source.source_column_ref(key_column)? else {
+        return None;
+    };
+    columns.insert(key_index);
+    for column in predicate_columns(predicate) {
+        let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
+            return None;
+        };
+        columns.insert(column_index);
+    }
+    Some(columns)
+}
+
+fn predicate_columns(expr: &Expr) -> Vec<String> {
+    let mut columns = Vec::new();
+    collect_expr_columns(expr, &mut columns);
+    columns.sort();
+    columns.dedup();
+    columns
+}
+
+fn collect_expr_columns(expr: &Expr, columns: &mut Vec<String>) {
+    match expr {
+        Expr::Column(column) => columns.push(column.name().to_string()),
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Alias { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
+        | Expr::Lower(inner)
+        | Expr::Upper(inner)
+        | Expr::Abs(inner) => collect_expr_columns(inner, columns),
+        Expr::Binary { left, right, .. }
+        | Expr::IsDistinctFrom { left, right }
+        | Expr::IsNotDistinctFrom { left, right } => {
+            collect_expr_columns(left, columns);
+            collect_expr_columns(right, columns);
+        },
+        Expr::InList { expr, list, .. } => {
+            collect_expr_columns(expr, columns);
+            for item in list {
+                collect_expr_columns(item, columns);
+            }
+        },
+        Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
+        | Expr::Sqrt { expr, .. }
+        | Expr::Round { expr, .. }
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. } => collect_expr_columns(expr, columns),
+        Expr::Concat(exprs) => {
+            for expr in exprs {
+                collect_expr_columns(expr, columns);
+            }
+        },
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                collect_expr_columns(&branch.when, columns);
+                collect_expr_columns(&branch.then, columns);
+            }
+            collect_expr_columns(else_expr, columns);
+        },
+        Expr::Literal(_) => {},
+    }
+}
+
 async fn parquet_metadata(
     store: Arc<dyn datafusion::object_store::ObjectStore>,
     path: ObjectStorePath,
@@ -773,11 +855,13 @@ fn row_group_key_ranges(
     column_index: usize,
     selected_row_groups: &[usize],
 ) -> Vec<Option<KeyRange>> {
+    let schema = metadata.file_metadata().schema_descr();
+    let leaf_column_index = single_leaf_primitive_root_column_index(schema, column_index);
     selected_row_groups
         .iter()
         .map(|row_group_index| {
             let row_group = metadata.row_groups().get(*row_group_index)?;
-            let statistics = row_group.columns().get(column_index)?.statistics()?;
+            let statistics = leaf_column_index.and_then(|index| row_group.columns().get(index)?.statistics())?;
             match statistics {
                 Statistics::Int32(stats) => {
                     Some(KeyRange { min: i64::from(*stats.min_opt()?), max: i64::from(*stats.max_opt()?) })
@@ -787,6 +871,28 @@ fn row_group_key_ranges(
             }
         })
         .collect()
+}
+
+fn leaf_column_statistics<'a>(
+    row_group: &'a parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
+    root_column_index: usize,
+) -> Option<&'a Statistics> {
+    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
+    row_group.columns().get(leaf_column_index)?.statistics()
+}
+
+fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices =
+        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
+    let leaf_index = leaf_indices.next()?;
+    if leaf_indices.next().is_some() {
+        return None;
+    }
+    Some(leaf_index)
 }
 
 fn selected_or_all_row_groups(selected: Option<&[usize]>, row_group_count: usize) -> Vec<usize> {
@@ -831,7 +937,26 @@ fn stable_log_field(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::parquet::data_type::FixedLenByteArray;
+    use std::{
+        fs::{self, File},
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use arrow::{
+        array::{ArrayRef, Int64Array, StructArray},
+        datatypes::{Field, Fields, Schema},
+        record_batch::RecordBatch,
+    };
+    use datafusion::parquet::{
+        arrow::ArrowWriter,
+        data_type::FixedLenByteArray,
+        file::{
+            properties::WriterProperties,
+            reader::{FileReader, SerializedFileReader},
+        },
+    };
 
     use super::*;
 
@@ -900,5 +1025,90 @@ mod tests {
             static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Gt, &StaticPruningLiteral::Decimal128(10)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn static_reader_predicate_pruning_uses_leaf_stats_for_root_column() {
+        let dir = unique_test_dir("lakehouse-static-nested");
+        fs::create_dir_all(&dir).expect("temporary lakehouse pruning directory should be created");
+        let path = dir.join("nested.parquet");
+        write_nested_key_parquet(&path);
+        let reader = SerializedFileReader::try_from(path.as_path()).expect("test parquet file should be readable");
+        let metadata = reader.metadata();
+        assert_eq!(metadata.num_row_groups(), 2);
+
+        let predicate = StaticRowGroupPruningExpr::Atom(StaticRowGroupPruningAtom::Comparison {
+            column_index: 1,
+            op: BinaryOp::Eq,
+            literal: StaticPruningLiteral::Int64(5),
+        });
+        let schema = metadata.file_metadata().schema_descr();
+
+        assert_eq!(static_row_group_may_satisfy_expr(metadata.row_group(0), schema, &predicate), Some(false));
+        assert_eq!(static_row_group_may_satisfy_expr(metadata.row_group(1), schema, &predicate), Some(true));
+
+        fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
+    }
+
+    #[test]
+    fn dimension_key_ranges_use_leaf_stats_for_root_column() {
+        let dir = unique_test_dir("lakehouse-dimension-nested");
+        fs::create_dir_all(&dir).expect("temporary lakehouse pruning directory should be created");
+        let path = dir.join("nested.parquet");
+        write_nested_key_parquet(&path);
+        let reader = SerializedFileReader::try_from(path.as_path()).expect("test parquet file should be readable");
+        let metadata = reader.metadata();
+
+        let ranges = row_group_key_ranges(metadata, 1, &[0, 1]);
+
+        assert_eq!(ranges, vec![Some(KeyRange { min: 100, max: 100 }), Some(KeyRange { min: 5, max: 5 })]);
+
+        fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
+    }
+
+    #[test]
+    fn nested_root_column_stats_are_not_used_for_pruning() {
+        let dir = unique_test_dir("lakehouse-nested-root");
+        fs::create_dir_all(&dir).expect("temporary lakehouse pruning directory should be created");
+        let path = dir.join("nested.parquet");
+        write_nested_key_parquet(&path);
+        let reader = SerializedFileReader::try_from(path.as_path()).expect("test parquet file should be readable");
+        let metadata = reader.metadata();
+        let predicate = StaticRowGroupPruningExpr::Atom(StaticRowGroupPruningAtom::Comparison {
+            column_index: 0,
+            op: BinaryOp::Eq,
+            literal: StaticPruningLiteral::Int64(5),
+        });
+        let schema = metadata.file_metadata().schema_descr();
+
+        assert_eq!(static_row_group_may_satisfy_expr(metadata.row_group(0), schema, &predicate), None);
+        assert_eq!(row_group_key_ranges(metadata, 0, &[0, 1]), vec![None, None]);
+
+        fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
+    }
+
+    fn write_nested_key_parquet(path: &Path) {
+        let payload_a = Arc::new(Field::new("a", DataType::Int64, false));
+        let payload_b = Arc::new(Field::new("b", DataType::Int64, false));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("payload", DataType::Struct(Fields::from(vec![payload_a.clone(), payload_b.clone()])), false),
+            Field::new("key", DataType::Int64, false),
+        ]));
+        let payload_a_values = Arc::new(Int64Array::from(vec![0, 0])) as ArrayRef;
+        let payload_b_values = Arc::new(Int64Array::from(vec![5, 100])) as ArrayRef;
+        let payload =
+            Arc::new(StructArray::from(vec![(payload_a, payload_a_values), (payload_b, payload_b_values)])) as ArrayRef;
+        let key = Arc::new(Int64Array::from(vec![100, 5])) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![payload, key]).expect("test batch should be valid");
+        let file = File::create(path).expect("test parquet file should be creatable");
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be valid");
+        writer.write(&batch).expect("test parquet batch should be writable");
+        writer.close().expect("test parquet writer should close");
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be valid").as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

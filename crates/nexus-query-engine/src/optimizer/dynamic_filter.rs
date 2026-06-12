@@ -7,7 +7,7 @@ use crate::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage, DynamicFilterId,
         DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
-    expr::{AggregateFunction, ColumnRef, Expr},
+    expr::{AggregateFunction, BinaryOp, ColumnQualifier, ColumnRef, Expr},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -122,9 +122,15 @@ pub enum DynamicFilterRouteRejectedReason {
     UnsupportedConsumerColumnType,
     /// Consumer source is already required to produce the build-side payload.
     ConsumerUpstreamOfProducer,
+    /// Producer lineage crosses a shared path, so a selected residual-side
+    /// build frame may be only a subset of the residual input's values.
+    ProducerLineageSharedPath,
     /// Consumer source has multiple parents in the plan, so source-level
     /// filtering could affect aliases that are not constrained by the join key.
     ConsumerSourceReusedInPlan,
+    /// The route would create a control-dependency cycle with an earlier
+    /// dynamic-filter route.
+    DynamicFilterControlCycle,
     /// Post-decode join-probe filtering would feed a scalar global decimal
     /// SUM, where the route is optional and can pessimize the aggregate
     /// backend.
@@ -221,7 +227,65 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 AggregateGroupKeyLineage::Consumer,
             ));
             if consumer_lineages.is_empty() {
-                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerKeyLineageUnavailable);
+                let Some((consumer, consumer_column)) =
+                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                else {
+                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerKeyLineageUnavailable);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                };
+                if post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer) {
+                    populate_selected_consumer_diagnostics(
+                        &mut candidate,
+                        &consumer,
+                        &consumer_column,
+                        DynamicFilterConsumerLowering::PostDecodeOnly,
+                    );
+                    candidate.rejected_reason =
+                        Some(DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                }
+                candidate.consumer_key_column = Some(consumer_column.clone());
+                let filter_kinds =
+                    vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
+                let id = DynamicFilterId::new(routes.len());
+                let producer_column = if aggregate_group_key_producer.is_some() {
+                    producer_lineage.source_column.clone()
+                } else {
+                    orientation.producer_key.name().to_string()
+                };
+                let producer = aggregate_group_key_producer
+                    .map(|aggregate_node_id| DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id })
+                    .unwrap_or(DynamicFilterProducer::HashJoinBuild {
+                        join_node_id: node.id,
+                        build_side: join.spec.build_side,
+                        build_input: orientation.producer_input,
+                    });
+                let route = DynamicFilterRoute::new(
+                    id,
+                    producer,
+                    consumer,
+                    vec![producer_column],
+                    vec![consumer_column],
+                    filter_kinds.clone(),
+                    DynamicFilterConsumerLowering::PostDecodeOnly,
+                );
+                if dynamic_filter_route_would_create_node_cycle(&plan, &routes, &route) {
+                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::DynamicFilterControlCycle);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                }
+                candidate.consumer_kind = Some(route.consumer.kind().to_string());
+                candidate.consumer_node_id = Some(route.consumer.node_id());
+                candidate.consumer_reduction_stage = Some(route.consumer_reduction_stage());
+                routes.push(route);
+
+                candidate.dynamic_filter_id = Some(id);
+                candidate.filter_kinds = filter_kinds;
+                candidate.consumer_lowering = Some(DynamicFilterConsumerLowering::PostDecodeOnly);
+                candidate.routed = true;
+                diagnostics.route_count += 1;
                 diagnostics.candidates.push(candidate);
                 continue;
             };
@@ -312,7 +376,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     continue;
                 } else {
                     let Some((consumer, consumer_column)) =
-                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, false, true)
+                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
                     else {
                         candidate.rejected_reason =
                             Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
@@ -358,6 +422,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     filter_kinds.clone(),
                     consumer_lowering,
                 );
+                if dynamic_filter_route_would_create_node_cycle(&plan, &routes, &route) {
+                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::DynamicFilterControlCycle);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                }
                 candidate.consumer_kind = Some(route.consumer.kind().to_string());
                 candidate.consumer_node_id = Some(route.consumer.node_id());
                 candidate.consumer_reduction_stage = Some(route.consumer_reduction_stage());
@@ -370,6 +439,106 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 diagnostics.route_count += 1;
                 diagnostics.candidates.push(candidate);
             }
+        }
+
+        for residual_candidate in residual_equality_route_candidates(&plan, &parent_counts, node.id, join) {
+            diagnostics.considered_count += 1;
+            let mut candidate = DynamicFilterRouteCandidateDiagnostics {
+                rule_name: DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
+                candidate_node_id: node.id,
+                dynamic_filter_id: None,
+                producer_build_side: Some(residual_candidate.producer_build_side),
+                producer_input_node_id: Some(residual_candidate.producer_input),
+                consumer_input_node_id: Some(residual_candidate.consumer_input),
+                consumer_kind: None,
+                consumer_node_id: None,
+                consumer_source_node_id: Some(residual_candidate.consumer_lineage.source_node_id),
+                producer_key_column: Some(residual_candidate.producer_column.clone()),
+                consumer_key_column: Some(residual_candidate.consumer_lineage.source_column.clone()),
+                filter_kinds: Vec::new(),
+                consumer_lowering: None,
+                consumer_reduction_stage: None,
+                selected_source_bytes: None,
+                total_source_bytes: None,
+                routed: false,
+                rejected_reason: None,
+            };
+
+            let consumer_source = local_parquet_source(&plan, residual_candidate.consumer_lineage.source_node_id);
+            let Some(consumer_source) = consumer_source else {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerNotLocalParquet);
+                diagnostics.candidates.push(candidate);
+                continue;
+            };
+            let stats = consumer_source.diagnostics.selected_row_group_stats.as_ref();
+            candidate.selected_source_bytes = stats.and_then(|stats| stats.selected_source_bytes());
+            candidate.total_source_bytes = stats.and_then(|stats| stats.total_source_bytes());
+
+            if input_reference_count(&plan, residual_candidate.consumer_lineage.source_node_id) > 1
+                || residual_candidate.consumer_lineage.has_shared_path
+            {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            if residual_candidate.producer_lineage_has_shared_path {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerLineageSharedPath);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            if subtree_contains_node(
+                &plan,
+                residual_candidate.producer_input,
+                residual_candidate.consumer_lineage.source_node_id,
+            ) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerUpstreamOfProducer);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            if !consumer_reader_column_is_visible(consumer_source, &residual_candidate.consumer_lineage.source_column) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerColumnNotReaderVisible);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            if !consumer_column_type_is_supported(consumer_source, &residual_candidate.consumer_lineage.source_column) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+
+            let filter_kinds =
+                vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
+            let consumer_lowering = consumer_lowering(consumer_source);
+            let id = DynamicFilterId::new(routes.len());
+            let route = DynamicFilterRoute::new(
+                id,
+                residual_candidate.producer,
+                DynamicFilterConsumer::LocalParquetSource {
+                    source_node_id: residual_candidate.consumer_lineage.source_node_id,
+                },
+                vec![residual_candidate.producer_column],
+                vec![residual_candidate.consumer_lineage.source_column],
+                filter_kinds.clone(),
+                consumer_lowering,
+            );
+            if routes.iter().any(|existing| dynamic_filter_route_equivalent(existing, &route)) {
+                continue;
+            }
+            if dynamic_filter_route_would_create_node_cycle(&plan, &routes, &route) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::DynamicFilterControlCycle);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            candidate.consumer_kind = Some(route.consumer.kind().to_string());
+            candidate.consumer_node_id = Some(route.consumer.node_id());
+            candidate.consumer_reduction_stage = Some(route.consumer_reduction_stage());
+            candidate.dynamic_filter_id = Some(id);
+            candidate.filter_kinds = filter_kinds;
+            candidate.consumer_lowering = Some(consumer_lowering);
+            candidate.routed = true;
+            diagnostics.route_count += 1;
+            routes.push(route);
+            diagnostics.candidates.push(candidate);
         }
     }
 
@@ -434,6 +603,432 @@ struct RouteOrientation<'a> {
     producer_key: &'a ColumnRef,
     consumer_key: &'a ColumnRef,
     consumer_side: JoinSide,
+}
+
+#[derive(Debug, Clone)]
+struct ResidualEqualityRouteCandidate {
+    producer: DynamicFilterProducer,
+    producer_build_side: JoinSide,
+    producer_input: NodeId,
+    producer_column: String,
+    producer_lineage_has_shared_path: bool,
+    consumer_input: NodeId,
+    consumer_lineage: SourceColumnLineage,
+}
+
+fn residual_equality_route_candidates(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    join_node_id: NodeId,
+    join: &JoinNode,
+) -> Vec<ResidualEqualityRouteCandidate> {
+    if join.spec.join_type != JoinType::Inner {
+        return Vec::new();
+    }
+    let Some(residual) = &join.spec.residual_predicate else {
+        return Vec::new();
+    };
+    let mut equalities = Vec::new();
+    collect_residual_input_equalities(residual, &mut equalities);
+    let mut candidates = Vec::new();
+    for equality in equalities {
+        candidates.extend(residual_equality_route_candidates_for_orientation(
+            plan,
+            parent_counts,
+            join_node_id,
+            join,
+            equality.left_column.as_str(),
+            equality.right_column.as_str(),
+            JoinSide::Left,
+            JoinSide::Right,
+        ));
+        candidates.extend(residual_equality_route_candidates_for_orientation(
+            plan,
+            parent_counts,
+            join_node_id,
+            join,
+            equality.right_column.as_str(),
+            equality.left_column.as_str(),
+            JoinSide::Right,
+            JoinSide::Left,
+        ));
+    }
+    candidates
+}
+
+fn residual_equality_route_candidates_for_orientation(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    residual_join_node_id: NodeId,
+    residual_join: &JoinNode,
+    producer_column_at_residual_input: &str,
+    consumer_column_at_residual_input: &str,
+    producer_side: JoinSide,
+    consumer_side: JoinSide,
+) -> Vec<ResidualEqualityRouteCandidate> {
+    let producer_input = residual_join.inputs[join_side_index(producer_side)];
+    let consumer_input = residual_join.inputs[join_side_index(consumer_side)];
+    let Some(producer_lineage) = unique_lineage(
+        plan,
+        parent_counts,
+        producer_input,
+        producer_column_at_residual_input,
+        AggregateGroupKeyLineage::Reject,
+    ) else {
+        return Vec::new();
+    };
+    let consumer_lineages = dedup_lineages(lineages_for_column(
+        plan,
+        parent_counts,
+        consumer_input,
+        consumer_column_at_residual_input,
+        AggregateGroupKeyLineage::Consumer,
+    ));
+    if consumer_lineages.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    for consumer_lineage in consumer_lineages {
+        let Some(consumer_source) = local_parquet_source(plan, consumer_lineage.source_node_id) else {
+            continue;
+        };
+        if !residual_equality_source_filter_is_promising(
+            local_parquet_source(plan, producer_lineage.source_node_id),
+            consumer_source,
+        ) {
+            continue;
+        }
+        for producer in residual_equality_hash_build_producers_for_lineage(
+            plan,
+            parent_counts,
+            residual_join_node_id,
+            producer_input,
+            &producer_lineage,
+        ) {
+            candidates.push(ResidualEqualityRouteCandidate {
+                producer: DynamicFilterProducer::HashJoinBuild {
+                    join_node_id: producer.join_node_id,
+                    build_side: producer.build_side,
+                    build_input: producer.build_input,
+                },
+                producer_build_side: producer.build_side,
+                producer_input: producer.build_input,
+                producer_column: producer.producer_column,
+                producer_lineage_has_shared_path: producer_lineage.has_shared_path,
+                consumer_input,
+                consumer_lineage: consumer_lineage.clone(),
+            });
+        }
+    }
+    candidates
+}
+
+#[derive(Debug, Clone)]
+struct ResidualEqualityHashBuildProducer {
+    join_node_id: NodeId,
+    build_side: JoinSide,
+    build_input: NodeId,
+    producer_column: String,
+}
+
+fn residual_equality_hash_build_producers_for_lineage(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    residual_join_node_id: NodeId,
+    producer_side_root: NodeId,
+    producer_lineage: &SourceColumnLineage,
+) -> Vec<ResidualEqualityHashBuildProducer> {
+    let mut producers = Vec::new();
+    for node in plan.nodes() {
+        let PlanNode::Join(join) = &node.kind else {
+            continue;
+        };
+        if !subtree_contains_node(plan, producer_side_root, node.id) {
+            continue;
+        }
+        if !join_shape_supported(join) {
+            continue;
+        }
+        let build_input = match join.spec.build_side {
+            JoinSide::Left => join.inputs[0],
+            JoinSide::Right => join.inputs[1],
+        };
+        if build_input != producer_lineage.source_node_id
+            && !simple_source_path_contains_node(plan, build_input, producer_lineage.source_node_id)
+        {
+            continue;
+        }
+        let Some(producer_column) = source_lineage_column_at_node(
+            plan,
+            parent_counts,
+            build_input,
+            producer_lineage.source_node_id,
+            producer_lineage.source_column.as_str(),
+        ) else {
+            continue;
+        };
+        if node.id == residual_join_node_id && subtree_contains_node(plan, build_input, producer_lineage.source_node_id)
+        {
+            continue;
+        }
+        producers.push(ResidualEqualityHashBuildProducer {
+            join_node_id: node.id,
+            build_side: join.spec.build_side,
+            build_input,
+            producer_column,
+        });
+    }
+    producers.sort_by_key(|producer| producer.join_node_id);
+    producers
+}
+
+fn source_lineage_column_at_node(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    node_id: NodeId,
+    source_node_id: NodeId,
+    source_column: &str,
+) -> Option<String> {
+    let node = plan.node(node_id)?;
+    node.output_schema()
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let lineages = dedup_lineages(lineages_for_column(
+                plan,
+                parent_counts,
+                node_id,
+                field.name(),
+                AggregateGroupKeyLineage::Producer,
+            ));
+            lineages
+                .iter()
+                .any(|lineage| lineage.source_node_id == source_node_id && lineage.source_column == source_column)
+                .then(|| field.name().to_string())
+        })
+        .next()
+}
+
+fn simple_source_path_contains_node(plan: &QueryPlan, root: NodeId, target: NodeId) -> bool {
+    let Some(node) = plan.node(root) else {
+        return false;
+    };
+    if root == target {
+        return true;
+    }
+    match &node.kind {
+        PlanNode::Filter(filter) => simple_source_path_contains_node(plan, filter.input, target),
+        PlanNode::Projection(projection) => simple_source_path_contains_node(plan, projection.input, target),
+        PlanNode::Sort(sort) => simple_source_path_contains_node(plan, sort.input, target),
+        PlanNode::Source(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Join(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => false,
+    }
+}
+
+fn residual_equality_source_filter_is_promising(
+    producer_source: Option<&LocalParquetSource>,
+    consumer_source: &LocalParquetSource,
+) -> bool {
+    let Some(producer_source) = producer_source else {
+        return false;
+    };
+    if producer_source.reader_predicate.is_some() {
+        return true;
+    }
+    let producer_stats = producer_source.diagnostics.selected_row_group_stats.as_ref();
+    let consumer_stats = consumer_source.diagnostics.selected_row_group_stats.as_ref();
+    if let (Some(producer_rows), Some(consumer_rows)) =
+        (producer_stats.and_then(|stats| stats.selected_rows), consumer_stats.and_then(|stats| stats.selected_rows))
+    {
+        return producer_rows < consumer_rows;
+    }
+    if let (Some(producer_bytes), Some(consumer_bytes)) = (
+        producer_stats.and_then(|stats| stats.selected_source_bytes()),
+        consumer_stats.and_then(|stats| stats.selected_source_bytes()),
+    ) {
+        return producer_bytes < consumer_bytes;
+    }
+    false
+}
+
+#[derive(Debug, Clone)]
+struct ResidualInputEquality {
+    left_column: String,
+    right_column: String,
+}
+
+fn collect_residual_input_equalities(expr: &Expr, out: &mut Vec<ResidualInputEquality>) {
+    match expr {
+        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
+            collect_residual_input_equalities(left, out);
+            collect_residual_input_equalities(right, out);
+        },
+        Expr::Binary { left, op: BinaryOp::Eq, right, .. } => {
+            if let Some(equality) = residual_input_equality(left, right) {
+                out.push(equality);
+            }
+        },
+        Expr::Alias { expr, .. } => collect_residual_input_equalities(expr, out),
+        _ => {},
+    }
+}
+
+fn residual_input_equality(left: &Expr, right: &Expr) -> Option<ResidualInputEquality> {
+    let (left_side, left_column) = residual_input_column(left)?;
+    let (right_side, right_column) = residual_input_column(right)?;
+    match (left_side, right_side) {
+        (JoinSide::Left, JoinSide::Right) => Some(ResidualInputEquality { left_column, right_column }),
+        (JoinSide::Right, JoinSide::Left) => {
+            Some(ResidualInputEquality { left_column: right_column, right_column: left_column })
+        },
+        _ => None,
+    }
+}
+
+fn residual_input_column(expr: &Expr) -> Option<(JoinSide, String)> {
+    let Expr::Column(column) = expr else {
+        return None;
+    };
+    match column.qualifier()? {
+        ColumnQualifier::Input { index: 0 } => Some((JoinSide::Left, column.name().to_string())),
+        ColumnQualifier::Input { index: 1 } => Some((JoinSide::Right, column.name().to_string())),
+        _ => None,
+    }
+}
+
+fn dynamic_filter_route_equivalent(left: &DynamicFilterRoute, right: &DynamicFilterRoute) -> bool {
+    left.producer == right.producer
+        && left.consumer == right.consumer
+        && left.producer_columns == right.producer_columns
+        && left.consumer_columns == right.consumer_columns
+}
+
+fn dynamic_filter_route_would_create_node_cycle(
+    plan: &QueryPlan,
+    routes: &[DynamicFilterRoute],
+    route: &DynamicFilterRoute,
+) -> bool {
+    dynamic_filter_endpoint_reaches_with_routes(
+        plan,
+        routes,
+        dynamic_filter_consumer_endpoint(&route.consumer),
+        dynamic_filter_producer_endpoint(&route.producer),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DynamicFilterDependencyEndpoint {
+    NodeOutput(NodeId),
+    JoinBuild(NodeId),
+    JoinProbe(NodeId),
+}
+
+fn dynamic_filter_producer_endpoint(producer: &DynamicFilterProducer) -> DynamicFilterDependencyEndpoint {
+    match producer {
+        DynamicFilterProducer::HashJoinBuild { join_node_id, .. } => {
+            DynamicFilterDependencyEndpoint::JoinBuild(*join_node_id)
+        },
+        DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } => {
+            DynamicFilterDependencyEndpoint::NodeOutput(*aggregate_node_id)
+        },
+    }
+}
+
+fn dynamic_filter_consumer_endpoint(consumer: &DynamicFilterConsumer) -> DynamicFilterDependencyEndpoint {
+    match consumer {
+        DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
+            DynamicFilterDependencyEndpoint::NodeOutput(*source_node_id)
+        },
+        DynamicFilterConsumer::HashJoinProbe { join_node_id, .. } => {
+            DynamicFilterDependencyEndpoint::JoinProbe(*join_node_id)
+        },
+        DynamicFilterConsumer::Filter { filter_node_id } => {
+            DynamicFilterDependencyEndpoint::NodeOutput(*filter_node_id)
+        },
+    }
+}
+
+fn dynamic_filter_endpoint_reaches_with_routes(
+    plan: &QueryPlan,
+    routes: &[DynamicFilterRoute],
+    from: DynamicFilterDependencyEndpoint,
+    to: DynamicFilterDependencyEndpoint,
+) -> bool {
+    let mut stack = vec![from];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(endpoint) = stack.pop() {
+        if !visited.insert(endpoint) {
+            continue;
+        }
+        if endpoint == to {
+            return true;
+        }
+        push_dynamic_filter_dependency_successors(plan, routes, endpoint, &mut stack);
+    }
+    false
+}
+
+fn push_dynamic_filter_dependency_successors(
+    plan: &QueryPlan,
+    routes: &[DynamicFilterRoute],
+    endpoint: DynamicFilterDependencyEndpoint,
+    stack: &mut Vec<DynamicFilterDependencyEndpoint>,
+) {
+    for node in plan.nodes() {
+        match &node.kind {
+            PlanNode::Join(join) => {
+                let build_input = match join.spec.build_side {
+                    JoinSide::Left => join.inputs[0],
+                    JoinSide::Right => join.inputs[1],
+                };
+                let probe_input = match join.spec.build_side {
+                    JoinSide::Left => join.inputs[1],
+                    JoinSide::Right => join.inputs[0],
+                };
+                match endpoint {
+                    DynamicFilterDependencyEndpoint::NodeOutput(node_id) if node_id == build_input => {
+                        stack.push(DynamicFilterDependencyEndpoint::JoinBuild(node.id));
+                    },
+                    DynamicFilterDependencyEndpoint::NodeOutput(node_id) if node_id == probe_input => {
+                        stack.push(DynamicFilterDependencyEndpoint::JoinProbe(node.id));
+                    },
+                    DynamicFilterDependencyEndpoint::JoinBuild(node_id) if node_id == node.id => {
+                        stack.push(DynamicFilterDependencyEndpoint::JoinProbe(node.id));
+                    },
+                    DynamicFilterDependencyEndpoint::JoinProbe(node_id) if node_id == node.id => {
+                        stack.push(DynamicFilterDependencyEndpoint::NodeOutput(node.id));
+                    },
+                    _ => {},
+                }
+            },
+            _ => {
+                if let DynamicFilterDependencyEndpoint::NodeOutput(node_id) = endpoint
+                    && node.input_ids().contains(&node_id)
+                {
+                    stack.push(DynamicFilterDependencyEndpoint::NodeOutput(node.id));
+                }
+            },
+        }
+    }
+    for route in routes {
+        if dynamic_filter_producer_endpoint(&route.producer) == endpoint {
+            stack.push(dynamic_filter_consumer_endpoint(&route.consumer));
+        }
+    }
+}
+
+const fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    }
 }
 
 fn rejected_candidate(
@@ -581,6 +1176,7 @@ fn lineages_for_column(
                 .map(mark_shared)
                 .collect()
         },
+        PlanNode::Limit(_) if aggregate_group_key_lineage == AggregateGroupKeyLineage::Consumer => Vec::new(),
         PlanNode::Limit(limit) => {
             lineages_for_column(plan, parent_counts, limit.input, column_name, aggregate_group_key_lineage)
                 .into_iter()
