@@ -4,7 +4,7 @@
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::Arc,
     time::Duration,
@@ -38,7 +38,7 @@ use iceberg::{
 use nexus_query_engine::is_supported_arrow_type;
 use parquet::file::{
     FOOTER_SIZE,
-    metadata::{FooterTail, ParquetMetaDataReader},
+    metadata::{FooterTail, ParquetMetaData, ParquetMetaDataReader},
 };
 
 use crate::{
@@ -1417,7 +1417,7 @@ async fn attach_remote_footer_schemas_for_field_id_proof(
         .collect::<Vec<_>>();
     let fetches = requests.into_iter().map(|(index, location, size_bytes)| {
         let file_io = file_io.clone();
-        async move { (index, remote_iceberg_data_file_footer_arrow_schema(&file_io, &location, size_bytes).await) }
+        async move { (index, remote_iceberg_parquet_footer(&file_io, &location, size_bytes).await) }
     });
     let mut footers = futures::stream::iter(fetches).buffer_unordered(REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY);
 
@@ -1429,12 +1429,13 @@ async fn attach_remote_footer_schemas_for_field_id_proof(
         } else {
             footers.next().await
         };
-        let Some((index, footer_schema)) = result else {
+        let Some((index, footer)) = result else {
             break;
         };
-        if let Some(footer_schema) = footer_schema {
+        if let Some(footer) = footer {
             if let Some(data_file) = plan.data_files.get_mut(index) {
-                data_file.footer_schema = Some(footer_schema);
+                data_file.footer_schema = Some(footer.schema);
+                data_file.row_group_null_counts = footer.row_group_null_counts;
             }
         }
     }
@@ -1449,14 +1450,6 @@ fn scan_plan_needs_field_id_footer_schema(plan: &TableFormatScanPlan) -> bool {
         })
 }
 
-async fn remote_iceberg_data_file_footer_arrow_schema(
-    file_io: &FileIO,
-    location: &str,
-    known_file_size: Option<u64>,
-) -> Option<SchemaRef> {
-    remote_iceberg_parquet_footer(file_io, location, known_file_size).await.map(|footer| footer.schema)
-}
-
 async fn remote_iceberg_parquet_footer_row_count(
     file_io: &FileIO,
     location: &str,
@@ -1468,6 +1461,7 @@ async fn remote_iceberg_parquet_footer_row_count(
 struct RemoteIcebergParquetFooter {
     schema: SchemaRef,
     row_count: Option<u64>,
+    row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
 }
 
 async fn remote_iceberg_parquet_footer(
@@ -1525,7 +1519,43 @@ async fn remote_iceberg_parquet_footer(
             .ok()
             .map(|schema| Arc::new(schema) as SchemaRef)?;
     let row_count = u64::try_from(file_metadata.num_rows()).ok();
-    Some(RemoteIcebergParquetFooter { schema, row_count })
+    let row_group_null_counts = parquet_footer_row_group_null_counts(&metadata);
+    Some(RemoteIcebergParquetFooter { schema, row_count, row_group_null_counts })
+}
+
+fn parquet_footer_row_group_null_counts(metadata: &ParquetMetaData) -> BTreeMap<usize, Vec<Option<u64>>> {
+    let schema = metadata.file_metadata().schema_descr();
+    let root_field_count = schema.root_schema().get_fields().len();
+    (0..root_field_count)
+        .filter_map(|root_index| {
+            let leaf_index = single_leaf_primitive_root_column_index(schema, root_index)?;
+            let counts = metadata
+                .row_groups()
+                .iter()
+                .map(|row_group| {
+                    row_group
+                        .columns()
+                        .get(leaf_index)
+                        .and_then(|column| column.statistics())
+                        .and_then(|statistics| statistics.null_count_opt())
+                })
+                .collect::<Vec<_>>();
+            Some((root_index, counts))
+        })
+        .collect()
+}
+
+fn single_leaf_primitive_root_column_index(
+    schema: &parquet::schema::types::SchemaDescriptor,
+    root_index: usize,
+) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices =
+        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
+    let leaf_index = leaf_indices.next()?;
+    leaf_indices.next().is_none().then_some(leaf_index)
 }
 
 fn count_star_probe_column_mapping_for_tasks(tasks: &[FileScanTask]) -> Result<Option<TableFormatColumnMapping>> {

@@ -2008,6 +2008,11 @@ pub struct TableFormatDataFile {
     /// Footer Arrow schema with Parquet field-id metadata, when the table-format
     /// planner fetched it during metadata planning.
     pub footer_schema: Option<SchemaRef>,
+    /// Footer-proven row-group null counts by physical root column index.
+    ///
+    /// Inner vectors are indexed by physical row-group number. `None` entries
+    /// mean the footer did not prove a null count for that column chunk.
+    pub row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
     /// Partition values attached to this data file.
     pub partition_values: Vec<TableFormatPartitionValue>,
     /// Supported position-delete files associated with this data file.
@@ -2026,6 +2031,7 @@ impl fmt::Debug for TableFormatDataFile {
             .field("read_capability", &self.read_capability)
             .field("resolved_parquet_source", &self.resolved_parquet_source)
             .field("footer_schema_available", &self.footer_schema.is_some())
+            .field("row_group_null_counts", &self.row_group_null_counts)
             .field("partition_values", &self.partition_values)
             .field("position_delete_files", &self.position_delete_files)
             .finish()
@@ -2050,6 +2056,7 @@ impl TableFormatDataFile {
             read_capability,
             resolved_parquet_source: None,
             footer_schema: None,
+            row_group_null_counts: BTreeMap::new(),
             partition_values: Vec::new(),
             position_delete_files: Vec::new(),
         }
@@ -2082,6 +2089,12 @@ impl TableFormatDataFile {
     /// Records the footer Arrow schema used for Iceberg field-id proof.
     pub fn with_footer_schema(mut self, schema: SchemaRef) -> Self {
         self.footer_schema = Some(schema);
+        self
+    }
+
+    /// Records footer-proven row-group null counts by physical root column index.
+    pub fn with_row_group_null_counts(mut self, null_counts: BTreeMap<usize, Vec<Option<u64>>>) -> Self {
+        self.row_group_null_counts = null_counts;
         self
     }
 

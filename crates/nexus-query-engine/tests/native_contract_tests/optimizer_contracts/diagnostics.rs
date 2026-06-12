@@ -2,6 +2,10 @@
 fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
     let diagnostics = NativeOptimizerDiagnostics {
         aggregate_join_pushdown: AggregateJoinPushdownDiagnostics { considered_count: 1, ..Default::default() },
+        count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
         projection_simplification: ProjectionSimplificationDiagnostics { considered_count: 1, ..Default::default() },
         semijoin_reduction: SemijoinReductionDiagnostics { considered_count: 1, ..Default::default() },
         outer_join_null_rejection: OuterJoinNullRejectionDiagnostics { considered_count: 1, ..Default::default() },
@@ -24,12 +28,13 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
     };
 
     let rows = diagnostics.stable_rule_rows();
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), 12);
     let rendered = rows.join(";");
     for rule_name in [
         PROJECTION_SIMPLIFICATION_RULE_NAME,
         SEMIJOIN_REDUCTION_RULE_NAME,
         JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+        COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
         OUTER_JOIN_NULL_REJECTION_RULE_NAME,
         JOIN_FILTER_REASSOCIATION_RULE_NAME,
         DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
@@ -44,6 +49,47 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
             "missing stable optimizer diagnostic row for {rule_name}: {rendered}"
         );
     }
+}
+
+#[test]
+fn native_optimizer_stable_rule_rows_project_count_non_null_pruning_candidates() {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(estimated_local_source_with_fields("orders", &["o_custkey", "o_orderkey"], 1_024, 10));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("o_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        Arc::new(Schema::new(vec![
+            Field::new("o_custkey", DataType::Int32, false),
+            Field::new("c_count", DataType::Int64, false),
+        ])),
+    );
+
+    let diagnostics = NativeOptimizerDiagnostics {
+        count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics {
+            considered_count: 1,
+            applied_count: 0,
+            candidates: vec![CountNonNullColumnPruningCandidateDiagnostics {
+                rule_name: COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
+                aggregate_node_id: aggregate,
+                column: "o_orderkey".to_string(),
+                source_node_id: Some(source),
+                file_column_index: Some(1),
+                applied: false,
+                rejected_reason: Some(CountNonNullColumnPruningRejectedReason::NullCountProofUnavailable),
+            }],
+        },
+        ..Default::default()
+    };
+
+    assert_eq!(
+        diagnostics.stable_rule_rows(),
+        vec![
+            "rule=count_non_null_column_pruning,considered_count=1,applied_count=0,candidates=rule=count_non_null_column_pruning,aggregate_node_id=n1,column=o_orderkey,source_node_id=n0,file_column_index=1,applied=false,rejected_reason=NullCountProofUnavailable".to_string()
+        ]
+    );
 }
 
 #[test]

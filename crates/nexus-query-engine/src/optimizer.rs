@@ -7,6 +7,7 @@
 mod semijoin_reduction;
 
 mod aggregate_join_pushdown;
+mod count_non_null_pruning;
 mod diagnostics;
 mod dimension_pruning;
 mod dynamic_filter;
@@ -22,6 +23,10 @@ mod stream_fanout_replay;
 pub use aggregate_join_pushdown::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
+};
+pub use count_non_null_pruning::{
+    COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME, CountNonNullColumnPruningCandidateDiagnostics,
+    CountNonNullColumnPruningDiagnostics, CountNonNullColumnPruningOptions, CountNonNullColumnPruningRejectedReason,
 };
 pub use dimension_pruning::{
     DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DIMENSION_KEY_FILTER_MAX_RUNS, DimensionDerivedApplyResult,
@@ -81,6 +86,8 @@ use crate::plan::QueryPlan;
 pub struct NativeOptimizerOptions {
     /// Options for reducing rollup/grouping-set aggregates before dimension joins.
     pub aggregate_join_pushdown: AggregateJoinPushdownOptions,
+    /// Options for rewriting footer-proven non-null `COUNT(column)` arguments.
+    pub count_non_null_column_pruning: CountNonNullColumnPruningOptions,
     /// Options for removing redundant identity projections.
     pub projection_simplification: ProjectionSimplificationOptions,
     /// Options for pushing left-semi key filters below eligible joins.
@@ -108,6 +115,7 @@ impl NativeOptimizerOptions {
     pub fn disabled() -> Self {
         Self {
             aggregate_join_pushdown: AggregateJoinPushdownOptions::disabled(),
+            count_non_null_column_pruning: CountNonNullColumnPruningOptions::disabled(),
             projection_simplification: ProjectionSimplificationOptions::disabled(),
             semijoin_reduction: SemijoinReductionOptions::disabled(),
             outer_join_null_rejection: OuterJoinNullRejectionOptions::disabled(),
@@ -157,6 +165,8 @@ impl NativeOptimizerResult {
 pub struct NativeOptimizerDiagnostics {
     /// Diagnostics from the aggregate-join pushdown pass.
     pub aggregate_join_pushdown: AggregateJoinPushdownDiagnostics,
+    /// Diagnostics from the footer-proven count argument pruning pass.
+    pub count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics,
     /// Diagnostics from the projection-simplification pass.
     pub projection_simplification: ProjectionSimplificationDiagnostics,
     /// Diagnostics from the semijoin-reduction pass.
@@ -183,6 +193,7 @@ impl NativeOptimizerDiagnostics {
     /// Returns true when no optimizer pass considered or applied candidates.
     pub fn is_empty(&self) -> bool {
         self.aggregate_join_pushdown.is_empty()
+            && self.count_non_null_column_pruning.is_empty()
             && self.projection_simplification.is_empty()
             && self.semijoin_reduction.is_empty()
             && self.outer_join_null_rejection.is_empty()
@@ -198,6 +209,7 @@ impl NativeOptimizerDiagnostics {
     /// Merges diagnostics from another optimizer invocation into this one.
     pub fn merge(&mut self, other: Self) {
         self.aggregate_join_pushdown.merge(other.aggregate_join_pushdown);
+        self.count_non_null_column_pruning.merge(other.count_non_null_column_pruning);
         self.projection_simplification.merge(other.projection_simplification);
         self.semijoin_reduction.merge(other.semijoin_reduction);
         self.outer_join_null_rejection.merge(other.outer_join_null_rejection);
@@ -235,8 +247,12 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         join_build_side_result.plan,
         &options.aggregate_join_pushdown,
     );
-    let stream_fanout_replay_result = stream_fanout_replay::optimize_stream_fanout_replay(
+    let count_non_null_column_pruning_result = count_non_null_pruning::optimize_count_non_null_column_pruning(
         aggregate_join_pushdown_result.plan,
+        &options.count_non_null_column_pruning,
+    );
+    let stream_fanout_replay_result = stream_fanout_replay::optimize_stream_fanout_replay(
+        count_non_null_column_pruning_result.plan,
         &options.stream_fanout_replay,
     );
     let shared_subplan_materialization_result = shared_subplan_materialization::optimize_shared_subplan_materialization(
@@ -263,6 +279,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         || dimension_pruning_result.change.changed()
         || join_build_side_result.change.changed()
         || aggregate_join_pushdown_result.change.changed()
+        || count_non_null_column_pruning_result.change.changed()
         || stream_fanout_replay_result.change.changed()
         || local_parquet_source_reuse_result.change.changed()
         || shared_subplan_materialization_result.change.changed()
@@ -277,6 +294,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         plan: dynamic_filter_route_result.plan,
         diagnostics: NativeOptimizerDiagnostics {
             aggregate_join_pushdown: aggregate_join_pushdown_result.diagnostics,
+            count_non_null_column_pruning: count_non_null_column_pruning_result.diagnostics,
             projection_simplification: {
                 let mut diagnostics = projection_simplification_result.diagnostics;
                 diagnostics.merge(final_projection_simplification_result.diagnostics);

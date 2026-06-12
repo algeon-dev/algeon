@@ -204,6 +204,14 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     );
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(!source.is_zero_column_count_source());
+    assert_eq!(source.read_columns, vec!["key".to_string()]);
+    assert_eq!(source.projected_output_columns, Vec::<String>::new());
+    assert_eq!(source.pure_filter_columns, vec!["key".to_string()]);
+    assert_eq!(source.diagnostics.read_column_count, 1);
+    assert_eq!(source.diagnostics.projected_output_column_count, 0);
+    assert_eq!(source.diagnostics.pure_filter_column_count, 1);
+    assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
+    nexus_query_engine::validate_local_parquet_source(source).unwrap();
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);

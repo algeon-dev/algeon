@@ -1,6 +1,8 @@
 use nexus_query_engine::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
-    AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
+    AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason, COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
+    CountNonNullColumnPruningCandidateDiagnostics, CountNonNullColumnPruningDiagnostics,
+    CountNonNullColumnPruningOptions, CountNonNullColumnPruningRejectedReason,
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedRowGroupPruningDiagnostics,
     DimensionDerivedRowGroupPruningOptions, DimensionDerivedRowGroupPruningRejectedReason, DynamicFilter,
@@ -29,6 +31,7 @@ include!("optimizer_contracts/support.rs");
 include!("optimizer_contracts/options.rs");
 include!("optimizer_contracts/diagnostics.rs");
 include!("optimizer_contracts/aggregate_join_pushdown.rs");
+include!("optimizer_contracts/count_non_null_pruning.rs");
 include!("optimizer_contracts/shared_subplan_materialization.rs");
 include!("optimizer_contracts/dynamic_filter.rs");
 include!("optimizer_contracts/dimension_pruning.rs");

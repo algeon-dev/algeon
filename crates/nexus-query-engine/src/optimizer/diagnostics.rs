@@ -89,6 +89,16 @@ impl NativeOptimizerDiagnostics {
                 format_candidates(&reuse.candidates, format_local_parquet_source_reuse_candidate)
             ));
         }
+        if !self.count_non_null_column_pruning.is_empty() {
+            let pruning = &self.count_non_null_column_pruning;
+            rows.push(format!(
+                "rule={},considered_count={},applied_count={},candidates={}",
+                COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
+                pruning.considered_count,
+                pruning.applied_count,
+                format_candidates(&pruning.candidates, format_count_non_null_column_pruning_candidate)
+            ));
+        }
         if !self.shared_subplan_materialization.is_empty() {
             let materialization = &self.shared_subplan_materialization;
             rows.push(format!(
@@ -265,6 +275,21 @@ fn format_local_parquet_source_reuse_candidate(candidate: &LocalParquetSourceReu
         stable_file_ids,
         superset_read_columns,
         candidate.branch_filter_count,
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_count_non_null_column_pruning_candidate(candidate: &CountNonNullColumnPruningCandidateDiagnostics) -> String {
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},aggregate_node_id={},column={},source_node_id={},file_column_index={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.aggregate_node_id,
+        stable_diagnostic_field(candidate.column.as_str()),
+        candidate.source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+        option_usize_text(candidate.file_column_index),
         candidate.applied,
         rejected_reason,
     )
