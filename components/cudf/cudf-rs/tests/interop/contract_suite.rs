@@ -1,3 +1,5 @@
+#[path = "arrow_device_tests.rs"]
+mod arrow_device_tests;
 #[path = "borrowed_view_tests.rs"]
 mod borrowed_view_tests;
 #[path = "import_tests.rs"]

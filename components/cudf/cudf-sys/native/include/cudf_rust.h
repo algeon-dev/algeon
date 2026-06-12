@@ -3,6 +3,7 @@
 
 /// Master include for cudf Rust FFI C shim.
 
+#include "arrow_device.h"
 #include "binary.h"
 #include "column.h"
 #include "concatenate.h"

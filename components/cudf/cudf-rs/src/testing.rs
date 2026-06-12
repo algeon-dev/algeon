@@ -7,6 +7,8 @@
 //! Items in this module are intentionally **not** part of the stable,
 //! user-facing API contract. They may change or disappear at any time.
 
+use std::ffi::c_void;
+
 use crate::{
     AggSpec, MergeOptions, SortOptions,
     core::{
@@ -319,4 +321,46 @@ pub fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
 /// tests.
 pub fn trigger_record_batch_error_for_test() -> Result<()> {
     arrow::__debug_trigger_record_batch_error_for_test()
+}
+
+/// Reset host-copy Arrow interop observation counters used by integration
+/// tests.
+pub fn reset_arrow_host_interop_observation_for_test() {
+    arrow::__test_reset_host_interop_observation();
+}
+
+/// Read how many times the host-copy Arrow export entrypoint ran.
+pub fn arrow_host_export_call_count_for_test() -> usize {
+    arrow::__test_host_export_call_count()
+}
+
+/// Read how many times the host-copy Arrow import entrypoint ran.
+pub fn arrow_host_import_call_count_for_test() -> usize {
+    arrow::__test_host_import_call_count()
+}
+
+/// Return the Arrow C Device ABI device_type code for CPU roots.
+pub fn arrow_device_cpu_type_for_test() -> i32 {
+    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CPU
+}
+
+/// Return the Arrow C Device ABI device_type code for CUDA_HOST roots.
+pub fn arrow_device_cuda_host_type_for_test() -> i32 {
+    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST
+}
+
+/// Return the Arrow C Device ABI device_type code for CUDA_MANAGED roots.
+pub fn arrow_device_cuda_managed_type_for_test() -> i32 {
+    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED
+}
+
+/// Testing-only hook: overwrite one owned ArrowDeviceArray handle's
+/// `device_type` field in place.
+///
+/// # Safety
+///
+/// `raw_device_array` must be a valid ArrowDeviceArray handle produced by this
+/// crate's Arrow device bridge and still owned by a live Rust wrapper.
+pub unsafe fn force_device_arrow_array_device_type_for_test(raw_device_array: *mut c_void, device_type: i32) {
+    unsafe { cudf_sys::cudf_test_arrow_device_array_set_device_type(raw_device_array, device_type) }
 }

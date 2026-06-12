@@ -127,6 +127,7 @@ endif()
 add_library(
   cudf_rust SHARED
   src/error.cpp
+  src/arrow_device.cpp
   src/types.cpp
   src/owning_handle.cpp
   src/column.cpp
