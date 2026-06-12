@@ -11,6 +11,12 @@ pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
 pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-nexus-error-kind";
 /// Flight SQL response metadata key containing the retry/status classification.
 pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-nexus-error-status";
+/// Flight SQL response metadata key containing the first unsupported column name, when known.
+pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column";
+/// Flight SQL response metadata key containing the first unsupported column Arrow type, when known.
+pub const UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-type";
+/// Flight SQL response metadata key containing the first unsupported column role, when known.
+pub const UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-role";
 const DATAFUSION_ERROR_FALLBACK_OPERATION: &str = "datafusion_nexus.server.datafusion_error";
 
 pub type Result<T> = std::result::Result<T, ServerError>;
@@ -102,7 +108,7 @@ fn adapter_error_to_status(error: &Error) -> Status {
 }
 
 fn client_status_message(error: &Error) -> String {
-    match error.code() {
+    let message = match error.code() {
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
         },
@@ -118,7 +124,22 @@ fn client_status_message(error: &Error) -> String {
             "internal server error while processing the request".to_string()
         },
         _ => error.message().to_string(),
+    };
+    append_unsupported_column_context(error, message)
+}
+
+fn append_unsupported_column_context(error: &Error, message: String) -> String {
+    let Some(column) = error.fact_value("unsupported_column") else {
+        return message;
+    };
+    let column_type = error.fact_value("unsupported_column_type").unwrap_or("unknown");
+    let role = error.fact_value("unsupported_column_role").unwrap_or("unknown");
+    if message.contains("unsupported_column=") {
+        return message;
     }
+    format!(
+        "{message}; unsupported_column={column}; unsupported_column_type={column_type}; unsupported_column_role={role}"
+    )
 }
 
 fn diagnostic_status_message(error: &Error) -> String {
@@ -129,12 +150,28 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_metadata(status.metadata_mut(), ERROR_CODE_METADATA_KEY, error.code().as_str());
     insert_metadata(status.metadata_mut(), ERROR_KIND_METADATA_KEY, error.kind().as_str());
     insert_metadata(status.metadata_mut(), ERROR_STATUS_METADATA_KEY, error.status().as_str());
+    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_METADATA_KEY, error, "unsupported_column");
+    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, error, "unsupported_column_type");
+    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, error, "unsupported_column_role");
     status
 }
 
 fn insert_metadata(metadata: &mut tonic::metadata::MetadataMap, key: &'static str, value: &'static str) {
     if let Ok(value) = MetadataValue::try_from(value) {
         metadata.insert(key, value);
+    }
+}
+
+fn insert_fact_metadata(
+    metadata: &mut tonic::metadata::MetadataMap,
+    metadata_key: &'static str,
+    error: &Error,
+    fact_key: &str,
+) {
+    if let Some(value) = error.fact_value(fact_key)
+        && let Ok(value) = MetadataValue::try_from(value)
+    {
+        metadata.insert(metadata_key, value);
     }
 }
 
@@ -487,14 +524,51 @@ mod tests {
         assert_no_diagnostic_fields(status.message());
     }
 
+    #[test]
+    fn adapter_unsupported_column_facts_are_client_visible() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::NativeCandidateRejected,
+                "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
+                "table-format scan leaf was not rewritten to native; first rejection=unsupported_type; no CPU Arrow reader fallback",
+            )
+            .with_fact("unsupported_column", "countDetail")
+            .with_fact(
+                "unsupported_column_type",
+                "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)",
+            )
+            .with_fact("unsupported_column_role", "projected")
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "native_candidate_rejected", "planning", "permanent");
+        assert!(status.message().contains("first rejection=unsupported_type"));
+        assert!(status.message().contains("unsupported_column=countDetail"));
+        assert!(status.message().contains(
+            "unsupported_column_type=Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)"
+        ));
+        assert!(status.message().contains("unsupported_column_role=projected"));
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
+        assert_metadata_value(
+            &status,
+            UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
+            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)",
+        );
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "projected");
+        assert_no_diagnostic_fields(status.message());
+    }
+
     fn assert_error_metadata(status: &Status, code: &str, kind: &str, error_status: &str) {
-        let actual_code = status.metadata().get(ERROR_CODE_METADATA_KEY).expect("error code metadata must be present");
-        assert_eq!(actual_code.to_str().expect("error code metadata must be ASCII"), code);
-        let actual_kind = status.metadata().get(ERROR_KIND_METADATA_KEY).expect("error kind metadata must be present");
-        assert_eq!(actual_kind.to_str().expect("error kind metadata must be ASCII"), kind);
-        let actual_status =
-            status.metadata().get(ERROR_STATUS_METADATA_KEY).expect("error status metadata must be present");
-        assert_eq!(actual_status.to_str().expect("error status metadata must be ASCII"), error_status);
+        assert_metadata_value(status, ERROR_CODE_METADATA_KEY, code);
+        assert_metadata_value(status, ERROR_KIND_METADATA_KEY, kind);
+        assert_metadata_value(status, ERROR_STATUS_METADATA_KEY, error_status);
+    }
+
+    fn assert_metadata_value(status: &Status, key: &'static str, expected: &str) {
+        let actual = status.metadata().get(key).unwrap_or_else(|| panic!("{key} metadata must be present"));
+        assert_eq!(actual.to_str().unwrap_or_else(|_| panic!("{key} metadata must be ASCII")), expected);
     }
 
     fn assert_no_diagnostic_fields(message: &str) {

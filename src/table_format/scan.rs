@@ -1298,7 +1298,7 @@ mod tests {
         let unsupported = plan.first_unsupported_column().expect("projected map column must be named");
         assert_eq!(unsupported.logical_name, "allRiskEvents");
         assert_eq!(unsupported.role_code(), "projected");
-        assert!(unsupported.data_type_debug().starts_with("Map("));
+        assert!(unsupported.data_type_summary().starts_with("Map("));
     }
 
     #[test]
@@ -1950,9 +1950,9 @@ impl<'a> TableFormatUnsupportedColumn<'a> {
         self.role.code()
     }
 
-    /// Debug-formatted Arrow type for diagnostics.
-    pub(crate) fn data_type_debug(&self) -> String {
-        format!("{:?}", self.data_type)
+    /// Human-readable Arrow type for client-facing diagnostics.
+    pub(crate) fn data_type_summary(&self) -> String {
+        nexus_query_engine::diagnostic_arrow_type(self.data_type)
     }
 }
 

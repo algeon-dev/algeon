@@ -122,7 +122,12 @@ fn unsupported_operator_column(
     data_type: &arrow::datatypes::DataType,
     role: &'static str,
 ) -> UnsupportedTableFormatOperatorColumn {
-    UnsupportedTableFormatOperatorColumn { operator, column: column.into(), data_type: format!("{data_type:?}"), role }
+    UnsupportedTableFormatOperatorColumn {
+        operator,
+        column: column.into(),
+        data_type: nexus_query_engine::diagnostic_arrow_type(data_type),
+        role,
+    }
 }
 
 fn logical_expr_column_name(expr: &Expr) -> String {

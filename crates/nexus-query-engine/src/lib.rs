@@ -57,9 +57,9 @@ pub mod prelude {
 pub mod ir {
     pub use crate::{
         datatypes::{
-            arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
-            is_supported_arrow_implicit_cast, is_supported_arrow_type, is_supported_list_carry_type,
-            is_timestamp_with_timezone, timestamp_unit_to_cudf_resolution,
+            arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, diagnostic_arrow_type,
+            is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
+            is_supported_list_carry_type, is_timestamp_with_timezone, timestamp_unit_to_cudf_resolution,
         },
         expr::{
             AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart,
@@ -249,7 +249,7 @@ pub use contract_report::{
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport,
 };
 pub use datatypes::{
-    arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
+    arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, diagnostic_arrow_type, is_supported_arrow_cast,
     is_supported_arrow_implicit_cast, is_supported_arrow_type, is_supported_list_carry_type,
     is_timestamp_with_timezone, timestamp_unit_to_cudf_resolution,
 };
